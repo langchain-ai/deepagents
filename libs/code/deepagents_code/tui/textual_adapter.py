@@ -1118,6 +1118,28 @@ async def _finalize_usage_round(
         _session_stats.finalize_recorded_requests(recorded_requests)
 
 
+async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle
+    """Mount a standalone transcript note about a diff that could not be shown.
+
+    A last resort for the cases where no tool row and no diff body survived to
+    carry the message. The transcript is the surface these statements were
+    written for; a log line reaches only a user who already suspects something
+    is wrong and knows to open the Debug Console.
+
+    Guarded because it runs on the turn loop: failing to render a note about a
+    rendering failure must not abort the turn and drop the remaining tools'
+    hooks.
+
+    Args:
+        adapter: The stream adapter holding the mount callback.
+        text: The sentence to display.
+    """
+    try:
+        await adapter._mount_message(AppMessage(text))
+    except Exception:
+        logger.exception("Failed to mount diff note: %s", text)
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -1987,30 +2009,13 @@ async def execute_task_textual(
                             # the remaining tools' hooks.
                             try:
                                 if tool_status == "success":
-                                    # A display problem is not a tool failure.
-                                    # Prepend the caveat to the row's own output
-                                    # rather than routing through `set_error`,
-                                    # which would stamp the row "Error", overwrite
-                                    # the tool's success message with the caveat,
-                                    # and make a completed operation count toward
-                                    # every failure surface — so a user would
-                                    # retry an edit that already applied.
-                                    # Prepended, not appended, so the caveat
-                                    # survives the collapsed output preview.
-                                    tool_msg.set_success(
-                                        "\n\n".join(
-                                            part
-                                            for part in (caveat, output_str)
-                                            if part
-                                        )
+                                    # One call so the caveat text and the flag
+                                    # that keeps this row out of a group summary
+                                    # cannot be set apart — see
+                                    # `set_success_with_caveat`.
+                                    caveat_shown = tool_msg.set_success_with_caveat(
+                                        caveat, output_str
                                     )
-                                    if caveat:
-                                        # The row now carries the only account of
-                                        # a change that cannot be shown, so it
-                                        # must not be folded into a group summary
-                                        # built from tool names.
-                                        tool_msg.mark_display_caveat()
-                                        caveat_shown = True
                                 else:
                                     tool_msg.set_error(output_str or "Error")
                                 adapter._sync_tool_widget(tool_msg)
@@ -2118,21 +2123,33 @@ async def execute_task_textual(
                                 # cosmetic, and a failure here must not abort the
                                 # turn and drop the remaining tools' hooks.
                                 try:
-                                    await adapter._mount_message(
-                                        DiffMessage(
-                                            record.diff,
-                                            record.display_path,
-                                            tool_name=record.tool_name,
-                                            before=record.before_content or "",
-                                            after=record.after_content or "",
-                                            stats=record.diff_stats,
-                                            outcome=record.diff_outcome,
-                                        )
+                                    diff_msg = DiffMessage(
+                                        record.diff,
+                                        record.display_path,
+                                        tool_name=record.tool_name,
+                                        before=record.before_content or "",
+                                        after=record.after_content or "",
+                                        stats=record.diff_stats,
+                                        outcome=record.diff_outcome,
+                                        # Skip the caveat only when the row
+                                        # already displays the identical
+                                        # sentence and cannot be folded away.
+                                        # For `edit_file` both are guaranteed
+                                        # on screen — it is excluded from
+                                        # grouping, and a non-`shown` outcome
+                                        # blocks supersession — so without this
+                                        # the same sentence renders twice,
+                                        # adjacent.
+                                        show_caveat=not caveat_shown,
                                     )
-                                    # The mounted diff renders the same caveat
-                                    # for any outcome but `shown`, so it stands
-                                    # in for the row when there was none.
-                                    caveat_shown = caveat_shown or bool(caveat)
+                                    await adapter._mount_message(diff_msg)
+                                    # Read from the widget rather than assuming
+                                    # a non-`shown` outcome put the caveat on
+                                    # screen: it also suppresses its own caveat
+                                    # when told the row has it.
+                                    caveat_shown = (
+                                        caveat_shown or diff_msg.renders_caveat
+                                    )
                                     if tool_msg is not None and replaces_row:
                                         tool_msg.mark_superseded_by_diff()
                                         adapter._sync_tool_widget(tool_msg)
@@ -2141,18 +2158,31 @@ async def execute_task_textual(
                                         "Failed to mount diff for %s",
                                         record.display_path,
                                     )
+                                    # The diff was expected and never appeared.
+                                    # Say so on screen — a silently absent diff
+                                    # reads as "nothing changed", and under
+                                    # `shown` there is no caveat to fall back
+                                    # on.
+                                    await _mount_diff_note(
+                                        adapter,
+                                        f"The diff for {record.display_path} "
+                                        "could not be rendered.",
+                                    )
                             if caveat and not caveat_shown:
                                 # No row took the caveat (its widget was torn
                                 # down) and no diff mounted to carry it — a
                                 # `delete` with a lost pre-image is the live
-                                # case. Nothing on screen will say the change
-                                # could not be shown, so at least leave it
-                                # somewhere a user can find it.
+                                # case. Put it in the transcript, which is the
+                                # surface the caveat was written for; a log line
+                                # alone leaves a destructive change looking
+                                # routine to anyone not watching the Debug
+                                # Console.
                                 logger.warning(
                                     "No surface carried the display caveat for %s: %s",
                                     record.display_path,
                                     caveat,
                                 )
+                                await _mount_diff_note(adapter, caveat)
 
                         # Reshow spinner only when all in-flight tools have
                         # completed (avoids premature "Thinking..." when

@@ -32,13 +32,13 @@ if TYPE_CHECKING:
 def _clear_highlight_cache() -> Iterator[None]:
     """Keep the module-level highlight cache from leaking between tests.
 
-    `_highlight_lines` is an `lru_cache` on `(code, path)`, so one test's
+    `_highlight_lines_cached` is an `lru_cache` on `(code, path)`, so one test's
     highlighted lines — or its cached lexer *failure* — would otherwise be served
     to the next test using the same snippet.
     """
-    diff_module._highlight_lines.cache_clear()
+    diff_module._highlight_lines_cached.cache_clear()
     yield
-    diff_module._highlight_lines.cache_clear()
+    diff_module._highlight_lines_cached.cache_clear()
 
 
 def _rendered(diff: str, max_lines: int | None = 100) -> list[Static]:
@@ -451,7 +451,7 @@ class TestComposeDiffLines:
         """
         line = 199_000
         source = "y = 2\n" * 200_000
-        assert len(source) > diff_module._MAX_HIGHLIGHT_CHARS
+        assert len(source) > diff_module.MAX_HIGHLIGHT_CHARS
         assert diff_module._highlight_source_prefix(source, line) == ""
         # A prefix that does fit still comes back whole.
         assert diff_module._highlight_source_prefix(source, 10) == "\n".join(

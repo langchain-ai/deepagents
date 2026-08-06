@@ -191,11 +191,11 @@ class MessageData:
     diff_before_content: str | None = None
     """Content prefix before the change, used to highlight DIFF messages.
 
-    Bounded by `_MAX_HIGHLIGHT_CHARS` as trimmed by `highlight_source_prefixes`
-    on the way to the widget; `from_widget` reads the already-trimmed value. This
-    field does not clamp, so a direct constructor call can park an unbounded copy
-    of a file in a store whose whole point is that thousands of messages cost
-    little.
+    Bounded by `diff.MAX_HIGHLIGHT_CHARS` as trimmed by
+    `highlight_source_prefixes` on the way to the widget; `from_widget` reads the
+    already-trimmed value. `__post_init__` re-applies the same bound so a direct
+    constructor call cannot park an unbounded copy of a file in a store whose
+    whole point is that thousands of messages cost little.
     """
 
     diff_after_content: str | None = None
@@ -209,6 +209,14 @@ class MessageData:
 
     One field rather than a `stats`-plus-"counts unknown" pair, so a rehydrated
     diff cannot come back holding counts it also declares fictional.
+    """
+
+    diff_show_caveat: bool = True
+    """Whether the DIFF renders its outcome's caveat, or leaves it to its row.
+
+    Persisted rather than recomputed because the decision depends on what else
+    was mounted at the time, which rehydration cannot see. Without it a diff
+    whose row carries the caveat comes back printing the same sentence twice.
     """
 
     # SKILL message fields - only populated for SKILL messages
@@ -292,6 +300,18 @@ class MessageData:
         if self.type == MessageType.RUBRIC and not self.rubric_details:
             msg = "RUBRIC messages must have rubric_details"
             raise ValueError(msg)
+        # Enforce the bound the highlight fields document. `from_widget` already
+        # supplies trimmed values, so this only catches direct construction —
+        # which is exactly the path that could otherwise park an unbounded copy
+        # of a file in a store whose whole point is that thousands of messages
+        # cost little. Imported here rather than at module scope to keep the
+        # widget module off the startup import path (AGENTS.md).
+        from deepagents_code.tui.widgets.diff import MAX_HIGHLIGHT_CHARS
+
+        if self.diff_before_content is not None:
+            self.diff_before_content = self.diff_before_content[:MAX_HIGHLIGHT_CHARS]
+        if self.diff_after_content is not None:
+            self.diff_after_content = self.diff_after_content[:MAX_HIGHLIGHT_CHARS]
 
     def to_widget(self) -> Widget:
         """Recreate a widget from this message data.
@@ -386,6 +406,7 @@ class MessageData:
                     after=self.diff_after_content or "",
                     stats=self.diff_stats,
                     outcome=self.diff_outcome,
+                    show_caveat=self.diff_show_caveat,
                     id=self.id,
                 )
 
@@ -476,6 +497,11 @@ class MessageData:
                 tool_duration=widget._duration,
                 tool_expanded=widget._expanded,
                 tool_reject_reason=widget._reject_reason,
+                # The raw flag, deliberately, not the `_superseded_by_diff`
+                # property: that property conjoins `is_success`, so persisting
+                # it would bake the current status into the stored value and a
+                # later error-to-success flip would lose the supersession. Do
+                # not "fix" this to use the public property.
                 tool_diff_superseded=widget._diff_superseded,
                 tool_display_caveat=widget.has_display_caveat,
             )
@@ -501,6 +527,7 @@ class MessageData:
                 diff_after_content=widget._after,
                 diff_stats=widget._stats,
                 diff_outcome=widget._outcome,
+                diff_show_caveat=widget._show_caveat,
             )
 
         if isinstance(widget, SummarizationMessage):

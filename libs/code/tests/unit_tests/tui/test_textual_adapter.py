@@ -3462,6 +3462,31 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert len(diffs) == 1
         assert diffs[0]._outcome == "untrusted_before"
 
+    async def test_the_caveat_is_not_printed_twice_when_the_row_survives(
+        self, tmp_path: Path
+    ) -> None:
+        """An `edit_file` row can never be folded, so both surfaces are visible.
+
+        The diff mounts with a non-`shown` outcome and the row keeps its own
+        copy of the same sentence, so without suppressing one the reader sees
+        the identical caveat twice, adjacent.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        diff = next(m for m in mounted if isinstance(m, DiffMessage))
+
+        assert "prior contents could not be read" in (tool._output or "")
+        assert diff.renders_caveat is False, "the row already states this"
+        # The untrusted body must still be suppressed — `show_caveat` hides the
+        # sentence, never the reason for it.
+        assert diff._outcome == "untrusted_before"
+
     async def test_unreadable_read_back_reports_success_with_a_caveat(
         self, tmp_path: Path
     ) -> None:

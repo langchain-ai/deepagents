@@ -68,7 +68,11 @@ def display_caveat(
 
     Keyed on the outcome rather than on a `FileOperationRecord` so a widget
     holding only the outcome produces the identical sentence, and the wording
-    cannot drift between surfaces.
+    cannot drift between surfaces. That holds for every outcome whose text is
+    self-contained; `unreadable_after` is the exception, degrading to a generic
+    reason without `after_read_error`. No current caller reaches it — that path
+    leaves `record.diff` unset, so no `DiffMessage` mounts — but a future one
+    passing only the outcome would render a weaker sentence than the tool row.
 
     Args:
         outcome: What the operation can honestly say about what it changed.
@@ -125,12 +129,18 @@ def display_caveat(
 
 
 def record_display_caveat(record: FileOperationRecord | None) -> str:
-    """Return `display_caveat` for a completed record, or empty for none.
+    """Return `display_caveat` for a successful completed record.
+
+    An untrusted pre-image describes what a successful operation could not
+    verify. It is not a property of a failed tool call: showing its success
+    wording after the tool error would contradict the actual result. `status`
+    cannot make that distinction because a successful write or edit whose
+    post-image cannot be read is also recorded as an error.
 
     Returns:
-        The caveat for `record`'s outcome, or empty when there is no record.
+        The caveat for a successful record's outcome, or empty otherwise.
     """
-    if record is None:
+    if record is None or not getattr(record, "tool_succeeded", True):
         return ""
     return display_caveat(
         record.diff_outcome, record.tool_name, record.after_read_error
@@ -149,9 +159,12 @@ class ApprovalPreview:
     stats: DiffStats | None = None
     """Change counts for `diff`, taken before it was clipped for display.
 
-    The prompt's `+N -M` header must not be recounted from `diff`: previews are
-    built with `max_lines=100`, so a recount describes the preview rather than
-    the change, and on the delete path that number gates destroying the file.
+    The prompt's `+N -M` header must not be recounted from `diff`: the
+    `write_file` and `delete` previews are built with `max_lines=100`, so a
+    recount describes the preview rather than the change, and on the delete path
+    that number gates destroying the file. The `edit_file` preview passes
+    `max_lines=None` and so is safe to recount — do not read that as a cap
+    covering all three.
     """
 
 
@@ -168,7 +181,35 @@ def _response_failure_reason(responses: list[Any]) -> str:
     """
     if not responses:
         return "no response"
-    return responses[0].error or "no content and no error reported"
+    return getattr(responses[0], "error", None) or "no content and no error reported"
+
+
+def _response_content(responses: list[Any]) -> tuple[str | None, str | None]:
+    """Decode a backend download response, keeping the reason a read failed.
+
+    Every attribute here is reached through `getattr` and every type checked,
+    so a backend returning a malformed response produces a *reason* rather than
+    an `AttributeError`. That distinction matters: routing a contract violation
+    through the same handler as a real read failure makes a local bug — a
+    renamed field, a `None` where a response was expected — present as a broken
+    workspace, silently degrading every file operation in the session.
+
+    Returns:
+        The decoded content and `None`, or `None` and a human-readable reason.
+    """
+    if not responses:
+        return None, "no response"
+    content = getattr(responses[0], "content", None)
+    if content is None or getattr(responses[0], "error", None) is not None:
+        return None, _response_failure_reason(responses)
+    if not isinstance(content, (bytes, bytearray)):
+        return None, (
+            f"backend returned {type(content).__name__} content, expected bytes"
+        )
+    try:
+        return bytes(content).decode("utf-8"), None
+    except UnicodeDecodeError as e:
+        return None, str(e)
 
 
 def _read_with_reason(path: Path) -> tuple[str | None, str | None]:
@@ -281,6 +322,12 @@ class FileOperationRecord:
     tool_call_id: str | None
     args: dict[str, Any] = field(default_factory=dict)
     status: FileOpStatus = "pending"
+    tool_succeeded: bool = False
+    """Whether the tool itself reported success.
+
+    This is separate from `status`, which also becomes `error` when a
+    successful write or edit cannot be read back for diffing.
+    """
     error: str | None = None
     metrics: FileOpMetrics = field(default_factory=FileOpMetrics)
     diff: str | None = None
@@ -289,8 +336,9 @@ class FileOperationRecord:
 
     The single provenance for what a `DiffMessage` shows. `None` is the only
     way this says "unknown" — never `DiffStats(0, 0)`, which means a verified
-    zero. Unset until a diff is computed, and left unset when `diff_outcome` is
-    `untrusted_before`, where any count would be fiction.
+    zero. Unset until a diff is computed, and left unset for both outcomes that
+    have nothing to count: `untrusted_before`, where any count would be fiction,
+    and `unreadable_after`, which returns before a diff is ever computed.
 
     Deliberately not `metrics.lines_added`/`lines_removed`, which are session
     accounting and do not always mean diff lines: a new-file `write_file` sets
@@ -339,6 +387,13 @@ def resolve_physical_path(
             return path
         return (Path.cwd() / path).resolve()
     except (OSError, ValueError):
+        # The exception is the only thing distinguishing an embedded NUL byte
+        # from a name too long from a failing agent-dir lookup. `None` now
+        # decides which pre-image branch runs and reaches the user as "no
+        # physical path could be resolved", which explains nothing on its own.
+        logger.warning(
+            "Could not resolve physical path for %s", path_str, exc_info=True
+        )
         return None
 
 
@@ -588,13 +643,11 @@ class FileOpTracker:
         if tool_name in {"write_file", "edit_file", "delete"}:
             if self.backend and path_str:
                 try:
-                    responses = self.backend.download_files([path_str])
-                    if (
-                        responses
-                        and responses[0].content is not None
-                        and responses[0].error is None
-                    ):
-                        record.before_content = responses[0].content.decode("utf-8")
+                    content, error = _response_content(
+                        self.backend.download_files([path_str])
+                    )
+                    if content is not None:
+                        record.before_content = content
                     else:
                         # A missing file is the normal create case only for
                         # `write_file`; for an edit or a delete that reports
@@ -603,16 +656,25 @@ class FileOpTracker:
                         # content nor an error violates the backend contract,
                         # so it never counts as an absent file either. Every
                         # such case leaves a diff that cannot be trusted.
-                        error = _response_failure_reason(responses)
-                        if error != FILE_NOT_FOUND or tool_name != "write_file":
-                            lost_pre_image(path_str, error)
+                        reason = error or "no content and no error reported"
+                        if reason != FILE_NOT_FOUND or tool_name != "write_file":
+                            lost_pre_image(path_str, reason)
                         record.before_content = ""
-                except (OSError, UnicodeDecodeError, AttributeError) as e:
-                    # `AttributeError` covers a backend returning a malformed
-                    # response. That is a contract bug, but this runs unguarded
-                    # on the turn loop, so log it loudly rather than let it
-                    # abort the turn.
+                except OSError as e:
                     lost_pre_image(path_str, str(e))
+                    record.before_content = ""
+                except AttributeError as e:
+                    # The backend object itself does not satisfy the protocol —
+                    # a contract bug, not a file that could not be read. Kept
+                    # out of the handler above so the two are distinguishable
+                    # in the logs: routing both through one message makes a
+                    # local defect present as a broken workspace, degrading
+                    # every operation in the session with nothing to say which
+                    # it was. Still caught, because `start_operation` runs
+                    # unguarded on the turn loop and raising would abort the
+                    # turn over a cosmetic read.
+                    logger.exception("Backend violated the download contract")
+                    lost_pre_image(path_str, f"backend contract violation: {e}")
                     record.before_content = ""
             elif record.physical_path:
                 content, reason = _read_with_reason(record.physical_path)
@@ -632,6 +694,22 @@ class FileOpTracker:
                     # the edit.
                     lost_pre_image(record.physical_path, reason or "file not found")
                 record.before_content = content or ""
+            else:
+                # No backend and no resolvable physical path: nothing was read,
+                # so nothing about the prior state is known. Without this the
+                # outcome stays at its `shown` default — the one answer that is
+                # never safe to guess. `write_file` and `edit_file` are caught
+                # downstream, where `_populate_after_content` hits the same
+                # missing path and flips to `unreadable_after`; `delete` is not,
+                # because it synthesizes an empty post-image instead of reading
+                # one back, and empty-against-empty yields no diff. That path
+                # would otherwise finish as a verified `+0 -0` about a file
+                # whose contents were never seen.
+                lost_pre_image(
+                    record.display_path,
+                    "no backend and no resolvable physical path",
+                )
+                record.before_content = ""
         self.active[tool_call_id] = record
 
     def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:  # noqa: ANN401  # Tool message type is dynamic
@@ -667,6 +745,7 @@ class FileOpTracker:
             return record
 
         record.status = "success"
+        record.tool_succeeded = True
 
         if record.tool_name == "read_file":
             record.read_output = content_text
@@ -807,17 +886,22 @@ class FileOpTracker:
                         record.display_path, "the tool call carried no file path"
                     )
                     return
-                responses = self.backend.download_files([file_path])
-                if (
-                    responses
-                    and responses[0].content is not None
-                    and responses[0].error is None
-                ):
-                    record.after_content = responses[0].content.decode("utf-8")
+                content, reason = _response_content(
+                    self.backend.download_files([file_path])
+                )
+                if content is not None:
+                    record.after_content = content
                 else:
-                    unreadable(file_path, _response_failure_reason(responses))
-            except (OSError, UnicodeDecodeError, AttributeError) as e:
+                    unreadable(file_path, reason or "no content and no error reported")
+            except OSError as e:
                 unreadable(file_path, str(e))
+            except AttributeError as e:
+                # Same split as the pre-image read: a backend that does not
+                # satisfy the protocol is a contract bug, reported as one rather
+                # than as an unreadable file, but still not allowed to abort the
+                # turn.
+                logger.exception("Backend violated the download contract")
+                unreadable(file_path, f"backend contract violation: {e}")
         else:
             # Fallback: direct filesystem read when no backend provided. Reports
             # its reason at warning like the backend branch above — the same

@@ -4,9 +4,12 @@ import logging
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.content import Content
+from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_code.diff_utils import DiffStats
+from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.message_store import (
     DEFAULT_HEIGHT_HINT,
     MIN_HEIGHT_HINT,
@@ -26,6 +29,12 @@ from deepagents_code.tui.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
+
+
+def _rendered_text(widget: Widget) -> str:
+    """Return a composed child's plain text, ignoring styles."""
+    rendered = widget.render()
+    return rendered.plain if isinstance(rendered, Content) else str(rendered)
 
 
 class TestMessageData:
@@ -481,6 +490,56 @@ class TestMessageData:
         assert (restored._before, restored._after) == ("a", "b")
         assert restored._stats == DiffStats(additions=200, deletions=200)
         assert restored._outcome == "untrusted_before"
+        # Not only the privates: a rehydration bug preserving all four while
+        # breaking composition would pass on the assertions above alone.
+        assert any(
+            "prior contents could not be read" in _rendered_text(child)
+            for child in restored.compose()
+        )
+
+    def test_a_suppressed_caveat_stays_suppressed_after_rehydration(self) -> None:
+        """The decision depends on what else was mounted, which the store cannot see.
+
+        Without persisting it, a diff whose tool row carries the caveat comes
+        back printing the same sentence a second time.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            outcome="untrusted_before",
+            show_caveat=False,
+            id="test-diff-no-caveat",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert restored.renders_caveat is False
+        texts = [_rendered_text(child) for child in restored.compose()]
+        assert all("prior contents could not be read" not in text for text in texts)
+        # The body stays suppressed regardless — only the sentence was hidden.
+        assert all("+b" not in text for text in texts)
+
+    def test_highlight_prefixes_are_clamped_on_direct_construction(self) -> None:
+        """The store's premise is that thousands of messages cost little.
+
+        `from_widget` supplies already-trimmed values, so only a direct
+        constructor call could park an unbounded copy of a file here.
+        """
+        oversized = "x" * (diff_module.MAX_HIGHLIGHT_CHARS + 5000)
+
+        data = MessageData(
+            type=MessageType.DIFF,
+            content="@@ -1 +1 @@\n-a\n+b",
+            diff_before_content=oversized,
+            diff_after_content=oversized,
+        )
+
+        assert data.diff_before_content is not None
+        assert data.diff_after_content is not None
+        assert len(data.diff_before_content) == diff_module.MAX_HIGHLIGHT_CHARS
+        assert len(data.diff_after_content) == diff_module.MAX_HIGHLIGHT_CHARS
 
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""

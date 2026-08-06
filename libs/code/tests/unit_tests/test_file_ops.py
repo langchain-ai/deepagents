@@ -25,6 +25,7 @@ from deepagents_code.file_ops import (
     build_approval_preview,
     display_caveat,
     is_sensitive_file_path,
+    record_display_caveat,
 )
 
 
@@ -287,6 +288,56 @@ def test_absent_local_pre_image_is_flagged_for_a_delete(tmp_path: Path) -> None:
     tracker.start_operation("delete", {"file_path": str(path)}, "gone-2")
 
     assert tracker.active["gone-2"].diff_outcome == "untrusted_before"
+
+
+def test_an_unresolvable_delete_does_not_claim_a_verified_zero() -> None:
+    """No backend and no physical path means nothing about the file is known.
+
+    `start_operation` had no `else` for this case, so the outcome stayed at its
+    `shown` default. `write_file`/`edit_file` recover downstream, where the
+    post-read hits the same missing path — but `delete` synthesizes an empty
+    post-image instead of reading one back, so empty-against-empty yields no
+    diff and the record finished as a confident `+0 -0` about a file whose
+    contents were never seen.
+    """
+    tracker = FileOpTracker(assistant_id=None)
+
+    with mock.patch(
+        "deepagents_code.file_ops.resolve_physical_path", return_value=None
+    ):
+        tracker.start_operation("delete", {"file_path": "/nul\x00/x"}, "lost-1")
+
+    assert tracker.active["lost-1"].diff_outcome == "untrusted_before"
+
+    record = tracker.complete_with_message(
+        SimpleNamespace(content="Deleted", tool_call_id="lost-1", status="success")
+    )
+
+    assert record is not None
+    assert record.diff_outcome == "untrusted_before"
+    assert record.diff_stats is None
+    assert display_caveat(record.diff_outcome, record.tool_name) != ""
+
+
+def test_a_malformed_backend_response_reports_a_shape_not_an_attribute_error(
+    tmp_path: Path,
+) -> None:
+    """A contract violation must not present as a broken workspace.
+
+    Catching `AttributeError` alongside the read errors made a local bug — a
+    renamed field, a `None` where a response was expected — read as "could not
+    read file", degrading every operation in the session with nothing to say
+    which it was.
+    """
+    backend = mock.MagicMock()
+    backend.download_files.return_value = [SimpleNamespace(content="str", error=None)]
+    tracker = FileOpTracker(assistant_id=None, backend=backend)
+
+    tracker.start_operation("edit_file", {"file_path": str(tmp_path / "a.py")}, "bad-1")
+
+    record = tracker.active["bad-1"]
+    assert record.diff_outcome == "untrusted_before"
+    assert record.before_content == ""
 
 
 def test_record_diff_stats_survive_truncation(tmp_path: Path) -> None:
@@ -796,11 +847,48 @@ class TestDisplayCaveat:
     def test_a_displayable_change_says_nothing(self) -> None:
         assert display_caveat("shown", "edit_file") == ""
 
+    def test_a_failed_operation_never_claims_success(self) -> None:
+        """An untrusted pre-image does not override the tool's error result."""
+        record = FileOperationRecord(
+            tool_name="edit_file",
+            display_path="missing.py",
+            physical_path=None,
+            tool_call_id="failed-1",
+            status="error",
+            tool_succeeded=False,
+            diff_outcome="untrusted_before",
+        )
+
+        assert record_display_caveat(record) == ""
+
     def test_an_unreadable_read_back_names_the_reason(self) -> None:
         """Without the reason the sentence restates the problem."""
         caveat = display_caveat("unreadable_after", "edit_file", "Permission denied")
 
         assert "Permission denied" in caveat
+
+    def test_a_lost_pre_image_says_the_change_cannot_be_shown(self) -> None:
+        """Pin the wording contract directly.
+
+        Otherwise it is only implied by adapter tests matching this prose.
+        """
+        caveat = display_caveat("untrusted_before", "delete")
+
+        assert "`delete`" in caveat
+        assert "prior contents could not be read" in caveat
+
+    def test_a_terminator_only_change_says_there_is_no_line_diff(self) -> None:
+        """Same reason: the sentence is a contract, not an implementation detail."""
+        caveat = display_caveat("terminators_only", "write_file")
+
+        assert "`write_file`" in caveat
+        assert "line terminators" in caveat
+
+    def test_an_unreadable_read_back_without_a_reason_admits_it(self) -> None:
+        """The fallback must not read as though a reason were given."""
+        caveat = display_caveat("unreadable_after", "edit_file")
+
+        assert "the reason was not reported" in caveat
 
     def test_an_unknown_outcome_fails_loud_rather_than_reassuring(self) -> None:
         """A new `DiffOutcome` shipped without a case must not read as "fine".

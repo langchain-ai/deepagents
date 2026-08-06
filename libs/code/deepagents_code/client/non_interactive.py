@@ -781,9 +781,11 @@ def _process_message_chunk(
         else:
             tool_args = {}
         record = file_op_tracker.complete_with_message(message_obj)
-        # Gated on the outcome, not on `record.diff`: three of the four outcomes
-        # produce no diff at all, and two of those (a lost pre-image, a
-        # terminator-only change) print nothing without this. Headless output is
+        # Gated on the outcome, not on `record.diff`: two of the four outcomes
+        # produce no diff at all (`unreadable_after`, which returns before one is
+        # computed, and `terminators_only`, which has none by definition), and
+        # neither does a `delete` with a lost pre-image, where both sides are
+        # empty. None of those print anything without this. Headless output is
         # what CI reads, so a change that could not be verified has to say so
         # here too rather than only in the TUI.
         caveat = record_display_caveat(record)
@@ -795,11 +797,17 @@ def _process_message_chunk(
                     f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
                     highlight=False,
                 )
-                if caveat:
-                    console.print(
-                        f"[yellow]{escape_markup(caveat)}[/yellow]",
-                        highlight=False,
-                    )
+            if caveat:
+                # Printed even under `--quiet`, which suppresses *diagnostics*;
+                # a statement that an operation could not be verified is not
+                # one, and dropping it here would leave the caveat existing
+                # nowhere. Safe for the mode's contract because quiet already
+                # routes `console` to stderr, so this cannot pollute the stdout
+                # result that `-p --quiet` exists to keep clean.
+                console.print(
+                    f"[yellow]{escape_markup(caveat)}[/yellow]",
+                    highlight=False,
+                )
         tool_name = getattr(message_obj, "name", "")
         if not tool_name:
             tool_name = correlated_tool_name

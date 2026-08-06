@@ -710,9 +710,18 @@ class TestQuietFileOpNotification:
         assert "foo.py" in output
         assert "prior contents could not be read" in output
 
-    def test_quiet_still_suppresses_a_caveat(self) -> None:
-        """Quiet mode owns the whole notification, caveat included."""
-        assert self._run(quiet=True, diff_outcome="untrusted_before") == ""
+    def test_quiet_keeps_the_caveat_but_drops_the_path_line(self) -> None:
+        """Quiet suppresses diagnostics; an unverifiable change is not one.
+
+        `--quiet` exists to keep stdout clean for `-p`, and it already routes
+        this console to stderr — so the caveat cannot pollute the result either
+        way. Dropping it here would leave a change that could not be verified
+        stated nowhere at all, which is the mode CI reads.
+        """
+        output = self._run(quiet=True, diff_outcome="untrusted_before")
+
+        assert "prior contents could not be read" in output
+        assert "foo.py" not in output
 
 
 class TestNoStreamMode:

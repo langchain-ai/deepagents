@@ -38,9 +38,9 @@ from deepagents_code.config import (
     is_ascii_mode,
 )
 from deepagents_code.diff_utils import (
-    DIFF_TRUNCATION_MARKER,
     DiffStats,
     count_diff_change_lines,
+    is_truncation_marker,
     split_diff_lines,
 )
 from deepagents_code.file_ops import (
@@ -3621,8 +3621,40 @@ class ToolCallMessage(Vertical):
         """
         return self._has_display_caveat
 
+    def set_success_with_caveat(self, caveat: str, output: str) -> bool:
+        """Complete this row successfully, leading with a caveat if there is one.
+
+        The live path's single entry point, because the flag and the prose it
+        describes must not be settable apart: a flag without the sentence leaves
+        a row unfoldable for no visible reason, and — the costly direction — the
+        sentence without the flag lets the change's only account be folded into
+        a group summary.
+
+        Not routed through `set_error`: a display problem is not a tool failure.
+        That would stamp the row "Error", overwrite the tool's success message,
+        and make a completed operation count toward every failure surface, so a
+        user would retry an edit that already applied. Prepended rather than
+        appended so the caveat survives the collapsed output preview.
+
+        Args:
+            caveat: The caveat to lead with, or empty when there is none.
+            output: The tool's own output.
+
+        Returns:
+            Whether a caveat was applied, for callers tracking whether any
+            surface carried it.
+        """
+        self.set_success("\n\n".join(part for part in (caveat, output) if part))
+        self._has_display_caveat = bool(caveat)
+        return bool(caveat)
+
     def mark_display_caveat(self) -> None:
-        """Record that this row's output opens with a display caveat."""
+        """Restore the display-caveat flag on a rehydrated row.
+
+        For `MessageData.to_widget` only, where the output carrying the caveat
+        is restored separately through `_deferred_output`. On the live path use
+        `set_success_with_caveat`, which sets both together.
+        """
         self._has_display_caveat = True
 
     @property
@@ -4154,7 +4186,8 @@ class ToolGroupSummary(Static):
                 follow the tool's visibility via a marker class. Not group
                 members: they take neither `-grouped` nor a `display` flip, so
                 their own visibility class survives the fold. Also linked to
-                the tool's approval hiding.
+                the tool's own hide reasons — approval and diff supersession
+                both — via `has_own_hide_reason`.
         """
         tool.add_class("-grouped")
         self._tools.append(tool)
@@ -4206,10 +4239,11 @@ class ToolGroupSummary(Static):
     def _release_collapsible(self, widget: Widget) -> None:
         """Drop a widget's group linkage and clear its collapsed accessory class.
 
-        Only the *group's* hide reason is released. A tool's own approval
-        linkage (`_visibility_accessories`) intentionally survives, so a
-        revealed pending row still hides its footer when an approval prompt
-        replaces it — see `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS`.
+        Only the *group's* hide reason is released. A tool's own linkage
+        (`_visibility_accessories`) intentionally survives, so a revealed row
+        still hides its footer for any of its own hide reasons — an approval
+        prompt replacing it, or a diff superseding it. See `has_own_hide_reason`
+        for the full set.
         """
         if widget in self._collapsible:
             self._collapsible.remove(widget)
@@ -4468,6 +4502,7 @@ class DiffMessage(Static):
         after: str = "",
         stats: DiffStats | None = None,
         outcome: DiffOutcome = "shown",
+        show_caveat: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4490,6 +4525,13 @@ class DiffMessage(Static):
                 independent flags because they are not independent: a
                 `stats`-plus-"counts are fiction" pair is representable, and
                 whichever of the two a reader trusts, the other contradicts it.
+            show_caveat: Whether to render the outcome's caveat. Suppresses only
+                the sentence, never the body — an untrusted body stays hidden
+                either way. Pass `False` only when a tool row already on screen
+                carries the identical sentence, which for `edit_file` is
+                guaranteed: it can never be folded into a group, so both would
+                render adjacent. The caller owns that judgement because this
+                widget cannot see what else is mounted.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4506,6 +4548,18 @@ class DiffMessage(Static):
             )
         self._stats = stats
         self._outcome = outcome
+        self._show_caveat = show_caveat
+
+    @property
+    def renders_caveat(self) -> bool:
+        """Whether this widget's body states the change could not be shown.
+
+        Read by the adapter instead of inferring from the record's outcome: the
+        adapter cannot otherwise know whether the mounted widget actually put
+        the caveat on screen, and asserting it did is how a caveat came to be
+        both suppressed and reported as delivered.
+        """
+        return self._outcome != "shown" and self._show_caveat
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -4523,6 +4577,19 @@ class DiffMessage(Static):
         # scrollback, and the counts would describe them.
         if self._redacted:
             yield Static(Content.assemble(*parts), classes="diff-header")
+            if self.renders_caveat:
+                # Rendered alongside the redaction notice, not instead of it.
+                # The two say different things: redaction means the diff was
+                # withheld deliberately, the caveat means it could not be
+                # produced at all. Showing only the former tells a reader the
+                # change is known and merely hidden. The caveat names the tool
+                # and nothing else, so it leaks no file content.
+                yield Static(
+                    Content.styled(
+                        display_caveat(self._outcome, self._tool_name or "operation"),
+                        "dim",
+                    )
+                )
             yield Static(
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
@@ -4533,17 +4600,22 @@ class DiffMessage(Static):
             # the body making the same false claim more loudly, so the caveat
             # replaces it outright.
             #
+            # Gated on the outcome, not on `renders_caveat`: `show_caveat`
+            # suppresses the sentence when a row already carries it, and must
+            # never be able to bring the untrusted body back.
+            #
             # The caveat is the shared one, so this widget stands on its own:
             # the tool row that also carries it can be folded into a group, or
             # never have mounted at all, and pointing at it would leave the
             # reader chasing text that is not on screen.
             yield Static(Content.assemble(*parts), classes="diff-header")
-            yield Static(
-                Content.styled(
-                    display_caveat(self._outcome, self._tool_name or "operation"),
-                    "dim",
+            if self.renders_caveat:
+                yield Static(
+                    Content.styled(
+                        display_caveat(self._outcome, self._tool_name or "operation"),
+                        "dim",
+                    )
                 )
-            )
         else:
             stats = self._stats if self._stats is not None else self._recount()
             if stats is None:
@@ -4575,7 +4647,10 @@ class DiffMessage(Static):
             different from — and more honest than — silently showing none.
         """
         lines = split_diff_lines(self._diff_content)
-        if lines and lines[-1] == DIFF_TRUNCATION_MARKER:
+        # Any position, not just the last line, and via the shared predicate:
+        # the renderer marks a truncated row wherever it appears, and the two
+        # must not disagree about whether this body is complete.
+        if any(is_truncation_marker(line) for line in lines):
             return None
         return count_diff_change_lines(lines)
 

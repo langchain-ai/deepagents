@@ -12,7 +12,7 @@ import re
 from difflib import SequenceMatcher
 from functools import lru_cache
 from itertools import accumulate, groupby, pairwise
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, get_args
 
 from textual.content import Content
 from textual.highlight import highlight
@@ -21,10 +21,10 @@ from textual.widgets import Static
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs
 from deepagents_code.diff_utils import (
-    DIFF_TRUNCATION_MARKER,
     HUNK_RE,
     DiffStats,
     file_header_indexes,
+    is_truncation_marker,
     split_diff_lines,
 )
 
@@ -55,7 +55,7 @@ one token per character on punctuation-dense lines — so minified JS or
 single-line JSON would stall the compose path. Longer lines render unemphasised.
 """
 
-_MAX_HIGHLIGHT_CHARS = 100_000
+MAX_HIGHLIGHT_CHARS = 100_000
 """Largest source prefix worth lexing for syntax highlighting.
 
 Above this the side is skipped and its rows render as plain text.
@@ -105,21 +105,43 @@ class _RowStyle(NamedTuple):
 # (30%, applied per-span in `_compose_diff_content`). Keep them ordered that way
 # — equal tiers flatten the row and lose the distinction.
 #
-# Keyed over all of `_DiffRowKind`, so a new *numbered* row kind fails
-# type-checking here rather than silently rendering with no marker or emphasis.
-# Decoration kinds live only in the wider `_RowKind` and are handled by the early
-# `continue`s in `_compose_diff_content`, which is what narrows `row.kind` to a
-# valid key. One map rather than three so a kind cannot be added to some of them
-# and missed in the rest.
+# Keyed over `_DiffRowKind`. Decoration kinds live only in the wider `_RowKind`
+# and are handled by the early `continue`s in `_compose_diff_content`, which is
+# what narrows `row.kind` to a valid key. One map rather than three so a kind
+# cannot be added to some of them and missed in the rest.
+#
+# Built with keywords: all four fields are `str`, so positional construction
+# lets `marker_style` and `emphasis` swap silently into a wrong-but-plausible
+# render. Same hazard `DiffStats` is `kw_only` to rule out.
 _ROW_STYLES: dict[_DiffRowKind, _RowStyle] = {
     "added": _RowStyle(
-        "$text-success 80% on $success 20%", "+", "$text-success", "on $success 30%"
+        gutter="$text-success 80% on $success 20%",
+        marker="+",
+        marker_style="$text-success",
+        emphasis="on $success 30%",
     ),
     "removed": _RowStyle(
-        "$text-error 80% on $error 20%", "-", "$text-error", "on $error 30%"
+        gutter="$text-error 80% on $error 20%",
+        marker="-",
+        marker_style="$text-error",
+        emphasis="on $error 30%",
     ),
-    "context": _RowStyle("$foreground 30% on $foreground 3%", " ", "", ""),
+    "context": _RowStyle(
+        gutter="$foreground 30% on $foreground 3%",
+        marker=" ",
+        marker_style="",
+        emphasis="",
+    ),
 }
+
+# A `dict` literal is not checked for exhaustiveness — neither mypy nor ty flags
+# a missing key, and `_ROW_STYLES[row.kind]` type-checks fine while raising
+# `KeyError` at render time. Check it at import so a new numbered row kind fails
+# loudly on startup instead of on whichever diff first happens to contain one.
+# A raise rather than an `assert`, which `-O` strips and ruff bans.
+if _missing_row_styles := set(get_args(_DiffRowKind)) - _ROW_STYLES.keys():
+    _msg = f"_ROW_STYLES is missing entries for {sorted(_missing_row_styles)}"
+    raise RuntimeError(_msg)
 
 
 _BEFORE_KINDS: tuple[_DiffRowKind, ...] = ("removed",)
@@ -267,8 +289,8 @@ def _highlight_source_prefix(source: str, line: int) -> str:
     # the whole source first would allocate a near-full copy of the file per
     # side, per compose, only to throw it away. One char past the limit is
     # enough to tell "fits" from "does not".
-    oversized = len(source) > _MAX_HIGHLIGHT_CHARS
-    lines = (source[: _MAX_HIGHLIGHT_CHARS + 1] if oversized else source).splitlines()
+    oversized = len(source) > MAX_HIGHLIGHT_CHARS
+    lines = (source[: MAX_HIGHLIGHT_CHARS + 1] if oversized else source).splitlines()
     # With a truncated head, `line` is only reached within the limit when a
     # further line follows it — otherwise the last entry is a partial line and
     # the real prefix runs past the limit.
@@ -285,7 +307,7 @@ def _highlight_source_prefix(source: str, line: int) -> str:
         # `Content.split("\n")` does not, keeping row numbers aligned to the
         # lexed output.
         prefix += "\n"
-    return prefix if len(prefix) <= _MAX_HIGHLIGHT_CHARS else ""
+    return prefix if len(prefix) <= MAX_HIGHLIGHT_CHARS else ""
 
 
 def _compose_diff_content(
@@ -406,21 +428,24 @@ def _highlighted_rows(
 
 
 @lru_cache(maxsize=4)
-def _highlight_lines(code: str, path: str) -> tuple[Content, ...] | None:
+def _highlight_lines_cached(code: str, path: str) -> tuple[Content, ...] | None:
     """Return highlighted source lines, or `None` if lexing fails.
 
     Cached because scrolling rebuilds a `DiffMessage` from `MessageData` on every
     pass, and each mount would otherwise re-lex both sides. Two entries per diff,
     so `maxsize=4` holds the last two diffs — the scrolling case it exists for.
 
-    Sized small on purpose. `_MAX_HIGHLIGHT_CHARS` bounds the *input*, not what is
+    Sized small on purpose. `MAX_HIGHLIGHT_CHARS` bounds the *input*, not what is
     retained: an entry is one `Content` per line, each carrying a span list, and
     measures several times its source. Nothing clears this cache, so its cost is
     held for the process lifetime — size it against measured entries, not against
     the character limit.
 
-    Failures are cached too: a file whose lexer cannot parse it will not parse on
-    the next scroll either, and retrying would pay the cost to fail again.
+    *Expected* failures are cached too: a file whose lexer cannot parse it will
+    not parse on the next scroll either, and retrying would pay the cost to fail
+    again. Unexpected ones deliberately propagate to `_highlight_lines`, which
+    handles them outside the cache — memoizing a genuine bug would log it once
+    per `(code, path)` and then hide it for the rest of the process.
     """
     try:
         return tuple(highlight(code, path=path, tab_size=0).split("\n"))
@@ -428,10 +453,24 @@ def _highlight_lines(code: str, path: str) -> tuple[Content, ...] | None:
         # No usable lexer for this path — expected for unknown extensions.
         logger.debug("No usable lexer for %s: %s", path, e)
         return None
+
+
+def _highlight_lines(code: str, path: str) -> tuple[Content, ...] | None:
+    """Return highlighted source lines, or `None` if highlighting fails.
+
+    Wraps the cache rather than living inside it so an unexpected failure stays
+    visible on every attempt. `lru_cache` does not memoize raised exceptions, so
+    letting them escape `_highlight_lines_cached` is what keeps the retry.
+
+    Returns:
+        One `Content` per line, or `None` when the source could not be lexed.
+    """
+    try:
+        return _highlight_lines_cached(code, path)
     except Exception:
-        # Anything else is a bug here or a Textual API change, not a missing
-        # lexer. Highlighting is cosmetic, so still degrade to plain text, but
-        # say so at a level that will actually be seen.
+        # Anything not caught inside is a bug here or a Textual API change, not
+        # a missing lexer. Highlighting is cosmetic, so still degrade to plain
+        # text, but say so at a level that will actually be seen.
         logger.warning(
             "Syntax highlighting failed unexpectedly for %s", path, exc_info=True
         )
@@ -465,7 +504,7 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
             rows.append(_Row("context", line[1:], new))
             old += 1
             new += 1
-        elif line.strip() == DIFF_TRUNCATION_MARKER:
+        elif is_truncation_marker(line):
             # Checked after the marker prefixes above, so a context or added
             # line whose own text is `...` stays a source row. Reordering these
             # branches would render it as "diff truncated".

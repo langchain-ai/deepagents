@@ -111,7 +111,12 @@ class TestFileOpsExceptionHandling:
         assert any(r.levelname == "WARNING" for r in caplog.records)
 
     def test_file_op_tracker_handles_attribute_error(self, caplog):
-        """Test that FileOpTracker handles AttributeError properly."""
+        """A backend that does not satisfy the protocol must not abort the turn.
+
+        Caught apart from the read errors so the log says which it was: routed
+        through the same message, a local defect reads as a broken workspace and
+        silently degrades every file operation in the session.
+        """
         # Create tracker with a mock backend that raises AttributeError
         mock_backend = MagicMock()
         mock_backend.download_files.side_effect = AttributeError("Missing attribute")
@@ -131,10 +136,12 @@ class TestFileOpsExceptionHandling:
         assert record.before_content == ""
         assert record.diff_outcome == "untrusted_before"
 
-        # A malformed backend response is a contract bug, but `start_operation`
-        # runs unguarded on the turn loop — so it is logged, not raised.
+        # A contract violation is a bug, but `start_operation` runs unguarded on
+        # the turn loop — so it is logged, not raised.
         assert "Could not read pre-edit content" in caplog.text
         assert "Missing attribute" in caplog.text
+        # Named as a contract violation, not as an unreadable file.
+        assert "Backend violated the download contract" in caplog.text
 
     def test_file_op_tracker_handles_unicode_decode_error(self, caplog):
         """Test that FileOpTracker handles UnicodeDecodeError for binary files."""

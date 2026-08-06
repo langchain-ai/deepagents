@@ -754,13 +754,15 @@ class TestDiffMessageCredentialRedaction:
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
 
-    def test_redaction_outranks_an_unknown_change(self) -> None:
-        """Both suppress the body, but only one must not name the file's state.
+    def test_redaction_and_an_unknown_change_are_both_reported(self) -> None:
+        """Redaction drops the body; the caveat still says it was never known.
 
-        The unknown-change caveat is the safe thing to say about a normal file
-        and the wrong thing to say about a credential one, where the point is to
-        reveal nothing. Redaction has to win, and the contents must be dropped
-        rather than merely unrendered.
+        The two say different things. Redaction alone reads as "the change is
+        known and deliberately withheld", which is a stronger claim than the
+        truth when the pre-image could not be read at all. The caveat names the
+        tool and the failure and quotes no file content, so it is safe to show
+        beside the redaction notice — while the contents themselves must still
+        be dropped rather than merely left unrendered.
         """
         diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
         message = DiffMessage(
@@ -773,8 +775,9 @@ class TestDiffMessageCredentialRedaction:
         )
         texts = self._texts(message)
         assert any("may contain credentials" in text for text in texts)
-        assert all("prior contents could not be read" not in text for text in texts)
+        assert any("prior contents could not be read" in text for text in texts)
         assert all("supersecret" not in text for text in texts)
+        assert all("API_KEY=old" not in text for text in texts)
         assert (message._before, message._after) == ("", "")
 
 

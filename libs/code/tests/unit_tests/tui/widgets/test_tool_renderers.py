@@ -323,6 +323,27 @@ class TestDeleteApprovalCounts:
 
         assert data["stats"].deletions == 5000
 
+    def test_the_rendered_prompt_header_shows_the_whole_file_count(
+        self, tmp_path: Path
+    ) -> None:
+        """Assert at the surface the user reads, not one layer above it.
+
+        The renderer handing `stats` to the widget is only half the path; the
+        widget still chooses between them and a recount. Without this, reordering
+        that choice — or dropping the argument — puts the ~50x understatement
+        back on the prompt for an irreversible operation with the suite green.
+        """
+        target = tmp_path / "big.py"
+        target.write_text("value = 1\n" * 5000, encoding="utf-8")
+
+        widget_class, data = DeleteFileRenderer.get_approval_widget(
+            {"file_path": str(target)}
+        )
+        texts = _widget_texts(list(widget_class(data).compose()))
+
+        assert any("-5000" in text for text in texts), texts
+        assert all("-96" not in text for text in texts), texts
+
     def test_diff_lines_are_split_on_the_producer_s_boundary(
         self, tmp_path: Path
     ) -> None:

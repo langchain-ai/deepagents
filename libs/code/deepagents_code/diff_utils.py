@@ -1,4 +1,11 @@
-"""Shared unified-diff helpers."""
+r"""Shared unified-diff helpers.
+
+Every diff passing through this module is `"\n"`-joined from lines that came
+from `splitlines()` or `split("\n")`, so no element can contain a line boundary.
+That is what makes `split_diff_lines` the exact inverse and `splitlines()` wrong
+here — see its docstring for what breaks. Check any helper added to this module,
+and any new producer of a diff it reads, against that invariant.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +27,33 @@ DIFF_TRUNCATION_MARKER: Final[str] = "..."
 Written by `compute_unified_diff` and rendered as a `truncated` row. It is also
 the signal that any counts recomputed from the body would be short — see
 `DiffMessage._recount`, which returns `None` rather than a known-low number.
+
+Match it with `is_truncation_marker` rather than by hand: the renderer and the
+recount must agree, or a body that renders "diff truncated" is also counted as
+if it were complete.
 """
+
+
+def is_truncation_marker(line: str) -> bool:
+    """Return whether a diff line is the truncation marker.
+
+    One predicate for both readers, which previously disagreed: the renderer
+    stripped, the recount compared exactly.
+
+    Exact, deliberately. `compute_unified_diff` writes the marker bare, while
+    every real diff line carries a `+`, `-`, or space prefix — so an exact match
+    cannot collide with file content, and a source line whose own text is `...`
+    arrives here as `" ..."` and stays a context row. Stripping would classify
+    that line as a clipped body and suppress the change counts for a diff that
+    is complete.
+
+    Args:
+        line: A single unified-diff line.
+
+    Returns:
+        Whether the line marks a clipped body.
+    """
+    return line == DIFF_TRUNCATION_MARKER
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -30,10 +63,32 @@ class DiffStats:
     Keyword-only and frozen so that claim holds at construction as well as in
     transit: a positional pair is exactly the transposition this type exists to
     rule out, and the counts are read long after they are computed.
+
+    Attributes:
+        additions: Added change lines, excluding file headers, counted before
+            any truncation of the body for display.
+        deletions: Removed change lines, on the same terms.
     """
 
     additions: int
     deletions: int
+
+    def __post_init__(self) -> None:
+        """Reject negative counts.
+
+        Both in-repo producers derive from `difflib`, so this only guards direct
+        construction — but the type is public and reaches a delete prompt, where
+        the number gates destroying a file.
+
+        Raises:
+            ValueError: If either count is negative.
+        """
+        if self.additions < 0 or self.deletions < 0:
+            msg = (
+                f"DiffStats counts cannot be negative, got additions="
+                f"{self.additions}, deletions={self.deletions}"
+            )
+            raise ValueError(msg)
 
 
 def split_diff_lines(diff: str) -> list[str]:

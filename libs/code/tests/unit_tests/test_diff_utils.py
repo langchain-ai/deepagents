@@ -7,9 +7,11 @@ from typing import Any
 import pytest
 
 from deepagents_code.diff_utils import (
+    DIFF_TRUNCATION_MARKER,
     DiffStats,
     count_diff_change_lines,
     file_header_indexes,
+    is_truncation_marker,
     split_diff_lines,
 )
 
@@ -188,3 +190,28 @@ class TestCountDiffChanges:
         positional: Any = DiffStats
         with pytest.raises(TypeError):
             positional(1, 2)
+
+    @pytest.mark.parametrize(("additions", "deletions"), [(-1, 0), (0, -1), (-1, -1)])
+    def test_negative_counts_are_rejected(self, additions: int, deletions: int) -> None:
+        """The type is public and its numbers gate destroying a file."""
+        with pytest.raises(ValueError, match="cannot be negative"):
+            DiffStats(additions=additions, deletions=deletions)
+
+
+class TestIsTruncationMarker:
+    """One predicate, so the renderer and the recount cannot disagree."""
+
+    def test_the_bare_marker_matches(self) -> None:
+        assert is_truncation_marker(DIFF_TRUNCATION_MARKER)
+
+    def test_a_context_line_whose_text_is_the_marker_does_not(self) -> None:
+        """A source line reading `...` arrives here with its space prefix.
+
+        Stripping would call that a clipped body and suppress the counts for a
+        diff that is complete.
+        """
+        assert not is_truncation_marker(f" {DIFF_TRUNCATION_MARKER}")
+
+    @pytest.mark.parametrize("line", ["+...", "-...", "....", "", "..."[:2]])
+    def test_near_misses_do_not_match(self, line: str) -> None:
+        assert not is_truncation_marker(line)

@@ -172,7 +172,9 @@ class SlashCommandController:
         Returns:
             `True` when a registered command has exactly this name.
         """
-        return any(entry.name == name for entry in self._commands)
+        return any(
+            entry.name == name or name in entry.aliases for entry in self._commands
+        )
 
     def reset(self) -> None:
         """Clear suggestions."""

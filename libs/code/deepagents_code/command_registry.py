@@ -68,6 +68,7 @@ class SlashCommand:
             description=self.description,
             hidden_keywords=self.hidden_keywords,
             argument_hint=self.argument_hint,
+            aliases=self.aliases,
         )
 
 
@@ -442,6 +443,9 @@ class CommandEntry(NamedTuple):
     still matching and inserting its full canonical `name`
     (e.g. `/skill:my-plugin:review`). Falls back to `name` when empty.
     """
+
+    aliases: tuple[str, ...] = ()
+    """Alternative command names accepted by the command dispatcher."""
 
     def label(self) -> str:
         """Return the popup label, preferring `display_name` over `name`.

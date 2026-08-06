@@ -1755,20 +1755,23 @@ class ChatInput(Vertical):
         # re-detection below (and before the history early-return) so a stale
         # draft never outlives the text it described.
         #
-        # An edit that *shrinks* the draft -- backspacing a typo in a dropped
-        # path -- keeps it. The shortened text no longer names an existing
-        # entry, so revalidating would clear the draft and hand the leading `/`
-        # straight to command mode, which strips it from the user's buffer
-        # mid-edit. Retaining the draft while the text is still a prefix of it
-        # keeps the path intact and lets the user finish typing.
+        # Editing the path token keeps the draft. The intermediate value may no
+        # longer name an existing entry, so revalidating would clear the draft
+        # and hand the leading `/` straight to command mode, which strips it
+        # from the user's buffer mid-edit. This includes in-place edits, not
+        # only appending or backspacing.
         draft = self._dropped_path_draft
         if not text:
             self._dropped_path_draft = None
-        elif draft is not None and not (
-            text.startswith(draft) or draft.startswith(text)
+        elif (
+            draft is not None
+            and not (text.startswith(draft) or draft.startswith(text))
+            and not self._edit_preserves_dropped_path_context(
+                previous_text, text, draft
+            )
         ):
-            # Neither an extension nor a truncation: the text has genuinely
-            # moved on, so re-run detection rather than assuming either answer.
+            # The path context has genuinely been replaced, so re-run
+            # detection rather than assuming either answer.
             self._dropped_path_draft = self._detect_dropped_path_draft(text)
 
         # History handlers explicitly decide mode and stripped display text.
@@ -1864,6 +1867,37 @@ class ChatInput(Vertical):
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
+
+    @staticmethod
+    def _edit_preserves_dropped_path_context(
+        previous_text: str, text: str, draft: str
+    ) -> bool:
+        """Return whether an edit still refers to a dropped path token.
+
+        A shared non-slash prefix or suffix means the user changed part of the
+        accepted token in place. A replacement such as `/help` shares only the
+        absolute-path slash and must be allowed to enter command mode.
+        """
+        if not previous_text.startswith(draft):
+            return False
+
+        prefix_len = 0
+        max_prefix_len = min(len(previous_text), len(text))
+        while (
+            prefix_len < max_prefix_len
+            and previous_text[prefix_len] == text[prefix_len]
+        ):
+            prefix_len += 1
+
+        suffix_len = 0
+        max_suffix_len = min(len(previous_text), len(text))
+        while (
+            suffix_len < max_suffix_len - prefix_len
+            and previous_text[-(suffix_len + 1)] == text[-(suffix_len + 1)]
+        ):
+            suffix_len += 1
+
+        return prefix_len > 1 or suffix_len > 0
 
     def _should_check_path_payload(self, text: str) -> bool:
         """Return whether a text change may contain a pasted path payload."""

@@ -3891,6 +3891,29 @@ class TestDroppedFolderPaste:
             assert chat.mode == "normal"
             assert chat._text_area.text == str(folder)
 
+    async def test_in_place_edit_after_folder_drop_keeps_leading_slash(
+        self, tmp_path: Path
+    ) -> None:
+        """Editing within a dropped path must not turn it into a command."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        dropped = str(folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = dropped
+            chat._text_area.move_cursor((0, len(dropped) - 2))
+            await _pause_for_strip(pilot)
+
+            await pilot.press("x")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"{dropped[:-2]}x{dropped[-2:]}"
+
     async def test_typing_after_recalled_dropped_path_keeps_normal_mode(
         self, tmp_path: Path
     ) -> None:
@@ -3958,6 +3981,29 @@ class TestDroppedFolderPaste:
             # Register a command named for a directory that really exists.
             chat.update_slash_commands([CommandEntry(str(folder), "stub", "", "")])
 
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._dropped_path_draft is None
+
+    async def test_command_alias_wins_over_existing_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """An alias sharing a path name must still enter command mode."""
+        from deepagents_code.command_registry import CommandEntry
+
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.update_slash_commands(
+                [CommandEntry("/canonical", "stub", "", "", aliases=(str(folder),))]
+            )
             chat._text_area.text = str(folder)
             await _pause_for_strip(pilot)
 

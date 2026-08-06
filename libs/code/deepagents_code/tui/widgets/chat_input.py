@@ -1763,16 +1763,31 @@ class ChatInput(Vertical):
         draft = self._dropped_path_draft
         if not text:
             self._dropped_path_draft = None
-        elif (
-            draft is not None
-            and not (text.startswith(draft) or draft.startswith(text))
-            and not self._edit_preserves_dropped_path_context(
-                previous_text, text, draft
-            )
-        ):
-            # The path context has genuinely been replaced, so re-run
-            # detection rather than assuming either answer.
-            self._dropped_path_draft = self._detect_dropped_path_draft(text)
+        elif draft is not None:
+            if text.startswith(draft) or draft.startswith(text):
+                # The buffer still extends the accepted token. Remember the
+                # current text prefix so a truncation that leaves the path
+                # missing from disk still submits as text. Skip the refresh
+                # when there is no shared prefix (e.g. history recall, where
+                # the previous text is empty) to avoid clearing the draft.
+                shared_prefix = self._longest_common_prefix(previous_text, text)
+                if shared_prefix:
+                    self._dropped_path_draft = shared_prefix
+            elif self._edit_preserves_dropped_path_context(previous_text, text, draft):
+                # An in-place edit made the remembered token stale, so
+                # `previous_text.startswith(draft)` no longer holds. Without
+                # this refresh the next keystroke would fail the helper, clear
+                # the draft, and hand the still-leading `/` to command mode.
+                # The updated prefix also lets `_starts_with_dropped_path`
+                # recognize the edited path at submission time even when it no
+                # longer exists on disk.
+                edited_prefix = self._longest_common_prefix(previous_text, text)
+                if len(edited_prefix) > 1 and edited_prefix.startswith("/"):
+                    self._dropped_path_draft = edited_prefix
+            else:
+                # The path context has genuinely been replaced, so re-run
+                # detection rather than assuming either answer.
+                self._dropped_path_draft = self._detect_dropped_path_draft(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -1867,6 +1882,18 @@ class ChatInput(Vertical):
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
+
+    @staticmethod
+    def _longest_common_prefix(previous_text: str, text: str) -> str:
+        """Return the longest shared prefix between two strings."""
+        prefix_len = 0
+        max_prefix_len = min(len(previous_text), len(text))
+        while (
+            prefix_len < max_prefix_len
+            and previous_text[prefix_len] == text[prefix_len]
+        ):
+            prefix_len += 1
+        return previous_text[:prefix_len]
 
     @staticmethod
     def _edit_preserves_dropped_path_context(

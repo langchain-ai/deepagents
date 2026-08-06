@@ -3914,6 +3914,87 @@ class TestDroppedFolderPaste:
             assert chat.mode == "normal"
             assert chat._text_area.text == f"{dropped[:-2]}x{dropped[-2:]}"
 
+    async def test_multiple_in_place_edits_after_folder_drop_keep_normal_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Multiple in-place edits to a dropped path must not drop the draft.
+
+        After the first in-place edit, the remembered token no longer matches
+        the buffer start. A second in-place edit must still recognize the edit
+        as path context and keep normal mode, not hand the `/` to command mode.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        dropped = str(folder)
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = dropped
+            chat._text_area.move_cursor((0, len(dropped) - 2))
+            await _pause_for_strip(pilot)
+
+            await pilot.press("x")
+            await pilot.pause()
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"{dropped[:-2]}x{dropped[-2:]}"
+
+            # Move the cursor left by one (into the path) and edit again.
+            await pilot.press("left")
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"{dropped[:-2]}yx{dropped[-2:]}"
+            assert chat._dropped_path_draft is not None
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "normal"
+
+    async def test_submit_edited_missing_dropped_path_stays_normal(
+        self, tmp_path: Path
+    ) -> None:
+        """An edited dropped path that no longer exists must submit as text.
+
+        The remembered draft token is refreshed to the edited prefix so
+        `_starts_with_dropped_path` still matches at submission time, even
+        though the edited path is not currently on disk.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        dropped = str(folder)
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = dropped
+            chat._text_area.move_cursor_to_end()
+            await _pause_for_strip(pilot)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            edited = str(folder)[:-1]
+            assert chat._text_area.text == edited
+            assert chat.mode == "normal"
+            import pathlib
+
+            assert not pathlib.Path(edited).exists()  # noqa: ASYNC240
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == edited
+            assert app.submitted[0].mode == "normal"
+
     async def test_typing_after_recalled_dropped_path_keeps_normal_mode(
         self, tmp_path: Path
     ) -> None:

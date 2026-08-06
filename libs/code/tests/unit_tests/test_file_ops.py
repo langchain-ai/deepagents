@@ -626,6 +626,50 @@ def test_build_approval_preview_generates_diff(tmp_path: Path) -> None:
     assert "+gamma" in preview.diff
 
 
+def test_build_approval_preview_carries_file_aligned_sources(tmp_path: Path) -> None:
+    """`before`/`after` are the full file, for syntax-highlighting the diff."""
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\nbeta\n")
+
+    preview = build_approval_preview(
+        "edit_file",
+        {
+            "file_path": str(target),
+            "old_string": "beta",
+            "new_string": "gamma",
+            "replace_all": False,
+        },
+        assistant_id=None,
+    )
+
+    assert preview is not None
+    assert preview.before == "alpha\nbeta\n"
+    assert preview.after == "alpha\ngamma\n"
+
+
+def test_build_approval_preview_omits_sources_when_edit_fails(tmp_path: Path) -> None:
+    """A replacement that cannot apply carries no diff and no sources."""
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\nbeta\n")
+
+    preview = build_approval_preview(
+        "edit_file",
+        {
+            "file_path": str(target),
+            "old_string": "absent",
+            "new_string": "gamma",
+            "replace_all": False,
+        },
+        assistant_id=None,
+    )
+
+    assert preview is not None
+    assert preview.diff is None
+    assert preview.error is not None
+    assert preview.before is None
+    assert preview.after is None
+
+
 def test_build_delete_approval_preview_shows_removed_content(
     tmp_path: Path,
 ) -> None:

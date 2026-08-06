@@ -81,12 +81,11 @@ def _count_diff_stats(
             the body was clipped. Always preferred where supplied, because the
             `delete` preview is built with `max_lines=100`, so recounting
             `diff_lines` would describe the excerpt rather than the change — and
-            that number is what the user approves when destroying a file. Only
-            `DeleteFileRenderer` passes it; the edit path builds `diff_lines`
-            uncapped and supplies none, so the recount below is that path's
-            normal behavior rather than a rare fallback. (`ApprovalPreview.stats`
-            documents the same rule across all three producers; this function
-            serves only two of them.)
+            that number is what the user approves when destroying a file. The
+            edit path's fragment fallback builds `diff_lines` uncapped and
+            supplies none, so the recount below is exact there.
+            (`ApprovalPreview.stats` documents the same rule across all three
+            producers; this function serves only two of them.)
 
     Returns:
         Line counts for the change.
@@ -205,21 +204,20 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
-            # Neither renderer that feeds this widget supplies file line numbers
-            # worth showing, for different reasons (both in `tool_renderers.py`).
-            # `EditFileRenderer` builds its diff from the replacement fragments
-            # rather than the file, so its hunks start at 1 and a gutter would
-            # assert numbers that are simply wrong. `DeleteFileRenderer`'s covers
-            # the whole file from line 1, so its numbers are correct but say
-            # nothing — every line is going. Wrong numbers on an approval prompt
-            # are the worse of the two, and neither earns the column.
+            # The gutter shows only when the renderer marks the diff's numbers
+            # as the file's. `EditFileRenderer` sets it for the full-file
+            # preview diff; its fragment fallback diffs `old_string` against
+            # `new_string`, whose numbers are fragment-relative and would
+            # assert locations that are simply wrong. `DeleteFileRenderer`
+            # leaves it off too — its diff covers the whole file from line 1,
+            # so the numbers are correct but say nothing: every line is going.
             yield from compose_diff_lines(
                 "\n".join(diff_lines),
                 max_lines=_MAX_DIFF_LINES,
                 path=file_path,
                 before=old_string,
                 after=new_string,
-                show_numbers=False,
+                show_numbers=bool(self.data.get("show_numbers")),
             )
         else:
             yield from self._render_strings_only(old_string, new_string)

@@ -378,13 +378,14 @@ def _highlighted_rows(
     prefix, or whose text has drifted from the source, are omitted and render as
     plain text.
 
-    That holds only as far as the caller's source really is file-aligned, and the
-    approval path's is not: it passes edit fragments, so the lexer starts
-    mid-file and treats the fragment as if it began at line 1. The drift check
-    below does not catch this — the fragment's diff is generated *from* those
-    same strings, so the row text matches and every row is highlighted. A
-    fragment cut from inside a docstring or block comment is therefore colored as
-    code, and nothing detects it. Cosmetic, and confined to the approval prompt.
+    That holds only as far as the caller's source really is file-aligned. The
+    approval prompt's main path now passes full before/after contents, but its
+    fallback still passes edit fragments: the lexer starts mid-file and treats
+    the fragment as if it began at line 1. The drift check below does not catch
+    this — the fragment's diff is generated *from* those same strings, so the
+    row text matches and every row is highlighted. A fragment cut from inside a
+    docstring or block comment is therefore colored as code, and nothing
+    detects it. Cosmetic, and confined to the approval prompt's fallback.
 
     Assumes a single-file diff, as `before`/`after` are one file's contents: rows
     are matched to source by line number, which restarts per file in a multi-file

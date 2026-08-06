@@ -6,7 +6,7 @@ import difflib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from deepagents_code._constants import FILE_NOT_FOUND
 from deepagents_code.diff_utils import (
@@ -166,6 +166,22 @@ class ApprovalPreview:
     `max_lines=None` and so is safe to recount — do not read that as a cap
     covering all three.
     """
+    before: str | None = None
+    """Full pre-change file content, aligned to `diff`'s old line numbers.
+
+    Syntax highlighting a diff needs the whole source, lexed from line 1, so
+    changed rows can be located by hunk number — fragments of the change
+    cannot serve (see `compose_diff_lines`' `before` contract). Only the
+    `edit_file` preview populates this, and only when the replacement
+    succeeded; it is `None` for the other producers, for an unreadable or
+    oversized file, and for a replacement that does not apply. It is *not*
+    clipped the way a `diff` may be.
+    """
+    after: str | None = None
+    """Full post-change file content, aligned to `diff`'s new line numbers.
+
+    Populated on the same terms as `before`.
+    """
 
 
 #: Reason reported when a backend response carries neither content nor an error.
@@ -231,7 +247,9 @@ def _read_with_reason(path: Path) -> tuple[str | None, str | None]:
     """
     try:
         return path.read_text(encoding="utf-8"), None
-    except (OSError, UnicodeDecodeError) as e:
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        # `ValueError` covers a path with an embedded NUL byte — malformed tool
+        # args must not take down the approval prompt that surfaces them.
         return None, str(e)
 
 
@@ -492,6 +510,16 @@ def format_display_path(path_str: str | None) -> str:
         return str(path_str)
 
 
+_EDIT_PREVIEW_MAX_LINES: Final = 100_000
+"""Largest file, in lines, the `edit_file` approval preview reads and diffs.
+
+`difflib` cost scales with line count, not bytes: it on this scale is tens of
+milliseconds — comfortable on the Textual message pump, where the renderer
+invokes the preview. Beyond it, whole-file diff time climbs super-linearly
+and the prompt reads as hung.
+"""
+
+
 def build_approval_preview(
     tool_name: str,
     args: dict[str, Any],
@@ -584,17 +612,37 @@ def build_approval_preview(
 
     if tool_name == "edit_file":
         if physical_path is None:
+            # Not an `error` — same contract as the unreadable case below:
+            # the edit may still apply, so the renderer falls back to the
+            # fragment diff.
             return ApprovalPreview(
                 title=f"Update {display_path}",
                 details=[f"File: {path_str}", "Action: Replace text"],
-                error="Unable to resolve file path.",
             )
         before = _safe_read(physical_path)
         if before is None:
+            # Not an `error`: unlike a replacement that cannot apply, an
+            # unreadable file does not mean the edit is wrong — the renderer
+            # falls back to diffing the replacement fragments, which is also
+            # the only branch available to sandbox-backed sessions whose
+            # files are not on the local filesystem at all.
             return ApprovalPreview(
                 title=f"Update {display_path}",
                 details=[f"File: {path_str}", "Action: Replace text"],
-                error="Unable to read current file contents.",
+            )
+        # Diffing runs on the Textual message pump (the renderer calls this
+        # synchronously), so an unbounded `difflib` over a huge file would
+        # freeze the approval prompt. Past the cap, return diffless and let
+        # the renderer fall back to diffing the replacement fragments.
+        # Credential files are exempt: their diff never renders, and the
+        # fragment fallback would carry the file's secrets into widget data
+        # where only the `diff_lines` branch is redacted.
+        if before.count("\n") > _EDIT_PREVIEW_MAX_LINES and not is_sensitive_file_path(
+            path_str
+        ):
+            return ApprovalPreview(
+                title=f"Update {display_path}",
+                details=[f"File: {path_str}", "Action: Replace text"],
             )
         old_string = str(args.get("old_string", ""))
         new_string = str(args.get("new_string", ""))
@@ -625,6 +673,8 @@ def build_approval_preview(
             diff=diff,
             diff_title=f"Diff {display_path}",
             stats=stats,
+            before=before,
+            after=after,
         )
 
     return None

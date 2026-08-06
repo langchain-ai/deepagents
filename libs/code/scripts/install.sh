@@ -1516,6 +1516,16 @@ fi
 if [ -n "$INSTALLED_EXTRAS" ]; then
   log_warn "This install has extras that a bare upgrade will remove: ${INSTALLED_EXTRAS}"
   log_warn "  To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS=\"${INSTALLED_EXTRAS}\""
+  # Give an interactive user the chance to back out before uv rebuilds the
+  # environment and drops those packages. Non-interactive runs (no TTY, or an
+  # unattended DEEPAGENTS_CODE_YES) can't answer, so they keep the warning
+  # only; an explicit YES is an instruction to proceed, not to abort.
+  if [ "$ASSUME_YES" != "1" ] && can_prompt; then
+    if ! prompt_yn "Continue anyway and remove them?"; then
+      log_info "Aborted. No changes made."
+      exit 0
+    fi
+  fi
 fi
 if [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \

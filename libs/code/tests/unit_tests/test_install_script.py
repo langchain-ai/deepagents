@@ -258,15 +258,16 @@ def _invoke_interactive(
     tmp_path: Path,
     extra_env: dict[str, str],
     *,
-    answer: str,
+    answer: str | list[str],
     installed_version: str | None = "0.0.1",
     latest_version: str | None = None,
 ) -> tuple[int, str, Path]:
     """Run `install.sh` with a pty stdin and feed `answer` to its prompt.
 
     A pty makes `[ -t 0 ]` true, so the script treats the run as interactive and
-    reads the y/n answer from stdin. Returns the exit code, combined output
-    (ANSI stripped), and the uv-argv path.
+    reads the y/n answer from stdin. `answer` may be a single line or a list of
+    lines (fed in order) when the script prompts more than once. Returns the
+    exit code, combined output (ANSI stripped), and the uv-argv path.
     """
     env = _env(
         tmp_path,
@@ -274,6 +275,7 @@ def _invoke_interactive(
         installed_version=installed_version,
         latest_version=latest_version,
     )
+    answers = [answer] if isinstance(answer, str) else answer
     primary, secondary = pty.openpty()
     proc = subprocess.Popen(
         ["bash", str(SCRIPT)],
@@ -284,7 +286,8 @@ def _invoke_interactive(
         text=True,
     )
     os.close(secondary)
-    os.write(primary, f"{answer}\n".encode())
+    for line in answers:
+        os.write(primary, f"{line}\n".encode())
     output = proc.stdout.read() if proc.stdout else ""
     proc.wait(timeout=30)
     os.close(primary)
@@ -1280,6 +1283,67 @@ def test_install_script_no_extras_warning_when_extras_explicit(tmp_path: Path) -
 
     assert proc.returncode == 0
     assert "extras that a bare upgrade will remove" not in proc.stderr
+
+
+def test_install_script_extras_interrupt_decline_aborts_before_uv(
+    tmp_path: Path,
+) -> None:
+    """Answering 'n' to the extras prompt exits before uv runs.
+
+    Two prompts fire on this path — the update prompt, then the extras-loss
+    interrupt — so both answers are fed. Declining the second must abort
+    cleanly (exit 0, no uv invocation, no environment rebuild).
+    """
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
+
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {},
+        answer=["y", "n"],
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert code == 0
+    assert "Continue anyway and remove them?" in output
+    assert "Aborted. No changes made." in output
+    assert not args_path.exists()
+
+
+def test_install_script_extras_interrupt_accept_proceeds(tmp_path: Path) -> None:
+    """Answering 'y' to the extras prompt continues the upgrade."""
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
+
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {},
+        answer=["y", "y"],
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert code == 0
+    assert "Continue anyway and remove them?" in output
+    assert "Aborted. No changes made." not in output
+    args = args_path.read_text().splitlines()
+    assert args[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_extras_assume_yes_skips_interrupt(tmp_path: Path) -> None:
+    """`DEEPAGENTS_CODE_YES=1` proceeds past the extras interrupt unattended."""
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
+
+    proc, args_path = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_YES": "1"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "extras that a bare upgrade will remove" in proc.stderr
+    assert "Aborted. No changes made." not in proc.stderr
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
 def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:

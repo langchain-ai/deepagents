@@ -10192,6 +10192,7 @@ class DeepAgentsApp(App):
         from deepagents_code.command_registry import (
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
+            IMMEDIATE_UI_ARG_FORMS,
             SIDE_EFFECT_FREE,
             STARTUP_RECOVERY_COMMANDS,
         )
@@ -10219,11 +10220,13 @@ class DeepAgentsApp(App):
                 or self._modal_command_running()
             )
         if cmd in IMMEDIATE_UI:
-            # Only bare form (no args) bypasses — the selector-opening form is
-            # safe, but an argument form does a direct action that shouldn't
-            # race the agent (e.g. `/model <name>` switches models, `/threads
-            # -r <id>` resumes a thread).
-            return value == cmd
+            # Only UI-opening forms bypass: the bare command, or an argument
+            # form whitelisted in IMMEDIATE_UI_ARG_FORMS (e.g. `/auto model`,
+            # which opens the classifier picker). Other argument forms do a
+            # direct action that shouldn't race the agent (e.g. `/model <name>`
+            # switches models, `/threads -r <id>` resumes a thread,
+            # `/auto model <spec>` mutates classifier state).
+            return value == cmd or value in IMMEDIATE_UI_ARG_FORMS
         return cmd in SIDE_EFFECT_FREE
 
     async def _submit_input(

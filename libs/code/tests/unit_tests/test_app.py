@@ -22842,19 +22842,54 @@ class TestDeferredActions:
             assert app._can_bypass_queue("/model --default foo") is False
 
     async def test_can_bypass_queue_bare_auto_bypasses(self) -> None:
-        """Bare `/auto` must bypass the queue; `/auto model ...` must not.
+        """Bare `/auto` and `/auto model` bypass; the mutating forms must not.
 
         `/auto` is the mid-turn approval-mode switch, so parking it behind a busy
-        queue would break the "stop auto-approving right now" escape. Its
-        argument form resolves a classifier model and can wait for idle. Pins
-        both sides of `BypassTier.IMMEDIATE_UI` for this command.
+        queue would break the "stop auto-approving right now" escape. `/auto
+        model` with no further arguments only opens the classifier picker, so it
+        is bare-equivalent; `/auto model <spec>` and `/auto model clear` resolve
+        or mutate classifier state and can wait for idle.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._can_bypass_queue("/auto") is True
+            assert app._can_bypass_queue("/auto model") is True
             assert app._can_bypass_queue("/auto model openai:gpt-5.5-mini") is False
             assert app._can_bypass_queue("/auto model clear") is False
+
+    async def test_auto_model_opens_selector_while_busy(self) -> None:
+        """`/auto model` opens the selector instead of queueing when busy."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(
+                app,
+                "_show_auto_classifier_model_selector",
+                new_callable=AsyncMock,
+            ) as show_selector:
+                app.post_message(ChatInput.Submitted("/auto model", "command"))
+                await pilot.pause()
+
+            show_selector.assert_awaited_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_auto_model_with_spec_still_queues(self) -> None:
+        """`/auto model <spec>` mutates classifier state, so it must queue."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(
+                ChatInput.Submitted("/auto model openai:gpt-5.5-mini", "command")
+            )
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/auto model openai:gpt-5.5-mini"
 
     async def test_model_with_args_still_queues(self) -> None:
         """/model gpt-4 should be queued when busy, not bypass."""

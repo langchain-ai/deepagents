@@ -2,6 +2,27 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.53](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.52...deepagents-code==0.1.53) (2026-08-06)
+
+
+### Features
+
+* **code:** `dcode_term_program` trace metadata ([#5329](https://github.com/langchain-ai/deepagents/issues/5329)) ([8d3a1a9](https://github.com/langchain-ai/deepagents/commit/8d3a1a929f7569630060ab68862b2a21c382d58c))
+* **code:** add Baseten built-in pricing overrides ([#5312](https://github.com/langchain-ai/deepagents/issues/5312)) ([f34ffa0](https://github.com/langchain-ai/deepagents/commit/f34ffa0cb8c0c7943b116a753535df47e32de2a3))
+* **code:** local pricing overrides as a fallback when genai-prices misses ([#5304](https://github.com/langchain-ai/deepagents/issues/5304)) ([89bcaf2](https://github.com/langchain-ai/deepagents/commit/89bcaf2c31ab347cb4cb4563bc18f296dbecea08))
+* **code:** suggest compacting large resumed threads ([#5318](https://github.com/langchain-ai/deepagents/issues/5318)) ([cb2329d](https://github.com/langchain-ai/deepagents/commit/cb2329d1ec480455a7ba4e2b277cbd727c9215c7))
+
+
+### Bug Fixes
+
+* **code:** always restart after a successful startup auto-update ([#5317](https://github.com/langchain-ai/deepagents/issues/5317)) ([8cdee15](https://github.com/langchain-ai/deepagents/commit/8cdee15bbc54381229a686f8263656be0202b9b5))
+* **code:** keep MCP shutdown-race traceback off the terminal ([#5325](https://github.com/langchain-ai/deepagents/issues/5325)) ([7d97097](https://github.com/langchain-ai/deepagents/commit/7d9709700dd24cc2477cd091f01de990f23ee4a9))
+* **code:** open `/auto model` selector immediately while connecting ([#5341](https://github.com/langchain-ai/deepagents/issues/5341)) ([72bfc1e](https://github.com/langchain-ai/deepagents/commit/72bfc1e68574909ceb929be869c66fbdc9fe5a1d))
+* **code:** preserve runtime offload archive routing ([#5328](https://github.com/langchain-ai/deepagents/issues/5328)) ([768b061](https://github.com/langchain-ai/deepagents/commit/768b061805f65a36c71a1ad8f6a41b4e67063e91))
+* **code:** route failures to `PostToolUseFailure` ([#5315](https://github.com/langchain-ai/deepagents/issues/5315)) ([c1f4ac3](https://github.com/langchain-ai/deepagents/commit/c1f4ac3d53b3231d80be97691763850d230e8080))
+* **code:** stop leaking turn coroutines and sqlite handles ([#5218](https://github.com/langchain-ai/deepagents/issues/5218)) ([994799b](https://github.com/langchain-ai/deepagents/commit/994799b2f25950eb76e1085b5026d1f19eceb563))
+* **code:** use dismissed copy for ask-user prompts ([#5331](https://github.com/langchain-ai/deepagents/issues/5331)) ([920fb66](https://github.com/langchain-ai/deepagents/commit/920fb66763e85b759c2ec3cac090bccd7f05b55f))
+
 ## [0.1.52](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.51...deepagents-code==0.1.52) (2026-08-04)
 
 ### Features

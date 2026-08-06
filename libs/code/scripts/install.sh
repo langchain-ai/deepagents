@@ -542,6 +542,30 @@ fix_install_log_owner() {
   fi
 }
 
+path_device() {
+  local device
+  # GNU and BSD `stat` use different format flags. The device number is enough
+  # here: `rename(2)` cannot cross a filesystem boundary.
+  device="$(stat -c %d "$1" 2>/dev/null || true)"
+  case "$device" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s\n' "$device"; return 0 ;;
+  esac
+
+  device="$(stat -f %d "$1" 2>/dev/null || true)"
+  case "$device" in
+    ''|*[!0-9]*) return 1 ;;
+    *) printf '%s\n' "$device" ;;
+  esac
+}
+
+paths_share_filesystem() {
+  local first_device second_device
+  first_device="$(path_device "$1")" || return 1
+  second_device="$(path_device "$2")" || return 1
+  [ "$first_device" = "$second_device" ]
+}
+
 copy_install_log() {
   [ -n "${INSTALL_LOG:-}" ] || return 1
   [ -n "${install_log_dir:-}" ] || return 1
@@ -549,19 +573,26 @@ copy_install_log() {
   if [ "$(id -u)" -eq 0 ]; then
     path_is_under_home "$install_log_dir" || return 1
   fi
-  # Belt-and-braces: the rename below replaces a symlink at INSTALL_LOG rather
-  # than following it, so this guard is not what makes publishing safe. Keep it
+  # Belt-and-braces: the publication below never follows a symlink at
+  # INSTALL_LOG, so this guard is not what makes publishing safe. Keep it
   # anyway — it fails early and explicitly on an obviously tampered path.
   [ ! -L "$INSTALL_LOG" ] || return 1
   # Do not stage beneath install_log_dir: when this runs as root, its parent can
   # still be user-writable and the user could replace a freshly-created staging
   # directory before `cp` enters it. `/tmp` is sticky, so a root-owned 0700
   # directory created there cannot be renamed or replaced by another user.
-  # The final `mv` replaces a planted INSTALL_LOG symlink instead of following
-  # it.
+  # Privileged publication uses an atomic hard link below, which never follows
+  # a planted INSTALL_LOG symlink.
   local stage_dir staged
   stage_dir=$(mktemp -d "/tmp/deepagents-code-install-log.XXXXXX" 2>/dev/null) || return 2
   staged="${stage_dir}/install.log"
+  # Do not persist a privileged log when `mv` would cross a filesystem
+  # boundary. Its copy-and-delete fallback could follow a symlink planted at
+  # INSTALL_LOG by the user who owns the cache directory.
+  if [ "$(id -u)" -eq 0 ] && ! paths_share_filesystem "$stage_dir" "$install_log_dir"; then
+    rmdir "$stage_dir" 2>/dev/null || true
+    return 1
+  fi
   if ! (cd "$stage_dir" && cp "$uv_stderr" install.log) 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
     rmdir "$stage_dir" 2>/dev/null || true
@@ -593,7 +624,19 @@ copy_install_log() {
     rmdir "$stage_dir" 2>/dev/null || true
     return 1
   }
-  if ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
+  if [ "$(id -u)" -eq 0 ]; then
+    # Unlinking a symlink removes the directory entry without following it.
+    # `ln` then atomically creates INSTALL_LOG only if the attacker has not
+    # replaced that entry in the meantime; unlike cross-device `mv`, it never
+    # copies through a planted symlink.
+    rm -f "$INSTALL_LOG" 2>/dev/null || true
+    if ! ln "$staged" "$INSTALL_LOG" 2>/dev/null; then
+      rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return 2
+    fi
+    rm -f "$staged" 2>/dev/null || true
+  elif ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
     rmdir "$stage_dir" 2>/dev/null || true
     return 2

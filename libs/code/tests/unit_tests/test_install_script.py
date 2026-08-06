@@ -1971,6 +1971,8 @@ def _run_copy_install_log(
         "TEMP_FILES=()\n"
         'register_temp() { TEMP_FILES+=("$1"); }\n'
         f"{_extract_shell_function('path_is_under_home')}\n"
+        f"{_extract_shell_function('path_device')}\n"
+        f"{_extract_shell_function('paths_share_filesystem')}\n"
         f"{_extract_shell_function('copy_install_log')}\n"
         f"HOME={str(home)!r}\n"
         f"install_log_dir={str(install_log_dir)!r}\n"
@@ -2030,16 +2032,35 @@ def test_copy_install_log_stages_outside_user_writable_log_dir(
     assert published.read_text() == "captured uv stderr\n"
 
 
+def test_copy_install_log_skips_privileged_cross_device_publication(
+    tmp_path: Path,
+) -> None:
+    """A root install never lets `mv` fall back to a symlink-following copy."""
+    rc, _log_dir, published = _run_copy_install_log(
+        tmp_path,
+        race_hook=(
+            'id() { printf "0\\n"; }\n'
+            "path_device() {\n"
+            '  case "$1" in\n'
+            '    "$install_log_dir") printf "destination\\n" ;;\n'
+            '    *) printf "staging\\n" ;;\n'
+            "  esac\n"
+            "}\n"
+        ),
+    )
+
+    assert rc == 1
+    assert not published.exists()
+
+
 def test_copy_install_log_replaces_symlink_planted_during_the_race(
     tmp_path: Path,
 ) -> None:
     """A symlink planted at the publish path is replaced, never written through.
 
-    This is the property that made the implementation switch from `ln` to a
-    same-directory `mv`. The `-L` guard runs before staging, so it cannot cover
-    a link planted after it — only `rename(2)` swapping the directory entry
-    can. Plant the link in the race window and assert the attacker's target is
-    untouched.
+    The `-L` guard runs before staging, so it cannot cover a link planted after
+    it. Privileged publication unlinks that directory entry and atomically
+    creates a hard link instead, so the attacker's target remains untouched.
     """
     outside = tmp_path / "outside.txt"
     outside.write_text("do not clobber\n")
@@ -2101,11 +2122,11 @@ def test_copy_install_log_cleans_up_staged_file_when_publish_fails(
     The staged file holds the full captured stderr, so an orphan is both litter
     and a disclosure; repeated failures would accumulate them.
     """
-    # Fail the rename itself, leaving the staged file in place for the cleanup
-    # to find. Contriving a filesystem state that breaks `mv` is unreliable —
-    # `mv file dir/` moves *into* the directory rather than failing.
+    # Fail the root-safe hard-link publication itself, leaving the staged file
+    # in place for the cleanup to find. Contriving a filesystem state that
+    # breaks `ln` is unreliable.
     rc, log_dir, published = _run_copy_install_log(
-        tmp_path, race_hook="mv() { return 1; }\n"
+        tmp_path, race_hook='id() { printf "0\\n"; }\nln() { return 1; }\n'
     )
 
     assert rc == 2

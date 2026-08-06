@@ -12,6 +12,7 @@ import importlib.util
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import tomllib
@@ -529,6 +530,25 @@ sessions database, version-check caches, input history. Kept separate from
 top-level user-facing config and agent directories so listing/iterating
 `~/.deepagents` doesn't conflate state with agents.
 """
+
+
+def default_cache_dir() -> Path:
+    """Return the OS-appropriate cache directory for Deep Agents Code.
+
+    Honors `XDG_CACHE_HOME` on Linux (falling back to `~/.cache`) and uses
+    `~/Library/Caches` on macOS. The install script mirrors the Linux branch
+    for its own `<cache>/deepagents-code/install.log` path.
+
+    Returns:
+        Base cache directory, before the `deepagents-code` subdirectory.
+    """
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches"
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        return Path(xdg_cache_home)
+    return Path.home() / ".cache"
+
 
 RECENT_MODELS_FILENAME = "recent_models.json"
 """Filename under `DEFAULT_STATE_DIR` for the MRU list shown in `/model`."""

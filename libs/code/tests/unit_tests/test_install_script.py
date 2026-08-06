@@ -94,6 +94,7 @@ def _write_fake_tools(
     curl_fails: bool = False,
     curl_failures_before_success: int = 0,
     dcode_verify_fails: bool = False,
+    rg_version_fails: bool = False,
     mktemp_fails: bool = False,
     stage_uv_receipt: bool = True,
 ) -> tuple[Path, Path, Path]:
@@ -105,6 +106,7 @@ def _write_fake_tools(
     the script's offline fallback can be exercised. `dcode_verify_fails` makes
     `dcode -v` exit non-zero (`VERIFY_OK=false`) so the eager managed-ripgrep
     guard can be exercised against a present-but-broken binary.
+    `rg_version_fails` stages an `rg` that fails its version probe.
 
     An existing install also gets a bare `uv-receipt.toml`, because that is
     what a real `uv tool install` leaves behind: the script treats a uv-managed
@@ -208,6 +210,11 @@ printf '%s' '{payload}'
     sleep.write_text("#!/usr/bin/env bash\nexit 0\n")
     _make_executable(sleep)
 
+    if rg_version_fails:
+        rg = bin_dir / "rg"
+        rg.write_text("#!/usr/bin/env bash\nexit 1\n")
+        _make_executable(rg)
+
     if mktemp_fails:
         mktemp = bin_dir / "mktemp"
         mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
@@ -244,6 +251,7 @@ def _env(
     curl_fails: bool = False,
     curl_failures_before_success: int = 0,
     dcode_verify_fails: bool = False,
+    rg_version_fails: bool = False,
     mktemp_fails: bool = False,
     stage_uv_receipt: bool = True,
 ) -> dict[str, str]:
@@ -254,6 +262,7 @@ def _env(
         curl_fails=curl_fails,
         curl_failures_before_success=curl_failures_before_success,
         dcode_verify_fails=dcode_verify_fails,
+        rg_version_fails=rg_version_fails,
         mktemp_fails=mktemp_fails,
         stage_uv_receipt=stage_uv_receipt,
     )
@@ -277,6 +286,7 @@ def _invoke(
     curl_fails: bool = False,
     curl_failures_before_success: int = 0,
     dcode_verify_fails: bool = False,
+    rg_version_fails: bool = False,
     mktemp_fails: bool = False,
     stage_uv_receipt: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
@@ -295,6 +305,7 @@ def _invoke(
         curl_fails=curl_fails,
         curl_failures_before_success=curl_failures_before_success,
         dcode_verify_fails=dcode_verify_fails,
+        rg_version_fails=rg_version_fails,
         mktemp_fails=mktemp_fails,
         stage_uv_receipt=stage_uv_receipt,
     )
@@ -5905,6 +5916,27 @@ def test_install_script_system_ripgrep_skips_tools_install(tmp_path: Path) -> No
 
     assert proc.returncode == 0, proc.stderr
     assert not (tmp_path / "dcode-tools.txt").exists()
+
+
+def test_install_script_system_ripgrep_failed_version_probe_warns(
+    tmp_path: Path,
+) -> None:
+    """A broken system `rg` is optional and must not abort the installer."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_CODE_RIPGREP_INSTALLER": "system",
+        },
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        rg_version_fails=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "Could not determine the version of ripgrep on PATH" in combined
+    assert "slower fallback" in combined
 
 
 def test_install_script_skip_optional_skips_tools_install(tmp_path: Path) -> None:

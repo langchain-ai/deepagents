@@ -3044,7 +3044,9 @@ check_sudo() {
 installed_rg_is_acceptable() {
   local ver
   command -v rg >/dev/null 2>&1 || return 1
-  ver=$(installed_rg_version)
+  if ! ver=$(installed_rg_version) || [ -z "$ver" ]; then
+    return 1
+  fi
   if version_too_old "$ver" "$MIN_RIPGREP_VERSION"; then
     log_warn "ripgrep ${ver} is older than the supported minimum (${MIN_RIPGREP_VERSION})."
     return 1
@@ -3166,15 +3168,18 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       fi
     fi
   elif command -v rg >/dev/null 2>&1; then
-    rg_version=$(installed_rg_version)
-    if version_too_old "$rg_version" "$MIN_RIPGREP_VERSION"; then
+    if ! rg_version=$(installed_rg_version) || [ -z "$rg_version" ]; then
+      echo ""
+      log_warn "Could not determine the version of ripgrep on PATH."
+      ripgrep_manual_hint
+    elif version_too_old "$rg_version" "$MIN_RIPGREP_VERSION"; then
       echo ""
       log_warn "ripgrep ${rg_version} found, but the minimum supported is ${MIN_RIPGREP_VERSION} — the grep tool may misbehave."
       ripgrep_manual_hint
     elif [ "$VERBOSE" = "1" ]; then
       echo ""
       log_info "Checking optional tools..."
-      log_success "ripgrep ${rg_version:-(version unknown)} found"
+      log_success "ripgrep ${rg_version} found"
     fi
   else
     echo ""

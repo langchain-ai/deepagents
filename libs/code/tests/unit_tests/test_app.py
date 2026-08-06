@@ -22881,6 +22881,27 @@ class TestDeferredActions:
             show_selector.assert_awaited_once()
             assert len(app._pending_messages) == 0
 
+    @pytest.mark.parametrize("command", ["/auto\tmodel", "/auto\nmodel"])
+    async def test_auto_model_whitespace_variants_open_selector_while_busy(
+        self, command: str
+    ) -> None:
+        """Whitespace-separated selector commands bypass and dispatch consistently."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(
+                app,
+                "_show_auto_classifier_model_selector",
+                new_callable=AsyncMock,
+            ) as show_selector:
+                app.post_message(ChatInput.Submitted(command, "command"))
+                await pilot.pause()
+
+            show_selector.assert_awaited_once()
+            assert len(app._pending_messages) == 0
+
     async def test_auto_model_with_spec_still_queues(self) -> None:
         """`/auto model <spec>` mutates classifier state, so it must queue."""
         app = DeepAgentsApp(agent=MagicMock())

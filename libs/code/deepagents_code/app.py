@@ -13815,7 +13815,7 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
-        elif cmd == "/auto" or cmd.startswith("/auto "):
+        elif cmd.split(maxsplit=1)[0] == "/auto":
             await self._handle_auto_command(command)
         elif cmd in {"/manual", "/yolo"}:
             from deepagents_code.approval_mode import ApprovalMode

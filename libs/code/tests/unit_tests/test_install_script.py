@@ -815,6 +815,28 @@ def test_install_script_prompt_read_failure_continues_update(
     assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
+def test_install_script_attached_tty_read_failure_continues_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An EOF on an attached terminal must not be treated as declining."""
+    script = tmp_path / "install.sh"
+    source = SCRIPT.read_text(encoding="utf-8").replace(
+        "    if ! read -r reply; then\n", "    if ! false; then\n", 1
+    )
+    script.write_text(source, encoding="utf-8")
+    _make_executable(script)
+    monkeypatch.setitem(globals(), "SCRIPT", script)
+
+    code, output, args_path = _invoke_interactive(
+        tmp_path, {}, answer="n", installed_version="0.1.0", latest_version="0.2.0"
+    )
+
+    assert code == 0
+    assert "Could not read from terminal — skipping prompt." in output
+    assert "Keeping deepagents-code 0.1.0" not in output
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
 def test_install_script_interactive_accept_updates(tmp_path: Path) -> None:
     """Answering 'y' to the update prompt runs `uv tool install -U`."""
     code, output, args_path = _invoke_interactive(
@@ -2168,6 +2190,20 @@ def test_copy_install_log_rejects_directory_created_during_publication(
     assert rc == 2
     assert published.is_dir()
     assert not (published / "install.log").exists()
+
+
+def test_copy_install_log_rejects_directory_created_before_nonroot_move(
+    tmp_path: Path,
+) -> None:
+    """A non-root `mv` into a raced directory must not report success."""
+    rc, _log_dir, published = _run_copy_install_log(
+        tmp_path,
+        race_hook=('mv() {\n  command mkdir "$INSTALL_LOG"\n  command mv "$@"\n}\n'),
+    )
+
+    assert rc != 0
+    assert published.is_dir()
+    assert (published / "install.log").read_text() == "captured uv stderr\n"
 
 
 def test_copy_install_log_cleans_up_staged_file_when_publish_fails(

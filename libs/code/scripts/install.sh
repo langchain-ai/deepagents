@@ -469,7 +469,10 @@ prompt_yn() {
   local reply
   if [ -t 0 ]; then
     printf "%s [y/N] " "$question"
-    read -r reply
+    if ! read -r reply; then
+      log_warn "Could not read from terminal — skipping prompt."
+      return 2
+    fi
   else
     printf "%s [y/N] " "$question" > /dev/tty
     if ! read -r reply < /dev/tty 2>/dev/null; then
@@ -642,6 +645,13 @@ copy_install_log() {
       rmdir "$stage_dir" 2>/dev/null || true
       return 2
     fi
+    # `mv` accepts a directory destination by moving the staged file into it.
+    # Check the result after publication so a directory created between the
+    # preflight check and `mv` is reported as a failed log write.
+    [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ] || {
+      rmdir "$stage_dir" 2>/dev/null || true
+      return 1
+    }
   fi
   rmdir "$stage_dir" 2>/dev/null || true
 }

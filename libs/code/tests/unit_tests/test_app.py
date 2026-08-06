@@ -14688,7 +14688,7 @@ class TestMessageTimestampFooters:
             await pilot.pause()
 
             tool.set_success("The file change could not be shown.")
-            tool.mark_display_caveat()
+            tool._mark_display_caveat()
             app._sync_tool_message_state(tool)
 
             stored = app._message_store.get_message("tool-caveat")
@@ -35620,6 +35620,47 @@ class TestToolGroupCollapse:
             assert before.display is False
             assert excluded.display is True
             assert not excluded.has_class("-grouped")
+            assert after.display is False
+
+    async def test_regroup_leaves_caveated_rows_expanded(self) -> None:
+        """A rehydrated caveat must not be folded into a group summary.
+
+        The live path evicts these rows (`_evict_unfoldable`); this is the
+        separate rehydration implementation, and nothing else covers it. The
+        summary line is built from tool names alone, so folding a caveated
+        `delete` renders destroying a 5,000-line file whose contents could not
+        be read as `▸ Deleted 1 file` — identical to destroying an empty one,
+        and visible only after the user scrolls away and back.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-caveat-history")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            before, caveated, after = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("before", "read_file", {"file_path": "a.py"}, "success"),
+                    ("caveated", "delete", {"file_path": "big.py"}, "success"),
+                    ("after", "read_file", {"file_path": "b.py"}, "success"),
+                ],
+            )
+            # Set the way rehydration does: the flag is restored before mount
+            # and the output carrying the sentence comes back separately.
+            caveated._mark_display_caveat()
+            await pilot.pause()
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert caveated.display is True, "the caveat was folded out of sight"
+            assert not caveated.has_class("-grouped")
+            # It is also a group boundary, like any other unfoldable row.
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert before.display is False
             assert after.display is False
 
     async def test_regroup_leaves_edit_diff_outside_later_tool_group(self) -> None:

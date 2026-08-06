@@ -660,7 +660,10 @@ class TextualUIAdapter:
 
     def __init__(
         self,
-        mount_message: Callable[..., Awaitable[None]],
+        # Returns whether the widget reached the screen; most callers ignore it,
+        # but the diff path needs it to tell a rendered caveat from one dropped
+        # by a torn-down transcript.
+        mount_message: Callable[..., Awaitable[bool]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool | None]
@@ -2142,17 +2145,21 @@ async def execute_task_textual(
                                         # adjacent.
                                         show_caveat=not caveat_shown,
                                     )
-                                    await adapter._mount_message(diff_msg)
+                                    mounted = await adapter._mount_message(diff_msg)
                                     # Read from the widget rather than assuming
                                     # a non-`shown` outcome put the caveat on
                                     # screen: it also suppresses its own caveat
-                                    # when told the row has it.
-                                    caveat_shown = (
-                                        caveat_shown or diff_msg.renders_caveat
+                                    # when told the row has it. Conjoined with
+                                    # the mount result because `renders_caveat`
+                                    # describes how the widget was built, not
+                                    # where it ended up — a transcript torn down
+                                    # mid-stream makes the mount a silent no-op,
+                                    # and crediting it here would skip the
+                                    # fallback below and leave the caveat on no
+                                    # surface at all.
+                                    caveat_shown = caveat_shown or (
+                                        mounted and diff_msg.renders_caveat
                                     )
-                                    if tool_msg is not None and replaces_row:
-                                        tool_msg.mark_superseded_by_diff()
-                                        adapter._sync_tool_widget(tool_msg)
                                 except Exception:
                                     logger.exception(
                                         "Failed to mount diff for %s",
@@ -2168,6 +2175,23 @@ async def execute_task_textual(
                                         f"The diff for {record.display_path} "
                                         "could not be rendered.",
                                     )
+                                else:
+                                    # Hiding the row is a separate step with its
+                                    # own failure: the diff is already on screen,
+                                    # so reporting "could not be rendered" here
+                                    # would contradict what the user can see.
+                                    # Only the row stayed visible, which is the
+                                    # safe direction and needs no transcript
+                                    # note.
+                                    if tool_msg is not None and replaces_row:
+                                        try:
+                                            tool_msg.mark_superseded_by_diff()
+                                            adapter._sync_tool_widget(tool_msg)
+                                        except Exception:
+                                            logger.exception(
+                                                "Failed to hide superseded row for %s",
+                                                record.display_path,
+                                            )
                             if caveat and not caveat_shown:
                                 # No row took the caveat (its widget was torn
                                 # down) and no diff mounted to carry it — a

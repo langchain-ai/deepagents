@@ -472,7 +472,13 @@ class TestMessageData:
         assert restored.id == "test-skill-1"
 
     def test_diff_message_roundtrip_preserves_highlighting_inputs(self) -> None:
-        """Virtualized diffs retain only the needed lexer prefixes and true counts."""
+        """Virtualized diffs retain only the needed lexer prefixes and true counts.
+
+        `shown` with real counts, because `untrusted_before` leaves `stats`
+        unset — `FileOperationRecord.diff_stats` documents that pairing as
+        impossible, and a test that builds it stops describing what the code
+        produces.
+        """
         original = DiffMessage(
             "@@ -1 +1 @@\n-a\n+b",
             "example.py",
@@ -480,7 +486,6 @@ class TestMessageData:
             before="a\nunused before\n",
             after="b\nunused after\n",
             stats=DiffStats(additions=200, deletions=200),
-            outcome="untrusted_before",
             id="test-diff-highlight",
         )
 
@@ -489,9 +494,33 @@ class TestMessageData:
         assert isinstance(restored, DiffMessage)
         assert (restored._before, restored._after) == ("a", "b")
         assert restored._stats == DiffStats(additions=200, deletions=200)
-        assert restored._outcome == "untrusted_before"
+        assert restored._outcome == "shown"
         # Not only the privates: a rehydration bug preserving all four while
         # breaking composition would pass on the assertions above alone.
+        assert any("+200" in _rendered_text(child) for child in restored.compose())
+
+    def test_an_untrusted_diff_roundtrips_without_counts(self) -> None:
+        """The outcome and its suppressed body have to survive separately.
+
+        Split from the highlighting round-trip above so each asserts a state the
+        tracker can actually produce: this one carries no `stats`, because a
+        count taken against a stand-in pre-image would be fiction.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            before="a\n",
+            after="b\n",
+            outcome="untrusted_before",
+            id="test-diff-untrusted",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert restored._outcome == "untrusted_before"
+        assert restored._stats is None
         assert any(
             "prior contents could not be read" in _rendered_text(child)
             for child in restored.compose()
@@ -1425,7 +1454,7 @@ def test_display_caveat_survives_the_store_roundtrip() -> None:
     """
     tool = ToolCallMessage("write_file", {"file_path": "a.py"})
     tool.set_success("could not be shown\n\nWrote file")
-    tool.mark_display_caveat()
+    tool._mark_display_caveat()
 
     restored = MessageData.from_widget(tool).to_widget()
 

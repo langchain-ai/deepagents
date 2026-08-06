@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
 from itertools import accumulate, groupby, pairwise
@@ -82,8 +83,15 @@ _DiffRowKind = Literal["context", "added", "removed"]
 _RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
 
 
-class _RowStyle(NamedTuple):
+@dataclass(frozen=True, kw_only=True)
+class _RowStyle:
     """How one kind of source row renders.
+
+    Keyword-only because all four fields are `str`: positional construction
+    lets `marker_style` and `emphasis` swap into a wrong-but-plausible render
+    that nothing would flag. Same hazard `DiffStats` is `kw_only` to rule out,
+    and the reason this is a dataclass rather than a `NamedTuple` — it is only
+    ever read by attribute, so nothing needs the tuple behavior.
 
     Attributes:
         gutter: Style for the line-number column.
@@ -109,10 +117,6 @@ class _RowStyle(NamedTuple):
 # and are handled by the early `continue`s in `_compose_diff_content`, which is
 # what narrows `row.kind` to a valid key. One map rather than three so a kind
 # cannot be added to some of them and missed in the rest.
-#
-# Built with keywords: all four fields are `str`, so positional construction
-# lets `marker_style` and `emphasis` swap silently into a wrong-but-plausible
-# render. Same hazard `DiffStats` is `kw_only` to rule out.
 _ROW_STYLES: dict[_DiffRowKind, _RowStyle] = {
     "added": _RowStyle(
         gutter="$text-success 80% on $success 20%",
@@ -144,15 +148,18 @@ if _missing_row_styles := set(get_args(_DiffRowKind)) - _ROW_STYLES.keys():
     raise RuntimeError(_msg)
 
 
+# Which row kinds are read from which side's source, keyed by `_Row.number`.
+#
+# Follows the numbering in `_Row.number`: only removed rows are numbered in the
+# old file. Named once because `highlight_source_prefixes` sizes each prefix and
+# `_highlighted_rows` reads from it, and a row kind sized against one side but
+# read from the other loses its highlighting with nothing to explain why.
+#
+# A comment rather than a docstring under `_AFTER_KINDS`, which would attribute
+# the shared rule to that name alone and leave `_BEFORE_KINDS` reading as
+# undocumented.
 _BEFORE_KINDS: tuple[_DiffRowKind, ...] = ("removed",)
 _AFTER_KINDS: tuple[_DiffRowKind, ...] = ("added", "context")
-"""Which row kinds are read from which side's source, keyed by `_Row.number`.
-
-Follows the numbering in `_Row.number`: only removed rows are numbered in the old
-file. Named once because `highlight_source_prefixes` sizes each prefix and
-`_highlighted_rows` reads from it, and a row kind sized against one side but read
-from the other loses its highlighting with nothing to explain why.
-"""
 
 
 class _Row(NamedTuple):
@@ -450,7 +457,12 @@ def _highlight_lines_cached(code: str, path: str) -> tuple[Content, ...] | None:
     try:
         return tuple(highlight(code, path=path, tab_size=0).split("\n"))
     except (ValueError, LookupError) as e:
-        # No usable lexer for this path — expected for unknown extensions.
+        # No usable lexer. Not reachable through an unknown extension —
+        # `highlight` guesses a lexer rather than raising, so `m.unknownext`
+        # and a bare `noext` both return styled output. This covers a lexer
+        # that fails on the content itself, and any future `highlight` that
+        # stops guessing; debug rather than warning because degrading to plain
+        # text is a complete, if plainer, render.
         logger.debug("No usable lexer for %s: %s", path, e)
         return None
 

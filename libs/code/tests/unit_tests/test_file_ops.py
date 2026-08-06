@@ -1,3 +1,4 @@
+import logging
 import shutil
 import textwrap
 from pathlib import Path
@@ -693,6 +694,50 @@ def test_build_delete_approval_preview_unresolvable_path() -> None:
     assert preview.error == "Unable to resolve file path."
 
 
+def test_delete_preview_says_so_when_it_cannot_read_the_file(tmp_path: Path) -> None:
+    """A preview that cannot reach the file must not render as an empty one.
+
+    The pre-image is read from the local filesystem, so a session whose files
+    live on a backend (sandbox, store, LangSmith) resolves to a path that is
+    not there. Without an explicit detail the prompt carries no diff, no
+    counts, and no error — asking the user to approve destroying a 5,000-line
+    file on a screen identical to destroying an empty one.
+    """
+    absent = tmp_path / "not-here.py"
+
+    preview = build_approval_preview("delete", {"file_path": str(absent)}, None)
+
+    assert preview is not None
+    assert preview.diff is None
+    assert preview.stats is None
+    assert any("could not be read" in detail for detail in preview.details), (
+        f"the prompt showed nothing about what it will delete: {preview.details}"
+    )
+
+
+def test_write_preview_distinguishes_an_unreadable_file_from_a_new_one(
+    tmp_path: Path,
+) -> None:
+    """`before or ""` collapsed "exists but unreadable" into the create case.
+
+    Both the delete and edit branches handle an unreadable pre-image
+    explicitly; only `write_file` degraded silently, dropping the overwrite
+    warning and rendering the payload as a pure insertion against nothing.
+    """
+    target = tmp_path / "locked.py"
+    target.write_text("secret = 1\n", encoding="utf-8")
+
+    with mock.patch("deepagents_code.file_ops._safe_read", return_value=None):
+        preview = build_approval_preview(
+            "write_file", {"file_path": str(target), "content": "new = 2\n"}, None
+        )
+
+    assert preview is not None
+    assert any("could not be read" in detail for detail in preview.details), (
+        f"an unreadable existing file was described as a create: {preview.details}"
+    )
+
+
 def _tool_message(content: str, tool_call_id: str) -> object:
     """Build the minimal shape `complete_with_message` reads.
 
@@ -822,6 +867,131 @@ class TestBackendReadBack:
 
         assert record.diff_outcome == "unreadable_after"
         assert record.after_read_error
+
+    def test_binary_content_from_the_backend_reports_the_decode_failure(self) -> None:
+        """The local read has a real-bytes test; the backend read had none.
+
+        A backend serving a binary file returns bytes that are not UTF-8, and
+        the decode is what turns that into a reason the user can read. Without
+        this, dropping the `UnicodeDecodeError` handler in `_response_content`
+        would only surface as an aborted turn in production.
+        """
+        from deepagents.backends.protocol import FileDownloadResponse
+
+        record = self._complete(
+            self._backend(
+                self._found(b"value = 1\n"),
+                [
+                    FileDownloadResponse(
+                        path="/x.txt", content=b"\x89PNG\r\n\x1a\n\xff\xfe", error=None
+                    )
+                ],
+            )
+        )
+
+        assert record.diff_outcome == "unreadable_after"
+        assert record.after_read_error is not None
+        assert "utf-8" in record.after_read_error
+
+    def test_a_backend_raising_outside_oserror_does_not_abort_the_turn(self) -> None:
+        """Real backends raise well outside `OSError`.
+
+        The store backend base64-decodes (`binascii.Error`, a `ValueError`) and
+        the LangSmith backend lets transport errors through. Catching only
+        `OSError`/`AttributeError` let a transient sandbox blip kill the turn
+        and drop every remaining tool's hooks — the outcome the handlers exist
+        to prevent.
+        """
+        backend = mock.Mock()
+        backend.download_files.side_effect = [
+            self._found(b"value = 1\n"),
+            ValueError("Invalid base64-encoded string"),
+        ]
+
+        record = self._complete(backend)
+
+        assert record.diff_outcome == "unreadable_after"
+        assert record.after_read_error == "Invalid base64-encoded string"
+
+    def test_a_raising_pre_image_read_is_a_lost_pre_image_not_a_crash(self) -> None:
+        """Same guarantee on the pre-operation read, which runs on the turn loop."""
+        backend = mock.Mock()
+        backend.download_files.side_effect = RuntimeError("sandbox unreachable")
+        tracker = FileOpTracker(
+            assistant_id=None, backend=cast("BackendProtocol", backend)
+        )
+
+        tracker.start_operation("edit_file", {"file_path": "/x.txt"}, "raise-1")
+
+        record = tracker.active["raise-1"]
+        assert record.diff_outcome == "untrusted_before"
+        assert record.before_content == ""
+
+
+class TestOutcomeInvariants:
+    """`_finalize` is the one funnel where outcome/payload pairings can be checked.
+
+    Every "outcome implies payload" rule lives in `DiffOutcome`'s docstring and
+    is written from three separate branches, so nothing but this enforces them.
+    """
+
+    @staticmethod
+    def _finalized(**overrides: object) -> FileOperationRecord:
+        """Push a hand-built record through the tracker's completion funnel.
+
+        Returns:
+            The record after invariant enforcement.
+        """
+        record = FileOperationRecord(
+            tool_name="edit_file",
+            display_path="a.py",
+            physical_path=None,
+            tool_call_id="inv-1",
+            status="success",
+            tool_succeeded=True,
+            **overrides,  # ty: ignore
+        )
+        FileOpTracker(assistant_id=None)._finalize(record)
+        return record
+
+    def test_counts_are_dropped_under_an_untrusted_pre_image(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`diff_stats` here would be counted against a stand-in empty file.
+
+        The body is already suppressed for this outcome, but `diff_stats` is
+        read directly by the adapter and the message store — so a stale pair
+        still puts a fabricated `+200` on screen.
+        """
+        with caplog.at_level(logging.ERROR):
+            record = self._finalized(
+                diff_outcome="untrusted_before",
+                diff_stats=DiffStats(additions=200, deletions=0),
+            )
+
+        assert record.diff_stats is None
+        assert "untrusted pre-image" in caplog.text
+
+    def test_a_mismatched_read_error_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`after_read_error` is the payload for `unreadable_after` and only it."""
+        with caplog.at_level(logging.WARNING):
+            self._finalized(diff_outcome="shown", after_read_error="permission_denied")
+
+        assert "after_read_error" in caplog.text
+
+    def test_a_consistent_record_is_left_alone(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The check must be silent on what the tracker actually produces."""
+        with caplog.at_level(logging.WARNING):
+            record = self._finalized(
+                diff_outcome="shown", diff_stats=DiffStats(additions=1, deletions=1)
+            )
+
+        assert record.diff_stats == DiffStats(additions=1, deletions=1)
+        assert caplog.text == ""
 
 
 def test_a_missing_file_path_is_reported_as_the_read_failure() -> None:

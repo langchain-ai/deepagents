@@ -79,12 +79,14 @@ def _count_diff_stats(
         new_string: Replacement text (fallback when no diff).
         stats: Authoritative counts from the preview's producer, taken before
             the body was clipped. Always preferred where supplied, because the
-            `write_file` and `delete` previews are built with `max_lines=100`,
-            so recounting `diff_lines` would describe the excerpt rather than
-            the change — and on the delete path that number is what the user
-            approves. Only `DeleteFileRenderer` passes it; the edit path builds
-            `diff_lines` uncapped and supplies none, so the recount below is
-            that path's normal behavior rather than a rare fallback.
+            `delete` preview is built with `max_lines=100`, so recounting
+            `diff_lines` would describe the excerpt rather than the change — and
+            that number is what the user approves when destroying a file. Only
+            `DeleteFileRenderer` passes it; the edit path builds `diff_lines`
+            uncapped and supplies none, so the recount below is that path's
+            normal behavior rather than a rare fallback. (`ApprovalPreview.stats`
+            documents the same rule across all three producers; this function
+            serves only two of them.)
 
     Returns:
         Line counts for the change.

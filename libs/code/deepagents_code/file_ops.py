@@ -140,7 +140,7 @@ def record_display_caveat(record: FileOperationRecord | None) -> str:
     Returns:
         The caveat for a successful record's outcome, or empty otherwise.
     """
-    if record is None or not getattr(record, "tool_succeeded", True):
+    if record is None or not record.tool_succeeded:
         return ""
     return display_caveat(
         record.diff_outcome, record.tool_name, record.after_read_error
@@ -168,6 +168,12 @@ class ApprovalPreview:
     """
 
 
+#: Reason reported when a backend response carries neither content nor an error.
+#: Named rather than inlined so the call sites that narrow `_response_content`'s
+#: optional reason cannot drift from the string this module actually produces.
+NO_REASON_REPORTED = "no content and no error reported"
+
+
 def _response_failure_reason(responses: list[Any]) -> str:
     """Return why a backend download response carries no usable content.
 
@@ -181,7 +187,7 @@ def _response_failure_reason(responses: list[Any]) -> str:
     """
     if not responses:
         return "no response"
-    return getattr(responses[0], "error", None) or "no content and no error reported"
+    return getattr(responses[0], "error", None) or NO_REASON_REPORTED
 
 
 def _response_content(responses: list[Any]) -> tuple[str | None, str | None]:
@@ -502,21 +508,31 @@ def build_approval_preview(
 
     if tool_name == "write_file":
         content = str(args.get("content", ""))
-        before = (
+        existing = (
             _safe_read(physical_path)
             if physical_path and physical_path.exists()
             else ""
         )
+        # `None` is a file that is there but could not be read, which is not the
+        # same as no file at all: collapsing the two would drop the overwrite
+        # warning and render the whole payload as a pure insertion, so the
+        # prompt would describe creating a file when it is about to destroy one.
+        before = existing or ""
         after = content
-        diff, stats = compute_unified_diff(
-            before or "", after, display_path, max_lines=100
-        )
+        diff, stats = compute_unified_diff(before, after, display_path, max_lines=100)
         additions = stats.additions
         total_lines = _count_lines(after)
+        if existing is None:
+            action_suffix = (
+                " (existing contents could not be read — this may overwrite them)"
+            )
+        elif existing:
+            action_suffix = " (overwrites existing content)"
+        else:
+            action_suffix = ""
         details = [
             f"File: {path_str}",
-            "Action: Create new file"
-            + (" (overwrites existing content)" if before else ""),
+            "Action: Create new file" + action_suffix,
             f"Lines to write: {additions or total_lines}",
         ]
         return ApprovalPreview(
@@ -547,6 +563,17 @@ def build_approval_preview(
             details.append(f"Lines to delete: {_count_lines(before)}")
         elif physical_path.exists():
             details.append("Contents: directory or unreadable file")
+        else:
+            # The pre-image is read straight from the local filesystem, so a
+            # session whose files live on a backend (sandbox, store, LangSmith)
+            # resolves to a path that is not there and lands here. Without this
+            # the prompt carries no diff, no counts, and no explanation — the
+            # user is asked to approve destroying a 5,000-line file on a screen
+            # indistinguishable from destroying an empty one.
+            details.append(
+                "Contents: could not be read — this prompt cannot show what "
+                "will be deleted"
+            )
         return ApprovalPreview(
             title=f"Delete {display_path}",
             details=details,
@@ -656,7 +683,9 @@ class FileOpTracker:
                         # content nor an error violates the backend contract,
                         # so it never counts as an absent file either. Every
                         # such case leaves a diff that cannot be trusted.
-                        reason = error or "no content and no error reported"
+                        # `_response_content` returns a reason on every failure
+                        # path, so the fallback only narrows the optional away.
+                        reason = error or NO_REASON_REPORTED
                         if reason != FILE_NOT_FOUND or tool_name != "write_file":
                             lost_pre_image(path_str, reason)
                         record.before_content = ""
@@ -675,6 +704,17 @@ class FileOpTracker:
                     # turn over a cosmetic read.
                     logger.exception("Backend violated the download contract")
                     lost_pre_image(path_str, f"backend contract violation: {e}")
+                    record.before_content = ""
+                except Exception as e:
+                    # `OSError` does not cover what real backends raise: the
+                    # store backend decodes base64 (`binascii.Error`, a
+                    # `ValueError`) and the LangSmith backend catches only its
+                    # own two error types, letting transport failures through.
+                    # Narrower handling would let a transient sandbox blip abort
+                    # the turn and drop every remaining tool's hooks — the exact
+                    # outcome the handlers above exist to prevent.
+                    logger.exception("Failed to read pre-edit content for %s", path_str)
+                    lost_pre_image(path_str, str(e) or type(e).__name__)
                     record.before_content = ""
             elif record.physical_path:
                 content, reason = _read_with_reason(record.physical_path)
@@ -778,6 +818,11 @@ class FileOpTracker:
                 self._populate_after_content(record)
                 if record.after_content is None:
                     record.status = "error"
+                    # Deliberately outranks a `untrusted_before` set by the
+                    # pre-image read: when both reads fail there is one caveat
+                    # to spend, and "the result could not be read back" is the
+                    # one the user can act on — it says the file's current state
+                    # is unverified, which subsumes not knowing what it was.
                     record.diff_outcome = "unreadable_after"
                     record.error = "Could not read updated file content."
                     # Record what the *request* knows before bailing. The write
@@ -892,7 +937,9 @@ class FileOpTracker:
                 if content is not None:
                     record.after_content = content
                 else:
-                    unreadable(file_path, reason or "no content and no error reported")
+                    # As in the pre-image read: the fallback only narrows the
+                    # optional, it is not a reachable message.
+                    unreadable(file_path, reason or NO_REASON_REPORTED)
             except OSError as e:
                 unreadable(file_path, str(e))
             except AttributeError as e:
@@ -902,6 +949,12 @@ class FileOpTracker:
                 # turn.
                 logger.exception("Backend violated the download contract")
                 unreadable(file_path, f"backend contract violation: {e}")
+            except Exception as e:
+                # Same reasoning as the pre-image read: backends raise well
+                # outside `OSError`, and a read-back failure must degrade to an
+                # unreadable result rather than abort the turn.
+                logger.exception("Failed to read post-edit content for %s", file_path)
+                unreadable(file_path, str(e) or type(e).__name__)
         else:
             # Fallback: direct filesystem read when no backend provided. Reports
             # its reason at warning like the backend branch above — the same
@@ -918,5 +971,42 @@ class FileOpTracker:
                 record.after_content = content
 
     def _finalize(self, record: FileOperationRecord) -> None:
+        self._enforce_outcome_invariants(record)
         self.completed.append(record)
         self.active.pop(record.tool_call_id, None)
+
+    @staticmethod
+    def _enforce_outcome_invariants(record: FileOperationRecord) -> None:
+        """Correct payloads that contradict the record's `diff_outcome`.
+
+        `diff_outcome` and the fields it speaks for (`diff_stats`,
+        `after_read_error`) are set from three separate branches, so every
+        "outcome implies payload" rule in `DiffOutcome` holds by convention
+        only. This is the single funnel every completed record passes through,
+        which makes it the one place the rules can be checked at all.
+
+        Corrects rather than raises, matching this module's posture that a
+        display defect must not abort the turn — but logs, because reaching
+        here means a producer wrote a combination it documents as impossible.
+        """
+        if record.diff_outcome == "untrusted_before" and record.diff_stats is not None:
+            # Counts taken against a stand-in empty pre-image describe a
+            # whole-file insertion that never happened. The body is suppressed
+            # for this outcome, but `diff_stats` is read directly by the
+            # adapter and the message store, so a stale pair would still put
+            # fabricated `+N` on screen.
+            logger.error(
+                "Record for %s carries diff_stats under an untrusted pre-image; "
+                "dropping them",
+                record.display_path,
+            )
+            record.diff_stats = None
+        if (record.after_read_error is not None) != (
+            record.diff_outcome == "unreadable_after"
+        ):
+            logger.warning(
+                "Record for %s pairs after_read_error=%r with outcome %r",
+                record.display_path,
+                record.after_read_error,
+                record.diff_outcome,
+            )

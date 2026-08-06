@@ -344,8 +344,13 @@ class TestDeleteApprovalCounts:
         assert any("-5000" in text for text in texts), texts
         assert all("-96" not in text for text in texts), texts
 
+    @pytest.mark.parametrize(
+        "separator",
+        ["\u2028", "\u2029", "\v", "\f", "\x85", "\r"],
+        ids=["line-sep", "para-sep", "vtab", "formfeed", "nel", "cr"],
+    )
     def test_diff_lines_are_split_on_the_producer_s_boundary(
-        self, tmp_path: Path
+        self, tmp_path: Path, separator: str
     ) -> None:
         r"""`splitlines()` here strands content as unmarked metadata.
 
@@ -353,9 +358,14 @@ class TestDeleteApprovalCounts:
         cuts a deleted line into a tail fragment with no `-` marker — which the
         approval prompt renders as a neutral note rather than as content about
         to be destroyed.
+
+        Parametrized over the same six separators as
+        `test_edit_widget_marks_every_row_of_a_split_prone_edit`: `\r` is the
+        one most likely to reach a real deleted file, and testing U+2028 alone
+        left it uncovered on the destructive path.
         """
         target = tmp_path / "sep.py"
-        target.write_text("value =  payload\n", encoding="utf-8")
+        target.write_text(f"value = {separator}payload\n", encoding="utf-8")
 
         _widget, data = DeleteFileRenderer.get_approval_widget(
             {"file_path": str(target)}

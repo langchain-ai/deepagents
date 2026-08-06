@@ -143,11 +143,21 @@ def file_header_indexes(lines: list[str]) -> set[int]:
             inside_hunk = old_remaining > 0 or new_remaining > 0
             continue
         if inside_hunk:
-            if line.startswith("\\"):
+            if _opens_file_header(lines, index):
+                # The budget says this hunk is still running, but a full
+                # `---`/`+++`/`@@` sequence starts here — so the budget
+                # over-declared and the next file has begun. Without this the
+                # `--- a/y.py` is consumed as a deletion, the following headers
+                # render as source rows, and the change counts include them.
+                # The three-line shape is what makes this safe: a removed line
+                # can read `--- something`, but not while the two lines after
+                # it also form a header pair and a hunk header.
+                inside_hunk = False
+            elif line.startswith("\\"):
                 # "\ No newline at end of file" annotates the line before it and
                 # belongs to neither budget.
                 continue
-            if line.startswith("-"):
+            elif line.startswith("-"):
                 old_remaining -= 1
             elif line.startswith("+"):
                 new_remaining -= 1
@@ -168,14 +178,27 @@ def file_header_indexes(lines: list[str]) -> set[int]:
                 # treating it as metadata is the misreading this walk prevents.
                 inside_hunk = old_remaining > 0 or new_remaining > 0
                 continue
-        if (
-            index + 2 < len(lines)
-            and line.startswith("--- ")
-            and lines[index + 1].startswith("+++ ")
-            and HUNK_RE.match(lines[index + 2])
-        ):
+        if _opens_file_header(lines, index):
             indexes.update((index, index + 1))
     return indexes
+
+
+def _opens_file_header(lines: list[str], index: int) -> bool:
+    """Whether a file-header pair immediately preceding a hunk starts here.
+
+    Args:
+        lines: Unified-diff lines.
+        index: Position of the candidate `---` line.
+
+    Returns:
+        Whether `lines[index:index + 3]` is `---`, `+++`, and a hunk header.
+    """
+    return (
+        index + 2 < len(lines)
+        and lines[index].startswith("--- ")
+        and lines[index + 1].startswith("+++ ")
+        and HUNK_RE.match(lines[index + 2]) is not None
+    )
 
 
 def count_diff_change_lines(lines: list[str]) -> DiffStats:

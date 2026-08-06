@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
+from textual.widgets import Static
 
 from deepagents_code import config as config_module, file_ops as file_ops_module
 from deepagents_code._ask_user_types import (
@@ -115,8 +116,16 @@ def _handlers_for(*events: HookEvent) -> "AbstractContextManager[object]":
     )
 
 
-async def _mock_mount(widget: object) -> None:
-    """Mock mount function for tests."""
+async def _mock_mount(_widget: object) -> bool:
+    """Mock mount function for tests.
+
+    Returns:
+        Always `True`; the real mount reports whether the widget reached the
+        screen, and callers that skip a fallback on a successful mount need
+        this fake to say it did.
+    """
+    await asyncio.sleep(0)
+    return True
 
 
 def _mock_approval() -> Future[object]:
@@ -302,9 +311,10 @@ class TestInterruptCleanup:
         """Tool-only interrupted turns should keep the stale-token marker."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             mounted.append(widget)
             await asyncio.sleep(0)
+            return True
 
         set_spinner = AsyncMock()
         set_active = MagicMock()
@@ -610,9 +620,10 @@ class TestInterruptCleanup:
         """Criteria cancellation cleans runtime UI without adding chat messages."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             mounted.append(widget)
             await asyncio.sleep(0)
+            return True
 
         tool_widget = MagicMock()
         tool_widget.tool_name = "docs_search"
@@ -658,9 +669,10 @@ class TestInterruptCleanup:
         """Ordinary chat cancellation still records and displays interruption."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             mounted.append(widget)
             await asyncio.sleep(0)
+            return True
 
         agent = SimpleNamespace(aupdate_state=AsyncMock())
         adapter = TextualUIAdapter(
@@ -2333,8 +2345,9 @@ class TestExecuteTaskTextualUsageStats:
     async def test_records_provider_from_settings(self) -> None:
         """A usage chunk records the configured provider on `turn_stats`."""
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         turn_stats = SessionStats()
         cost_updates: list[float] = []
@@ -2428,8 +2441,9 @@ class TestExecuteTaskTextualUsageStats:
         """Hidden calls count toward cost, but not the active context size."""
         from deepagents_code.app import DeepAgentsApp
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         turn_stats = SessionStats()
         cost_updates: list[float] = []
@@ -2633,8 +2647,9 @@ class TestSessionCostEvents:
     async def test_streamed_total_reaches_the_app(self) -> None:
         """A session-cost event is applied as the displayed lifetime total."""
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         totals: list[float] = []
         adapter = TextualUIAdapter(
@@ -2714,8 +2729,9 @@ class TestSessionCostEvents:
     async def test_failing_cost_callback_does_not_kill_the_stream(self) -> None:
         """A misbehaving display callback must not abort the user's turn."""
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         adapter = TextualUIAdapter(
             mount_message=mount_message,
@@ -2814,9 +2830,10 @@ class TestExecuteTaskTextualAutoModeClassifier:
         mounted: list[object] = []
         statuses: list[str | None] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def record_spinner(status: str | None) -> None:
             await asyncio.sleep(0)
@@ -2878,9 +2895,10 @@ class TestExecuteTaskTextualAutoModeClassifier:
         """`with_structured_output` streams tool-call chunks; these stay hidden."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             # Realistic on-the-wire shape: structured output arrives as a
@@ -2937,9 +2955,10 @@ class TestExecuteTaskTextualAutoModeClassifier:
         mounted: list[object] = []
         statuses: list[str | None] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def record_spinner(status: str | None) -> None:
             await asyncio.sleep(0)
@@ -3070,9 +3089,10 @@ class TestExecuteTaskTextualFileOpDiffs:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         args = {"file_path": str(target)}
         chunks = [
@@ -3100,9 +3120,10 @@ class TestExecuteTaskTextualFileOpDiffs:
     async def _run_edit(target: Path, new_string: str) -> list[object]:
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         args = {
             "file_path": str(target),
@@ -3139,9 +3160,10 @@ class TestExecuteTaskTextualFileOpDiffs:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         args = {"file_path": str(target), "content": content}
         chunks = [
@@ -3217,6 +3239,25 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert "value = 1" in diff._before, "the pre-image never reached the widget"
         assert "value = 2" in diff._after, "the post-image never reached the widget"
         assert diff._stats == DiffStats(additions=1, deletions=1)
+
+        # The stated risk is highlighting silently disappearing from every real
+        # diff, and the private attributes above stop one layer short of that.
+        # Compose the widget and compare against the same diff built without
+        # sources: the extra spans are the lexer's, so this fails if `before`/
+        # `after` arrive but are never used. Counting spans rather than naming
+        # a style keeps it from breaking on a theme change.
+        def spans_for(widget: DiffMessage) -> int:
+            """Total spans across the widget's rendered source rows."""
+            return sum(
+                len(child.render().spans)  # ty: ignore
+                for child in widget.compose()
+                if isinstance(child, Static) and "value =" in str(child.render())
+            )
+
+        plain = DiffMessage(diff._diff_content, diff._file_path, tool_name="edit_file")
+        assert spans_for(diff) > spans_for(plain), (
+            "the sources reached the widget but nothing was highlighted from them"
+        )
 
     async def test_a_write_file_diff_never_hides_its_row(self, tmp_path: Path) -> None:
         """Only `edit_file` may be superseded, and a diff alone is not enough.
@@ -3324,6 +3365,123 @@ class TestExecuteTaskTextualFileOpDiffs:
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
         assert tool._status == "success"
         assert tool.display is True, "row hidden with no diff mounted in its place"
+        # Surviving the failure is not enough: the diff was expected and never
+        # appeared, and under a `shown` outcome there is no caveat to fall back
+        # on, so a silent absence reads as "nothing changed". Without this the
+        # note could be deleted and only the guard above would still pass.
+        notes = [m for m in mounted if isinstance(m, AppMessage)]
+        assert any("could not be rendered" in str(n._content) for n in notes), (
+            "the turn survived but nothing told the user the diff was missing"
+        )
+
+    async def test_a_failure_hiding_the_row_is_not_reported_as_a_missing_diff(
+        self, tmp_path: Path
+    ) -> None:
+        """Supersession failing must not claim the diff on screen is absent.
+
+        Hiding the row runs after the diff has mounted. Reporting "could not be
+        rendered" for its failure would contradict what the user can plainly
+        see, and send them looking for a diff that is right there.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
+        with (
+            patch("deepagents_code.file_ops._read_with_reason", side_effect=read),
+            patch.object(
+                ToolCallMessage,
+                "mark_superseded_by_diff",
+                side_effect=RuntimeError("hide exploded"),
+            ),
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        assert any(isinstance(m, DiffMessage) for m in mounted), (
+            "the diff never mounted, so the supersession step was not reached"
+        )
+        notes = [m for m in mounted if isinstance(m, AppMessage)]
+        assert not any("could not be rendered" in str(n._content) for n in notes), (
+            "a hide failure was reported as a rendering failure"
+        )
+
+    async def test_a_caveat_no_surface_carried_lands_in_the_transcript(
+        self, tmp_path: Path
+    ) -> None:
+        """The last-resort note is the only thing left when the row is gone.
+
+        A torn-down row leaves `_current_tool_messages` without the tool id, so
+        nothing calls `set_success_with_caveat` and no widget carries the
+        sentence. Every other test here keeps the row alive, so this fallback —
+        including its warning — could be deleted with the suite green, and a
+        destructive change whose contents could not be read would look routine.
+        """
+        target = tmp_path / "big.py"
+        target.write_text("value = 1\n" * 5000, encoding="utf-8")
+
+        mounted: list[object] = []
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,  # replaced below, once `mounted` exists
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        adapter._mount_message = mount_message
+        args = {"file_path": str(target)}
+
+        class _TearDownTheRowMidTurn(_FakeAgent):
+            """Drop the row registry between the tool call and its result.
+
+            The registry is populated *after* the row mounts, so a mount-time
+            hook is too early to model this. Clearing here is what a screen
+            swap or a Ctrl+D mid-stream leaves behind: the result arrives, its
+            tool id resolves to no widget, and nothing calls
+            `set_success_with_caveat`.
+            """
+
+            async def astream(
+                self, *_: Any, **__: Any
+            ) -> AsyncIterator[tuple[Any, ...]]:
+                """Yield the call, tear the registry down, then the result."""
+                for index, chunk in enumerate(self._chunks):
+                    yield chunk
+                    if index == 0:
+                        adapter._current_tool_messages.clear()
+
+        chunks = [
+            ((), "messages", (_tool_call_message("delete", args, "del-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Deleted file", tool_call_id="del-1"), {}),
+            ),
+        ]
+        with patch(
+            "deepagents_code.file_ops._read_with_reason",
+            return_value=(None, "Permission denied"),
+        ):
+            await execute_task_textual(
+                user_input="delete the file",
+                agent=_TearDownTheRowMidTurn(chunks),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=True),
+                adapter=adapter,
+            )
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.has_display_caveat is False, (
+            "the row was still reachable, so the fallback was not exercised"
+        )
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+        notes = [m for m in mounted if isinstance(m, AppMessage)]
+        assert any(
+            "prior contents could not be read" in str(n._content) for n in notes
+        ), "no surface carried the caveat for a lost pre-image delete"
 
     async def test_noop_edit_keeps_the_tool_row_instead_of_claiming_no_changes(
         self, tmp_path: Path
@@ -3521,9 +3679,10 @@ class TestExecuteTaskTextualFileOpDiffs:
 
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         args = {
             "file_path": str(target),
@@ -3570,9 +3729,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # Split a JSON object across fragments; only the last one closes it.
         chunks = [
@@ -3604,9 +3764,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """A tool row stays unmounted while its JSON args are still partial."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # JSON never closes — the row must not mount with partial args.
         chunks = [
@@ -3639,9 +3800,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # A JSON string split so the first fragment is not yet valid JSON.
         chunks = [
@@ -3671,9 +3833,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """A complete `tool_call` block mounts with its dict args verbatim."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             (
@@ -3709,9 +3872,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # Two tools (index 0 and 1) with interleaved argument fragments.
         chunks = [
@@ -3754,8 +3918,9 @@ class TestExecuteTaskTextualSummarizationFeedback:
             await asyncio.sleep(0)
             statuses.append(status)
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         chunks = [
             (
@@ -3794,9 +3959,10 @@ class TestExecuteTaskTextualSummarizationFeedback:
             await asyncio.sleep(0)
             statuses.append(status)
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted_widgets.append(widget)
+            return True
 
         chunks = [
             (
@@ -3834,9 +4000,10 @@ class TestExecuteTaskTextualSummarizationFeedback:
         async def record_spinner(_status: str | None) -> None:
             await asyncio.sleep(0)
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted_widgets.append(widget)
+            return True
 
         # Only summarization chunks, no regular chunks follow.
         chunks = [
@@ -4098,7 +4265,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
         """A tool call that never reaches the transcript does not count."""
         user_visible_output_started = MagicMock()
 
-        async def fail_mount(_widget: object) -> None:
+        async def fail_mount(_widget: object) -> bool:
             await asyncio.sleep(0)
             msg = "mount failed"
             raise RuntimeError(msg)
@@ -4140,8 +4307,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
             await asyncio.sleep(0)
             statuses.append(status)
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         chunks = [
             (
@@ -4367,10 +4535,11 @@ class TestExecuteTaskTextualParallelToolSpinner:
         # so read the mounted row directly rather than the post-turn tracking.
         mounted_tools: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted_tools.append(widget)
+            return True
 
         adapter = TextualUIAdapter(
             mount_message=capture_mount,
@@ -4420,10 +4589,11 @@ class TestExecuteTaskTextualParallelToolSpinner:
         # so read the mounted row directly rather than the post-turn tracking.
         mounted_tools: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted_tools.append(widget)
+            return True
 
         adapter = TextualUIAdapter(
             mount_message=capture_mount,
@@ -4732,9 +4902,10 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         """A rubric-injected human turn must separate assistant attempts."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         class FakeAssistantMessage:
             def __init__(self, content: str = "", **kwargs: str | None) -> None:
@@ -4859,9 +5030,10 @@ class TestExecuteTaskTextualHITLShellSuppression:
         mounted: list[object] = []
         snapshots: dict[str, tuple[bool, bool, str]] = {}
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         future: asyncio.Future[object] = asyncio.Future()
 
@@ -5009,9 +5181,10 @@ class TestExecuteTaskTextualHITLShellSuppression:
         """`finally` must restore the widget even if approval raises."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5312,10 +5485,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
 
         execute_row_holder: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 execute_row_holder.append(widget)
+            return True
 
         agent = _SequencedAgent(
             streams_by_call=[
@@ -5374,10 +5548,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         snapshot: dict[str, tuple[str, float | None]] = {}
         rows: dict[str, ToolCallMessage] = {}
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 rows[widget.tool_name] = widget
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5457,10 +5632,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         snapshot: dict[str, tuple[str, float | None]] = {}
         rows: dict[str, ToolCallMessage] = {}
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 rows[widget.tool_name] = widget
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5565,10 +5741,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         """
         task_row_holder: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 task_row_holder.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5646,10 +5823,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         """
         task_row_holder: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 task_row_holder.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5702,9 +5880,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5784,9 +5963,10 @@ class TestExecuteTaskTextualAskUser:
             }
         )
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5854,10 +6034,11 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_mount_failure_does_not_register_tool_id(self) -> None:
         """Mount failure should not poison `displayed_tool_ids` on the adapter."""
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
             msg = "mount failed"
             raise RuntimeError(msg)
+            return True
 
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
@@ -5907,9 +6088,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5966,9 +6148,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "cancelled"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -6029,9 +6212,10 @@ class TestExecuteTaskTextualAskUser:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -6105,9 +6289,10 @@ class TestExecuteTaskTextualAskUser:
         approval: asyncio.Future[object] = asyncio.Future()
         approval.set_result({"type": "reject"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -6183,9 +6368,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "reject"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -6244,9 +6430,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "reject", "message": "use a safer command"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -6309,9 +6496,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "reject"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -6382,7 +6570,7 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "answered", "answers": "not-a-list"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 original = widget.set_error
@@ -6393,6 +6581,7 @@ class TestExecuteTaskTextualAskUser:
 
                 widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -6446,7 +6635,7 @@ class TestExecuteTaskTextualAskUser:
         mounted: list[ToolCallMessage] = []
         error_calls: list[str] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 original = widget.set_error
@@ -6457,6 +6646,7 @@ class TestExecuteTaskTextualAskUser:
 
                 widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
+            return True
 
         agent = _SequencedAgent(
             streams_by_call=[
@@ -7131,9 +7321,10 @@ class TestToolHooksTextual:
         """tool.use fires (with name, id, args) before the ToolCallMessage mounts."""
         events: list[str] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             events.append(f"mount:{type(widget).__name__}")
+            return True
 
         def record_dispatch(event: str, _payload: dict[str, Any]) -> None:
             events.append(f"dispatch:{event}")
@@ -7182,9 +7373,10 @@ class TestToolHooksTextual:
         mounted: list[object] = []
         output = "x" * 5000
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             (
@@ -7308,13 +7500,14 @@ class TestToolHooksTextual:
         by a synthetic UI-mount error.
         """
 
-        async def failing_mount(widget: object) -> None:
+        async def failing_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             # Simulate a mount failure only for the tool row (assistant/other
             # widgets still mount), so the guard under test is exercised.
             if isinstance(widget, ToolCallMessage):
                 msg = "mount boom"
                 raise RuntimeError(msg)  # noqa: TRY004  # simulated failure, not a type guard
+            return True
 
         chunks = [
             (
@@ -7649,10 +7842,11 @@ class TestToolHooksTextual:
         error event — a pairing the rest of this module maintains everywhere else.
         """
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
             msg = "mount failed"
             raise RuntimeError(msg)
+            return True
 
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
@@ -7766,7 +7960,7 @@ class TestToolHooksTextual:
             await asyncio.sleep(0)
             return future
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             if isinstance(widget, ToolCallMessage) and widget.tool_name == "ask_user":
 
                 def fail_success(_output: str) -> None:
@@ -7775,6 +7969,7 @@ class TestToolHooksTextual:
 
                 widget.set_success = fail_success  # ty: ignore
             await asyncio.sleep(0)
+            return True
 
         questions: list[Question] = [{"question": "Name?", "type": "text"}]
         agent = _SequencedAgent(
@@ -7915,9 +8110,10 @@ class TestToolHooksTextual:
         """tool.result fires with tool_status='error' and tool.error also fires."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             (
@@ -8215,10 +8411,11 @@ class TestToolHooksTextual:
         """
         mounted: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
         agent = _SequencedAgent(
@@ -8296,10 +8493,11 @@ class TestToolHooksTextual:
         """The model gets framed rejection text; the row keeps the raw reason."""
         mounted: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
         agent = _SequencedAgent(
@@ -9141,12 +9339,13 @@ class TestToolHooksTextual:
         mounted: list[ToolCallMessage] = []
         app_messages: list[AppMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
             elif isinstance(widget, AppMessage):
                 app_messages.append(widget)
+            return True
 
         results: list[AskUserWidgetResult] = [
             {"type": "answered", "answers": ["Alice"]},
@@ -9282,10 +9481,11 @@ class TestToolHooksTextual:
         """
         mounted: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         questions: list[Question] = [{"question": "Name?", "type": "text"}]
         ask_interrupt = SimpleNamespace(
@@ -9387,10 +9587,11 @@ class TestToolHooksTextual:
         """
         mounted: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
@@ -9609,10 +9810,11 @@ class TestToolHooksTextual:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": answers})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -10432,9 +10634,10 @@ class TestExecuteTaskTextualRubricEvents:
         mounted: list[object] = []
         evaluations: list[tuple[str, str]] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # (namespace, stream_mode, data); empty namespace == main agent.
         chunks = [
@@ -10479,9 +10682,10 @@ class TestExecuteTaskTextualRubricEvents:
         mounted: list[object] = []
         evaluations: list[tuple[str, str]] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
         chunks = [

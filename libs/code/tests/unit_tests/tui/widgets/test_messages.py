@@ -6179,12 +6179,51 @@ class TestCaveatedRowsLeaveTheGroup:
             assert caveated.display is False, "the group never folded the row"
 
             caveated.set_success("could not be shown\n\nWrote file")
-            caveated.mark_display_caveat()
+            caveated._mark_display_caveat()
             summary.close()
             await pilot.pause()
 
             assert caveated.display is True
             assert plain.display is False, "an ordinary row was evicted too"
+
+    async def test_a_recompletion_clears_a_caveat_it_overwrote(self) -> None:
+        """The flag must not outlive the sentence it describes.
+
+        `set_success` owns `_output`, so a row completed with a caveat and then
+        re-completed plainly no longer displays one. Leaving the flag set kept
+        that row out of every group for no reason the user could see, while
+        asserting something false about its output.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _CaveatGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+            summary.add_member(tool)
+            await pilot.pause()
+
+            tool.set_success_with_caveat("could not be shown", "Wrote file")
+            assert tool.has_display_caveat is True
+
+            tool.set_success("Wrote file")
+
+            assert tool.has_display_caveat is False
+            assert "could not be shown" not in tool._output
+
+    async def test_a_caveat_survives_its_own_setter(self) -> None:
+        """`set_success_with_caveat` delegates to `set_success`, which now clears.
+
+        Ordering regression guard: clearing after the flag is set would make the
+        pairing unsettable at all, silently disabling every caveat.
+        """
+        async with _CaveatGroupApp().run_test() as pilot:
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+
+            applied = tool.set_success_with_caveat("could not be shown", "Wrote file")
+
+            assert applied is True
+            assert tool.has_display_caveat is True
+            assert tool._output.startswith("could not be shown")
 
     async def test_an_uncaveated_success_stays_folded(self) -> None:
         """Eviction must be the exception, or grouping stops working at all."""

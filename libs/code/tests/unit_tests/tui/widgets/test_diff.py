@@ -384,6 +384,44 @@ class TestComposeDiffLines:
         )
         assert any("if x:" in r.plain for r in rows)
 
+    def test_an_expected_lexer_failure_degrades_and_is_not_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `(ValueError, LookupError)` branch, and its negative caching.
+
+        The test above raises `RuntimeError`, which the *outer* wrapper handles
+        and deliberately leaves uncached. This is the inner branch, whose
+        failures are cached on purpose: a lexer that cannot parse this content
+        will not parse it on the next scroll either, and a rebuilt
+        `DiffMessage` re-lexes both sides every pass. Asserting the call count
+        is what separates the two policies — without it, moving the handler
+        inside or outside the cache reads the same.
+
+        Note this branch is not reachable through an unknown extension:
+        `highlight` guesses a lexer instead of raising, so the failure has to
+        be injected.
+        """
+        diff_module._highlight_lines_cached.cache_clear()
+        calls = 0
+
+        def _no_lexer(*_args: object, **_kwargs: object) -> Content:
+            """Fail the way a missing lexer does, counting attempts."""
+            nonlocal calls
+            calls += 1
+            raise LookupError(msg)
+
+        msg = "no lexer for this"
+        monkeypatch.setattr(diff_module, "highlight", _no_lexer)
+        for _ in range(3):
+            rows = _contents(
+                compose_diff_lines("@@ -1 +1 @@\n+if x:", path="m.py", after="if x:\n")
+            )
+
+        row = next(r for r in rows if "if x:" in r.plain)
+        assert not _keyword_spans(row), f"an unlexable row was styled: {row.spans}"
+        assert calls == 1, f"an expected failure was re-attempted {calls} times"
+        diff_module._highlight_lines_cached.cache_clear()
+
     def test_source_that_drifted_from_the_diff_renders_plain(self) -> None:
         """Highlighting is only safe while the source still matches the diff.
 
@@ -478,6 +516,23 @@ class TestRowKinds:
         assert any("diff-hunk-break" in w.classes for w in _rendered(diff)), _texts(
             _rendered(diff)
         )
+
+    def test_rows_after_a_separator_renumber_from_the_second_hunk(self) -> None:
+        """Each hunk header resets the counters to the file it names.
+
+        Asserting only that a separator appears leaves the reset itself
+        unpinned: numbering the second hunk continuously from the first would
+        render `3, 3` here instead of `50, 50` — plausible-looking, and wrong
+        about every line it names.
+        """
+        diff = "@@ -1,1 +1,1 @@\n-a\n+b\n@@ -50,1 +50,1 @@\n-c\n+d"
+        numbered = [
+            _plain(w).split()[0]
+            for w in _rendered(diff)
+            if "diff-hunk-break" not in w.classes
+        ]
+
+        assert numbered == ["1", "1", "50", "50"]
 
     def test_truncation_marker_is_distinct_from_a_hunk_break(self) -> None:
         """A cut-short diff must not read as one that merely skips ahead."""

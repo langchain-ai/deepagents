@@ -1968,6 +1968,11 @@ class ToolCallMessage(Vertical):
         elapsed = time() - self._start_time if self._start_time is not None else None
         self._stop_animation()
         self._status = "success"
+        # This call owns `_output`, so any caveat a previous completion put
+        # there is gone. Clearing here keeps the flag from outliving the
+        # sentence it describes and leaving the row unfoldable for no visible
+        # reason; `set_success_with_caveat` re-sets it after delegating here.
+        self._has_display_caveat = False
         self._duration = (
             elapsed
             if self._tool_name in _TIMED_SUCCESS_TOOLS and elapsed is not None
@@ -3648,12 +3653,17 @@ class ToolCallMessage(Vertical):
         self._has_display_caveat = bool(caveat)
         return bool(caveat)
 
-    def mark_display_caveat(self) -> None:
+    def _mark_display_caveat(self) -> None:
         """Restore the display-caveat flag on a rehydrated row.
 
         For `MessageData.to_widget` only, where the output carrying the caveat
         is restored separately through `_deferred_output`. On the live path use
         `set_success_with_caveat`, which sets both together.
+
+        Private so it is not available as a public way to set the flag alone:
+        the store already restores this widget's other private state, and a
+        caller outside that path wanting the flag without the sentence is the
+        split `set_success_with_caveat` exists to prevent.
         """
         self._has_display_caveat = True
 
@@ -4473,7 +4483,24 @@ class ToolGroupSummary(Static):
 
 
 class DiffMessage(Static):
-    """Widget displaying a diff with syntax highlighting."""
+    """Widget displaying a diff with syntax highlighting.
+
+    Two behaviors beyond rendering, both easy to break from `compose` without
+    noticing, and documented per-parameter on `__init__`:
+
+    - Any `outcome` other than `shown` replaces the diff body with a caveat
+      sentence. A body rendered under a lost pre-image would be a whole-file
+      insertion that never happened, so suppression is the honest result rather
+      than a degradation.
+    - A path this session treats as sensitive suppresses the body *and* the
+      counts. Leaking `+40 -3` for a credentials file still describes its
+      contents, so the header cannot survive a redacted body.
+
+    `renders_caveat` reports whether this widget's body states the change could
+    not be shown. The adapter reads it back when deciding whether any surface
+    carried the caveat — conjoined with the mount result, since this says only
+    what the widget would render, not that it reached the screen.
+    """
 
     DEFAULT_CSS = """
     DiffMessage {

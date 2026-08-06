@@ -193,9 +193,15 @@ class MessageData:
 
     Bounded by `diff.MAX_HIGHLIGHT_CHARS` as trimmed by
     `highlight_source_prefixes` on the way to the widget; `from_widget` reads the
-    already-trimmed value. `__post_init__` re-applies the same bound so a direct
-    constructor call cannot park an unbounded copy of a file in a store whose
-    whole point is that thousands of messages cost little.
+    already-trimmed value.
+
+    `__post_init__` enforces the same *length* limit, but not the same rule: it
+    slices characters, so a value it truncates can end mid-line, which
+    `highlight_source_prefixes` — keyed on the diff's line numbers — never
+    produces. Such a prefix lexes into a partial final line and trips the drift
+    check in `_highlighted_rows`. It is a backstop against a direct constructor
+    call parking an unbounded copy of a file in a store whose whole point is
+    that thousands of messages cost little, not a second way to build a prefix.
     """
 
     diff_after_content: str | None = None
@@ -359,7 +365,7 @@ class MessageData:
                 widget._deferred_expanded = self.tool_expanded
                 widget._deferred_reject_reason = self.tool_reject_reason
                 if self.tool_display_caveat:
-                    widget.mark_display_caveat()
+                    widget._mark_display_caveat()
                 if self.tool_diff_superseded:
                     # Go through the widget's own setter so a rehydrated row
                     # passes the same tool-name guard as the live path; writing

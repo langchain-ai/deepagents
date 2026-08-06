@@ -124,6 +124,31 @@ class TestFileHeaderIndexes:
         ).split("\n")
         assert file_header_indexes(lines) == {0, 1}
 
+    def test_an_over_declared_budget_does_not_swallow_the_next_file(self) -> None:
+        """A hunk header may claim more lines than its body actually has.
+
+        `difflib` always declares exact counts, so neither in-repo producer
+        reaches this — but the module documents multi-file support and invites
+        other producers. With the budget still open, `--- a/y.py` was consumed
+        as a deletion: the second file's headers went unrecognized, rendered as
+        source rows, and counted as changes.
+        """
+        lines = _diff(
+            "--- a/x.py",
+            "+++ b/x.py",
+            "@@ -1,5 +1,5 @@",  # claims five, supplies one of each
+            "-a",
+            "+b",
+            "--- a/y.py",
+            "+++ b/y.py",
+            "@@ -1,1 +1,1 @@",
+            "-c",
+            "+d",
+        ).split("\n")
+
+        assert file_header_indexes(lines) == {0, 1, 5, 6}
+        assert _count("\n".join(lines)) == DiffStats(additions=2, deletions=2)
+
     def test_header_pair_not_followed_by_a_hunk_is_ignored(self) -> None:
         """Only a pair immediately preceding a hunk is metadata."""
         assert file_header_indexes(["--- a/x.py", "+++ b/x.py"]) == set()

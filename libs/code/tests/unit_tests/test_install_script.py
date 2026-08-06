@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pty
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -824,6 +826,106 @@ def test_can_prompt_false_without_usable_tty(tmp_path: Path) -> None:
     wrongly report the unanswerable cron/systemd/CI case as promptable.
     """
     assert _eval_can_prompt(tmp_path, is_interactive=True, stdin_is_tty=False) is False
+
+
+def _eval_prompt_yn(tmp_path: Path, *, is_interactive: bool, answer: str | None) -> int:
+    """Run the real `prompt_yn` and report its raw exit code.
+
+    `answer=None` detaches the controlling terminal (stdin from `/dev/null`,
+    `start_new_session`), so there is no terminal to prompt on — the rc=2
+    path. Otherwise stdin is a real pty with the answer written in, so the
+    `[ -t 0 ]` branch reads it and rc distinguishes yes (0) from no (1).
+    """
+    script = tmp_path / "prompt_yn_harness.sh"
+    script.write_text(
+        f"{_extract_shell_function('prompt_yn')}\n"
+        f"IS_INTERACTIVE={'true' if is_interactive else 'false'}\n"
+        "prompt_yn 'Proceed?'\n",
+        encoding="utf-8",
+    )
+    if answer is None:
+        proc = subprocess.run(
+            ["bash", str(script)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            start_new_session=True,
+        )
+        return proc.returncode
+    primary, secondary = pty.openpty()
+    try:
+        # Write the answer before the child reads, so `read` sees it on the
+        # pty's input queue rather than blocking.
+        os.write(primary, (answer + "\n").encode())
+        proc = subprocess.run(
+            ["bash", str(script)],
+            stdin=secondary,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    finally:
+        os.close(secondary)
+        os.close(primary)
+    return proc.returncode
+
+
+def test_prompt_yn_yes_returns_zero(tmp_path: Path) -> None:
+    """An affirmative answer is rc=0."""
+    assert _eval_prompt_yn(tmp_path, is_interactive=True, answer="y") == 0
+
+
+def test_prompt_yn_no_returns_one(tmp_path: Path) -> None:
+    """A declined answer is rc=1, distinct from the no-terminal case."""
+    assert _eval_prompt_yn(tmp_path, is_interactive=True, answer="n") == 1
+
+
+def test_prompt_yn_no_terminal_returns_two(tmp_path: Path) -> None:
+    """No usable terminal is rc=2, so callers can default instead of decline."""
+    assert _eval_prompt_yn(tmp_path, is_interactive=True, answer=None) == 2
+
+
+def test_prompt_yn_non_interactive_returns_two(tmp_path: Path) -> None:
+    """`IS_INTERACTIVE=false` is rc=2 — unaskable, not a "no"."""
+    assert _eval_prompt_yn(tmp_path, is_interactive=False, answer="y") == 2
+
+
+def _eval_version_at_least(tmp_path: Path, have: str, want: str) -> bool:
+    """Run the real `version_at_least` from install.sh, reporting its verdict."""
+    script = tmp_path / "version_harness.sh"
+    script.write_text(
+        f"{_extract_shell_function('version_at_least')}\n"
+        f"if version_at_least {have!r} {want!r}; then echo YES; else echo NO; fi\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip() == "YES"
+
+
+@pytest.mark.parametrize(
+    ("have", "want", "expected"),
+    [
+        ("14.1.1", "12.0.0", True),  # current managed pin clears the floor
+        ("12.0.0", "12.0.0", True),  # boundary: equal is acceptable
+        ("12.0.1", "12.0.0", True),  # patch above
+        ("13.0.0", "12.0.0", True),  # minor above
+        ("11.9.9", "12.0.0", False),  # minor below
+        ("0.10.0", "12.0.0", False),  # ancient distro package
+        ("", "12.0.0", False),  # empty is never acceptable
+        ("abc", "12.0.0", False),  # unparseable is never acceptable
+    ],
+)
+def test_version_at_least(tmp_path: Path, have: str, want: str, expected: bool) -> None:
+    """Dotted-version comparison gates the system ripgrep floor."""
+    assert _eval_version_at_least(tmp_path, have, want) is expected
 
 
 _FRESH_INSTALL_DIFF = (
@@ -1962,6 +2064,10 @@ def _run_install_uv(
     use_wget: bool = False,
     busybox_wget: bool = False,
     truncated: bool = False,
+    sum_fails: bool = False,
+    sum_missing_entry: bool = False,
+    sum_mismatch: bool = False,
+    no_sha_tool: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real `install_uv` from `install.sh` against a fake uv installer.
 
@@ -1982,29 +2088,68 @@ def _run_install_uv(
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    first_line = "'<html>error</html>'" if no_shebang else "'#!/bin/sh'"
-    installer = first_line
+    first_line = "<html>error</html>" if no_shebang else "#!/bin/sh"
+    installer = first_line + "\n"
     if truncated:
         # A body cut mid-`if`: the shebang is intact, so only a parse check
         # rejects this. Exactly the shape a dropped connection leaves behind.
-        installer += " 'if [ 1 = 1 ]; then'"
-    installer += " 'echo UV_INSTALLER_NOISE'"
+        installer += "if [ 1 = 1 ]; then\n"
+    installer += "echo UV_INSTALLER_NOISE\n"
     if fails:
-        installer += " 'exit 3'"
+        installer += "exit 3\n"
 
-    # The fake downloader must handle its output flag (curl ``-o`` / wget ``-O``)
-    # and write the installer content there instead of stdout. With
+    # The fake installer is served as a real file (not shell-quoted inline) so
+    # its digest can be computed and served alongside it. install_uv fetches
+    # two URLs through the same downloader: the installer
+    # (astral.sh/uv/install.sh) and the checksum manifest
+    # (github.com/astral-sh/uv/releases/latest/download/sha256.sum). The URL
+    # stays visible in argv, so the fake routes each to its payload. The
+    # manifest's `uv-installer.sh` entry carries the real digest of the
+    # fixture, computed here with Python's hashlib, so the fixture is
+    # self-consistent on any platform and verification passes.
+    installer_fixture = tmp_path / "fake-uv-installer.sh"
+    installer_fixture.write_text(installer, encoding="utf-8")
+    good_digest = hashlib.sha256(installer.encode()).hexdigest()
+    sum_fixture = tmp_path / "fake-sha256.sum"
+    if sum_missing_entry:
+        sum_fixture.write_text(
+            "0" * 64 + " *uv-aarch64-apple-darwin.tar.gz\n", encoding="utf-8"
+        )
+    elif sum_mismatch:
+        sum_fixture.write_text("0" * 64 + " *uv-installer.sh\n", encoding="utf-8")
+    else:
+        sum_fixture.write_text(f"{good_digest} *uv-installer.sh\n", encoding="utf-8")
+
+    # The fake downloader must handle its output flag (curl ``-o`` / wget
+    # ``-O``) and copy the right fixture there based on the URL in argv. With
     # ``download_fails`` it instead emits an error to stderr and exits non-zero
-    # without creating the file, so install_uv sees a failed download.
+    # without creating the file, so install_uv sees a failed download. With
+    # ``sum_fails`` the installer serves fine but the manifest fetch fails.
     downloader_name = "wget" if use_wget else "curl"
     out_flag = "-O" if use_wget else "-o"
+    sum_fail_guard = ""
+    if sum_fails:
+        sum_fail_guard = (
+            "  printf 'DOWNLOADER_ERROR: could not resolve host\\n' >&2\n  exit 7\n"
+        )
+
     if download_fails:
         write_body = (
             "printf 'DOWNLOADER_ERROR: could not resolve host\\n' >&2\nexit 7\n"
         )
     elif download_failures_before_success:
+        # The retry counter must key on the installer fetch only — the checksum
+        # manifest is a separate request that must keep routing to its fixture
+        # (and succeed) so verification can run once the installer download
+        # recovers.
         attempts = tmp_path / "uv-download-attempts.txt"
         write_body = (
+            'case "$all_args" in\n'
+            "  *sha256.sum*)\n"
+            f'    cat {str(sum_fixture)!r} >"${{out:-/dev/stdout}}"\n'
+            "    exit 0\n"
+            "    ;;\n"
+            "esac\n"
             "count=0\n"
             f"if [ -f {str(attempts)!r} ]; then read -r count < {str(attempts)!r}; fi\n"
             "count=$((count + 1))\n"
@@ -2013,10 +2158,20 @@ def _run_install_uv(
             "  printf 'DOWNLOADER_ERROR: transient failure\\n' >&2\n"
             "  exit 7\n"
             "fi\n"
-            f"printf '%s\\n' {installer} >\"${{out:-/dev/stdout}}\"\n"
+            f'cat {str(installer_fixture)!r} >"${{out:-/dev/stdout}}"\n'
         )
     else:
-        write_body = f"printf '%s\\n' {installer} >\"${{out:-/dev/stdout}}\"\n"
+        write_body = (
+            'case "$all_args" in\n'
+            "  *sha256.sum*)\n"
+            f"{sum_fail_guard}"
+            f'    cat {str(sum_fixture)!r} >"${{out:-/dev/stdout}}"\n'
+            "    ;;\n"
+            "  *)\n"
+            f'    cat {str(installer_fixture)!r} >"${{out:-/dev/stdout}}"\n'
+            "    ;;\n"
+            "esac\n"
+        )
     downloader = bin_dir / downloader_name
     # `wget_download` probes `wget --help` to decide which hardening flags this
     # wget implements. Answer those probes *before* any counting or output, so
@@ -2061,6 +2216,9 @@ def _run_install_uv(
     record_argv = f"printf '%s\\n' \"$*\" >> {str(argv_log)!r}\n"
     downloader.write_text(
         "#!/usr/bin/env bash\n" + help_handler + record_argv + "out=''\n"
+        # Capture the full argv *before* the parsing loop shifts it away — the
+        # body routes on the URL, which is gone from `$*` once the loop runs.
+        'all_args="$*"\n'
         "while [ $# -gt 0 ]; do\n"
         '  case "$1" in\n'
         f'    {out_flag}) out="$2"; shift 2 ;;\n'
@@ -2076,7 +2234,6 @@ def _run_install_uv(
         mktemp = bin_dir / "mktemp"
         mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
         _make_executable(mktemp)
-
     # install_uv branches on is_snap_curl. For the curl path, stub it to the
     # non-snap answer so the normal curl branch runs (and no stray "command not
     # found" hits stderr). For the wget path, report curl as a snap so install_uv
@@ -2098,6 +2255,36 @@ def _run_install_uv(
         encoding="utf-8",
     )
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    if no_sha_tool:
+        # `command -v` only checks PATH presence (it never runs the tool), so
+        # hiding the host's sha256sum/shasum requires a PATH that genuinely
+        # lacks them. Rebuild PATH from scratch: bin_dir (fakes) plus symlinks
+        # to just the core utilities install_uv and the fakes invoke.
+        tools_dir = tmp_path / "bare-tools"
+        tools_dir.mkdir()
+        needed = (
+            "awk",
+            "bash",
+            "cat",
+            "chmod",
+            "env",
+            "grep",
+            "head",
+            "ls",
+            "mkdir",
+            "mktemp",
+            "mv",
+            "rm",
+            "sh",
+            "sleep",
+            "tr",
+            "uname",
+        )
+        for tool_name in needed:
+            resolved = shutil.which(tool_name)
+            if resolved:
+                (tools_dir / tool_name).symlink_to(resolved)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{tools_dir}"
     return subprocess.run(
         ["bash", str(script)],
         env=env,
@@ -2174,6 +2361,69 @@ def test_install_uv_rejects_truncated_download(tmp_path: Path) -> None:
 
     assert proc.returncode != 0
     assert "failed a shell syntax check" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_verifies_checksum_and_runs(tmp_path: Path) -> None:
+    """A download whose digest matches the manifest is verified, then run.
+
+    The fake manifest carries the real SHA-256 of the fixture installer, so a
+    passing run proves the verification step is wired end-to-end: manifest
+    fetched, entry selected, digest compared, payload executed.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False)
+
+    assert proc.returncode == 0
+    # The installer body only runs when verification succeeded.
+    argv = (tmp_path / "downloader-argv.txt").read_text()
+    assert "sha256.sum" in argv
+
+
+def test_install_uv_checksum_mismatch_aborts_before_exec(tmp_path: Path) -> None:
+    """A digest that disagrees with the manifest fails closed, never executing.
+
+    A mismatch is a supply-chain anomaly (tampered mirror, CDN poisoning), so
+    the payload must not run even though it is a valid shell script.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, sum_mismatch=True)
+
+    assert proc.returncode != 0
+    assert "checksum mismatch" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_unfetchable_checksum_aborts(tmp_path: Path) -> None:
+    """A manifest that cannot be downloaded fails closed rather than skipping.
+
+    Verification that silently becomes optional when the network hiccups is
+    not verification; the installer must stop and say why.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, sum_fails=True)
+
+    assert proc.returncode != 0
+    assert "Could not download the uv release checksum manifest" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_manifest_missing_installer_entry_aborts(tmp_path: Path) -> None:
+    """A manifest without a uv-installer.sh line fails closed."""
+    proc = _run_install_uv(tmp_path, verbose=False, sum_missing_entry=True)
+
+    assert proc.returncode != 0
+    assert "no entry for uv-installer.sh" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_requires_a_sha256_tool(tmp_path: Path) -> None:
+    """A host with neither sha256sum nor shasum cannot verify, so it aborts."""
+    proc = _run_install_uv(tmp_path, verbose=False, no_sha_tool=True)
+
+    assert proc.returncode != 0
+    assert "sha256sum or shasum is required" in proc.stderr
     assert "UV_INSTALLER_NOISE" not in proc.stderr
     assert "UV_INSTALLER_NOISE" not in proc.stdout
 

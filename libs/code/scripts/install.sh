@@ -969,7 +969,7 @@ if [[ -n "$EXTRAS" ]]; then
   # Strip brackets if the user passed them anyway
   EXTRAS="${EXTRAS#[}"
   EXTRAS="${EXTRAS%]}"
-  if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
+  if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,._]+$ ]]; then
     log_error "DEEPAGENTS_CODE_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
     exit 1
   fi

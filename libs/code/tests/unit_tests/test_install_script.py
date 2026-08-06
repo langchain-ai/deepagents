@@ -406,6 +406,16 @@ def test_install_script_supports_exact_version_with_extras(tmp_path: Path) -> No
     assert "--prerelease" not in args
 
 
+def test_install_script_accepts_pep_508_extra_name_characters(tmp_path: Path) -> None:
+    """Extras with underscores and dots can be reused from a uv receipt."""
+    args = _run_install_script(
+        tmp_path,
+        {"DEEPAGENTS_CODE_EXTRAS": "provider_name.provider"},
+    )
+
+    assert args[-1] == "deepagents-code[provider_name.provider]"
+
+
 def test_install_script_supports_exact_version_without_extras(tmp_path: Path) -> None:
     """The version spec appends directly to the package name when no extras."""
     args = _run_install_script(tmp_path, {"DEEPAGENTS_CODE_VERSION": "0.1.0rc1"})

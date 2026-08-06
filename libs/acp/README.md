@@ -174,9 +174,6 @@ Select a model by passing `--model` (in `provider:model-name` form) to the comma
 
 `dcode` reads provider API keys from the environment (e.g. `ANTHROPIC_API_KEY`), the same way it does in the terminal. Run `dcode --help` to see the other flags supported in ACP mode, such as `--mcp-config` and `--no-mcp`.
 
-Sessions created through `dcode --acp` are stored in dcode's SQLite session database and can
-be loaded after the ACP server restarts.
-
 ## Model Switching
 
 The ACP adapter supports dynamic model switching using Session Config Options. This allows users to switch between different LLM models mid-session without losing conversation history.

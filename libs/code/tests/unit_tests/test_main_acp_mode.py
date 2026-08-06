@@ -34,7 +34,7 @@ def _build_agent_server(server: object) -> Callable[..., object]:
     """Stand in for `AgentServerACP`, exercising the agent factory it is handed."""
 
     def build(agent_factory: Callable[..., object], **_kwargs: object) -> object:
-        agent_factory(SimpleNamespace(cwd="/tmp"))
+        agent_factory(SimpleNamespace(cwd="/tmp", model=None))
         return server
 
     return build
@@ -203,9 +203,13 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
     assert call_kwargs["memory_auto_save"] is False
     mock_memory_auto_save.assert_called_once_with()
     test_acp_checkpointer.setup.assert_awaited_once_with()
-    assert mock_server_cls.call_args.kwargs == {
-        "load_sessions": True,
-        "checkpoint_metadata": {"agent_name": "agent"},
+    assert mock_server_cls.call_args.kwargs["models"][0] == {
+        "value": "anthropic:claude-sonnet-4-6",
+        "name": "anthropic:claude-sonnet-4-6",
+    }
+    assert mock_server_cls.call_args.kwargs["load_sessions"] is True
+    assert mock_server_cls.call_args.kwargs["checkpoint_metadata"] == {
+        "agent_name": "agent"
     }
     run_agent.assert_awaited_once_with(server)
     mcp_manager.cleanup.assert_awaited_once_with()

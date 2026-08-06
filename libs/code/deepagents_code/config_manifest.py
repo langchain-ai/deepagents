@@ -964,7 +964,13 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "together": ("langchain_together", "together"),
     "xai": ("langchain_xai", "xai"),
 }
-"""Provider integration import modules and the extras that install them."""
+"""Provider integration import modules and the extras that install them.
+
+Every import module name here must equal its PyPI distribution name up to
+underscore-for-hyphen substitution -- `provider_package_name` derives the
+distribution from it to build a `pypi.org/project/...` link, and a provider
+whose two names diverge would render a link to a nonexistent project.
+"""
 
 
 def provider_install_extra(provider: str) -> str | None:
@@ -980,6 +986,26 @@ def provider_install_extra(provider: str) -> str | None:
     """
     dependency = _PROVIDER_DEPENDENCIES.get(provider)
     return dependency[1] if dependency else None
+
+
+def provider_package_name(provider: str) -> str | None:
+    """Return the PyPI distribution that provides `provider`, if known.
+
+    Derived from the provider's integration import module by replacing
+    underscores with hyphens (e.g. `langchain_google_genai` ->
+    `langchain-google-genai`), which matches the distribution name for every
+    curated entry -- see the `_PROVIDER_DEPENDENCIES` docstring. This is not
+    PEP 503 normalization, and the result is not validated against PyPI.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`, `"google_genai"`).
+
+    Returns:
+        The distribution name, or `None` when the provider has no curated
+            extra (custom `class_path` providers, ambient-auth providers, etc.).
+    """
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    return dependency[0].replace("_", "-") if dependency else None
 
 
 def is_provider_package_installed(provider: str) -> bool:

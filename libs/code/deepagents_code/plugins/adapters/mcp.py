@@ -5,11 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+import tempfile
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_code.plugins._json import json_object, json_value
+from deepagents_code.plugins.agent_plugins import (
+    AGENT_PLUGIN_FORMAT,
+    load_agent_plugin_mcp,
+)
 from deepagents_code.plugins.substitution import plugin_environment, substitute_json
 
 if TYPE_CHECKING:
@@ -72,13 +77,7 @@ def plugin_mcp_server_entries(
     Returns:
         Deduplicated server entries in declaration order.
     """
-    servers: dict[str, object] = {}
-    for path in plugin.inventory.mcp_files:
-        if path.suffix in {".mcpb", ".dxt"}:
-            continue
-        servers.update(_load_mcp_server_map(path))
-    if plugin.manifest and plugin.manifest.inline_mcp:
-        servers.update(_server_map(plugin.manifest.inline_mcp))
+    servers = _plugin_mcp_server_map(plugin)
     entries: list[tuple[str, str, bool]] = []
     seen: set[str] = set()
     for name, server in servers.items():
@@ -129,13 +128,31 @@ def _load_mcp_server_map(path: Path) -> JsonObject:
     return _server_map(raw)
 
 
+def _agent_plugin_paths(plugin: PluginInstance) -> tuple[Path, Path]:
+    return plugin.root.resolve(), plugin.data_dir.resolve()
+
+
 def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
     """Load a plugin's declared MCP servers without creating runtime state.
 
     Returns:
         The unscoped server configuration keyed by declared server name.
     """
-    servers: JsonObject = {}
+    manifest = plugin.manifest
+    if manifest is not None and manifest.format == AGENT_PLUGIN_FORMAT:
+        plugin_root, plugin_data = _agent_plugin_paths(plugin)
+        servers: JsonObject = {}
+        for path in plugin.inventory.mcp_files:
+            servers.update(
+                load_agent_plugin_mcp(
+                    path,
+                    plugin_root=plugin_root,
+                    plugin_data=plugin_data,
+                )
+            )
+        return servers
+
+    servers = {}
     for path in plugin.inventory.mcp_files:
         if path.suffix in {".mcpb", ".dxt"}:
             logger.warning(
@@ -145,8 +162,8 @@ def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
             )
             continue
         servers.update(_load_mcp_server_map(path))
-    if plugin.manifest and plugin.manifest.inline_mcp:
-        servers.update(_server_map(plugin.manifest.inline_mcp))
+    if manifest and manifest.inline_mcp:
+        servers.update(_server_map(manifest.inline_mcp))
     return servers
 
 
@@ -170,6 +187,26 @@ def _normalize_server(
     server: object, *, plugin: PluginInstance, project_dir: Path | None
 ) -> JsonValue:
     normalized_server = json_value(server)
+    manifest = plugin.manifest
+    if (
+        manifest is not None
+        and manifest.format == AGENT_PLUGIN_FORMAT
+        and isinstance(normalized_server, dict)
+    ):
+        if normalized_server.get("type") != "stdio":
+            return normalized_server
+        env = normalized_server.get("env")
+        plugin_root, plugin_data = _agent_plugin_paths(plugin)
+        plugin_env = plugin_environment(
+            plugin_root=plugin_root,
+            plugin_data=plugin_data,
+            project_dir=project_dir,
+        )
+        configured_env = env if isinstance(env, dict) else {}
+        return json_value(
+            {**normalized_server, "env": {**configured_env, **plugin_env}}
+        )
+
     substituted = substitute_json(
         normalized_server,
         plugin_root=plugin.root,
@@ -218,6 +255,22 @@ def discover_plugin_mcp_configs(
     return tuple(plugin_mcp_configs(result.plugins, project_dir=project_dir))
 
 
+def _prepare_plugin_data(plugin: PluginInstance) -> bool:
+    try:
+        plugin.data_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=plugin.data_dir):
+            pass
+    except OSError:
+        logger.warning(
+            "Could not prepare plugin data dir for %s: %s",
+            plugin.plugin_id,
+            plugin.data_dir,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def plugin_mcp_configs(
     plugins: tuple[PluginInstance, ...], *, project_dir: Path | None = None
 ) -> list[JsonObject]:
@@ -235,18 +288,19 @@ def plugin_mcp_configs(
     """
     configs: list[JsonObject] = []
     for plugin in plugins:
-        # Create the writable data dir when MCP configs need it. Discovery itself
-        # only computes the path so it stays safe for blockbuster-guarded callers.
-        try:
-            plugin.data_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            logger.warning(
-                "Could not create plugin data dir for %s: %s",
-                plugin.plugin_id,
-                plugin.data_dir,
-                exc_info=True,
-            )
+        data_ready = _prepare_plugin_data(plugin)
         servers = _plugin_mcp_server_map(plugin)
+        manifest = plugin.manifest
+        if (
+            manifest is not None
+            and manifest.format == AGENT_PLUGIN_FORMAT
+            and not data_ready
+        ):
+            servers = {
+                name: server
+                for name, server in servers.items()
+                if not isinstance(server, dict) or server.get("type") != "stdio"
+            }
         scoped: JsonObject = {}
         for name, server in servers.items():
             if not isinstance(name, str):

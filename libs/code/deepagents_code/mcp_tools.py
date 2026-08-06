@@ -22,11 +22,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast, overload
 
 from deepagents_code import _env_vars
-from deepagents_code.mcp_config import resolve_mcp_server_env
+from deepagents_code.mcp_config import MCP_REDIRECTS_DISABLED, resolve_mcp_server_env
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
+    import httpx
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
     from mcp import ClientSession
@@ -571,6 +572,10 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
 
         if "env" in server_config and not isinstance(server_config["env"], dict):
             error_msg = f"Server '{server_name}' 'env' must be a dictionary"
+            raise TypeError(error_msg)
+
+        if "cwd" in server_config and not isinstance(server_config["cwd"], str):
+            error_msg = f"Server '{server_name}' 'cwd' must be a string"
             raise TypeError(error_msg)
     else:
         error_msg = (
@@ -1342,6 +1347,31 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
         raise RuntimeError(msg)
 
 
+def _create_no_redirect_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """Create an MCP HTTP client that rejects redirects.
+
+    Args:
+        headers: Headers configured for the MCP server.
+        timeout: HTTP client timeout.
+        auth: Optional HTTP authentication handler.
+
+    Returns:
+        An HTTP client with redirect following disabled.
+    """
+    import httpx
+
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout,
+        auth=auth,
+        follow_redirects=False,
+    )
+
+
 async def _check_remote_server(server_name: str, server_config: dict[str, Any]) -> None:
     """Check network connectivity to a remote MCP server URL.
 
@@ -1394,7 +1424,11 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     Returns:
         Whether a supported value contains a `${...}` reference.
     """
-    scalar_values = [server_config.get("command"), server_config.get("url")]
+    scalar_values = [
+        server_config.get("command"),
+        server_config.get("cwd"),
+        server_config.get("url"),
+    ]
     sequence_values = server_config.get("args")
     if isinstance(sequence_values, list):
         scalar_values.extend(sequence_values)
@@ -1903,6 +1937,18 @@ async def _load_tools_from_config(
     # discovery, and the final fold-in loop below.
     transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
 
+    def _stdio_connection(server_config: dict[str, Any]) -> Connection:
+        connection: Connection = StdioConnection(
+            command=server_config["command"],
+            args=server_config.get("args", []),
+            env=server_config.get("env") or None,
+            transport="stdio",
+        )
+        cwd = server_config.get("cwd")
+        if cwd is not None:
+            connection["cwd"] = cwd
+        return connection
+
     async def _preflight_and_connect(
         server_name: str,
         server_config: dict[str, Any],
@@ -1966,6 +2012,8 @@ async def _load_tools_from_config(
 
                 if "headers" in server_config:
                     conn["headers"] = server_config["headers"]
+                if server_config.get(MCP_REDIRECTS_DISABLED) is True:
+                    conn["httpx_client_factory"] = _create_no_redirect_http_client
 
                 from deepagents_code.mcp_auth import (
                     FileTokenStorage,
@@ -1977,6 +2025,9 @@ async def _load_tools_from_config(
                     name.lower() for name in (server_config.get("headers") or {})
                 }
                 has_authorization_header = "authorization" in header_names
+                client_headers_take_precedence = (
+                    server_config.get(MCP_REDIRECTS_DISABLED) is True
+                )
                 storage = FileTokenStorage(
                     server_name,
                     server_url=server_config["url"],
@@ -1994,12 +2045,9 @@ async def _load_tools_from_config(
                     return ("unauthenticated", auth_msg)
 
                 if explicit_oauth or (
-                    stored_tokens is not None and not has_authorization_header
+                    stored_tokens is not None
+                    and (client_headers_take_precedence or not has_authorization_header)
                 ):
-                    # Attach the provider when the user opted in, or when a
-                    # prior login (possibly triggered by 401 auto-detection)
-                    # already stored tokens for this server. Static
-                    # Authorization headers take precedence over stored OAuth.
                     conn["auth"] = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],
@@ -2008,12 +2056,7 @@ async def _load_tools_from_config(
                     )
 
                 return conn
-            return StdioConnection(
-                command=server_config["command"],
-                args=server_config.get("args", []),
-                env=server_config.get("env") or None,
-                transport="stdio",
-            )
+            return _stdio_connection(server_config)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
                 error = (

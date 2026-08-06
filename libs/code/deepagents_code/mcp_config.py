@@ -1,7 +1,7 @@
 """Validation and environment-variable expansion for MCP server config.
 
 Resolves `${VAR}` and `${VAR:-default}` references in the supported
-configuration fields (`command`, `url`, `args`, `env`, `headers`) and
+configuration fields (`command`, `url`, `cwd`, `args`, `env`, `headers`) and
 validates their types. A `${VAR:-default}` reference falls back to
 `default` when `VAR` is unset *or* empty (POSIX `:-` semantics).
 """
@@ -25,6 +25,12 @@ the default. A bare `$VAR` and a literal `$` are intentionally not matched.
 
 _ENV_BRACE_RE = re.compile(r"\$\{")
 """Matches a `${` brace-open, used to catch malformed `${...}` references."""
+
+MCP_ENV_RESOLUTION_DISABLED = "_deepagents_code_skip_env_resolution"
+"""Internal marker for configs whose interpolation was resolved by an adapter."""
+
+MCP_REDIRECTS_DISABLED = "_deepagents_code_disable_redirects"
+"""Internal marker for remote configs that must not follow redirects."""
 
 
 def _interpolate_env(value: str, *, field: str) -> str:
@@ -130,7 +136,7 @@ def resolve_mcp_server_env(
 ) -> dict[str, Any]:
     """Resolve `${VAR}` references in one MCP server's supported fields.
 
-    Interpolates the `command`, `url`, `args`, `env`, and `headers`
+    Interpolates the `command`, `url`, `cwd`, `args`, `env`, and `headers`
     fields (see `_interpolate_env` for the reference syntax); every other
     field is copied through verbatim. The input is not mutated.
 
@@ -148,9 +154,11 @@ def resolve_mcp_server_env(
         RuntimeError: If a required environment variable is unset.
     """  # noqa: DOC502 - `RuntimeError` is raised by `_interpolate_env`
     resolved: dict[str, Any] = copy.deepcopy(dict(server_config))
+    if resolved.pop(MCP_ENV_RESOLUTION_DISABLED, False) is True:
+        return resolved
     prefix = f"mcpServers.{server_name}"
 
-    for name in ("command", "url"):
+    for name in ("command", "cwd", "url"):
         if name in resolved:
             resolved[name] = _resolve_string(resolved[name], field=f"{prefix}.{name}")
 

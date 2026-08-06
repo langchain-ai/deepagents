@@ -761,15 +761,16 @@ class TestStartupAutoUpdate:
         # command name the user is told to "run again" with nothing to run.
         assert "again to start on v9.9.9" in printed
 
-    def test_shadowed_windows_install_restarts_with_executable_suffix(self) -> None:
-        """A shadowed Windows install must re-exec uv's `dcode.exe` shim."""
+    def test_shadowed_windows_install_resolves_upgraded_executable(self) -> None:
+        """A shadowed Windows `.cmd` must re-exec uv's `dcode.exe` shim."""
         from deepagents_code.update_check import ShadowedDcode
 
         console = MagicMock()
         upgrade = AsyncMock(return_value=(True, "updated"))
         shadow = ShadowedDcode(
-            shadowing_bin=Path("C:/old/bin/dcode.exe"),
+            shadowing_bin=Path("C:/old/bin/dcode.cmd"),
             upgraded_bin_dir=Path("C:/uv/bin"),
+            entry_point="dcode",
         )
 
         with (
@@ -794,6 +795,10 @@ class TestStartupAutoUpdate:
             patch(
                 "deepagents_code.update_check.detect_shadowed_dcode",
                 return_value=shadow,
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="C:/uv/bin/dcode.exe",
             ),
             patch(
                 "deepagents_code.main._restart_current_process",

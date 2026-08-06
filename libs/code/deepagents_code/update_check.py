@@ -28,7 +28,7 @@ import tomllib
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TextIO
@@ -1490,6 +1490,14 @@ class ShadowedDcode:
     `_uv_tool_bin_dir`).
     """
 
+    entry_point: str | None = field(default=None, compare=False)
+    """Console-script name requested from `PATH`.
+
+    Kept separately from `shadowing_bin` because Windows `PATHEXT` can make
+    the latter end in `.cmd` or `.bat`, even though uv installed an `.exe`
+    shim for the same entry point.
+    """
+
     def __post_init__(self) -> None:
         """Reject a non-conflict instance — the type's namesake invariant.
 
@@ -1512,11 +1520,16 @@ class ShadowedDcode:
     def upgraded_bin(self) -> Path:
         """Absolute path to the upgraded console-script shim uv installed.
 
-        Reuses the resolved PATH entry point's filename so Windows restarts
-        retain the required `.exe` suffix. This also preserves the
-        `deepagents-code` entry point when that is the shadowed command.
+        Resolves the requested entry point within uv's bin directory so
+        Windows `PATHEXT` selects uv's actual executable suffix instead of
+        reusing a shadowing `.cmd` or `.bat` suffix. On other platforms, this
+        resolves the normal shim name directly.
         """
-        return self.upgraded_bin_dir / self.shadowing_bin.name
+        entry_point = self.entry_point or self.shadowing_bin.name
+        upgraded = shutil.which(entry_point, path=str(self.upgraded_bin_dir))
+        if upgraded is not None:
+            return Path(upgraded)
+        return self.upgraded_bin_dir / entry_point
 
 
 def _uv_tool_bin_dir() -> Path | None:
@@ -1718,6 +1731,7 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
         return ShadowedDcode(
             shadowing_bin=Path(resolved),
             upgraded_bin_dir=upgraded_bin_dir,
+            entry_point=name,
         )
     return None
 

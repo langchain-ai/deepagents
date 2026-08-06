@@ -4329,6 +4329,14 @@ class TestMessageQueue:
 
             assert not app.query(StartupTip)
 
+    async def test_startup_tip_not_mounted_for_resume(self) -> None:
+        """A resumed thread should not show a startup tip above the chat input."""
+        app = DeepAgentsApp(resume_thread="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
     async def test_startup_tip_removed_after_first_submission(self) -> None:
         """The startup tip disappears once the first prompt is submitted."""
         app = DeepAgentsApp()

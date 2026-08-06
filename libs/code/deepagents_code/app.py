@@ -4191,7 +4191,7 @@ class DeepAgentsApp(App):
             # until the first spawn event; sits at the top of the bottom
             # container, above the startup tip and input.
             yield SubagentPanel(id="subagent-panel")
-            if show_startup_tip():
+            if not self._initial_resume_requested and show_startup_tip():
                 yield StartupTip(id="startup-tip")
             yield GoalStatusPanel(id="goal-status-panel")
             yield ChatInput(

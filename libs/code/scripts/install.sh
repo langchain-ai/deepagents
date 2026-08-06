@@ -2078,7 +2078,7 @@ ensure_path_setup() {
       ;;
     # fish is covered solely by its conf.d file below — never edit config.fish.
   esac
-  if [ "$shell_name" = "zsh" ] || [ -f "$HOME/.zshrc" ]; then
+  if [ "$shell_name" = "zsh" ] || [ -f "${zdotdir:-$HOME}/.zshrc" ]; then
     add_candidate "${zdotdir:-$HOME}/.zshrc"
     # ~/.zshrc is added alongside a ZDOTDIR zshrc only when it already exists.
     # ZDOTDIR relocates zsh's dotfiles entirely: zsh sources

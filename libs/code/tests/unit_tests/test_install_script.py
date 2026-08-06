@@ -2993,6 +2993,32 @@ def test_install_script_uses_zdotdir_pointing_at_missing_dir(
     assert not (home / ".zshrc").exists()
 
 
+def test_install_script_updates_existing_zdotdir_zshrc_from_bash(
+    tmp_path: Path,
+) -> None:
+    """An existing relocated zshrc is updated even when bash runs the installer."""
+
+    def seed(home: Path) -> None:
+        zdot = home / ".config/zsh"
+        zdot.mkdir(parents=True)
+        (zdot / ".zshrc").write_text("# zdotdir config\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path,
+        shell="/bin/bash",
+        extra_env={"ZDOTDIR": str(tmp_path / "home/.config/zsh")},
+        seed_home=seed,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert (
+        'export PATH="$HOME/.local/bin:$PATH"'
+        in (home / ".config/zsh/.zshrc").read_text()
+    )
+    assert not (home / ".zshrc").exists()
+
+
 def test_install_script_writes_both_zdotdir_and_legacy_zshrc(
     tmp_path: Path,
 ) -> None:

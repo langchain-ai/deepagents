@@ -1686,7 +1686,7 @@ class TestFormatRubricEvent:
         assert explanation.strip() in details
         assert "Exact copy remains intact" in details
         assert "Expected 'Not ready'; found 'Pending'." in details
-        assert "Passing criterion" not in details
+        assert "Satisfied criteria\n- Passing criterion" in details
         assert "Address every unmet criterion, then retry the check." in details
         assert "{'name':" not in details
         assert "truncated" not in details
@@ -1751,6 +1751,59 @@ class TestFormatRubricEvent:
 
         assert "The goal remains active" in details
         assert "`/goal clear`" in details
+
+    def test_details_report_the_full_pass_fail_accounting(self) -> None:
+        """Both verdicts render so a partial evaluation is visible as partial."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [
+                    {"name": "Reports infeasibility", "passed": True},
+                    {"name": "Lists 15 shops", "passed": False, "gap": "Only 5."},
+                    {"name": "Two sources each", "passed": False},
+                ],
+            }
+        )
+
+        assert (
+            "Unmet criteria\n- Lists 15 shops\n  Only 5.\n- Two sources each" in details
+        )
+        assert "Satisfied criteria\n- Reports infeasibility" in details
+        # Unmet criteria stay above the satisfied list; the panel leads with
+        # what the user has to act on.
+        assert details.index("Unmet criteria") < details.index("Satisfied criteria")
+
+    def test_criterion_without_a_boolean_verdict_is_listed_in_neither_section(
+        self,
+    ) -> None:
+        """A missing or non-boolean `passed` must not be guessed either way."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [
+                    {"name": "No verdict"},
+                    {"name": "Null verdict", "passed": None},
+                    {"name": "Truthy non-bool", "passed": 1},
+                ],
+            }
+        )
+
+        assert "Unmet criteria" not in details
+        assert "Satisfied criteria" not in details
+
+    def test_all_criteria_passing_still_renders_on_a_failure_verdict(self) -> None:
+        """A downgraded verdict has passing criteria but no failing ones."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "unverified": True,
+                "criteria": [{"name": "compiles", "passed": True}],
+            }
+        )
+
+        assert "Unmet criteria" not in details
+        assert "Satisfied criteria\n- compiles" in details
+        assert "could not account for every criterion" in details
 
     def test_unverified_verdict_reads_as_a_verification_gap(self) -> None:
         """A downgraded `satisfied` has no failing criteria to address."""

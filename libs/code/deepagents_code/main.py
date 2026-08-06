@@ -2880,6 +2880,7 @@ async def _run_acp_cli_async(
     )
     from deepagents_code.model_config import (
         ModelConfigError,
+        get_available_models,
         save_recent_model,
         touch_recent_model,
     )
@@ -2914,6 +2915,19 @@ async def _run_acp_cli_async(
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
+    models = [
+        {"value": spec, "name": spec}
+        for spec in dict.fromkeys(
+            [
+                resolved_spec,
+                *(
+                    f"{provider}:{model}"
+                    for provider, available in get_available_models().items()
+                    for model in available
+                ),
+            ]
+        )
+    ]
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
@@ -2962,8 +2976,20 @@ async def _run_acp_cli_async(
             def build_agent(
                 context: "AgentSessionContext",
             ) -> "Pregel[Any, Any, Any, Any]":
+                selected_model = context.model or resolved_spec
+                session_model = (
+                    model_result
+                    if selected_model == resolved_spec
+                    else create_model(
+                        selected_model,
+                        extra_kwargs=model_params,
+                        profile_overrides=profile_override,
+                    )
+                )
+                if session_model is not model_result:
+                    session_model.apply_to_settings()
                 agent_graph, _backend = create_cli_agent(
-                    model=model_result.model,
+                    model=session_model.model,
                     assistant_id=assistant_id,
                     tools=tools,
                     mcp_server_info=mcp_server_info,
@@ -2979,6 +3005,7 @@ async def _run_acp_cli_async(
 
             server = agent_server_cls(
                 build_agent,
+                models=models,
                 load_sessions=True,
                 checkpoint_metadata={"agent_name": assistant_id},
             )

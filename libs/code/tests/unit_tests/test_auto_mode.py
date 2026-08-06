@@ -77,6 +77,7 @@ from deepagents_code.auto_mode import (
     sanitize_auto_reason,
     user_prompt_metadata,
 )
+from deepagents_code.config import MODEL_RETRIES_ATTR
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
@@ -2104,6 +2105,51 @@ async def test_classifier_honors_zero_retry_fallback(tmp_path: Path) -> None:
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert len(model.calls) == 1
+
+
+async def test_distinct_classifier_uses_its_own_retry_budget(tmp_path: Path) -> None:
+    """A separate classifier does not inherit the primary model's retries."""
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    classifier = _FlakyStructuredModel(result, [ConnectionError("dropped")])
+    setattr(classifier, MODEL_RETRIES_ATTR, 0)
+    primary = _StructuredModel(result)
+    setattr(primary, MODEL_RETRIES_ATTR, 3)
+    middleware = _middleware(tmp_path, classifier_model=cast("Any", classifier))
+    request, _store, _key = _request(
+        tmp_path,
+        model=primary,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(classifier.calls) == 1
+
+
+def test_classifier_construction_deadline_is_not_retryable() -> None:
+    """A local construction expiry cannot extend its own wait through retries."""
+    assert (
+        _ClassifierConstructionDeadlineExceededError(
+            "openai:slow", 1
+        ).dcode_model_retryable
+        is False
+    )
 
 
 async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> None:

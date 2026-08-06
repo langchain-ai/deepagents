@@ -1407,6 +1407,23 @@ class TestModelParams:
             "_model_params": {"temperature": 0.7},
         }
 
+    def test_max_retries_is_not_forwarded_to_invocation(self) -> None:
+        """Retry configuration stays in the checkpoint, not provider settings."""
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model_params={"max_retries": 2, "temperature": 0.7}),
+        )
+        captured: list[ModelRequest] = []
+        result = _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"temperature": 0.7}
+        assert _checkpoint_update(result)["_model_params"] == {
+            "max_retries": 2,
+            "temperature": 0.7,
+        }
+
     def test_reasoning_effort_reaches_model_settings(self) -> None:
         """`reasoning_effort` from `/effort` must survive intact to the model.
 

@@ -359,7 +359,7 @@ def _build_overrides(
         provider_settings = {
             key: value
             for key, value in model_params.items()
-            if key != CLI_MAX_RETRIES_KEY
+            if key not in {CLI_MAX_RETRIES_KEY, "max_retries"}
         }
         if provider_settings:
             overrides["model_settings"] = {

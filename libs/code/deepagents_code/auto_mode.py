@@ -164,7 +164,12 @@ class _ClassifierConstructionDeadlineExceededError(TimeoutError):
     model could not be *built* in time rather than that it did not respond —
     the latter sends the user looking for a provider outage when the model was
     never constructed.
+
+    The construction deadline is local to dcode and has already expired when
+    this is raised, so retrying it would only multiply the elapsed wait.
     """
+
+    dcode_model_retryable = False
 
     def __init__(self, spec: str, timeout_seconds: float) -> None:
         self.spec = spec
@@ -2328,14 +2333,19 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         return await asyncio.shield(task), selected
 
-    async def _classify(
-        self,
-        request: ModelRequest,
-        calls: Sequence[ToolCall],
-        all_calls: Sequence[ToolCall],
-        dispositions: Mapping[str, str],
-        tools: Mapping[str, BaseTool],
-    ) -> AutoDecisionBatch:
+    async def _classifier_model_with_deadline(
+        self, request: ModelRequest
+    ) -> tuple[BaseChatModel, str | None]:
+        """Resolve a classifier without consuming its inference budget.
+
+        Returns:
+            Resolved classifier model and the label for a distinct model.
+
+        Raises:
+            _ClassifierConstructionDeadlineExceededError: If local construction
+                time expires.
+            TimeoutError: If model construction otherwise times out.
+        """
         # Construction and inference get separate budgets: a cold provider
         # import must not eat the time reserved for the verdict, and the two
         # failures need different reasons. Constructor threads cannot be
@@ -2353,6 +2363,28 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     self._classifier_construction_timeout_seconds,
                 ) from None
             raise
+        return model, spec
+
+    async def _classify(
+        self,
+        request: ModelRequest,
+        calls: Sequence[ToolCall],
+        all_calls: Sequence[ToolCall],
+        dispositions: Mapping[str, str],
+        tools: Mapping[str, BaseTool],
+        *,
+        model: BaseChatModel,
+        spec: str | None,
+    ) -> AutoDecisionBatch:
+        """Ask an already-resolved classifier for a decision batch.
+
+        Returns:
+            Parsed classifier decisions for the reviewed tool calls.
+
+        Raises:
+            _ClassifierDeadlineExceededError: If the local inference time expires.
+            TimeoutError: If inference otherwise times out.
+        """
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
@@ -2603,14 +2635,20 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 if self._model_retry_fallback is not None
                 else CodeModelRetryMiddleware()
             )
+            (
+                classifier_model,
+                classifier_spec,
+            ) = await self._classifier_model_with_deadline(request)
             classified = await retry.arun_with_retry(
-                request.model,
+                classifier_model,
                 lambda: self._classify(
                     request,
                     review_calls,
                     calls,
                     deterministic_dispositions,
                     tools,
+                    model=classifier_model,
+                    spec=classifier_spec,
                 ),
                 writer=getattr(request.runtime, "stream_writer", None),
                 max_retries=_runtime_model_retry_override(request.runtime),

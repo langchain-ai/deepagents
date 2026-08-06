@@ -562,7 +562,29 @@ class TestGraderConstruction:
         create_model.assert_called_once_with("openai:gpt-5.5", extra_kwargs=None)
         retry = create_agent.call_args.kwargs["middleware"][0]
         assert retry.max_retries == 0
-        assert model._deepagents_model_retries == 0
+
+    def test_string_model_keeps_its_resolved_retry_budget(self) -> None:
+        """A separately configured rubric keeps its provider retry setting."""
+        middleware = ReliableRubricMiddleware(
+            model="anthropic:claude-haiku-4-5",
+            model_retry_fallback=0,
+        )
+        model = MagicMock()
+        model._deepagents_model_retries = 2
+        grader = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=model),
+            ),
+            patch("langchain.agents.create_agent", return_value=grader) as create_agent,
+        ):
+            middleware._ensure_grader()
+
+        retry = create_agent.call_args.kwargs["middleware"][0]
+        assert retry.max_retries == 2
+        assert model._deepagents_model_retries == 2
 
     def test_concrete_model_is_reused(self) -> None:
         model = MagicMock()

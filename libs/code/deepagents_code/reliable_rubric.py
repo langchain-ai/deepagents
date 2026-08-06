@@ -298,6 +298,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
             CLI_MAX_RETRIES_KEY,
             DEFAULT_MODEL_RETRIES,
             create_model,
+            is_valid_retry_count,
             set_model_retry_metadata,
         )
 
@@ -314,21 +315,19 @@ class ReliableRubricMiddleware(RubricMiddleware):
                 if self._model_retry_override is not None
                 else None
             )
-            grader_model = create_model(
-                self._model,
-                extra_kwargs=retry_kwargs,
-            ).model
-            if (
-                self._model_retry_override is not None
-                or self._model_retry_fallback is not None
-            ):
-                set_model_retry_metadata(
-                    grader_model,
-                    retries=retry_fallback,
-                    cli_override=self._model_retry_override,
-                )
-            return grader_model
-        return self._model
+            return create_model(self._model, extra_kwargs=retry_kwargs).model
+        grader_model = self._model
+        existing_retries = getattr(grader_model, "_deepagents_model_retries", None)
+        if self._model_retry_override is not None or (
+            self._model_retry_fallback is not None
+            and not is_valid_retry_count(existing_retries)
+        ):
+            set_model_retry_metadata(
+                grader_model,
+                retries=retry_fallback,
+                cli_override=self._model_retry_override,
+            )
+        return grader_model
 
     def _build_grader(self, grader_model: BaseChatModel) -> Any:  # noqa: ANN401
         """Construct and cache the nested grader agent.
@@ -338,7 +337,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
         """
         from langchain.agents import create_agent
 
-        from deepagents_code.config import DEFAULT_MODEL_RETRIES
+        from deepagents_code.config import DEFAULT_MODEL_RETRIES, get_model_retries
         from deepagents_code.model_retry import CodeModelRetryMiddleware
 
         retry_fallback = (
@@ -348,6 +347,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
             if self._model_retry_fallback is not None
             else DEFAULT_MODEL_RETRIES
         )
+        retry_fallback = get_model_retries(grader_model, retry_fallback)
         self._resolved_model = grader_model
         middleware: list[AgentMiddleware[Any, Any]] = [
             CodeModelRetryMiddleware(max_retries=retry_fallback),

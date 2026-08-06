@@ -1588,6 +1588,86 @@ def test_install_script_extras_assume_yes_skips_interrupt(tmp_path: Path) -> Non
     assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
+def test_install_script_unreadable_receipt_interrupt_decline_aborts_before_uv(
+    tmp_path: Path,
+) -> None:
+    """Answering 'n' to the unreadable-receipt prompt exits before uv runs.
+
+    An unreadable receipt can still hide extras, so the unknown-extras case must
+    offer the same abort prompt as the known-extras one: the user is told their
+    extras may be removed and gets the chance to stop before the rebuild drops
+    them. Two prompts fire on this path — the update prompt, then the
+    unreadable-receipt interrupt — so both answers are fed.
+    """
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    receipt.chmod(0o000)
+
+    try:
+        code, output, args_path = _invoke_interactive(
+            tmp_path,
+            {},
+            answer=["y", "n"],
+            installed_version="0.1.0",
+            latest_version="0.2.0",
+        )
+    finally:
+        receipt.chmod(0o644)
+
+    assert code == 0
+    assert "Continue anyway?" in output
+    assert "Aborted. deepagents-code was left unchanged." in output
+    assert not args_path.exists()
+
+
+def test_install_script_unreadable_receipt_interrupt_accept_proceeds(
+    tmp_path: Path,
+) -> None:
+    """Answering 'y' to the unreadable-receipt prompt continues the upgrade."""
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    receipt.chmod(0o000)
+
+    try:
+        code, output, args_path = _invoke_interactive(
+            tmp_path,
+            {},
+            answer=["y", "y"],
+            installed_version="0.1.0",
+            latest_version="0.2.0",
+        )
+    finally:
+        receipt.chmod(0o644)
+
+    assert code == 0
+    assert "Continue anyway?" in output
+    assert "Aborted. deepagents-code was left unchanged." not in output
+    args = args_path.read_text().splitlines()
+    assert args[:3] == ["tool", "install", "-U"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permissions")
+def test_install_script_unreadable_receipt_assume_yes_skips_interrupt(
+    tmp_path: Path,
+) -> None:
+    """`DEEPAGENTS_CODE_YES=1` proceeds past the unreadable-receipt prompt."""
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    receipt.chmod(0o000)
+
+    try:
+        proc, args_path = _invoke(
+            tmp_path,
+            {"DEEPAGENTS_CODE_YES": "1"},
+            installed_version="0.1.0",
+            latest_version="0.2.0",
+        )
+    finally:
+        receipt.chmod(0o644)
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert "Aborted. deepagents-code was left unchanged." not in proc.stderr
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
 def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:
     """A pre-existing log-file symlink disables the persistent install log."""
     cache = tmp_path / "cache"

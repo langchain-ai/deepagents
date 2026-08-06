@@ -1576,6 +1576,16 @@ fi
 if [ "$EXTRAS_UNREADABLE" = true ]; then
   log_warn "Could not read ${receipt} to check which extras this install was built with."
   log_warn "  If it was built with DEEPAGENTS_CODE_EXTRAS, re-run with the same value or those packages will be removed."
+  # An unreadable receipt can still hide extras (e.g. one written by a prior
+  # sudo run), so offer the same abort prompt as the known-extras case below:
+  # the user is told their extras may be removed and must get the chance to
+  # stop before the rebuild drops them.
+  if [ "$ASSUME_YES" != "1" ] && can_prompt; then
+    if ! prompt_yn "Continue anyway?"; then
+      log_info "Aborted. deepagents-code was left unchanged."
+      exit 0
+    fi
+  fi
 elif [ -n "$INSTALLED_EXTRAS" ]; then
   log_warn "This install has extras that a bare re-run will remove: ${INSTALLED_EXTRAS}"
   log_warn "  To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS=\"${INSTALLED_EXTRAS}\""

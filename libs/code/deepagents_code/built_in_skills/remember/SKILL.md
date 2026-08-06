@@ -24,6 +24,10 @@ Scan the conversation for:
 - Tools, libraries, or techniques worth remembering
 - Feedback I gave about your behavior or outputs
 
+### Never Capture
+
+Do not write credentials, API keys, tokens, passwords, connection strings, private keys, or personal data (email addresses, phone numbers, names of individuals outside the team) into `~/.deepagents/agent/AGENTS.md`, `.deepagents/AGENTS.md`, or any generated `~/.deepagents/agent/skills/<skill-name>/SKILL.md`. When such a value is part of a learning worth keeping, record only a non-secret reference to it — for example, "the deploy token is read from the environment", never the value itself. Tell the user whenever you omit or redact something.
+
 ## Step 2: Decide Where to Store Each Learning
 
 For each best practice or learning, choose the right destination:
@@ -109,10 +113,10 @@ For preferences, guidelines, and simple rules that don't warrant a full skill:
 - Avoid A because it leads to B
 ```
 
-Use `edit_file` to update existing files or `write_file` to create new ones.
+Use `edit_file` to update existing files or `write_file` to create new ones. Before writing, strip anything covered by "Never Capture" — credentials, tokens, and personal data must not reach these files.
 
 ## Step 5: Summarize Changes
 
-List what you captured and where you stored it:
+List what you captured and where you stored it, and name anything you omitted or redacted under "Never Capture":
 - Skills created (with key best practices encoded)
 - Memory entries added (with location)

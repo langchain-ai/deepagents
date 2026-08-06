@@ -44,10 +44,13 @@ from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import (
     CompactTrigger,
     HookContext,
+    HookDecision,
     HookEvent,
     HookInvocation,
     PermissionEffect,
     PostToolUseDecision,
+    PostToolUseFailureDecision,
+    PostToolUseFailureEvent,
     PreCompactDecision,
     PreCompactEvent,
     PreToolUseDecision,
@@ -75,7 +78,7 @@ from deepagents_code.hooks.server_middleware import (
     _invoke_hook,
     _merge_tool_message_content,
     _session_gate,
-    _tool_result_failed,
+    _tool_result_error,
     _tool_result_text,
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
@@ -466,6 +469,59 @@ def test_hook_resume_value_validates_identity() -> None:
         )
 
 
+def _invoke_pre_tool_hook(
+    monkeypatch: pytest.MonkeyPatch,
+    request: HookInvocationRequest,
+    resume: object,
+) -> HookDecision:
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware.interrupt", lambda _payload: resume
+    )
+    event = request.invocation.event
+    assert isinstance(event, PreToolUseEvent)
+    gate = _session_gate(
+        {
+            "hooks_snapshot_id": request.snapshot_id,
+            "hooks_server_events": [HookEvent.PRE_TOOL_USE.value],
+        }
+    )
+    assert gate is not None
+    return _invoke_hook(
+        request.invocation.context,
+        event,
+        gate=gate,
+        config={"configurable": {"thread_id": request.invocation.context.thread_id}},
+        deadline=timedelta(seconds=1),
+    )
+
+
+def test_malformed_hook_resume_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    decision = _invoke_pre_tool_hook(monkeypatch, _request(), {"invalid": True})
+
+    assert isinstance(decision, PreToolUseDecision)
+    assert decision.permission.behavior == "none"
+    assert [item.code for item in decision.diagnostics] == ["invalid_resume"]
+
+
+def test_mismatched_hook_resume_stays_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A well-formed response for another request must not fail open."""
+    request = _request()
+    resume = build_hook_resume_value(
+        HookInvocationResponse(
+            protocol_version=1,
+            invocation_id=uuid4(),
+            snapshot_id=request.snapshot_id,
+            decision=PreToolUseDecision(
+                event=HookEvent.PRE_TOOL_USE,
+                permission=PermissionEffect(behavior="allow"),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="invocation_id mismatch"):
+        _invoke_pre_tool_hook(monkeypatch, request, resume)
+
+
 def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
     context = HookContext(
         thread_id="thread-1",
@@ -733,24 +789,38 @@ def test_tool_result_text_reads_only_matching_call() -> None:
     assert _tool_result_text(_multi_result_command(), "c1") == "mine"
 
 
-def test_tool_result_failed_ignores_unrelated_failure() -> None:
+def test_tool_result_error_ignores_unrelated_failure() -> None:
     result = _multi_result_command()
 
-    assert _tool_result_failed(result, "c1") is False
-    assert _tool_result_failed(result, "c2") is True
+    assert (
+        _tool_result_error(result, ToolCallData(id="c1", name="execute", args={}))
+        is None
+    )
+    assert (
+        _tool_result_error(
+            result,
+            ToolCallData(id="c2", name="execute", args={}),
+        )
+        == "theirs"
+    )
 
 
-def test_post_tool_use_skips_failed_tool_message(
+def test_failed_execute_routes_to_post_tool_use_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
     result = ToolMessage(
-        content="failed",
+        content="[Command failed with exit code 42]",
         name="execute",
         tool_call_id="c1",
-        status="error",
+        artifact={"exit_code": 42},
+        status="success",
     )
-    invoke = MagicMock()
+    invoke = MagicMock(
+        return_value=PostToolUseFailureDecision(
+            event=HookEvent.POST_TOOL_USE_FAILURE,
+        )
+    )
     monkeypatch.setattr(
         "deepagents_code.hooks.server_middleware._invoke_hook",
         invoke,
@@ -763,14 +833,17 @@ def test_post_tool_use_skips_failed_tool_message(
             cwd=Path("/tmp"),
             approval_mode=ApprovalMode.MANUAL,
         ),
-        {"snapshot_id": "snap", "events": frozenset({"PostToolUse"})},
+        {"snapshot_id": "snap", "events": frozenset({"PostToolUseFailure"})},
         {"configurable": {"thread_id": "thread-1"}},
         result,
         5,
     )
 
     assert updated is result
-    invoke.assert_not_called()
+    event = invoke.call_args.args[1]
+    assert isinstance(event, PostToolUseFailureEvent)
+    assert event.error == "Command exited with non-zero status code 42"
+    assert event.duration_ms == 5
 
 
 def test_append_pretool_context_to_result() -> None:
@@ -857,12 +930,7 @@ def test_pre_tool_allow_bypasses_hitl_and_preserves_context(
     handler.assert_called_once_with(request)
 
 
-def test_server_pre_tool_node_runs_before_stock_hitl(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from deepagents_code._env_vars import EXPERIMENTAL
-
-    monkeypatch.setenv(EXPERIMENTAL, "1")
+def test_server_pre_tool_node_runs_before_stock_hitl(tmp_path: Path) -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
     model.profile = {"max_input_tokens": 200000}
     graph, _backend = create_cli_agent(

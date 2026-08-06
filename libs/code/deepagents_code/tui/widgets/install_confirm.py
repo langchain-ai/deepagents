@@ -13,28 +13,85 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
+from textual.events import (
+    Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
+    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
+)
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Static
+
+from deepagents_code.tui.widgets._links import event_targets_link, open_style_link
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
-def _package_link(package: str) -> Content:
+def _package_link(package: str, *, hovered: bool = False) -> Content:
     """Render a package name as a bold PyPI link.
 
     Args:
         package: The package name to display and link.
+        hovered: Whether to add a reverse-video highlight, matching the
+            pointer cursor shown while the mouse is over the link.
 
     Returns:
         Styled content linking to the package's PyPI project page.
     """
     url = f"https://pypi.org/project/{package}/"
-    return Content.assemble((package, TStyle(bold=True, underline=True, link=url)))
+    style = TStyle(bold=True, underline=True, reverse=hovered, link=url)
+    return Content.assemble((package, style))
 
 
-class InstallPackageConfirmScreen(ModalScreen[bool]):
+class _LinkHoverMixin(ModalScreen[bool]):
+    """Pointer-cursor, hover-highlight, and click-to-open for styled links.
+
+    Subclasses define `_body_content(hovered: bool) -> Content` to rebuild
+    their body text with the package link's highlight toggled, and the mixin's
+    `_refresh_body(hovered: bool)` writes it into the `.install-confirm-body`
+    widget. The one widget lookup is cached after first use. Inheriting
+    `ModalScreen[bool]` here (rather than a bare mixin) lets the type checker
+    see `styles`/`query_one`, and gives subclasses a single linear MRO.
+    """
+
+    _hovered: bool = False
+    _body_widget: Static | None = None
+
+    def _body_content(self, *, hovered: bool) -> Content:
+        """Return the body `Content` with the link hover state applied."""
+        raise NotImplementedError
+
+    def _refresh_body(self, *, hovered: bool) -> None:
+        """Rewrite the body widget with the link's hover highlight toggled.
+
+        Args:
+            hovered: Whether the link should render highlighted.
+        """
+        if self._body_widget is None:
+            self._body_widget = self.query_one(".install-confirm-body", Static)
+        self._body_widget.update(self._body_content(hovered=hovered))
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler convention
+        """Open style-embedded hyperlinks on single click."""
+        open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer cursor over the link and highlight it on hover."""
+        over_link = event_targets_link(event)
+        self.styles.pointer = "pointer" if over_link else "default"
+        if over_link != self._hovered:
+            self._hovered = over_link
+            self._refresh_body(hovered=over_link)
+
+    def on_leave(self) -> None:
+        """Reset the cursor and clear any hover highlight."""
+        self.styles.pointer = "default"
+        if self._hovered:
+            self._hovered = False
+            self._refresh_body(hovered=False)
+
+
+class InstallPackageConfirmScreen(_LinkHoverMixin):
     """Confirmation overlay for installing an arbitrary `--package`.
 
     Dismisses with `True` when the user confirms and `False` when the user
@@ -91,6 +148,21 @@ class InstallPackageConfirmScreen(ModalScreen[bool]):
         super().__init__()
         self._package = package
 
+    def _body_content(self, *, hovered: bool = False) -> Content:
+        """Build the body text, toggling the link's hover highlight.
+
+        Args:
+            hovered: Whether the PyPI link should render highlighted.
+
+        Returns:
+            The body `Content` with the package link styled for `hovered`.
+        """
+        return Content.assemble(
+            "Installing ",
+            _package_link(self._package, hovered=hovered),
+            " runs third-party code in the dcode environment.",
+        )
+
     def compose(self) -> ComposeResult:
         """Compose the install confirmation dialog.
 
@@ -104,11 +176,7 @@ class InstallPackageConfirmScreen(ModalScreen[bool]):
                 markup=False,
             )
             yield Static(
-                Content.assemble(
-                    "Installing ",
-                    _package_link(self._package),
-                    " runs third-party code in the dcode environment.",
-                ),
+                self._body_content(),
                 classes="install-confirm-body",
                 markup=False,
             )
@@ -134,7 +202,7 @@ class InstallPackageConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class InstallProviderConfirmScreen(ModalScreen[bool]):
+class InstallProviderConfirmScreen(_LinkHoverMixin):
     """Confirmation overlay for installing a model provider's extra.
 
     Shown from the model selector when the user picks a model whose provider
@@ -200,11 +268,14 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
         self._extra = extra
         self._model_spec = model_spec
 
-    def compose(self) -> ComposeResult:
-        """Compose the provider-install confirmation dialog.
+    def _body_content(self, *, hovered: bool = False) -> Content:
+        """Build the body text, toggling the link's hover highlight.
 
-        Yields:
-            Title, body, and help-row widgets parented inside a `Vertical`.
+        Args:
+            hovered: Whether the PyPI link should render highlighted.
+
+        Returns:
+            The body `Content` with the package link styled for `hovered`.
         """
         # Reuse the auth UI's curated labels (e.g. `google_genai` -> "Google
         # Gemini") so the title reads naturally, falling back to a title-cased
@@ -217,9 +288,9 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
             self._provider, self._provider.replace("_", " ").title()
         )
         package = provider_package_name(self._provider) or self._extra
-        package_link = _package_link(package)
+        package_link = _package_link(package, hovered=hovered)
         if self._model_spec is not None:
-            body = Content.assemble(
+            return Content.assemble(
                 "To use ",
                 (self._model_spec, "bold"),
                 ", dcode needs to install the ",
@@ -227,15 +298,26 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
                 " integration. This will add the provider package to your "
                 "dcode environment.",
             )
-        else:
-            body = Content.assemble(
-                "To add a key for ",
-                (provider, "bold"),
-                ", dcode needs to install the ",
-                package_link,
-                " integration. This will add the provider package to your "
-                "dcode environment.",
-            )
+        return Content.assemble(
+            "To add a key for ",
+            (provider, "bold"),
+            ", dcode needs to install the ",
+            package_link,
+            " integration. This will add the provider package to your "
+            "dcode environment.",
+        )
+
+    def compose(self) -> ComposeResult:
+        """Compose the provider-install confirmation dialog.
+
+        Yields:
+            Title, body, and help-row widgets parented inside a `Vertical`.
+        """
+        from deepagents_code.tui.widgets.auth import PROVIDER_DISPLAY_NAMES
+
+        provider = PROVIDER_DISPLAY_NAMES.get(
+            self._provider, self._provider.replace("_", " ").title()
+        )
         with Vertical():
             yield Static(
                 f"Install {provider} support?",
@@ -243,7 +325,7 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
                 markup=False,
             )
             yield Static(
-                body,
+                self._body_content(),
                 classes="install-confirm-body",
                 markup=False,
             )

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 from textual.app import App, ComposeResult
 from textual.content import Content
 from textual.style import Style as TStyle
@@ -26,6 +29,26 @@ def _assert_pypi_link(content: Content, package: str) -> None:
         if isinstance(span.style, TStyle) and span.style.link
     ]
     assert links == [(package, f"https://pypi.org/project/{package}/")]
+
+
+def _link_span_reverses(content: Content) -> list[bool]:
+    """Return the `reverse` flag of every link-styled span in `content`."""
+    reverses: list[bool] = []
+    for span in content.spans:
+        style = span.style
+        if isinstance(style, TStyle) and style.link:
+            reverses.append(bool(style.reverse))
+    return reverses
+
+
+def _link_span_reverses(content: Content) -> list[bool]:
+    """Return the `reverse` flag of every link-styled span in `content`."""
+    reverses: list[bool] = []
+    for span in content.spans:
+        style = span.style
+        if isinstance(style, TStyle) and style.link:
+            reverses.append(bool(style.reverse))
+    return reverses
 
 
 class TestInstallPackageConfirmScreen:
@@ -184,3 +207,103 @@ class TestInstallProviderConfirmScreen:
             assert "langchain-litellm" in content.plain
             assert "To use" not in content.plain
             _assert_pypi_link(content, "langchain-litellm")
+
+
+class TestLinkHoverAndClick:
+    """Link affordance tests shared by both install confirmation screens."""
+
+    def _move_event(self, url: str | None) -> SimpleNamespace:
+        """Build a minimal mouse-move event over a link (or plain text)."""
+        return SimpleNamespace(style=SimpleNamespace(link=url, meta={}))
+
+    def _click_event(self, url: str | None) -> SimpleNamespace:
+        """Build a minimal click event over a link (or plain text)."""
+        return SimpleNamespace(
+            style=SimpleNamespace(link=url),
+            app=SimpleNamespace(notify=MagicMock()),
+            stop=MagicMock(),
+        )
+
+    async def test_hover_shows_pointer_and_highlights_link(self) -> None:
+        """Hovering the link sets a pointer cursor and highlights the text."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallPackageConfirmScreen("langchain-custom")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen.on_mouse_move(
+                self._move_event("https://pypi.org/project/langchain-custom/")  # ty: ignore
+            )
+            await pilot.pause()
+
+            assert screen.styles.pointer == "pointer"
+            content = screen.query_one(".install-confirm-body", Static).render()
+            assert isinstance(content, Content)
+            reverses = _link_span_reverses(content)
+            assert reverses
+            assert all(reverses)
+
+    async def test_leaving_link_clears_pointer_and_highlight(self) -> None:
+        """Moving off the link restores the default cursor and plain style."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallPackageConfirmScreen("langchain-custom")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen.on_mouse_move(
+                self._move_event("https://pypi.org/project/langchain-custom/")  # ty: ignore
+            )
+            screen.on_mouse_move(self._move_event(None))  # ty: ignore
+            await pilot.pause()
+
+            assert screen.styles.pointer == "default"
+            content = screen.query_one(".install-confirm-body", Static).render()
+            assert isinstance(content, Content)
+            reverses = _link_span_reverses(content)
+            assert reverses
+            assert not any(reverses)
+
+    async def test_on_leave_clears_hover_state(self) -> None:
+        """`on_leave` resets cursor and highlight when the mouse exits."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallPackageConfirmScreen("langchain-custom")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen.on_mouse_move(
+                self._move_event("https://pypi.org/project/langchain-custom/")  # ty: ignore
+            )
+            screen.on_leave()
+            await pilot.pause()
+
+            assert screen.styles.pointer == "default"
+            content = screen.query_one(".install-confirm-body", Static).render()
+            assert isinstance(content, Content)
+            reverses = _link_span_reverses(content)
+            assert reverses
+            assert not any(reverses)
+
+    def test_click_on_link_opens_url(self) -> None:
+        """A click on the package link routes through `open_style_link`."""
+        screen = InstallPackageConfirmScreen("langchain-custom")
+        event = self._click_event("https://pypi.org/project/langchain-custom/")
+        with patch(
+            "deepagents_code.tui.widgets.install_confirm.open_style_link"
+        ) as mock_open:
+            screen.on_click(event)  # ty: ignore
+
+        mock_open.assert_called_once_with(event)
+
+    def test_provider_screen_click_on_link_opens_url(self) -> None:
+        """The provider screen shares the same click-through behavior."""
+        screen = InstallProviderConfirmScreen("baseten", "baseten")
+        event = self._click_event("https://pypi.org/project/langchain-baseten/")
+        with patch(
+            "deepagents_code.tui.widgets.install_confirm.open_style_link"
+        ) as mock_open:
+            screen.on_click(event)  # ty: ignore
+
+        mock_open.assert_called_once_with(event)

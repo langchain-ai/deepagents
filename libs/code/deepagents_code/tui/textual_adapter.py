@@ -642,11 +642,11 @@ def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -
             "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
         )
     elif result in {"needs_revision", "max_iterations_reached"} and unverified:
-        # No criterion was confirmed to have failed, so telling the user to
-        # address unmet criteria would point at an empty list.
+        # The gap is in coverage, not in the criteria the grader did report, so
+        # the next step is to re-verify rather than to fix a listed failure.
         next_step = (
-            "The grader could not account for every criterion, so nothing was "
-            "confirmed. Retry the check to re-verify the work."
+            "The grader could not account for every criterion, so the full "
+            "rubric was not verified. Retry the check to re-verify the work."
         )
     elif result in {"needs_revision", "max_iterations_reached"}:
         next_step = "Address every unmet criterion, then retry the check."

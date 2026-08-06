@@ -1729,6 +1729,9 @@ class TestFormatRubricEvent:
         assert "Unmet criteria" not in details
         assert "Satisfied criteria\n- compiles" in details
         assert "could not account for every criterion" in details
+        # The next step must not deny the criteria the same panel just listed.
+        assert "nothing was confirmed" not in details
+        assert "the full rubric was not verified" in details
 
     def test_unverified_verdict_reads_as_a_verification_gap(self) -> None:
         """A downgraded `satisfied` has no failing criteria to address."""

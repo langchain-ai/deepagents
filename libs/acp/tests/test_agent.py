@@ -433,7 +433,15 @@ async def test_acp_agent_load_session_rejects_sessions_it_did_not_create() -> No
 
 
 async def test_acp_agent_load_session_rejects_different_cwd() -> None:
-    server, _ = _persistent_server(_persistent_graph(MemorySaver()))
+    checkpointer = MemorySaver()
+    contexts: list[AgentSessionContext] = []
+
+    def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
+        contexts.append(context)
+        return _persistent_graph(checkpointer)
+
+    server = AgentServerACP(agent=build_agent, load_sessions=True)
+    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
     session = await server.new_session(cwd="/tmp/original", mcp_servers=[])
 
     with pytest.raises(RequestError) as exc_info:
@@ -444,6 +452,8 @@ async def test_acp_agent_load_session_rejects_different_cwd() -> None:
         )
 
     assert exc_info.value.code == -32602
+    await server.load_session(cwd="/tmp/original", session_id=session.session_id, mcp_servers=[])
+    assert contexts[-1].cwd == "/tmp/original"
 
 
 async def test_acp_agent_load_session_is_unavailable_when_disabled() -> None:

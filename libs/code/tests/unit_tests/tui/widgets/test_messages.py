@@ -3666,33 +3666,50 @@ class TestToolCallMessageFileOutput:
         line numbers and (when the first row's padding was stripped) misaligned.
         Such output may still surface from cached or persisted transcripts. The
         TUI recomputes a compact gutter: numbers right-justified to the widest
-        number present, two spaces, then the original source indentation.
+        number present, ` | `, then the original source indentation.
         """
         msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
         # cat -n style: 6-wide right-justified number + tab + source line.
         output = '     1\t"""doc"""\n     2\t\n     3\t    indented'
         result = msg._format_output(output, is_preview=False)
 
-        # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
+        # No tab, no 6-wide pad: `{num} | ` gutter, then the original source
         # indentation (the 4 spaces on line 3) preserved verbatim.
-        assert result.content.plain == '1  """doc"""\n2  \n3      indented'
+        assert result.content.plain == '1 | """doc"""\n2 | \n3 |     indented'
 
-    def test_format_output_leaves_current_two_space_gutter_intact(self) -> None:
-        r"""The current SDK gutter is already compact, so compaction is a no-op.
+    def test_format_output_compacts_legacy_two_space_gutter(self) -> None:
+        r"""A legacy two-space gutter (predating #5343) is normalized to ` | `.
 
-        `read_file` now emits `f"{marker:>width}  {line}"` — a right-justified
-        marker, two spaces, then source. Re-justifying to the widest marker
-        reproduces the same string, and crucially a tab-indented source line
-        keeps its leading tab (the two-space separator, not the source tab, is
-        consumed). Regression guard: the old tab-splitting gutter dropped that
-        indentation, re-introducing the ambiguity this format fixes.
+        deepagents versions between #4561 and #5343 emitted
+        `f"{marker:>width}  {line}"` — a right-justified marker, two spaces,
+        then source — which is ambiguous with space-indented source. Such
+        output may still surface from cached or persisted transcripts; the TUI
+        recompacts it to the current, unambiguous ` | ` separator rather than
+        leaving it as-is.
         """
         msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
         # Two-digit max marker => width 2; line 2 is tab-indented source.
         output = " 9  def build_config():\n10  \treturn {}"
         result = msg._format_output(output, is_preview=False)
 
-        assert result.content.plain == " 9  def build_config():\n10  \treturn {}"
+        assert result.content.plain == " 9 | def build_config():\n10 | \treturn {}"
+
+    def test_format_output_leaves_current_pipe_gutter_intact(self) -> None:
+        r"""The current SDK gutter is already compact, so compaction is a no-op.
+
+        `read_file` now emits `f"{marker:>width} | {line}"` — a right-justified
+        marker, ` | `, then source. Re-justifying to the widest marker
+        reproduces the same string, and crucially a tab-indented source line
+        keeps its leading tab (only the ` | ` separator, not the source tab, is
+        consumed). Regression guard: an earlier tab-splitting gutter dropped
+        that indentation, which is the ambiguity this format fixes.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        # Two-digit max marker => width 2; line 2 is tab-indented source.
+        output = " 9 | def build_config():\n10 | \treturn {}"
+        result = msg._format_output(output, is_preview=False)
+
+        assert result.content.plain == " 9 | def build_config():\n10 | \treturn {}"
 
     def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
         r"""Multi-digit line numbers set a uniform, right-justified gutter."""
@@ -3700,7 +3717,7 @@ class TestToolCallMessageFileOutput:
         output = "     9\tnine\n    10\tten"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == " 9  nine\n10  ten"
+        assert compacted == " 9 | nine\n10 | ten"
 
     def test_compact_line_gutter_handles_continuation_markers(self) -> None:
         r"""`N.M` wrapped-line markers are gutters and drive the column width.
@@ -3712,7 +3729,7 @@ class TestToolCallMessageFileOutput:
         output = "     1\tfirst\n   1.1\twrapped"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "  1  first\n1.1  wrapped"
+        assert compacted == "  1 | first\n1.1 | wrapped"
 
     def test_compact_line_gutter_preserves_source_tabs_legacy(self) -> None:
         r"""Only the gutter tab is consumed; a legacy row's source tab stays put.
@@ -3723,23 +3740,23 @@ class TestToolCallMessageFileOutput:
         output = "     1\t\tdef foo():"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1  \tdef foo():"
+        assert compacted == "1 | \tdef foo():"
 
     def test_compact_line_gutter_preserves_source_tabs_current(self) -> None:
         r"""A current-format row's leading source tab (and a blank row) survive.
 
-        The current gutter separator is two spaces, so a tab-indented source
-        line reads as `"N  \tsource"`. Only the two spaces are consumed; the
-        source tab must remain. This is the regression guard for the tab-
-        splitting gutter that used to drop it. A blank source line (`"N  "` —
-        marker, separator, empty source) round-trips unchanged too; the
+        The current gutter separator is ` | `, so a tab-indented source line
+        reads as `"N | \tsource"`. Only the ` | ` is consumed; the source tab
+        must remain. This is the regression guard for the tab-splitting gutter
+        that used to drop it. A blank source line (`"N | "` — marker,
+        separator, empty source) round-trips unchanged too; the
         `_compact_line_gutter` return preserves its trailing separator (the
         display path may later strip trailing space, but the compactor does not).
         """
-        output = "1  def foo():\n2  \treturn 1\n3  "
+        output = "1 | def foo():\n2 | \treturn 1\n3 | "
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1  def foo():\n2  \treturn 1\n3  "
+        assert compacted == "1 | def foo():\n2 | \treturn 1\n3 | "
 
     def test_compact_line_gutter_parses_real_producer_output(self) -> None:
         r"""Round-trip guard against producer/consumer separator drift.
@@ -3756,7 +3773,7 @@ class TestToolCallMessageFileOutput:
         )
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1  def f():\n2  \treturn 1"
+        assert compacted == "1 | def f():\n2 | \treturn 1"
 
     def test_compact_line_gutter_round_trips_continuation_and_padding(self) -> None:
         r"""Real-producer round-trip exercising continuation + multi-digit padding.
@@ -3776,25 +3793,26 @@ class TestToolCallMessageFileOutput:
         compacted = ToolCallMessage._compact_line_gutter(output)
 
         lines = compacted.split("\n")
-        assert lines[0] == "   9  short"  # width 4, driven by the "10.1" marker
-        assert lines[2].startswith("10.1  ")
-        assert lines[-1] == "  11  \treturn 1"  # tab-indented source survives
+        assert lines[0] == "   9 | short"  # width 4, driven by the "10.1" marker
+        assert lines[2].startswith("10.1 | ")
+        assert lines[-1] == "  11 | \treturn 1"  # tab-indented source survives
 
     def test_compact_line_gutter_preserves_double_spaced_source(self) -> None:
         r"""Only the first separator is consumed; the rest of the source is verbatim.
 
         A source line whose own text starts with digits and two spaces
         (`"42  meaning"`) must survive intact: the regex captures the leading
-        gutter marker and emits everything after the first two-space separator
-        untouched, including the embedded double space. Guards the `(.*)` capture
+        gutter marker and emits everything after the first ` | ` separator
+        untouched, including the embedded double space that could otherwise be
+        mistaken for a legacy gutter separator. Guards the `(.*)` capture
         against a future separator group that might reprocess or collapse
-        interior spacing (e.g. widening `(?:  |\t)` to `\s+`).
+        interior spacing.
         """
         # width 2 (max marker "10"); row 5's source begins with digits + 2 spaces.
-        output = "5  42  meaning\n10  ok"
+        output = "5 | 42  meaning\n10 | ok"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == " 5  42  meaning\n10  ok"
+        assert compacted == " 5 | 42  meaning\n10 | ok"
 
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
         """Output without a gutter is returned unchanged."""
@@ -3805,16 +3823,17 @@ class TestToolCallMessageFileOutput:
         r"""Heads that aren't a bare `N`/`N.M` are treated as source, not gutter.
 
         Guards against corrupting data whose first column merely resembles a
-        number (leading/trailing dot, multiple dots) — in both the legacy tab
-        and current two-space forms, since a malformed head fails the marker
-        pattern before the separator alternation is ever reached.
+        number (leading/trailing dot, multiple dots) — across the legacy tab,
+        legacy two-space, and current pipe forms, since a malformed head fails
+        the marker pattern before the separator alternation is ever reached.
         """
         # Leading dot, trailing dot, and multi-dot heads must all pass through,
         # whichever separator follows. All lines are non-gutter, so nothing
         # matches and the whole output is returned verbatim.
         output = (
             "   .5\tweird\n   5.\talso\n 1.2.3\tnope\n"
-            ".5  two-space\n5.  two-space\n1.2.3  two-space"
+            ".5  two-space\n5.  two-space\n1.2.3  two-space\n"
+            ".5 | pipe\n5. | pipe\n1.2.3 | pipe"
         )
         assert ToolCallMessage._compact_line_gutter(output) == output
 
@@ -3832,7 +3851,7 @@ class TestToolCallMessageFileOutput:
         result = msg._format_file_output(output, is_preview=True)
 
         rendered = result.content.plain.split("\n")
-        assert rendered[0] == " 1  line 1"  # width 2 (max line number is 20)
+        assert rendered[0] == " 1 | line 1"  # width 2 (max line number is 20)
         assert result.truncation == "16 more lines"
 
     def test_compact_line_gutter_empty_output(self) -> None:

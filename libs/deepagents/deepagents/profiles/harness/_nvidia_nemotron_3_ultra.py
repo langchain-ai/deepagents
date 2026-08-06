@@ -141,14 +141,15 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         """Return whether `row` looks like a formatted `read_file` source line.
 
         Matches a primary source marker (`N`), optional spaces-only right-justify
-        padding in front of it, then the current two-space separator (emitted by
-        `format_content_with_line_numbers`) or the legacy `cat -n` tab.
-        Continuation rows (`N.M`) fail — the `.` follows the digits, so they are
-        not counted toward the source-line limit. The separator clause is matched
-        exactly (two spaces or a tab), in lockstep with the producer and with the
-        TUI `_compact_line_gutter` parser.
+        padding in front of it, then the current ` | ` separator (emitted by
+        `format_content_with_line_numbers`) or a legacy separator (the two-space
+        gutter, or the original `cat -n` tab) from content persisted by an older
+        deepagents version. Continuation rows (`N.M`) fail — the `.` follows the
+        digits, so they are not counted toward the source-line limit. The
+        separator clause is matched exactly, in lockstep with the producer and
+        with the TUI `_compact_line_gutter` parser.
         """
-        return re.match(r"^ *\d+(?:  |\t)", row) is not None
+        return re.match(r"^ *\d+(?: \| |  |\t)", row) is not None
 
     @staticmethod
     def _annotate(

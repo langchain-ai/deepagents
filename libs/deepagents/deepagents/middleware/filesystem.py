@@ -923,7 +923,7 @@ def _truncate_paginated_read(
 
     Args:
         content: Line-numbered content produced by
-            `format_content_with_line_numbers` (a marker followed by two spaces
+            `format_content_with_line_numbers` (a marker followed by ` | `
             and the source content).
         file_path: Path used to format the truncation message.
         read_result: Backend read result carrying the window metadata; the
@@ -964,7 +964,7 @@ def _truncate_paginated_read(
         boundaries: list[tuple[int, int]] = []
         for index, row in enumerate(rows):
             position += len(row)
-            marker = row.lstrip().partition("  ")[0].partition(".")[0]
+            marker = row.lstrip().partition(" | ")[0].partition(".")[0]
             source_line = int(marker)
             # Rows numbered past the window's last source line are not file
             # content: a byte-capped backend page appends its own truncation
@@ -978,7 +978,7 @@ def _truncate_paginated_read(
                 break
             next_source_line = None
             if index + 1 < len(rows):
-                next_marker = rows[index + 1].lstrip().partition("  ")[0].partition(".")[0]
+                next_marker = rows[index + 1].lstrip().partition(" | ")[0].partition(".")[0]
                 next_source_line = int(next_marker)
             if next_source_line != source_line:
                 boundaries.append((position, source_line))

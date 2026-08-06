@@ -5509,8 +5509,8 @@ class TestCreateCliAgentInterpreterWiring:
             runtime=runtime,
         )
 
-        assert "1  first" in allowed.content
-        assert "2  second" in allowed.content
+        assert "1 | first" in allowed.content
+        assert "2 | second" in allowed.content
         assert "can only read" in denied
 
     def test_rubric_grader_prefix_tracks_artifacts_root(self, tmp_path: Path) -> None:

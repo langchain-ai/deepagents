@@ -199,8 +199,9 @@ def format_content_with_line_numbers(
     """Format file content with line numbers.
 
     Chunks lines longer than `MAX_LINE_LENGTH` with continuation markers
-    (e.g., `5.1`, `5.2`). Line markers are separated from source content
-    with two spaces so source tabs cannot be confused with a gutter separator.
+    (e.g., `5.1`, `5.2`). Line markers are separated from source content with
+    ` | ` so the gutter can never be confused with source indentation,
+    whether the source uses tabs or spaces.
 
     Args:
         content: File content as string or list of lines
@@ -230,19 +231,24 @@ def format_content_with_line_numbers(
             rows.append((marker, chunk))
             marker_width = max(marker_width, len(marker))
 
-    # The two-space marker/source separator is a load-bearing contract shared by
-    # two downstream parsers that must stay in sync with the separator emitted
+    # The ` | ` marker/source separator is a load-bearing contract shared by
+    # downstream parsers that must stay in sync with the separator emitted
     # here:
+    #   - `_truncate_paginated_read` (middleware/filesystem.py, same package)
+    #     extracts the leading line number from each rendered row to compute
+    #     truncation boundaries.
     #   - `ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row`
     #     (profiles/harness/_nvidia_nemotron_3_ultra.py) counts source rows to
     #     decide whether to append the continuation notice.
     #   - `ToolCallMessage._compact_line_gutter` (the deepagents-code TUI, in a
     #     separate package: libs/code/.../tui/widgets/messages.py) re-justifies
     #     the gutter for display.
-    # Both also tolerate the legacy `cat -n` tab. Shrinking this separator below
-    # two spaces (or otherwise diverging) would silently break them; the
-    # producer->consumer round-trip tests in both packages guard against that.
-    return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
+    # The latter two also tolerate the legacy two-space separator and the
+    # original `cat -n` tab, since they may parse content persisted by an older
+    # deepagents version. Changing this separator (or otherwise diverging) would
+    # silently break them; the producer->consumer round-trip tests in both
+    # packages guard against that.
+    return "\n".join(f"{marker:>{marker_width}} | {line}" for marker, line in rows)
 
 
 def check_empty_content(content: str) -> str | None:

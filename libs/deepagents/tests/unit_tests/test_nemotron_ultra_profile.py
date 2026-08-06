@@ -156,23 +156,25 @@ def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
 def test_is_numbered_read_file_row_contract() -> None:
     """Pin which rows count as source lines for the continuation heuristic.
 
-    Primary markers with the current two-space separator or the legacy `cat -n`
-    tab count; padded markers count; continuation (`N.M`) rows and plain text do
-    not. Kept in sync with `format_content_with_line_numbers`' separator.
+    Primary markers with the current ` | ` separator, or a legacy separator
+    (the two-space gutter, or the original `cat -n` tab), count; padded markers
+    count; continuation (`N.M`) rows and plain text do not. Kept in sync with
+    `format_content_with_line_numbers`' separator.
     """
     is_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
 
-    # Source rows: current two-space, right-justify padding, and legacy tab.
+    # Source rows: current pipe, right-justify padding, and both legacy forms.
+    assert is_row("1 | source")
+    assert is_row(" 10 | source")
     assert is_row("1  source")
-    assert is_row(" 10  source")
     assert is_row("1\tsource")
     # A single space is not the separator: guards against the regex loosening
     # back to `\s+`/`\s{2,}`, which would count malformed rows.
     assert not is_row("1 source")
     # Continuation rows (unpadded and padded) and non-gutter text are not source
     # lines.
-    assert not is_row("1.1  wrapped")
-    assert not is_row(" 5.1  wrapped")
+    assert not is_row("1.1 | wrapped")
+    assert not is_row(" 5.1 | wrapped")
     assert not is_row("plain text with no gutter")
     assert not is_row("")
 

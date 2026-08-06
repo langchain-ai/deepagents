@@ -206,16 +206,18 @@ _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
 
-_READ_FILE_GUTTER_RE = re.compile(r"^ *(\d+(?:\.\d+)?)(?:  |\t)(.*)$")
+_READ_FILE_GUTTER_RE = re.compile(r"^ *(\d+(?:\.\d+)?)(?: \| |  |\t)(.*)$")
 """Match a `read_file` gutter row into (marker, source).
 
 The marker is a bare `N` or `N.M` (the latter a wrapped-line continuation) —
 both sides of the dot required, so a stray `.5` head is not a gutter. The
-separator is exactly two spaces (current format) or a single tab (legacy
-`cat -n`). Only the separator is consumed and leading padding is spaces-only, so
-source indentation — including leading tabs — after the gutter stays put. Kept in
-sync with the separator emitted by deepagents' `format_content_with_line_numbers`
-(the authoritative producer). See `ToolCallMessage._compact_line_gutter`.
+separator is ` | ` (current format), or a legacy separator — two spaces, or a
+single tab (`cat -n`) — from output persisted by an older deepagents version.
+Only the separator is consumed and leading padding is spaces-only, so source
+indentation — including leading tabs and spaces — after the gutter stays put.
+Kept in sync with the separator emitted by deepagents'
+`format_content_with_line_numbers` (the authoritative producer). See
+`ToolCallMessage._compact_line_gutter`.
 """
 
 
@@ -2667,13 +2669,14 @@ class ToolCallMessage(Vertical):
         r"""Tighten `read_file`'s line-number gutter for display.
 
         `read_file` prefixes each row with a right-justified line marker — `N`,
-        or `N.M` for a wrapped-line continuation — then two spaces, then the
-        original source content. (Output from deepagents versions predating the
-        gutter disambiguation in #4561 used the older `cat -n` gutter — a wide
-        right-justified number and a tab — which may still surface from cached or
+        or `N.M` for a wrapped-line continuation — then ` | `, then the original
+        source content. (Output from deepagents versions predating the gutter
+        disambiguation in #5343 used a two-space separator, and versions
+        predating #4561 used the older `cat -n` gutter — a wide right-justified
+        number and a tab — either of which may still surface from cached or
         persisted transcripts.) The model needs the raw gutter for edits, but the
-        TUI re-justifies markers to the widest marker actually present, then two
-        spaces, mirroring how grep/glob results sit flush left. Source
+        TUI re-justifies markers to the widest marker actually present, then
+        ` | `, mirroring how grep/glob results sit flush left. Source
         indentation after the gutter is preserved untouched.
 
         The gutter shape is `_READ_FILE_GUTTER_RE`. Lines that don't match a
@@ -2705,7 +2708,7 @@ class ToolCallMessage(Vertical):
                 compacted.append(line)
             else:
                 marker, source = row
-                compacted.append(f"{marker:>{width}}  {source}")
+                compacted.append(f"{marker:>{width}} | {source}")
         return "\n".join(compacted)
 
     def _format_edit_file_output(

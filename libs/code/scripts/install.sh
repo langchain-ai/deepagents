@@ -553,15 +553,14 @@ copy_install_log() {
   # than following it, so this guard is not what makes publishing safe. Keep it
   # anyway — it fails early and explicitly on an obviously tampered path.
   [ ! -L "$INSTALL_LOG" ] || return 1
-  # Stage inside a private directory. `mktemp` alone only protects creation:
-  # a user who owns install_log_dir could replace its resulting file before
-  # `cp` reopens it. The directory is mode 700, and copying via a relative
-  # pathname after entering it means the copy never follows such a replacement.
-  # Keeping the stage beneath install_log_dir also keeps the final move a
-  # same-filesystem rename, so it replaces a planted INSTALL_LOG symlink rather
-  # than degrading into a cross-filesystem copy that could follow one.
+  # Do not stage beneath install_log_dir: when this runs as root, its parent can
+  # still be user-writable and the user could replace a freshly-created staging
+  # directory before `cp` enters it. `/tmp` is sticky, so a root-owned 0700
+  # directory created there cannot be renamed or replaced by another user.
+  # The final `mv` replaces a planted INSTALL_LOG symlink instead of following
+  # it.
   local stage_dir staged
-  stage_dir=$(mktemp -d "${install_log_dir}/.install.log.XXXXXX" 2>/dev/null) || return 2
+  stage_dir=$(mktemp -d "/tmp/deepagents-code-install-log.XXXXXX" 2>/dev/null) || return 2
   staged="${stage_dir}/install.log"
   if ! (cd "$stage_dir" && cp "$uv_stderr" install.log) 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true

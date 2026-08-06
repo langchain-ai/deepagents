@@ -1974,6 +1974,35 @@ def test_copy_install_log_publishes_captured_stderr(tmp_path: Path) -> None:
     assert list(log_dir.glob(".install.log.*")) == []
 
 
+def test_copy_install_log_stages_outside_user_writable_log_dir(
+    tmp_path: Path,
+) -> None:
+    """The copied log is staged in sticky `/tmp`, not below the cache path.
+
+    A root installer cannot safely reopen a staging directory whose parent is
+    user-writable: that user can rename the directory and replace it with a
+    symlink before `cp` runs. Pin the `mktemp` template so the staging parent
+    remains independent of the cache directory.
+    """
+    mktemp_args = tmp_path / "mktemp-args.txt"
+    rc, _log_dir, published = _run_copy_install_log(
+        tmp_path,
+        race_hook=(
+            "mktemp() {\n"
+            f"  printf '%s\\n' \"$@\" > {str(mktemp_args)!r}\n"
+            '  command mktemp "$@"\n'
+            "}\n"
+        ),
+    )
+
+    assert rc == 0
+    assert mktemp_args.read_text().splitlines() == [
+        "-d",
+        "/tmp/deepagents-code-install-log.XXXXXX",
+    ]
+    assert published.read_text() == "captured uv stderr\n"
+
+
 def test_copy_install_log_replaces_symlink_planted_during_the_race(
     tmp_path: Path,
 ) -> None:

@@ -72,10 +72,9 @@
 #     supported version. Set DEEPAGENTS_CODE_OFFLINE=1 to skip the managed
 #     download entirely.
 #
-# The uv bootstrap download is verified against the SHA-256 manifest Astral
-# publishes with each uv release before it is executed; a mismatch, an
-# unreachable manifest, or a host with no SHA-256 tool aborts the install
-# rather than running unverified code.
+# Before execution, the downloaded uv bootstrap script is checked for a shell
+# shebang and valid shell syntax. These structural checks help catch error
+# pages and some truncated downloads, but do not verify its integrity.
 #   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
 #     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_NO_MODIFY_PATH — set to 1 to skip PATH setup entirely

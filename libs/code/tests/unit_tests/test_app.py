@@ -13097,6 +13097,153 @@ class TestAutoClassifierModelCommand:
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
         assert screen._include_recent_models is False
 
+    @staticmethod
+    def _rendered_description(push: MagicMock) -> str:
+        """Return the picker description as the user sees it rendered.
+
+        Reads through `Static.render()` rather than `str(...)` on purpose:
+        `str(Content(s)) == s`, so a `str()` assertion passes whether the
+        description was built as markup-safe `Content` or as a raw `str` that
+        `Static` would parse as markup.
+        """
+        rendered = Static(push.call_args.args[0]._description).render()
+        assert isinstance(rendered, Content)
+        return rendered.plain
+
+    async def test_selector_description_names_the_configured_classifier(self) -> None:
+        """The picker should name the classifier, not the main agent model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-haiku-4-5"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-haiku-4-5."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_marks_a_classifier_matching_the_main_model(
+        self,
+    ) -> None:
+        """A classifier set to the main model should not read as a distinct one."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "openai:gpt-5.5"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_does_not_parse_a_spec_as_markup(self) -> None:
+        """A bracketed spec should render literally, not as a style tag."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-opus-5[dim]"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-opus-5[dim]."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_does_not_crash_on_a_closing_tag_spec(
+        self,
+    ) -> None:
+        """A spec with `[/]` should render, not raise `MarkupError` on open."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-opus-5[/]"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-opus-5[/]."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_renders_markup_safely_when_mounted(
+        self,
+    ) -> None:
+        """The live modal, not just a hand-built `Static`, must render the spec.
+
+        The other description tests read `screen._description` and wrap it
+        themselves, so they would all still pass if `compose` started coercing
+        the description with `str(...)` — which is exactly the regression that
+        makes a `[/]` spec crash the modal.
+        """
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "anthropic:claude-opus-5[/]"
+            with patch.object(
+                app, "_effective_model_spec", return_value="openai:gpt-5.5"
+            ):
+                await app._show_auto_classifier_model_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            rendered = screen.query_one(".model-selector-description", Static).render()
+            assert isinstance(rendered, Content)
+            assert "anthropic:claude-opus-5[/]" in rendered.plain
+
+    async def test_selector_description_marks_an_inherited_classifier(self) -> None:
+        """With no classifier set, the picker should name the main agent model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = None
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+        )
+
+    async def test_selector_description_never_shows_the_inherit_sentinel(self) -> None:
+        """`--auto-classifier-model ""` should read as inheriting, not as a spec."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = INHERIT_CLASSIFIER_MODEL
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+        )
+
+    async def test_selector_description_without_a_resolved_main_model(self) -> None:
+        """Before credentials resolve a spec, the picker names only the role."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = None
+        with (
+            patch.object(app, "_effective_model_spec", return_value=None),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with the main agent model."
+        )
+
     async def test_bare_auto_still_switches_approval_mode(self) -> None:
         """`/auto` without arguments keeps switching approval mode."""
         from deepagents_code.approval_mode import ApprovalMode

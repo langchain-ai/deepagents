@@ -2313,6 +2313,7 @@ async def execute_task_textual(
             if interrupt_occurred:
                 any_rejected = False
                 ask_user_cancelled = False
+                dismissed_question_count = 0
                 resume_payload: dict[str, Any] = dict(pending_hook_resumes)
 
                 # Tools mounted above start their spinner immediately, but a
@@ -2485,6 +2486,12 @@ async def execute_task_textual(
                             # Halt the turn on cancel; error branches still
                             # resume so the agent can react to the failure.
                             ask_user_cancelled = True
+                            # Counts questions, not calls, purely so the banner
+                            # below can pick a singular or plural subject — the
+                            # halt reads the flag above, never this. A widget
+                            # dismisses its whole prompt, so every question in a
+                            # cancelled call went with it.
+                            dismissed_question_count += len(questions)
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
                             output = ASK_USER_CANCELLED_SUMMARY
                             _dispatch_tool_error_hook("ask_user")
@@ -2948,18 +2955,31 @@ async def execute_task_textual(
                                 tool_id,
                             )
 
+                    dismissed_subject = (
+                        "Questions" if dismissed_question_count > 1 else "Question"
+                    )
                     message = (
-                        "Question cancelled. Tell the agent what you'd like instead."
+                        f"{dismissed_subject} dismissed. Tell the agent what you'd "
+                        "like instead."
                         if ask_user_cancelled
                         else "Command rejected. Tell the agent what you'd like instead."
                     )
                     if undelivered:
                         # The user typed answers and they are now gone; saying so
                         # is the only way they learn not to wait for a response.
+                        # Which event destroyed them differs: a dismissal in this
+                        # batch, or — when `pending_ask_user` is empty because it
+                        # resets each stream iteration — a rejection in a later
+                        # iteration discarding an earlier one's answered row.
+                        cause = (
+                            f"{dismissed_subject} dismissed"
+                            if ask_user_cancelled
+                            else "Command rejected"
+                        )
                         message = (
-                            "Question cancelled, so answers to the other "
-                            "question(s) in this batch were not sent. Tell the "
-                            "agent what you'd like instead."
+                            f"{cause}, so answers to the other question(s) in this "
+                            "batch were not sent. Tell the agent what you'd like "
+                            "instead."
                         )
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time

@@ -108,6 +108,12 @@ effectively unbounded traversal. A resolved value above the ceiling is rejected
 and falls through to the next layer / default.
 """
 
+COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
+"""Context size above which a resumed thread is offered compaction.
+
+Zero or negative disables the suggestion.
+"""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -1472,6 +1478,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         settings_field="interpreter_ptc_acknowledge_unsafe",
     ),
     # --- Threads (config.toml-only; structured column table excepted) ---
+    ConfigOption(
+        key="threads.compact_on_resume_threshold",
+        group="Threads",
+        summary=(
+            "Offer to compact a resumed thread above this context size (0 disables)."
+        ),
+        kind=OptionKind.INT,
+        default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+        toml_keys=("threads", "compact_on_resume_threshold"),
+    ),
     ConfigOption(
         key="threads.relative_time",
         group="Threads",

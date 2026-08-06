@@ -225,6 +225,13 @@ Ensure the following:
 - Edge cases and error conditions are tested
 - Tests are deterministic (no flaky tests)
 
+**Never pipe a gating command through a filter.** When you run a verification or gating command (`pytest`, `ruff`, `make test`, `make lint`, `make type`), do not pipe it through `tail`, `head`, or `grep -v`.
+
+- A pipeline's exit status is the **last** command's, so a failing test run reports success, and `cmd | tail -20 && next` still runs `next` after the gate failed.
+- Run gating commands unfiltered. If output volume is genuinely a problem, use `set -o pipefail`, check `${PIPESTATUS[0]}`, or narrow the output with pytest's own selectors (`-k`, `-x`, `-q`, `--no-header`) instead of a trailing filter.
+- Before stating that work is complete, quote the observed summary line (for example, `201 passed in 12.3s`) from an unfiltered run.
+- Filtering output of **exploratory** commands (`git log`, `ls`, `grep`) is fine — this rule covers gating commands only.
+
 ### Security and risk assessment
 
 - No `eval()`, `exec()`, or `pickle` on user-controlled input

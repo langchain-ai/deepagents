@@ -1611,7 +1611,10 @@ def _resolves_to_upgraded_entry_point(
             silently dismissed.
     """
     try:
-        return Path(path_entry).resolve() == (upgraded_bin_dir / name).resolve()
+        return (
+            Path(path_entry).resolve()
+            == (upgraded_bin_dir / Path(path_entry).name).resolve()
+        )
     except OSError:
         # `Path.resolve` is non-strict, so a merely missing path does not land
         # here — an `OSError` means something abnormal (`ELOOP`, `EACCES` on a

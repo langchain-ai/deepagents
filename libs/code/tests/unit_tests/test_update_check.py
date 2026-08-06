@@ -2002,6 +2002,32 @@ class TestDetectShadowedDcode:
         ):
             assert detect_shadowed_dcode() is None
 
+    def test_returns_none_for_windows_convenience_symlink_to_upgraded_shim(
+        self, tmp_path
+    ) -> None:
+        """A `.exe` alias to uv's shim is not a Windows PATH shadow."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        upgraded_shim = uv_bin / "dcode.exe"
+        upgraded_shim.write_text("")
+        alias = other_bin / "dcode.exe"
+        alias.symlink_to(upgraded_shim)
+
+        def _which(name: str) -> str | None:
+            return str(alias) if name == "dcode" else None
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+        ):
+            assert detect_shadowed_dcode() is None
+
     def test_reports_shadow_when_resolution_cannot_be_verified(self, tmp_path) -> None:
         """An unresolvable PATH entry falls back to reporting the shadow.
 

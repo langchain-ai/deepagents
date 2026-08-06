@@ -624,6 +624,18 @@ async function validateTrigger({ github, context, core, botLogin = null, botId =
       }
       return { shouldRun: false };
     }
+    // A manual command passes silently into a queued GitHub Actions run that can
+    // take minutes to publish the override/applied comment, leaving the
+    // maintainer unsure whether the command even registered. Acknowledge it so a
+    // valid command always gets an immediate bot reply, matching the feedback
+    // every rejected command already gets.
+    await createComment(
+      github,
+      owner,
+      repo,
+      number,
+      `Running \`${command}\` for the \`${target.component}\` release PR; the result will be posted as a follow-up comment.`,
+    );
   }
 
   const result = {

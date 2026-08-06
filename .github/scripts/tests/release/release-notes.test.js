@@ -390,6 +390,24 @@ test('manual commands ignore comments authored by the configured bot', async () 
   assert.equal(run.calls.createComment.length, 0);
 });
 
+test('an accepted manual command is acknowledged immediately', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot draft', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub({ permission: 'write' });
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, true);
+  assert.equal(result.command, 'draft');
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /Running `draft` for the `deepagents-code` release PR/);
+});
+
 test('ready_for_review automatically validates as draft command', async () => {
   const { github } = makeGithub();
   const context = {
@@ -1344,7 +1362,9 @@ test('manual commands run for maintainers and admins', async () => {
   const maintainResult = await releaseNotes.validateTrigger({ github: maintain.github, context, core: makeCore() });
   assert.equal(maintainResult.shouldRun, true);
   assert.equal(maintainResult.command, 'apply');
-  assert.equal(maintain.calls.createComment.length, 0);
+  // Accepted commands are acknowledged with exactly one reply.
+  assert.equal(maintain.calls.createComment.length, 1);
+  assert.match(maintain.calls.createComment[0].body, /Running `apply`/);
 
   // The admin flag grants access even when the permission string is not in the set.
   const admin = makeGithub({ permission: 'read', adminFlag: true });
@@ -1373,6 +1393,9 @@ test('validateTrigger surfaces draft instructions and drops apply instructions',
   assert.equal(draftResult.shouldRun, true);
   assert.equal(draftResult.command, 'draft');
   assert.equal(draftResult.instructions, 'emphasize the breaking SDK change');
+  // The ack is a plain reply; instructions ride along in the result, not the comment.
+  assert.equal(draftRun.calls.createComment.length, 1);
+  assert.match(draftRun.calls.createComment[0].body, /Running `draft`/);
 
   // Instructions after `apply` never reach the workflow: apply republishes the
   // stored draft, so the gate reports no instructions for it.

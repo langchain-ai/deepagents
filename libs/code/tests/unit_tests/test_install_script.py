@@ -1677,6 +1677,43 @@ def test_install_script_warns_when_receipt_is_absent(tmp_path: Path) -> None:
     assert "re-run with the same value" in proc.stderr
 
 
+def test_install_script_warns_when_receipt_read_races(tmp_path: Path) -> None:
+    """A receipt removed after preflight checks does not abort the installer."""
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    env = _env(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+    sed = tmp_path / "bin" / "sed"
+    sed.write_text(
+        f"""#!/usr/bin/env bash
+for argument in "$@"; do
+  if [ "$argument" = {str(receipt)!r} ]; then
+    exit 1
+  fi
+done
+exec /usr/bin/sed "$@"
+"""
+    )
+    _make_executable(sed)
+
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert (tmp_path / "uv-args.txt").is_file()
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
 def test_install_script_warns_when_tool_dir_is_unsearchable(tmp_path: Path) -> None:
     """A tool dir left root-owned and 0700 by a prior sudo run must warn.

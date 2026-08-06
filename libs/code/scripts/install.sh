@@ -1543,40 +1543,43 @@ if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ]; then
       # "no extras" for an install that has them, defeating the whole check. The
       # range runs from the requirements line to the next top-level key, which
       # covers both the single-line array uv writes today and a wrapped one.
-      receipt_requirements=$(sed -nE \
+      if receipt_requirements=$(sed -nE \
         '/^requirements = /,$ { /^requirements = /!{ /^[A-Za-z_-]+ = /q; }; p; }' \
-        "$receipt" 2>/dev/null)
-      # Then isolate the deepagents-code inline table ([^{}] cannot cross into a
-      # neighbouring requirement) and read extras out of that entry alone. uv
-      # keeps each inline table on one line (observed through uv 0.9); if a
-      # future formatter wraps it, the entry match fails - handled below.
-      receipt_entry=$(printf '%s\n' "$receipt_requirements" \
-        | sed -nE 's/.*(\{[^{}]*name = "deepagents-code"[^{}]*\}).*/\1/p' \
-        | head -1)
-      if [ -n "$receipt_entry" ]; then
-        INSTALLED_EXTRAS=$(printf '%s\n' "$receipt_entry" \
-          | sed -nE 's/.*extras = \[([^]]*)\].*/\1/p' \
-          | tr -d ' "')
-        # INSTALLED_EXTRAS is echoed back inside a double-quoted, ready-to-paste
-        # shell command below; on a shared host a less-privileged writer of the
-        # receipt could plant `$(...)` and have it evaluated by whoever pastes
-        # the suggestion. Restrict to PEP 508 extra-name characters plus commas —
-        # anything else means the receipt was tampered with or written by a
-        # foreign tool, which is the unparseable case. An empty value is the
-        # normal no-extras receipt (uv omits the key entirely), not tampering.
-        case "$INSTALLED_EXTRAS" in
-          *[!A-Za-z0-9_,.-]*)
-            EXTRAS_UNREADABLE=true
-            INSTALLED_EXTRAS=""
-            ;;
-        esac
+        "$receipt" 2>/dev/null); then
+        # Then isolate the deepagents-code inline table ([^{}] cannot cross into a
+        # neighbouring requirement) and read extras out of that entry alone. uv
+        # keeps each inline table on one line (observed through uv 0.9); if a
+        # future formatter wraps it, the entry match fails - handled below.
+        receipt_entry=$(printf '%s\n' "$receipt_requirements" \
+          | sed -nE 's/.*(\{[^{}]*name = "deepagents-code"[^{}]*\}).*/\1/p' \
+          | head -1)
+        if [ -n "$receipt_entry" ]; then
+          INSTALLED_EXTRAS=$(printf '%s\n' "$receipt_entry" \
+            | sed -nE 's/.*extras = \[([^]]*)\].*/\1/p' \
+            | tr -d ' "')
+          # INSTALLED_EXTRAS is echoed back inside a double-quoted, ready-to-paste
+          # shell command below; on a shared host a less-privileged writer of the
+          # receipt could plant `$(...)` and have it evaluated by whoever pastes
+          # the suggestion. Restrict to PEP 508 extra-name characters plus commas —
+          # anything else means the receipt was tampered with or written by a
+          # foreign tool, which is the unparseable case. An empty value is the
+          # normal no-extras receipt (uv omits the key entirely), not tampering.
+          case "$INSTALLED_EXTRAS" in
+            *[!A-Za-z0-9_,.-]*)
+              EXTRAS_UNREADABLE=true
+              INSTALLED_EXTRAS=""
+              ;;
+          esac
+        else
+          # No entry matched: either the receipt has no `requirements` section we
+          # recognise, or the requirement is wrapped across lines. Both are "we
+          # cannot tell" and never "no extras" - uv always records the tool's own
+          # requirement, so a miss here is a parse failure, not an empty install.
+          EXTRAS_UNREADABLE=true
+        fi
       else
-        # No entry matched: either the receipt has no `requirements` section we
-        # recognise, or the requirement is wrapped across lines. Both are "we
-        # cannot tell" and never "no extras" - uv always records the tool's own
-        # requirement, so a miss here is a parse failure, not an empty install.
-        # (This also absorbs a failed read: sed's stderr is discarded, and an
-        # unreadable file yields no region and so no entry.)
+        # The read failed after the checks above, so the receipt may have changed
+        # or disappeared while we were reading it. Treat that race as unreadable.
         EXTRAS_UNREADABLE=true
       fi
     fi

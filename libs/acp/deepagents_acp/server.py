@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard
 from uuid import uuid4
 
@@ -31,7 +30,6 @@ from acp import (
 )
 from acp.exceptions import RequestError
 from acp.schema import (
-    AcpMcpServer,
     AgentCapabilities,
     AgentMessageChunk,
     AgentPlanUpdate,
@@ -89,13 +87,13 @@ if TYPE_CHECKING:
 SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
 """Compatibility alias for the optional ACP `SessionConfigOption` wrapper."""
 
-McpServer: TypeAlias = HttpMcpServer | SseMcpServer | AcpMcpServer | McpServerStdio
+McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
 """Type alias for ACP MCP server configuration variants."""
 
 ReplayContentBlock: TypeAlias = TextContentBlock | ImageContentBlock | AudioContentBlock
 """ACP content blocks that can be reconstructed from LangChain messages."""
 
-_MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, AcpMcpServer, McpServerStdio)
+_MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
 """Runtime MCP server classes used to detect legacy positional `new_session` calls."""
 
 _ACP_MODE_METADATA_KEY = "acp_mode"
@@ -138,58 +136,22 @@ def _is_mcp_servers(
     return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
-def _langchain_content_blocks(message: Any) -> list[dict[str, Any]]:
-    """Return normalized LangChain content blocks for a persisted message."""
-    try:
-        blocks = message.content_blocks
-    except (AttributeError, TypeError, ValueError):
-        content = getattr(message, "content", "")
-        if isinstance(content, str):
-            return [{"type": "text", "text": content}]
-        if not isinstance(content, list):
-            return []
-        blocks = [
-            {"type": "text", "text": block} if isinstance(block, str) else block
-            for block in content
-        ]
-    return [block for block in blocks if isinstance(block, dict)]
-
-
 def _replay_content_blocks(message: Any) -> list[ReplayContentBlock]:
     """Convert persisted LangChain content into replayable ACP blocks."""
     replay_blocks: list[ReplayContentBlock] = []
-    for block in _langchain_content_blocks(message):
+    for block in message.content_blocks:
         block_type = block.get("type")
-        if block_type == "text" and isinstance(block.get("text"), str):
+        data = block.get("base64")
+        mime_type = block.get("mime_type")
+        if block_type == "text":
             replay_blocks.append(text_block(block["text"]))
+        elif not (isinstance(data, str) and isinstance(mime_type, str)):
             continue
-        if block_type == "image":
-            data = block.get("base64")
-            mime_type = block.get("mime_type")
-            if isinstance(data, str) and isinstance(mime_type, str):
-                replay_blocks.append(image_block(data, mime_type, uri=block.get("url")))
-            elif isinstance(block.get("url"), str):
-                replay_blocks.append(text_block(f"[Image: {block['url']}]"))
-            continue
-        if block_type == "audio":
-            data = block.get("base64")
-            mime_type = block.get("mime_type")
-            if isinstance(data, str) and isinstance(mime_type, str):
-                replay_blocks.append(audio_block(data, mime_type))
+        elif block_type == "image":
+            replay_blocks.append(image_block(data, mime_type, uri=block.get("url")))
+        elif block_type == "audio":
+            replay_blocks.append(audio_block(data, mime_type))
     return replay_blocks
-
-
-def _replay_message_text(message: Any) -> str:
-    """Flatten the textual portion of a persisted message."""
-    text = "".join(
-        block["text"]
-        for block in _langchain_content_blocks(message)
-        if block.get("type") == "text" and isinstance(block.get("text"), str)
-    )
-    if text:
-        return text
-    content = getattr(message, "content", "")
-    return content if isinstance(content, str) else str(content)
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,30 +348,21 @@ class AgentServerACP(ACPAgent):
         if not self._load_sessions:
             method = "session/load"
             raise RequestError.method_not_found(method)
-        if not Path(cwd).is_absolute():
-            raise RequestError.invalid_params({"cwd": "must be an absolute path"})
 
         self._session_cwds[session_id] = cwd
-        self._session_mcp_servers[session_id] = list(mcp_servers or [])
-        self._initialize_session_options(session_id)
         agent = self._checkpointed_agent(session_id)
-
-        snapshot = await agent.aget_state(self._session_config(session_id))
-        if snapshot.created_at is None:
-            self._forget_session(session_id)
-            raise RequestError.resource_not_found(session_id)
-
-        metadata = snapshot.metadata or {}
+        metadata = (await agent.aget_state(self._session_config(session_id))).metadata or {}
         if metadata.get(_ACP_SESSION_METADATA_KEY) is not True:
-            self._forget_session(session_id)
+            del self._session_cwds[session_id]
             raise RequestError.resource_not_found(session_id)
-        saved_cwd = metadata.get("cwd")
-        if saved_cwd != cwd:
-            self._forget_session(session_id)
+        if metadata.get("cwd") != cwd:
+            del self._session_cwds[session_id]
             raise RequestError.invalid_params(
                 {"cwd": "must match the working directory used to create the session"}
             )
 
+        self._session_mcp_servers[session_id] = list(mcp_servers or [])
+        self._initialize_session_options(session_id)
         if self._restore_session_options(session_id, metadata):
             self._reset_agent(session_id)
 
@@ -809,19 +762,6 @@ class AgentServerACP(ACPAgent):
         agent = self._checkpointed_agent(session_id)
         await agent.aupdate_state(self._session_config(session_id), {}, as_node="__start__")
 
-    def _forget_session(self, session_id: str) -> None:
-        """Remove transient state created while attempting to load a session."""
-        self._session_cwds.pop(session_id, None)
-        self._session_mcp_servers.pop(session_id, None)
-        self._session_modes.pop(session_id, None)
-        self._session_mode_states.pop(session_id, None)
-        self._session_models.pop(session_id, None)
-        self._session_plans.pop(session_id, None)
-        self._allowed_command_types.pop(session_id, None)
-        if self._agent_session_id == session_id:
-            self._agent = None
-            self._agent_session_id = None
-
     async def _replay_session(
         self,
         session_id: str,
@@ -829,20 +769,12 @@ class AgentServerACP(ACPAgent):
     ) -> None:
         """Replay persisted conversation entries before `session/load` returns."""
         active_tool_calls: dict[str, dict[str, Any]] = {}
-        messages = await self._persisted_messages(session_id, agent)
-        for index, message in enumerate(messages):
-            message_type = getattr(message, "type", None)
-            message_id = getattr(message, "id", None) or f"{session_id}:message:{index}"
-            if message_type == "human":
-                await self._replay_human_message(session_id, message_id, message)
-            elif message_type == "ai":
-                await self._replay_ai_message(
-                    session_id,
-                    message_id,
-                    message,
-                    active_tool_calls,
-                )
-            elif message_type == "tool":
+        for message in await self._persisted_messages(session_id, agent):
+            if message.type == "human":
+                await self._replay_human_message(session_id, message.id, message)
+            elif message.type == "ai":
+                await self._replay_ai_message(session_id, message.id, message, active_tool_calls)
+            elif message.type == "tool":
                 await self._replay_tool_message(session_id, message, active_tool_calls)
 
     async def _persisted_messages(
@@ -855,36 +787,12 @@ class AgentServerACP(ACPAgent):
             snapshot
             async for snapshot in agent.aget_state_history(self._session_config(session_id))
         ]
-        messages_by_key: dict[tuple[str, int], Any] = {}
-        message_order: list[tuple[str, int]] = []
+        # Reassignment keeps a message's original position while taking its newest revision.
+        messages: dict[str, Any] = {}
         for snapshot in reversed(snapshots):
-            messages = snapshot.values.get("messages", [])
-            if not isinstance(messages, list):
-                continue
-            occurrences: dict[str, int] = {}
-            for message in messages:
-                message_id = getattr(message, "id", None)
-                key = (
-                    message_id
-                    if isinstance(message_id, str)
-                    else json.dumps(
-                        {
-                            "type": getattr(message, "type", None),
-                            "content": getattr(message, "content", None),
-                            "tool_calls": getattr(message, "tool_calls", None),
-                            "tool_call_id": getattr(message, "tool_call_id", None),
-                        },
-                        default=str,
-                        sort_keys=True,
-                    )
-                )
-                occurrence = occurrences.get(key, 0)
-                occurrences[key] = occurrence + 1
-                identity = (key, occurrence)
-                if identity not in messages_by_key:
-                    message_order.append(identity)
-                messages_by_key[identity] = message
-        return [messages_by_key[key] for key in message_order]
+            for message in snapshot.values.get("messages", []):
+                messages[message.id] = message
+        return list(messages.values())
 
     async def _replay_human_message(
         self,
@@ -894,14 +802,13 @@ class AgentServerACP(ACPAgent):
     ) -> None:
         """Replay one persisted user message."""
         for block in _replay_content_blocks(message):
-            update = UserMessageChunk(
-                session_update="user_message_chunk",
-                content=block,
-                message_id=message_id,
-            )
             await self._conn.session_update(
                 session_id=session_id,
-                update=update,
+                update=UserMessageChunk(
+                    session_update="user_message_chunk",
+                    content=block,
+                    message_id=message_id,
+                ),
                 source="DeepAgent",
             )
 
@@ -914,28 +821,21 @@ class AgentServerACP(ACPAgent):
     ) -> None:
         """Replay one persisted assistant message and its tool calls."""
         for block in _replay_content_blocks(message):
-            update = AgentMessageChunk(
-                session_update="agent_message_chunk",
-                content=block,
-                message_id=message_id,
-            )
             await self._conn.session_update(
                 session_id=session_id,
-                update=update,
+                update=AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=block,
+                    message_id=message_id,
+                ),
                 source="DeepAgent",
             )
-        for tool_call in getattr(message, "tool_calls", []):
-            if not isinstance(tool_call, dict):
-                continue
+        for tool_call in message.tool_calls:
             tool_id = tool_call.get("id")
-            tool_name = tool_call.get("name")
-            tool_args = tool_call.get("args")
-            if not (
-                isinstance(tool_id, str)
-                and isinstance(tool_name, str)
-                and isinstance(tool_args, dict)
-            ):
+            if tool_id is None:
                 continue
+            tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
             active_tool_calls[tool_id] = {"name": tool_name, "args": tool_args}
             await self._conn.session_update(
                 session_id=session_id,
@@ -956,13 +856,12 @@ class AgentServerACP(ACPAgent):
         active_tool_calls: dict[str, dict[str, Any]],
     ) -> None:
         """Replay one persisted tool result."""
-        tool_call_id = getattr(message, "tool_call_id", None)
-        tool_info = active_tool_calls.get(tool_call_id)
-        if not isinstance(tool_call_id, str) or tool_info is None:
+        tool_info = active_tool_calls.get(message.tool_call_id)
+        if tool_info is None or tool_info["name"] == "edit_file":
             return
-        if tool_info["name"] == "edit_file":
-            return
-        content = _replay_message_text(message)
+        content = "".join(
+            block["text"] for block in message.content_blocks if block.get("type") == "text"
+        )
         if tool_info["name"] == "execute":
             content = format_execute_result(
                 command=str(tool_info["args"].get("command", "")),
@@ -971,8 +870,8 @@ class AgentServerACP(ACPAgent):
         await self._conn.session_update(
             session_id=session_id,
             update=update_tool_call(
-                tool_call_id=tool_call_id,
-                status=("failed" if getattr(message, "status", None) == "error" else "completed"),
+                tool_call_id=message.tool_call_id,
+                status="failed" if message.status == "error" else "completed",
                 content=[tool_content(text_block(content))],
             ),
             source="DeepAgent",

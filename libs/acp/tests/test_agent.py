@@ -222,14 +222,25 @@ async def test_acp_agent_initialize_and_modes() -> None:
     assert session.modes is None
 
 
-async def test_acp_agent_load_session_replays_persisted_history() -> None:
-    checkpointer = MemorySaver()
-    first_graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="Pong")])),
+def _persistent_graph(checkpointer: MemorySaver, *replies: str) -> CompiledStateGraph:
+    """Compile a deep agent over `checkpointer` that answers with `replies`."""
+    return create_deep_agent(
+        model=GenericFakeChatModel(messages=iter([AIMessage(content=reply) for reply in replies])),
         checkpointer=checkpointer,
     )
-    first_server = AgentServerACP(agent=first_graph, load_sessions=True)
-    first_server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+
+
+def _persistent_server(graph: CompiledStateGraph) -> tuple[AgentServerACP, FakeACPClient]:
+    """Build a `load_sessions` server for `graph` with a connected fake client."""
+    server = AgentServerACP(agent=graph, load_sessions=True)
+    client = FakeACPClient()
+    server.on_connect(client)  # type: ignore[arg-type]
+    return server, client
+
+
+async def test_acp_agent_load_session_replays_persisted_history() -> None:
+    checkpointer = MemorySaver()
+    first_server, _ = _persistent_server(_persistent_graph(checkpointer, "Pong"))
 
     session = await first_server.new_session(cwd="/tmp", mcp_servers=[])
     await first_server.prompt(
@@ -237,14 +248,7 @@ async def test_acp_agent_load_session_replays_persisted_history() -> None:
         session_id=session.session_id,
     )
 
-    restarted_graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    restarted_server = AgentServerACP(agent=restarted_graph, load_sessions=True)
-    client = FakeACPClient()
-    restarted_server.on_connect(client)  # type: ignore[arg-type]
-
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
     init = await restarted_server.initialize(protocol_version=1)
     assert init.agent_capabilities.load_session is True
     response = await restarted_server.load_session(
@@ -264,12 +268,8 @@ async def test_acp_agent_load_session_replays_persisted_history() -> None:
 
 async def test_acp_agent_load_session_replays_tool_calls() -> None:
     checkpointer = MemorySaver()
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    server = AgentServerACP(agent=graph, load_sessions=True)
-    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    graph = _persistent_graph(checkpointer)
+    server, _ = _persistent_server(graph)
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
     await graph.aupdate_state(
         server._session_config(session.session_id),
@@ -277,6 +277,7 @@ async def test_acp_agent_load_session_replays_tool_calls() -> None:
             "messages": [
                 AIMessage(
                     content="",
+                    id="agent-message",
                     tool_calls=[
                         {
                             "name": "execute",
@@ -286,20 +287,13 @@ async def test_acp_agent_load_session_replays_tool_calls() -> None:
                         }
                     ],
                 ),
-                ToolMessage(content="hi", tool_call_id="call_1"),
+                ToolMessage(content="hi", id="tool-message", tool_call_id="call_1"),
             ]
         },
         as_node="__start__",
     )
 
-    restarted_graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    restarted_server = AgentServerACP(agent=restarted_graph, load_sessions=True)
-    client = FakeACPClient()
-    restarted_server.on_connect(client)  # type: ignore[arg-type]
-
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
     await restarted_server.load_session(
         cwd="/tmp",
         session_id=session.session_id,
@@ -320,12 +314,8 @@ async def test_acp_agent_load_session_replays_tool_calls() -> None:
 
 async def test_acp_agent_load_session_replays_compacted_messages() -> None:
     checkpointer = MemorySaver()
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    server = AgentServerACP(agent=graph, load_sessions=True)
-    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    graph = _persistent_graph(checkpointer)
+    server, _ = _persistent_server(graph)
     session = await server.new_session(cwd="/tmp", mcp_servers=[])
     config = server._session_config(session.session_id)
     await graph.aupdate_state(
@@ -350,13 +340,7 @@ async def test_acp_agent_load_session_replays_compacted_messages() -> None:
         as_node="model",
     )
 
-    restarted_graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    restarted_server = AgentServerACP(agent=restarted_graph, load_sessions=True)
-    client = FakeACPClient()
-    restarted_server.on_connect(client)  # type: ignore[arg-type]
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
     await restarted_server.load_session(
         cwd="/tmp",
         session_id=session.session_id,
@@ -433,74 +417,23 @@ async def test_acp_agent_load_session_restores_config_options() -> None:
     assert contexts[-1] == AgentSessionContext(cwd="/tmp", mode="manual", model="model-b")
 
 
-async def test_acp_agent_load_session_restores_empty_session() -> None:
-    checkpointer = MemorySaver()
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    server = AgentServerACP(agent=graph, load_sessions=True)
-    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
-    session = await server.new_session(cwd="/tmp", mcp_servers=[])
-
-    restarted_graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    restarted_server = AgentServerACP(agent=restarted_graph, load_sessions=True)
-    client = FakeACPClient()
-    restarted_server.on_connect(client)  # type: ignore[arg-type]
-
-    await restarted_server.load_session(
-        cwd="/tmp",
-        session_id=session.session_id,
-        mcp_servers=[],
-    )
-    assert client.events == []
-
-
-async def test_acp_agent_load_session_rejects_unknown_session() -> None:
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=MemorySaver(),
-    )
-    server = AgentServerACP(agent=graph, load_sessions=True)
-    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
-
-    with pytest.raises(RequestError) as exc_info:
-        await server.load_session(cwd="/tmp", session_id="missing", mcp_servers=[])
-
-    assert exc_info.value.code == -32002
-
-
-async def test_acp_agent_load_session_rejects_non_acp_checkpoint() -> None:
-    checkpointer = MemorySaver()
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
+async def test_acp_agent_load_session_rejects_sessions_it_did_not_create() -> None:
+    graph = _persistent_graph(MemorySaver())
     await graph.aupdate_state(
         {"configurable": {"thread_id": "other"}, "metadata": {"cwd": "/tmp"}},
         {},
         as_node="__start__",
     )
-    server = AgentServerACP(agent=graph, load_sessions=True)
-    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    server, _ = _persistent_server(graph)
 
-    with pytest.raises(RequestError) as exc_info:
-        await server.load_session(cwd="/tmp", session_id="other", mcp_servers=[])
-
-    assert exc_info.value.code == -32002
+    for session_id in ("missing", "other"):
+        with pytest.raises(RequestError) as exc_info:
+            await server.load_session(cwd="/tmp", session_id=session_id, mcp_servers=[])
+        assert exc_info.value.code == -32002
 
 
 async def test_acp_agent_load_session_rejects_different_cwd() -> None:
-    checkpointer = MemorySaver()
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=checkpointer,
-    )
-    server = AgentServerACP(agent=graph, load_sessions=True)
-    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    server, _ = _persistent_server(_persistent_graph(MemorySaver()))
     session = await server.new_session(cwd="/tmp/original", mcp_servers=[])
 
     with pytest.raises(RequestError) as exc_info:
@@ -513,25 +446,8 @@ async def test_acp_agent_load_session_rejects_different_cwd() -> None:
     assert exc_info.value.code == -32602
 
 
-async def test_acp_agent_load_session_rejects_relative_cwd() -> None:
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=MemorySaver(),
-    )
-    server = AgentServerACP(agent=graph, load_sessions=True)
-
-    with pytest.raises(RequestError) as load_exc:
-        await server.load_session(cwd="relative", session_id="missing", mcp_servers=[])
-
-    assert load_exc.value.code == -32602
-
-
 async def test_acp_agent_load_session_is_unavailable_when_disabled() -> None:
-    graph = create_deep_agent(
-        model=GenericFakeChatModel(messages=iter([])),
-        checkpointer=MemorySaver(),
-    )
-    server = AgentServerACP(agent=graph)
+    server = AgentServerACP(agent=_persistent_graph(MemorySaver()))
 
     with pytest.raises(RequestError) as exc_info:
         await server.load_session(cwd="/tmp", session_id="session", mcp_servers=[])

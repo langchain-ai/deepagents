@@ -12,13 +12,16 @@ from uuid import uuid4
 import httpx
 import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.errors import GraphInterrupt
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from langchain_core.callbacks import AsyncCallbackManager, CallbackManager
     from langchain_core.runnables import RunnableConfig
 
 from deepagents_code import model_config
@@ -47,7 +50,17 @@ from deepagents_code.model_retry import (
     format_retry_status,
 )
 
-_READ_ERROR = httpx.ReadError("connection dropped")
+
+def _read_error() -> httpx.ReadError:
+    """Return a fresh transient transport error.
+
+    Deliberately a factory, not a shared instance: the retry driver annotates an
+    exception whose budget it exhausted (so an enclosing driver does not restart
+    it), and a module-level singleton would carry that mark into later tests.
+    """
+    return httpx.ReadError("connection dropped")
+
+
 _CONNECT_ERROR = httpx.ConnectError("connection refused")
 _VALUE_ERROR = ValueError("bad request")
 
@@ -252,6 +265,42 @@ def test_valid_retry_provider_tables_do_not_warn(
     assert "not a known provider" not in caplog.text
 
 
+def test_late_resolved_provider_still_gets_its_retry_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider only `init_chat_model` can name must still pick up its config.
+
+    For a bare model name that `detect_provider` cannot place, the pre-construction
+    provider is `""`, so the retry lookup finds no `[retries.<provider>]` table and
+    falls back to the global count. The provider becomes known once the model
+    exists, so the budget is re-resolved rather than silently discarding the
+    user's per-provider setting.
+    """
+    cfg = _write_config(
+        tmp_path,
+        "[retries]\nmax_retries = 3\n[retries.openai]\nmax_retries = 10\n",
+    )
+    model = MagicMock(spec=BaseChatModel)
+    model.profile = None
+    # What `init_chat_model` records after inferring the provider itself.
+    model._model_provider = "openai"
+    monkeypatch.setattr(model_config, "has_provider_credentials", lambda _: True)
+    model_config.clear_caches()
+    with (
+        patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg),
+        patch("deepagents_code.config.detect_provider", return_value=None),
+        patch("langchain.chat_models.init_chat_model", return_value=model),
+    ):
+        result = create_model("some-unrecognized-model")
+    model_config.clear_caches()
+
+    assert result.provider == "openai"
+    # 10 from `[retries.openai]`, not the global 3.
+    assert result.model_retries == 10
+    assert getattr(model, MODEL_RETRIES_ATTR) == 10
+
+
 @pytest.mark.parametrize("cli_retries", [0, 3])
 def test_create_model_disables_provider_retries(
     tmp_path: Path,
@@ -342,7 +391,10 @@ def test_string_startup_model_uses_retry_aware_creation(tmp_path: Path) -> None:
     """Public string callers cannot bypass SDK retry disabling or metadata."""
     from deepagents_code.agent import create_cli_agent
     from deepagents_code.model_retry import CodeModelRetryMiddleware
-    from deepagents_code.offload_middleware import RetryingSummarizationMiddleware
+    from deepagents_code.offload_middleware import (
+        CLICompactionMiddleware,
+        RetryingSummarizationMiddleware,
+    )
 
     model = FakeListChatModel(responses=["ok"])
     model.profile = {"max_input_tokens": 20_000}
@@ -377,14 +429,119 @@ def test_string_startup_model_uses_retry_aware_creation(tmp_path: Path) -> None:
         item for item in main_middleware if isinstance(item, CodeModelRetryMiddleware)
     )
     assert main_retry.max_retries == 2
-    assert any(
+    # `CLICompactionMiddleware` owns the automatic-summarization slot on the main
+    # agent, so the retrying summarizer must not also be installed there: both
+    # report `name == "SummarizationMiddleware"` and `_apply_custom_middleware`
+    # silently drops all but the last entry for a given name.
+    assert not any(
         isinstance(item, RetryingSummarizationMiddleware) for item in main_middleware
     )
+    assert any(isinstance(item, CLICompactionMiddleware) for item in main_middleware)
+    names = [item.name for item in main_middleware]
+    assert len(names) == len(set(names)), f"duplicate middleware names: {names}"
     for subagent in build.call_args.kwargs["subagents"]:
         assert any(
             isinstance(item, RetryingSummarizationMiddleware)
             for item in subagent["middleware"]
         )
+
+
+def test_subagent_missing_credentials_does_not_block_startup(tmp_path: Path) -> None:
+    """A declarative subagent naming an unusable provider defers to invocation.
+
+    `create_model` runs dcode's fail-fast credential precheck, so constructing a
+    subagent model eagerly would let one unused `.deepagents/agents/*.md` file
+    stop the whole CLI from starting.
+    """
+    from deepagents_code.agent import create_cli_agent
+    from deepagents_code.model_config import MissingCredentialsError
+
+    model = FakeListChatModel(responses=["ok"])
+    model.profile = {"max_input_tokens": 20_000}
+    graph = MagicMock()
+    graph.with_config.return_value = graph
+    subagent_meta = {
+        "name": "researcher",
+        "description": "research things",
+        "system_prompt": "research",
+        "model": "anthropic:claude-sonnet-4-5",
+    }
+
+    def fake_create_model(spec: str, **_kwargs: object) -> ModelResult:
+        if spec == "anthropic:claude-sonnet-4-5":
+            msg = "No credentials found for provider 'anthropic'"
+            raise MissingCredentialsError(
+                msg, provider="anthropic", env_var="ANTHROPIC_API_KEY"
+            )
+        return ModelResult(
+            model=model, model_name="model", provider="openai", model_retries=2
+        )
+
+    with (
+        patch("deepagents_code.config.create_model", side_effect=fake_create_model),
+        patch("deepagents_code.agent.list_subagents", return_value=[subagent_meta]),
+        patch("deepagents_code.agent.create_deep_agent", return_value=graph) as build,
+    ):
+        create_cli_agent(
+            model="openai:gpt-5",
+            assistant_id="retry-test",
+            auto_approve=True,
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test",
+            cwd=tmp_path,
+        )
+
+    subagent = next(
+        item
+        for item in build.call_args.kwargs["subagents"]
+        if item["name"] == "researcher"
+    )
+    # Unresolvable: kept as the lazy spec so the failure surfaces on invocation.
+    assert subagent["model"] == "anthropic:claude-sonnet-4-5"
+
+
+def test_prebuilt_model_budget_does_not_forge_a_cli_override(tmp_path: Path) -> None:
+    """A config-resolved count must not masquerade as `--max-retries`.
+
+    Both CLI entry points build the model with `create_model` and pass the
+    resolved count back into `create_cli_agent`. Recording that as a CLI override
+    would make a runtime `/model` switch reuse the old provider's number instead
+    of consulting `[retries.<new-provider>]`.
+    """
+    from deepagents_code.agent import create_cli_agent
+    from deepagents_code.config import (
+        MODEL_RETRY_OVERRIDE_ATTR,
+        get_model_retries,
+        set_model_retry_metadata,
+    )
+
+    model = FakeListChatModel(responses=["ok"])
+    model.profile = {"max_input_tokens": 20_000}
+    # What `create_model` leaves behind for `[retries.openai].max_retries = 2`
+    # with no `--max-retries` on the command line.
+    set_model_retry_metadata(model, retries=2, cli_override=None)
+    graph = MagicMock()
+    graph.with_config.return_value = graph
+    with (
+        patch("deepagents_code.agent.list_subagents", return_value=[]),
+        patch("deepagents_code.agent.create_deep_agent", return_value=graph),
+    ):
+        create_cli_agent(
+            model=model,
+            assistant_id="retry-test",
+            auto_approve=True,
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test",
+            cwd=tmp_path,
+            model_retries=2,
+        )
+
+    assert get_model_retries(model, 99) == 2
+    assert getattr(model, MODEL_RETRY_OVERRIDE_ATTR) is None
 
 
 def test_resolve_config_retry_count_direct() -> None:
@@ -578,7 +735,7 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         if calls["n"] < 3:
-            raise _READ_ERROR
+            raise _read_error()
         return response
 
     mw = CodeModelRetryMiddleware(max_retries=5)
@@ -598,7 +755,7 @@ def test_wrapped_transient_error_retries_within_budget(
         calls["n"] += 1
         if calls["n"] == 1:
             wrapped = RuntimeError("model graph failed")
-            wrapped.__cause__ = _READ_ERROR
+            wrapped.__cause__ = _read_error()
             raise wrapped
         return _response()
 
@@ -617,7 +774,9 @@ def test_exception_group_transient_error_retries_within_budget(
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         if calls["n"] == 1:
-            group = ExceptionGroup("model graph failed", [ValueError("x"), _READ_ERROR])
+            group = ExceptionGroup(
+                "model graph failed", [ValueError("x"), _read_error()]
+            )
             raise group
         return _response()
 
@@ -639,7 +798,7 @@ def test_does_not_retry_after_streamed_output() -> None:
         assert selected.model is model
         stream = selected.model.stream(selected.messages)
         assert next(stream).text == "f"
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=3)
     with pytest.raises(httpx.ReadError):
@@ -663,7 +822,7 @@ async def test_async_does_not_retry_after_streamed_output() -> None:
         assert selected.model is model
         stream = selected.model.astream(selected.messages)
         assert (await anext(stream)).text == "f"
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=3)
     with pytest.raises(httpx.ReadError):
@@ -680,7 +839,7 @@ def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     mw = CodeModelRetryMiddleware(max_retries=2)
     with pytest.raises(httpx.ReadError):
@@ -708,7 +867,7 @@ def test_zero_retries_calls_handler_once() -> None:
 
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     with pytest.raises(httpx.ReadError):
         mw.wrap_model_call(_req(), handler)
@@ -725,7 +884,7 @@ def test_request_model_overrides_startup_retry_count(
 
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=0)
     with pytest.raises(httpx.ReadError):
@@ -743,7 +902,7 @@ def test_runtime_context_overrides_same_models_attached_budget(
 
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=5)
     with pytest.raises(httpx.ReadError):
@@ -793,7 +952,7 @@ def test_runtime_model_switch_uses_selected_models_retry_count(
         assert CLI_MAX_RETRIES_KEY not in selected.model_settings
         calls["n"] += 1
         if calls["n"] < 4:
-            raise _READ_ERROR
+            raise _read_error()
         return response
 
     retry = CodeModelRetryMiddleware(max_retries=1)
@@ -857,7 +1016,7 @@ async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None
     ) -> ModelResponse[Any]:
         calls["n"] += 1
         if calls["n"] < 2:
-            raise _READ_ERROR
+            raise _read_error()
         return response
 
     mw = CodeModelRetryMiddleware(max_retries=3)
@@ -945,6 +1104,63 @@ def test_compute_delay_jitter_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert low >= 0.0
 
 
+def test_retry_loop_sleeps_the_computed_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop must actually wait, with the attempt-indexed delay.
+
+    `_compute_delay` is well covered in isolation, but nothing connected it to the
+    loop: dropping the sleep, or passing a fixed index instead of `attempt`, turns
+    the budget into a tight hammer loop against an already-struggling provider and
+    every other test still passes.
+    """
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.random.uniform", lambda _a, _b: 0.0
+    )
+    slept: list[float] = []
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.time.sleep", lambda delay: slept.append(delay)
+    )
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    model = MagicMock(spec=BaseChatModel)
+
+    def handler() -> ModelResponse[Any]:
+        raise _read_error()
+
+    with pytest.raises(httpx.ReadError):
+        middleware.run_with_retry(model, handler, max_retries=3)
+
+    # One sleep per retry (not per attempt), following the exponential curve.
+    assert slept == pytest.approx([0.2, 0.4, 0.8])
+
+
+async def test_async_retry_loop_sleeps_the_computed_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Async twin of `test_retry_loop_sleeps_the_computed_backoff`."""
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.random.uniform", lambda _a, _b: 0.0
+    )
+    slept: list[float] = []
+
+    # Must stay a coroutine function to stand in for `asyncio.sleep`, and must not
+    # await anything itself -- awaiting the patched `sleep` would recurse.
+    async def _fake_sleep(delay: float) -> None:  # noqa: RUF029
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    middleware = CodeModelRetryMiddleware(max_retries=2)
+    model = MagicMock(spec=BaseChatModel)
+
+    async def handler() -> ModelResponse[Any]:  # noqa: RUF029  # awaited by the driver
+        raise _read_error()
+
+    with pytest.raises(httpx.ReadError):
+        await middleware.arun_with_retry(model, handler, max_retries=2)
+
+    assert slept == pytest.approx([0.2, 0.4])
+
+
 # --- defensive attribute guards ---
 
 
@@ -971,7 +1187,7 @@ def test_writer_failure_does_not_break_retry_loop(
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         if calls["n"] < 3:
-            raise _READ_ERROR
+            raise _read_error()
         return response
 
     def bad_writer(_event: dict[str, object]) -> None:
@@ -1003,7 +1219,7 @@ async def test_async_exhaustion_reraises_original(
         _request: ModelRequest,
     ) -> ModelResponse[Any]:
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     mw = CodeModelRetryMiddleware(max_retries=2)
     with pytest.raises(httpx.ReadError):
@@ -1027,7 +1243,7 @@ async def test_async_request_model_overrides_startup_retry_count(
         _request: ModelRequest,
     ) -> ModelResponse[Any]:
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=0)
     with pytest.raises(httpx.ReadError):
@@ -1080,7 +1296,7 @@ def test_negative_override_runs_once_and_reraises() -> None:
 
     def handler() -> ModelResponse[Any]:
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     with pytest.raises(httpx.ReadError):
         mw.run_with_retry(model, handler, max_retries=-1)
@@ -1094,7 +1310,7 @@ async def test_async_negative_override_runs_once_and_reraises() -> None:
 
     async def handler() -> ModelResponse[Any]:  # noqa: RUF029  # awaited by middleware
         calls["n"] += 1
-        raise _READ_ERROR
+        raise _read_error()
 
     with pytest.raises(httpx.ReadError):
         await mw.arun_with_retry(model, handler, max_retries=-1)
@@ -1107,14 +1323,14 @@ async def test_async_negative_override_runs_once_and_reraises() -> None:
 def test_should_retry_top_level_deterministic_status_wins() -> None:
     """A 401 carrying a transient __cause__ is not retryable."""
     err = AuthenticationError()  # status_code = 401
-    err.__cause__ = _READ_ERROR
+    err.__cause__ = _read_error()
     assert _should_retry_after_failure(err) is False
 
 
 def test_should_retry_opaque_wrapper_with_transient_cause() -> None:
     """A statusless opaque wrapper still retries via the chain scan."""
     wrapped = RuntimeError("opaque model graph failure")
-    wrapped.__cause__ = _READ_ERROR
+    wrapped.__cause__ = _read_error()
     assert _should_retry_after_failure(wrapped) is True
 
 
@@ -1133,7 +1349,7 @@ def test_deterministic_error_with_transient_cause_not_retried(
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         err = AuthenticationError()
-        err.__cause__ = _READ_ERROR
+        err.__cause__ = _read_error()
         raise err
 
     mw = CodeModelRetryMiddleware(max_retries=5)
@@ -1189,7 +1405,7 @@ def test_exception_chain_walks_context_even_when_cause_set() -> None:
 
     outer = RuntimeError("outer")
     cause = ValueError("cause")
-    context = _READ_ERROR
+    context = _read_error()
     outer.__cause__ = cause
     outer.__context__ = context
     names = [type(item).__name__ for item in exception_chain(outer)]
@@ -1202,7 +1418,7 @@ def test_should_retry_exception_group_top_level_auth_wins() -> None:
     """A top-level group member that is definitive non-retryable blocks retry."""
     group = ExceptionGroup(
         "model graph failed",
-        [AuthenticationError(), _READ_ERROR],
+        [AuthenticationError(), _read_error()],
     )
     assert _should_retry_after_failure(group) is False
 
@@ -1212,7 +1428,7 @@ def test_should_retry_nested_exception_group_auth_wins() -> None:
     group = ExceptionGroup(
         "model graph failed",
         [
-            ExceptionGroup("inner", [AuthenticationError(), _READ_ERROR]),
+            ExceptionGroup("inner", [AuthenticationError(), _read_error()]),
         ],
     )
     assert _should_retry_after_failure(group) is False
@@ -1222,7 +1438,7 @@ def test_should_retry_nested_exception_group_all_transient_still_retries() -> No
     group = ExceptionGroup(
         "model graph failed",
         [
-            ExceptionGroup("inner", [_READ_ERROR, _StatusError(503)]),
+            ExceptionGroup("inner", [_read_error(), _StatusError(503)]),
         ],
     )
     assert _should_retry_after_failure(group) is True
@@ -1231,9 +1447,118 @@ def test_should_retry_nested_exception_group_all_transient_still_retries() -> No
 def test_should_retry_exception_group_all_transient_still_retries() -> None:
     group = ExceptionGroup(
         "model graph failed",
-        [_READ_ERROR, _StatusError(503)],
+        [_read_error(), _StatusError(503)],
     )
     assert _should_retry_after_failure(group) is True
+
+
+def test_transient_wrapper_does_not_launder_a_permanent_cause() -> None:
+    """A permanent failure under a transient wrapper must not be retried.
+
+    The definitive verdict can arrive *below* the transient one, so checking only
+    the top level (or only group members) would burn the whole budget re-issuing a
+    request that can never succeed.
+    """
+    # The chain `raise ReadError() from AuthenticationError()` leaves behind.
+    exc = _read_error()
+    exc.__cause__ = AuthenticationError()
+    assert _should_retry_after_failure(exc) is False
+
+
+@pytest.mark.parametrize(
+    "deterministic",
+    [
+        ContextOverflowError("too large"),
+        GraphInterrupt(()),
+    ],
+    ids=["context_overflow", "graph_interrupt"],
+)
+def test_never_retry_types_beat_a_transient_sibling(
+    deterministic: Exception,
+) -> None:
+    """Control-flow and deterministic failures carry no status to classify by.
+
+    Without an explicit never-retry entry, the transient sibling would win the
+    chain scan -- suppressing an approval prompt, or delaying compaction, for the
+    full retry budget.
+    """
+    group = ExceptionGroup("model graph failed", [_read_error(), deterministic])
+    assert _should_retry_after_failure(group) is False
+
+
+def test_raise_from_none_severs_an_incidental_transient_context() -> None:
+    """`raise X from None` states the in-flight error is unrelated.
+
+    A deterministic error raised while a transport fault happens to be in flight
+    must not inherit that fault's retryability.
+    """
+    # Exactly the state `raise ValueError(...) from None` leaves behind inside an
+    # `except httpx.ReadError` block: context present, no cause, context suppressed.
+    exc = ValueError("deterministic")
+    exc.__context__ = _read_error()
+    exc.__suppress_context__ = True
+    assert _should_retry_after_failure(exc) is False
+
+    # Without the `from None`, the transport fault is still part of the story.
+    incidental = ValueError("deterministic")
+    incidental.__context__ = _read_error()
+    assert _should_retry_after_failure(incidental) is True
+
+
+def test_classification_failure_surfaces_the_model_error() -> None:
+    """A raising error attribute must not replace the failure being classified."""
+
+    class _LazyParseError(Exception):
+        @property
+        def code(self) -> str:
+            msg = "lazy parse failed"
+            raise RuntimeError(msg)
+
+    middleware = CodeModelRetryMiddleware(max_retries=2)
+    model = MagicMock(spec=BaseChatModel)
+    calls = 0
+
+    def handler() -> ModelResponse[Any]:
+        nonlocal calls
+        calls += 1
+        raise _LazyParseError
+
+    with pytest.raises(_LazyParseError):
+        middleware.run_with_retry(model, handler, max_retries=2)
+    # Unclassifiable, so treated as non-retryable rather than retried blindly.
+    assert calls == 1
+
+
+def test_nested_drivers_do_not_multiply_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An outer driver must not restart a budget an inner driver already spent.
+
+    Retry drivers nest in production (the model node wraps middleware that runs
+    its own summarizer/grader/classifier retries), so without this an exhausted
+    inner budget becomes `(retries + 1) ** 2` model calls behind a status line
+    still reporting the outer budget.
+    """
+    monkeypatch.setattr(
+        CodeModelRetryMiddleware, "_compute_delay", lambda _self, _attempt: 0.0
+    )
+    inner = CodeModelRetryMiddleware(max_retries=2)
+    outer = CodeModelRetryMiddleware(max_retries=2)
+    model = MagicMock(spec=BaseChatModel)
+    calls = 0
+
+    def leaf() -> ModelResponse[Any]:
+        nonlocal calls
+        calls += 1
+        raise _read_error()
+
+    def middle() -> ModelResponse[Any]:
+        return inner.run_with_retry(model, leaf, max_retries=2)
+
+    with pytest.raises(httpx.ReadError):
+        outer.run_with_retry(model, middle, max_retries=2)
+
+    assert calls == 3
 
 
 def test_explicit_non_retryable_marker_opts_out_of_timeout_fallback() -> None:
@@ -1269,7 +1594,7 @@ def test_hidden_summarizer_output_does_not_veto_retry() -> None:
         calls["n"] += 1
         assert selected.model is model
         _stream_from(summarizer, lc_source="summarization")
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=3)
     with (
@@ -1296,7 +1621,7 @@ async def test_async_hidden_summarizer_output_does_not_veto_retry() -> None:
             "prompt", config={"metadata": {"lc_source": "summarization"}}
         ):
             break
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=3)
     with (
@@ -1319,7 +1644,7 @@ def test_hidden_classifier_output_does_not_veto_retry() -> None:
         calls["n"] += 1
         assert selected.model is model
         _stream_from(classifier, lc_source="auto_mode_classifier")
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=2)
     with (
@@ -1342,13 +1667,81 @@ def test_untagged_inner_output_still_vetoes_retry() -> None:
         calls["n"] += 1
         assert selected.model is model
         _stream_from(other)
-        raise _READ_ERROR
+        raise _read_error()
 
     middleware = CodeModelRetryMiddleware(max_retries=3)
     with pytest.raises(httpx.ReadError):
         middleware.wrap_model_call(request, handler)
 
     assert calls["n"] == 1
+
+
+def test_protocol_stream_event_vetoes_retry_through_wrap_model_call() -> None:
+    """The tracker must be reachable via the ambient config, not just in isolation.
+
+    Real providers signal output with `on_stream_event`, while `FakeListChatModel`
+    (used by the other veto tests) only emits `on_llm_new_token`. Dispatching
+    through the ambient callback manager the way a provider does is what proves
+    `_stream_tracking_config` actually installed the tracker where the model can
+    reach it -- otherwise every streaming provider would replay partial output.
+    """
+    from langchain_core.callbacks.manager import handle_event
+    from langchain_core.runnables import ensure_config
+
+    events: list[dict] = []
+    calls = 0
+    request = _req(events, model_retries=3)
+
+    def handler(_selected: ModelRequest) -> ModelResponse[Any]:
+        nonlocal calls
+        calls += 1
+        manager = cast("CallbackManager", ensure_config()["callbacks"])
+        # Exactly how a streaming provider announces a chunk.
+        handle_event(
+            manager.handlers,
+            "on_stream_event",
+            "ignore_llm",
+            object(),
+            run_id=uuid4(),
+        )
+        raise _read_error()
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with pytest.raises(httpx.ReadError):
+        middleware.wrap_model_call(request, handler)
+
+    assert calls == 1
+    assert events == []
+
+
+async def test_async_protocol_stream_event_vetoes_retry() -> None:
+    """Async twin: the async callback manager must carry the tracker too."""
+    from langchain_core.callbacks.manager import ahandle_event
+    from langchain_core.runnables import ensure_config
+
+    events: list[dict] = []
+    calls = 0
+    request = _req(events, model_retries=3)
+
+    async def handler(_selected: ModelRequest) -> ModelResponse[Any]:
+        nonlocal calls
+        calls += 1
+        manager = cast("AsyncCallbackManager", ensure_config()["callbacks"])
+        await ahandle_event(
+            manager.handlers,
+            "on_stream_event",
+            "ignore_llm",
+            object(),
+            run_id=uuid4(),
+        )
+        raise _read_error()
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with pytest.raises(httpx.ReadError):
+        await middleware.awrap_model_call(request, handler)
+
+    assert calls == 1
+    assert events == []
 
 
 def test_on_stream_event_marks_output_visible() -> None:

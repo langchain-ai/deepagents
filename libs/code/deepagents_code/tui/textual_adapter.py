@@ -38,7 +38,6 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
-    from deepagents_code._session_stats import SpinnerStatus
     from deepagents_code.hooks.models.domain import ToolCallData
     from deepagents_code.resume_state import RubricResult
 
@@ -1548,11 +1547,8 @@ async def execute_task_textual(
                             # visible without changing main-agent UX.
                             if not is_main_agent:
                                 retry_status = f"nested {retry_status}"
-                            # LoadingWidget accepts text beyond the built-in statuses.
                             try:
-                                await adapter._set_spinner(
-                                    cast("SpinnerStatus", retry_status)
-                                )
+                                await adapter._set_spinner(retry_status)
                             except Exception:
                                 logger.debug(
                                     "model_retry spinner update failed",

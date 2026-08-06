@@ -1333,10 +1333,19 @@ def _resolve_criteria_model(
     model: str | BaseChatModel,
     retry_fallback: int | None,
 ) -> BaseChatModel:
-    """Construct string models through dcode's authoritative retry config.
+    """Construct string models through dcode's retry config.
+
+    Args:
+        model: Model spec to construct, or an already-concrete model.
+        retry_fallback: Retry budget to attach when constructing. Authoritative
+            for a string spec (it overrides the config-resolved count); ignored
+            for an already-concrete model.
 
     Returns:
-        A concrete model with provider retries disabled and retry metadata attached.
+        The model unchanged when it is already concrete -- neither provider retries
+            nor retry metadata are touched, since the caller owns its configuration.
+            Otherwise a model built via `create_model`, with provider retries
+            disabled and `retry_fallback` attached when one was given.
     """
     if not isinstance(model, str):
         return model
@@ -1368,7 +1377,9 @@ def create_goal_criteria_agent(
             sandbox, or `None` when repository context is unavailable.
         repository_root: Absolute path that bounds reads on `repository_backend`.
         context_tools: Loaded `fetch_url`, optional `web_search`, and MCP tools.
-        retry_fallback: Retry budget for models without attached metadata.
+        retry_fallback: Retry budget applied to the model. Authoritative for a
+            string spec -- it overrides the count `create_model` resolved from
+            config -- and the middleware fallback for an already-concrete model.
 
     Returns:
         Compiled criteria agent graph.
@@ -1404,7 +1415,9 @@ def _create_goal_criteria_agent(
         repository_root: Absolute path that bounds repository reads.
         context_tools: External context tools available to the criteria agent.
         auto_mode_enabled: Whether Auto may bypass delegated context approval.
-        retry_fallback: Retry budget for models without attached metadata.
+        retry_fallback: Retry budget applied to the model. Authoritative for a
+            string spec -- it overrides the count `create_model` resolved from
+            config -- and the middleware fallback for an already-concrete model.
         fs_tools: Parent filesystem-tool allowlist.
 
             The criteria agent exposes only the allowed subset of its read-only
@@ -1525,7 +1538,9 @@ def create_goal_criteria_fallback_agent(
 
     Args:
         model: Chat model or model identifier used by the server graph.
-        retry_fallback: Retry budget for models without attached metadata.
+        retry_fallback: Retry budget applied to the model. Authoritative for a
+            string spec -- it overrides the count `create_model` resolved from
+            config -- and the middleware fallback for an already-concrete model.
 
     Returns:
         Compiled goal-only criteria agent graph.

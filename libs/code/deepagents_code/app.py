@@ -1828,10 +1828,10 @@ def _model_retry_override(params: dict[str, Any] | None) -> int | None:
     """Return a validated retry carrier from model params, if present."""
     if not params:
         return None
-    from deepagents_code.config import CLI_MAX_RETRIES_KEY
+    from deepagents_code.config import CLI_MAX_RETRIES_KEY, is_valid_retry_count
 
     value = params.get(CLI_MAX_RETRIES_KEY)
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+    if is_valid_retry_count(value):
         return value
     return None
 

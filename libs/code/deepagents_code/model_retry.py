@@ -22,8 +22,11 @@ from langchain_core.callbacks import (
     BaseCallbackHandler,
     CallbackManager,
 )
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.runnables import ensure_config, patch_config
 from langchain_core.runnables.config import set_config_context
+from langgraph.errors import GraphBubbleUp
+from pydantic import ValidationError
 
 from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
@@ -82,10 +85,11 @@ Producers invoke their model with `config={"metadata": {"lc_source": ...}}`:
 `_create_summary_with_retry` / `_acreate_summary_with_retry` in
 `offload_middleware` (and upstream `SummarizationMiddleware._create_summary`)
 tag `"summarization"`; `AutoModeHITLMiddleware._classify` tags
-`"auto_mode_classifier"`. Both streams are filtered out of the transcript by
-the renderers (`_is_summarization_chunk` / `_is_auto_mode_classifier_chunk` in
-`tui/textual_adapter`, and `client/non_interactive`), so their tokens must not
-count as user-visible output when deciding whether a retry is safe.
+`"auto_mode_classifier"`. Neither reaches the transcript: the TUI renderer filters
+both (`_is_summarization_chunk` / `_is_auto_mode_classifier_chunk` in
+`tui/textual_adapter`), `client/non_interactive` filters summarization, and the
+classifier does not run outside the interactive runtime at all. So their tokens
+must not count as user-visible output when deciding whether a retry is safe.
 """
 
 
@@ -158,7 +162,7 @@ class _StreamOutputTracker(BaseCallbackHandler):
         tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Mark a legacy chunk as externally visible, including empty chunks."""
+        """Mark a token-stream chunk as externally visible, including empty ones."""
         del token, chunk, parent_run_id, tags, kwargs
         if run_id in self._hidden_runs:
             return
@@ -308,6 +312,29 @@ lets these retry.
 """
 
 
+def _safe_getattr(obj: object, name: str) -> Any:  # noqa: ANN401  # arbitrary SDK attribute
+    """Return `obj.name`, treating a raising descriptor as absent.
+
+    Provider SDKs (and custom provider classes registered via `[models.providers]`)
+    may expose error details through properties that parse a response body lazily
+    and can themselves raise. Classification runs inside an `except` block, so an
+    unguarded probe would replace the model failure with the probe's own error --
+    the user would see that instead of the real cause, and no retry would happen.
+
+    Args:
+        obj: Object to probe, normally the exception being classified.
+        name: Attribute name to read.
+
+    Returns:
+        The attribute value, or `None` when it is missing or raises.
+    """
+    try:
+        return getattr(obj, name, None)
+    except Exception:
+        logger.debug("Probing %r on %r raised", name, type(obj), exc_info=True)
+        return None
+
+
 def _provider_error_code(exc: Exception) -> str | None:
     """Return a provider-specific string error code, if the SDK carries one.
 
@@ -322,10 +349,10 @@ def _provider_error_code(exc: Exception) -> str | None:
         The string error code, or `None` when the exception carries none.
     """
     for attr in ("code", "type"):
-        value = getattr(exc, attr, None)
+        value = _safe_getattr(exc, attr)
         if isinstance(value, str) and value:
             return value
-    response = getattr(exc, "response", None)
+    response = _safe_getattr(exc, "response")
     if isinstance(response, dict):
         error = response.get("Error")
         if isinstance(error, dict):
@@ -371,7 +398,7 @@ def _extract_status_code(exc: Exception) -> int | None:
     Returns:
         The integer status code, or `None` when the exception carries none.
     """
-    status = getattr(exc, "status_code", None)
+    status = _safe_getattr(exc, "status_code")
     if isinstance(status, bool):
         return None
     if isinstance(status, int):
@@ -382,13 +409,13 @@ def _extract_status_code(exc: Exception) -> int | None:
     # Over pure gRPC the same attribute is a non-int StatusCode enum and is
     # ignored here so name-based classification can run. Check int `code`
     # before `response`, which may be absent or may contain a gRPC call object.
-    code = getattr(exc, "code", None)
+    code = _safe_getattr(exc, "code")
     if isinstance(code, int) and not isinstance(code, bool):
         return code
 
-    response = getattr(exc, "response", None)
+    response = _safe_getattr(exc, "response")
     if response is not None:
-        response_status = getattr(response, "status_code", None)
+        response_status = _safe_getattr(response, "status_code")
         if isinstance(response_status, int) and not isinstance(response_status, bool):
             return response_status
         if isinstance(response, dict):
@@ -400,7 +427,7 @@ def _extract_status_code(exc: Exception) -> int | None:
                 ):
                     return response_status
 
-    http_status = getattr(exc, "http_status", None)
+    http_status = _safe_getattr(exc, "http_status")
     if isinstance(http_status, int) and not isinstance(http_status, bool):
         return http_status
 
@@ -422,7 +449,48 @@ def _is_transient_sdk_error(exc: Exception) -> bool:
 
 def _is_marked_non_retryable(exc: BaseException) -> bool:
     """Return whether `exc` opted out of model-node retries via marker attr."""
-    return getattr(exc, DCODE_MODEL_RETRYABLE_ATTR, None) is False
+    return _safe_getattr(exc, DCODE_MODEL_RETRYABLE_ATTR) is False
+
+
+_NEVER_RETRY_TYPES: tuple[type[BaseException], ...] = (
+    GraphBubbleUp,
+    ContextOverflowError,
+    ValidationError,
+)
+"""Types that are never a transient model fault, regardless of the error chain.
+
+`GraphBubbleUp` is LangGraph's control-flow signal (interrupts and other
+bubble-ups), not a failure; retrying it would suppress a pending approval prompt.
+`ContextOverflowError` is deterministic -- the request is too large and will be
+too large on every attempt, so retrying only delays the compaction path that
+actually handles it. `ValidationError` is how a structured-output call reports a
+response that does not fit the schema; the same prompt reproduces it, so retrying
+just spends the budget to surface the identical error.
+
+These carry no HTTP status and no provider error code, so the status-based checks
+in `_is_definitive_non_retryable` cannot recognize them. Without an explicit
+entry, any transient fault elsewhere in the chain (a dropped connection recorded
+as `__context__`, or a sibling under a task group) would make the chain scan vote
+to retry.
+"""
+
+
+def _mark_non_retryable(exc: BaseException) -> None:
+    """Mark `exc` so an enclosing retry driver declines to retry it.
+
+    Retry drivers nest: the model-node middleware wraps inner middleware that runs
+    its own `run_with_retry` (summarization, the rubric grader, the Auto
+    classifier). Without a marker the outer driver would re-run a handler whose
+    inner budget is already spent, multiplying attempts -- `retries + 1` squared
+    in the worst case -- while the status line still reports the outer budget.
+
+    Marking is best-effort: some SDK exceptions define `__slots__` or are otherwise
+    read-only, and failing to annotate must never replace the original error.
+    """
+    try:
+        setattr(exc, DCODE_MODEL_RETRYABLE_ATTR, False)
+    except Exception:
+        logger.debug("Could not mark %r as retry-exhausted", type(exc), exc_info=True)
 
 
 def _is_status_retryable(status: int, *, error_code: str | None) -> bool:
@@ -441,6 +509,8 @@ def _is_definitive_non_retryable(exc: Exception) -> bool:
     deterministic failure wins over sibling or chained transient faults.
     """
     if _is_marked_non_retryable(exc):
+        return True
+    if isinstance(exc, _NEVER_RETRY_TYPES):
         return True
     error_code = _provider_error_code(exc)
     if error_code in _NONRETRYABLE_ERROR_CODES:
@@ -538,6 +608,13 @@ def exception_chain(exc: BaseException) -> Iterator[BaseException]:
     `BaseExceptionGroup` members, so transient transport faults stay
     discoverable whether they are explicit causes, implicit contexts, or
     sibling tasks under asyncio/anyio.
+
+    `raise X from None` is honored as an explicit statement that the in-flight
+    context is unrelated, so it is not followed -- otherwise an incidental
+    transient error could vote to retry a deliberate, deterministic failure.
+    Note this is narrower than `__suppress_context__` alone: assigning `__cause__`
+    also sets that flag, and there both links stay in the chain because an
+    explicit cause suppresses the context only for *display*.
     """
     pending = [exc]
     seen: set[int] = set()
@@ -554,6 +631,7 @@ def exception_chain(exc: BaseException) -> Iterator[BaseException]:
         if (
             current.__context__ is not None
             and current.__context__ is not current.__cause__
+            and not (current.__suppress_context__ and current.__cause__ is None)
         ):
             pending.append(current.__context__)
 
@@ -573,18 +651,18 @@ def _contains_retryable_model_error(exc: BaseException) -> bool:
 def _should_retry_after_failure(exc: BaseException) -> bool:
     """Decide whether a failed model call is worth retrying.
 
-    The top-level exception's own classification wins when it is definitively
-    non-transient: a permanent provider error code, a status-bearing
-    deterministic client error (a 4xx other than 408/429 that is not an AWS
-    throttle or known-transient SDK type), or a typed local opt-out marker.
-    The same guard applies recursively to members of a `BaseExceptionGroup`,
-    so a grouped `group[401, ReadError]` — or a nested
-    `group[group[401, ReadError]]` — is not retried just because a sibling is
-    transient.
+    A definitive verdict anywhere in the exception chain wins: a permanent
+    provider error code, a status-bearing deterministic client error (a 4xx other
+    than 408/429 that is not an AWS throttle or known-transient SDK type), a
+    never-retry type, or a typed opt-out marker. Only when nothing in the chain is
+    definitively permanent does a transient fault anywhere in it vote to retry.
 
-    When the top-level error carries no such definitive verdict, fall back to
-    scanning the chain so a genuinely transient fault wrapped in an opaque
-    outer exception is still retried.
+    Checking the whole chain in both directions matters because the two verdicts
+    reach us in mirrored shapes. A permanent failure can hide *under* a transient
+    wrapper (`ReadError` raised `from` a 401, or `group[group[401, ReadError]]`),
+    and a transient failure can hide under an opaque wrapper. Scanning the chain
+    for "permanent" first and "transient" second resolves both without letting a
+    transient sibling launder a deterministic error into five pointless attempts.
 
     Args:
         exc: The exception raised by the model call.
@@ -592,40 +670,15 @@ def _should_retry_after_failure(exc: BaseException) -> bool:
     Returns:
         `True` when the failure should be retried.
     """
-    if _is_marked_non_retryable(exc):
-        return False
-    if isinstance(exc, BaseExceptionGroup):
-        if any(
-            isinstance(member, Exception)
-            and (
-                _is_definitive_non_retryable(member)
-                or _nested_group_has_definitive_member(member)
-            )
-            for member in exc.exceptions
-        ):
-            return False
-    elif isinstance(exc, Exception) and _is_definitive_non_retryable(exc):
-        return False
-    return _contains_retryable_model_error(exc)
-
-
-def _nested_group_has_definitive_member(exc: Exception) -> bool:
-    """Return whether a group member nests a definitive non-retryable error.
-
-    `_should_retry_after_failure` inspects only top-level group members; a
-    nested `ExceptionGroup("inner", [401, ReadError])` has no status of its
-    own, so without this recursion the transient sibling would win and the
-    permanent failure would burn the full retry budget before surfacing.
-    """
-    if not isinstance(exc, BaseExceptionGroup):
+    chain = list(exception_chain(exc))
+    if any(
+        isinstance(current, Exception) and _is_definitive_non_retryable(current)
+        for current in chain
+    ):
         return False
     return any(
-        isinstance(member, Exception)
-        and (
-            _is_definitive_non_retryable(member)
-            or _nested_group_has_definitive_member(member)
-        )
-        for member in exc.exceptions
+        isinstance(current, Exception) and _is_retryable_model_error(current)
+        for current in chain
     )
 
 
@@ -683,13 +736,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
                 call. `0` disables retries unless the request's runtime-selected
                 model carries a different provider-specific budget.
         """
-        # `retry_on` and `on_failure` are passed only to satisfy the base
-        # constructor's validation; they are inert here. `wrap_model_call` /
-        # `awrap_model_call` are fully overridden and delegate to
-        # `run_with_retry`, which classifies via `_should_retry_after_failure`
-        # (a chain-aware superset of `_is_retryable_model_error`) and always
-        # re-raises rather than returning an error `AIMessage`. The base retry
-        # loop is never reached.
+        # `retry_on`/`on_failure` satisfy the base constructor's validation only;
+        # both `wrap_model_call` overrides bypass the base retry loop entirely.
         super().__init__(
             max_retries=max_retries,
             retry_on=_is_retryable_model_error,
@@ -763,6 +811,50 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
         """
         return get_model_retries(model, self.max_retries)
 
+    @staticmethod
+    def _should_attempt_again(
+        exc: Exception,
+        *,
+        attempt: int,
+        resolved_retries: int,
+        retry_if: Callable[[], bool] | None,
+    ) -> bool:
+        """Decide whether the loop may run another attempt after `exc`.
+
+        Shared by the sync and async drivers so the two cannot drift. When the
+        answer is no, `exc` is marked non-retryable before the caller re-raises so
+        an enclosing retry driver does not restart a budget this one already spent.
+
+        Classification is guarded: it probes attributes on a foreign exception, and
+        a failure there must surface the model error, not the probe's error.
+
+        Args:
+            exc: The failure from the attempt that just completed.
+            attempt: 0-indexed attempt that just failed.
+            resolved_retries: Retry budget for this call.
+            retry_if: Optional guard vetoing a retry (for example once output
+                became visible to the user).
+
+        Returns:
+            `True` when another attempt should run.
+        """
+        try:
+            retryable = _should_retry_after_failure(exc)
+        except Exception:
+            logger.exception("Retry classification failed; not retrying")
+            retryable = False
+        if retryable and attempt < resolved_retries:
+            if retry_if is None or retry_if():
+                return True
+            logger.info("Not retrying: model output was already shown to the user")
+        if retryable and attempt >= resolved_retries:
+            # Only budget exhaustion needs the marker. A failure classified as
+            # permanent already stops every driver, and a `retry_if` veto is
+            # request-local -- an outer driver with its own tracker may legitimately
+            # reach a different verdict.
+            _mark_non_retryable(exc)
+        return False
+
     def run_with_retry(
         self,
         model: BaseChatModel,
@@ -807,10 +899,11 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             try:
                 return handler()
             except Exception as exc:  # classified by _should_retry_after_failure
-                if (
-                    not _should_retry_after_failure(exc)
-                    or attempt >= resolved_retries
-                    or (retry_if is not None and not retry_if())
+                if not self._should_attempt_again(
+                    exc,
+                    attempt=attempt,
+                    resolved_retries=resolved_retries,
+                    retry_if=retry_if,
                 ):
                     raise
                 self._emit_retry_status(writer, attempt + 1, resolved_retries, exc)
@@ -863,10 +956,11 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             try:
                 return await handler()
             except Exception as exc:  # classified by _should_retry_after_failure
-                if (
-                    not _should_retry_after_failure(exc)
-                    or attempt >= resolved_retries
-                    or (retry_if is not None and not retry_if())
+                if not self._should_attempt_again(
+                    exc,
+                    attempt=attempt,
+                    resolved_retries=resolved_retries,
+                    retry_if=retry_if,
                 ):
                     raise
                 self._emit_retry_status(writer, attempt + 1, resolved_retries, exc)

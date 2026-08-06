@@ -27,6 +27,7 @@ from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.config import DEFAULT_MODEL_RETRIES
 from deepagents_code.hooks.models.domain import (
     CompactTrigger,
     HookEvent,
@@ -90,6 +91,30 @@ class _AutoCompactionBlockedError(Exception):
     def __init__(self, overflow: ContextOverflowError) -> None:
         super().__init__(str(overflow))
         self.overflow = overflow
+
+
+class SummarizationFailedError(RuntimeError):
+    """Raised when automatic summarization exhausts its model retry budget.
+
+    Upstream `SummarizationMiddleware._create_summary` caught every exception and
+    returned `"Error generating summary: ..."` *as the summary*, so a provider
+    outage silently replaced conversation history with an error string. dcode does
+    not swallow it -- but the raw provider error alone reads as though the user's
+    own request failed, when in fact background summarization failed and the
+    conversation is untouched.
+
+    Carries the provider failure as `__cause__` so the traceback stays intact,
+    while the message tells the user what state they are in and what to do, the
+    way the `/compact` tool path already does.
+    """
+
+    def __init__(self) -> None:
+        """Initialize with the standard actionable message."""
+        super().__init__(
+            "Automatic conversation summarization failed after retries. The "
+            "conversation has not been compacted -- no messages were summarized "
+            "or removed. Retry the turn, or run `/compact` to compact explicitly."
+        )
 
 
 def _offload_seed_message_id(tool_call_id: str) -> str:
@@ -186,7 +211,7 @@ def _summary_input(
     summarization: SummarizationMiddleware,
     messages: list[AnyMessage],
 ) -> tuple[str | None, str | None]:
-    """Prepare the SDK summary prompt without swallowing model exceptions.
+    """Build the SDK summary prompt inputs.
 
     Args:
         summarization: Deep Agents summarization helper.
@@ -287,26 +312,40 @@ class RetryingSummarizationMiddleware(SummarizationMiddleware):
 
         Returns:
             The generated summary text.
+
+        Raises:
+            SummarizationFailedError: If the summary model fails and the retry
+                budget is exhausted.
         """
-        return self._retry.run_with_retry(
-            self.model,
-            lambda: _create_summary_with_retry(self, messages_to_summarize),
-            writer=self._retry_writer.get(),
-            max_retries=self._retry_override.get(),
-        )
+        try:
+            return self._retry.run_with_retry(
+                self.model,
+                lambda: _create_summary_with_retry(self, messages_to_summarize),
+                writer=self._retry_writer.get(),
+                max_retries=self._retry_override.get(),
+            )
+        except Exception as exc:
+            raise SummarizationFailedError from exc
 
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate an automatic summary asynchronously with retries.
 
         Returns:
             The generated summary text.
+
+        Raises:
+            SummarizationFailedError: If the summary model fails and the retry
+                budget is exhausted.
         """
-        return await self._retry.arun_with_retry(
-            self.model,
-            lambda: _acreate_summary_with_retry(self, messages_to_summarize),
-            writer=self._retry_writer.get(),
-            max_retries=self._retry_override.get(),
-        )
+        try:
+            return await self._retry.arun_with_retry(
+                self.model,
+                lambda: _acreate_summary_with_retry(self, messages_to_summarize),
+                writer=self._retry_writer.get(),
+                max_retries=self._retry_override.get(),
+            )
+        except Exception as exc:
+            raise SummarizationFailedError from exc
 
     def wrap_model_call(
         self,
@@ -558,7 +597,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     the conversation has not reached the SDK's proactive eligibility gate.
     """
 
-    _model_retry_fallback: int
+    # Class-level default rather than a bare annotation: the factory below only
+    # assigns this when a budget was configured, and readers must not need a
+    # `getattr` fallback to survive that. A real default also keeps the value
+    # honest for anyone constructing the middleware directly.
+    _model_retry_fallback: int = DEFAULT_MODEL_RETRIES
 
     @property
     def name(self) -> str:
@@ -918,14 +961,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The generated summary text.
         """
         from deepagents_code.model_retry import (
-            DEFAULT_MODEL_RETRIES,
             CodeModelRetryMiddleware,
             _runtime_model_retry_override,
         )
 
-        retry = CodeModelRetryMiddleware(
-            max_retries=getattr(self, "_model_retry_fallback", DEFAULT_MODEL_RETRIES)
-        )
+        retry = CodeModelRetryMiddleware(max_retries=self._model_retry_fallback)
         return retry.run_with_retry(
             summarization.model,
             lambda: _create_summary_with_retry(summarization, to_summarize),
@@ -951,14 +991,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The generated summary text.
         """
         from deepagents_code.model_retry import (
-            DEFAULT_MODEL_RETRIES,
             CodeModelRetryMiddleware,
             _runtime_model_retry_override,
         )
 
-        retry = CodeModelRetryMiddleware(
-            max_retries=getattr(self, "_model_retry_fallback", DEFAULT_MODEL_RETRIES)
-        )
+        retry = CodeModelRetryMiddleware(max_retries=self._model_retry_fallback)
         return await retry.arun_with_retry(
             summarization.model,
             lambda: _acreate_summary_with_retry(summarization, to_summarize),

@@ -2038,7 +2038,9 @@ def parse_args() -> argparse.Namespace:
         metavar="JSON",
         help="Extra kwargs to pass to the model as a JSON string "
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
-        "These take priority, overriding config file values.",
+        "These take priority, overriding config file values. Exception: "
+        "`max_retries` is not sent to the provider; it sets dcode's own retry "
+        "budget and loses to --max-retries, which is the preferred flag.",
     )
 
     from deepagents_code.ui import non_negative_int, positive_int

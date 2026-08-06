@@ -2375,8 +2375,19 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         *,
         model: BaseChatModel,
         spec: str | None,
+        deadline: float,
     ) -> AutoDecisionBatch:
         """Ask an already-resolved classifier for a decision batch.
+
+        Args:
+            request: Resolved primary-model request.
+            calls: Tool calls being reviewed.
+            all_calls: Every tool call in the batch, for context.
+            dispositions: Deterministic dispositions already decided.
+            tools: Tools available to the agent.
+            model: Already-resolved classifier model.
+            spec: Label for a distinct classifier model, or `None` when inherited.
+            deadline: Absolute event-loop time by which inference must finish.
 
         Returns:
             Parsed classifier decisions for the reviewed tool calls.
@@ -2385,7 +2396,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             _ClassifierDeadlineExceededError: If the local inference time expires.
             TimeoutError: If inference otherwise times out.
         """
-        timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
+        # An *absolute* deadline, so retries share one wall-clock budget. A
+        # per-attempt timeout would restart on every retry and multiply the wait
+        # the budget exists to bound (5 retries x 20s = ~2 minutes before Auto
+        # falls back to asking the user).
+        timeout_cm = asyncio.timeout_at(deadline)
         try:
             async with timeout_cm:
                 structured = model.with_structured_output(AutoDecisionBatch)
@@ -2639,6 +2654,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 classifier_model,
                 classifier_spec,
             ) = await self._classifier_model_with_deadline(request)
+            # Fixed once, before the retry loop, so every attempt plus its backoff
+            # draws from the same inference budget.
+            inference_deadline = (
+                asyncio.get_running_loop().time() + self._classifier_timeout_seconds
+            )
             classified = await retry.arun_with_retry(
                 classifier_model,
                 lambda: self._classify(
@@ -2649,6 +2669,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     tools,
                     model=classifier_model,
                     spec=classifier_spec,
+                    deadline=inference_deadline,
                 ),
                 writer=getattr(request.runtime, "stream_writer", None),
                 max_retries=_runtime_model_retry_override(request.runtime),

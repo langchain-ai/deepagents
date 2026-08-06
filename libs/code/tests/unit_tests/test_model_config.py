@@ -8220,3 +8220,16 @@ class TestLoadStartupMode:
         config = tmp_path / "config.toml"
         config.write_text("this is not valid toml [[[\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+
+def test_retry_knob_classification_is_disjoint() -> None:
+    """A provider cannot both have and lack a retry-count constructor kwarg.
+
+    `RETRY_PARAM_BY_PROVIDER` and `_PROVIDERS_WITHOUT_RETRY_KNOB` together encode
+    a three-way classification (known knob / verified no knob / unknown), and
+    nothing at runtime rejects a provider added to both. Overlap would make the
+    behavior depend on which collection a given code path consults first.
+    """
+    from deepagents_code.config import _PROVIDERS_WITHOUT_RETRY_KNOB
+
+    assert not _PROVIDERS_WITHOUT_RETRY_KNOB & set(RETRY_PARAM_BY_PROVIDER)

@@ -2399,16 +2399,43 @@ def create_cli_agent(
         # request budget and CLI override carrier.
         model_retries = model_result.model_retries
     else:
-        from deepagents_code.config import get_model_retries, set_model_retry_metadata
+        from deepagents_code.config import (
+            MODEL_RETRIES_ATTR,
+            get_model_retries,
+            get_model_retry_override,
+            is_valid_retry_count,
+            set_model_retry_metadata,
+        )
 
         if model_retries is None:
             model_retries = get_model_retries(model, DEFAULT_MODEL_RETRIES)
         else:
-            # Explicit caller budget, including disabling retries with 0. Treat
-            # it as an authoritative override so nested graders/subagents and
-            # checkpoint carriers observe the same value.
+            # The caller's budget always becomes this model's request budget, so
+            # nested graders/subagents and checkpoint carriers observe it.
+            #
+            # Whether it is also a *CLI override* depends on where it came from.
+            # A model that already carries dcode retry metadata was built by
+            # `create_model`, which is what both CLI entry points do before
+            # passing the config-resolved count back in here -- forging an
+            # override from that count would make a runtime `/model` switch
+            # inherit this provider's resolved value as though the user had typed
+            # `--max-retries`, so `[retries.<new-provider>]` would never be
+            # consulted. Keep whatever override `create_model` determined.
+            #
+            # A bare model carries no metadata, so the caller's value is the only
+            # authority there and must survive a model switch (notably an
+            # explicit `0`, which disables retries).
+            already_configured = is_valid_retry_count(
+                getattr(model, MODEL_RETRIES_ATTR, None)
+            )
             set_model_retry_metadata(
-                model, retries=model_retries, cli_override=model_retries
+                model,
+                retries=model_retries,
+                cli_override=(
+                    get_model_retry_override(model)
+                    if already_configured
+                    else model_retries
+                ),
             )
     if auto_mode_enabled and (not interactive or sandbox is not None):
         logger.warning(
@@ -2575,6 +2602,7 @@ def create_cli_agent(
                 create_model,
                 get_model_retry_override,
             )
+            from deepagents_code.model_config import ModelConfigError
 
             retry_override = get_model_retry_override(model)
             retry_kwargs = (
@@ -2582,10 +2610,27 @@ def create_cli_agent(
                 if retry_override is not None
                 else None
             )
-            model_result = create_model(model_spec, extra_kwargs=retry_kwargs)
-            subagent_model = model_result.model
-            subagent["model"] = subagent_model
-            subagent_retries = model_result.model_retries
+            try:
+                model_result = create_model(model_spec, extra_kwargs=retry_kwargs)
+            except ModelConfigError:
+                # Constructing the model here is only an optimization: it lets us
+                # attach the retry budget up front. But `create_model` also runs
+                # dcode's fail-fast credential precheck, and a declarative
+                # subagent may name a provider the user has no key for. Failing
+                # here would make one unused `.deepagents/agents/*.md` file block
+                # startup entirely, where before only invoking that subagent
+                # failed. Fall back to the lazy string spec so the error surfaces
+                # at invocation, with the parent's budget as the fallback.
+                logger.debug(
+                    "Deferring model construction for subagent %r",
+                    subagent_meta["name"],
+                    exc_info=True,
+                )
+                subagent["model"] = model_spec
+            else:
+                subagent_model = model_result.model
+                subagent["model"] = subagent_model
+                subagent_retries = model_result.model_retries
         pending_subagent_middleware.append(
             (subagent, has_explicit_model, subagent_retries, subagent_model)
         )
@@ -3060,16 +3105,14 @@ def create_cli_agent(
             GoalCriteriaMiddleware(criteria_agent, criteria_fallback_agent)
         )
 
-    agent_middleware.extend(
-        [
-            create_retrying_summarization_middleware(
-                model,
-                composite_backend,
-                model_retries=model_retries,
-            ),
-            compaction_middleware,
-        ]
-    )
+    # `CLICompactionMiddleware` owns the stock automatic-summarization slot on
+    # the main agent: it runs auto-compaction from its own `wrap_model_call` and
+    # retries the summary model via `_summarize_with_retry`. Appending
+    # `RetryingSummarizationMiddleware` here too would be dead weight -- both
+    # report `name == "SummarizationMiddleware"`, so `_apply_custom_middleware`
+    # keeps only the last one by name. Subagents get no compaction middleware,
+    # so they install the retrying summarizer instead (see `_subagent_middleware`).
+    agent_middleware.append(compaction_middleware)
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()

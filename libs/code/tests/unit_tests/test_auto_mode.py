@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast, get_type_hints
 from unittest.mock import patch
 
+import httpx
 import pytest
 from langchain.agents.middleware.types import (
     ExtendedModelResponse,
@@ -5309,3 +5310,63 @@ async def test_classifier_local_deadline_does_not_retry_or_sleep(
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert len(model.calls) == 1
     assert delay_calls == []
+
+
+@pytest.mark.asyncio
+async def test_classifier_retries_share_one_inference_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retried classifier attempts must not each restart the wait budget.
+
+    A transient provider failure is retryable, so the retry loop re-enters
+    inference. With a per-attempt timeout that gave Auto `(retries + 1) x timeout`
+    to decide; the deadline is absolute so the total stays bounded and Auto falls
+    back to asking the user promptly.
+    """
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+        lambda self, attempt: 0.0,  # noqa: ARG005
+    )
+
+    class _SlowFlakyModel(_StructuredModel):
+        """Burns most of the budget per attempt, then fails retryably.
+
+        This is the shape that distinguishes the two designs: the transport error
+        is retryable, so the loop re-enters inference, and only an absolute
+        deadline stops it from doing so `retries + 1` times.
+        """
+
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            await asyncio.sleep(0.04)
+            msg = "connection dropped"
+            raise httpx.ReadError(msg)
+
+    model = _SlowFlakyModel()
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"delete": config},
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=0.05,
+        model_retry_fallback=5,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    # The 0.05s budget is spent partway into the second attempt. A per-attempt
+    # timeout would instead allow all 6 (1 + 5 retries).
+    assert len(model.calls) <= 2

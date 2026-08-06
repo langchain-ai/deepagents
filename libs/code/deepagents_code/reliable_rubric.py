@@ -141,6 +141,13 @@ class ReliableRubricMiddleware(RubricMiddleware):
     the nested grader agent. A separate whole-grader transport retry re-invokes
     only the grader on mid-response transport failures so grader tools must stay
     read-only or idempotent.
+
+    The two layers compound: the outer replay covers a transport failure that
+    leaves the grader's own graph unusable, which a per-model-call retry cannot
+    repair, while the inner budget covers ordinary transient faults. Both
+    recognize the same transport errors, so the outer layer only fires once the
+    inner budget is spent (or a visible-output veto stopped it) -- worst case
+    `(1 + model_retries)` model calls per grading, across two gradings.
     """
 
     def __init__(

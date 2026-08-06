@@ -609,6 +609,16 @@ dcode's model-node middleware owns the retry budget, so integrations with a
 known retry-count parameter receive zero at construction time. Providers absent
 from this mapping either do not expose an integer retry-count parameter or must
 declare one with `[retries.<provider>].param` in `config.toml`.
+
+Membership is verified against each provider's chat model constructor (for example
+`ChatGoogleGenerativeAI` exposes `max_retries`, not `retries`), never inferred from
+naming. Because the value written is always `0`, verification must also confirm the
+kwarg means "retries after the first attempt" and not "total attempts", where `0`
+would disable the call itself.
+
+A provider confirmed to have *no* such kwarg belongs in
+`config._PROVIDERS_WITHOUT_RETRY_KNOB`, which suppresses the per-construction
+"SDK retries stay active" warning that unknown providers trigger.
 """
 
 LANGSMITH_SERVICE = "langsmith"

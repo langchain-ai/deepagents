@@ -54,6 +54,25 @@ class _ResolvedModelRequest:
     model_params_known: bool = False
     """Whether `model_params` is known and should be written to the checkpoint."""
 
+    def __post_init__(self) -> None:
+        """Reject params that would be silently dropped.
+
+        Only three states are meaningful: unknown (leave the checkpoint alone),
+        known-and-empty (clear it), and known-with-params (write them). The fourth
+        combination -- params supplied but not marked known -- reads as though the
+        params will be persisted when `_checkpoint_command` ignores them, so fail
+        loudly instead of discarding a caller's data.
+
+        Raises:
+            ValueError: If `model_params` is set without `model_params_known`.
+        """
+        if self.model_params is not None and not self.model_params_known:
+            msg = (
+                "model_params set without model_params_known; these params would "
+                "never reach the checkpoint"
+            )
+            raise ValueError(msg)
+
 
 def _get_ls_provider(model: object) -> str | None:
     """Return the LangSmith provider name reported by a chat model.
@@ -476,17 +495,14 @@ def _model_creation_kwargs(
     from deepagents_code.config import (
         CLI_MAX_RETRIES_KEY,
         get_model_retry_override,
+        is_valid_retry_count,
     )
 
     kwargs: dict[str, dict[str, Any]] = {}
     retry_override = get_model_retry_override(current_model)
     if retry_override is None:
         raw_override = ctx.model_params.get(CLI_MAX_RETRIES_KEY)
-        if (
-            isinstance(raw_override, int)
-            and not isinstance(raw_override, bool)
-            and raw_override >= 0
-        ):
+        if is_valid_retry_count(raw_override):
             retry_override = raw_override
     if retry_override is not None:
         kwargs["extra_kwargs"] = {CLI_MAX_RETRIES_KEY: retry_override}

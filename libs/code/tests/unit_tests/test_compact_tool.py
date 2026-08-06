@@ -25,6 +25,7 @@ from deepagents_code.offload_middleware import (
     COMPACTION_FAILURE_PREFIX,
     CLICompactionMiddleware,
     RetryingSummarizationMiddleware,
+    SummarizationFailedError,
     _ArchiveReadGuard,
     _runtime_model_config,
 )
@@ -176,6 +177,38 @@ class TestCLICompactionMiddleware:
         assert summary == "Recovered summary"
         assert model.invoke.call_count == 2
         assert middleware.name == "SummarizationMiddleware"
+
+    def test_exhausted_summarization_reports_conversation_is_intact(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exhausted budget must say what failed and that nothing was lost.
+
+        Upstream returned `"Error generating summary: ..."` *as the summary*,
+        committing an error string into conversation history. Propagating the raw
+        provider error instead reads as though the user's own request failed, so
+        the failure is named and the original error kept as `__cause__`.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            lambda _self, _attempt: 0,
+        )
+        model = MagicMock()
+        model.profile = {"max_input_tokens": 20_000}
+        model.invoke.side_effect = httpx.ReadError("dropped")
+        middleware = RetryingSummarizationMiddleware(
+            model=model,
+            backend=MagicMock(),
+            trigger=("messages", 2),
+            keep=("messages", 1),
+            model_retry_fallback=1,
+        )
+
+        with pytest.raises(SummarizationFailedError) as caught:
+            middleware._create_summary([HumanMessage("one"), HumanMessage("two")])
+
+        assert "no messages were summarized or removed" in str(caught.value)
+        assert isinstance(caught.value.__cause__, httpx.ReadError)
+        assert model.invoke.call_count == 2
 
     async def test_async_automatic_summarization_retries_transient_failure(
         self, monkeypatch: pytest.MonkeyPatch

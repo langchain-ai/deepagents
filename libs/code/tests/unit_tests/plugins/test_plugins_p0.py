@@ -68,6 +68,7 @@ from deepagents_code.plugins.store import (
     set_plugin_enabled,
     versioned_cache_path,
 )
+from deepagents_code.plugins.update import auto_update_plugins
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 from deepagents_code.tui.modals.plugin_manager.state import (
@@ -311,6 +312,57 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
     )
     _write_json(manifest_path, {"name": "quality-review-plugin"})
     assert install_plugin(plugin_id).version is None
+
+
+def test_plugin_auto_update_stages_new_version_for_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    old_instance = install_plugin(plugin_id)
+    old_skill = old_instance.root / "skills" / "review" / "SKILL.md"
+
+    plugin_root = marketplace_root / "plugins" / "quality-review-plugin"
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "quality-review-plugin", "version": "2.0.0"},
+    )
+    source_skill = plugin_root / "skills" / "review" / "SKILL.md"
+    source_skill.write_text(source_skill.read_text() + "\nUpdated.", encoding="utf-8")
+    save_marketplace_record(
+        MarketplaceRecord(
+            name="company-tools",
+            source_type="git",
+            source="https://example.com/company-tools.git",
+            install_location=str(marketplace_root),
+        )
+    )
+    monkeypatch.setattr(
+        "deepagents_code.plugins.update.is_plugin_auto_update_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "deepagents_code.plugins.update._refresh_marketplace", lambda _record: None
+    )
+
+    assert auto_update_plugins() == (plugin_id,)
+    updated = load_installed_plugins()[plugin_id]
+    assert updated.version == "2.0.0"
+    assert Path(updated.install_path) == versioned_cache_path(plugin_id, "2.0.0")
+    assert old_skill.is_file()
+    assert not old_skill.read_text(encoding="utf-8").endswith("Updated.")
+    assert (
+        (Path(updated.install_path) / "skills" / "review" / "SKILL.md")
+        .read_text(encoding="utf-8")
+        .endswith("Updated.")
+    )
 
 
 def test_failed_cached_plugin_load_rolls_back_install(

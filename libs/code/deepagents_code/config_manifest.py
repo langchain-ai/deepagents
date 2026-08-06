@@ -1610,6 +1610,20 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
     ),
+    # --- Plugins --------------------------------------------------------
+    ConfigOption(
+        key="plugins.auto_update",
+        group="Plugins",
+        summary=(
+            "Update enabled, versioned plugins from remote marketplaces in the "
+            "background after the first prompt."
+        ),
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.PLUGIN_AUTO_UPDATE,
+        toml_keys=("plugins", "auto_update"),
+        empty_env_is_false=True,
+    ),
     # --- Updates --------------------------------------------------------
     ConfigOption(
         key="update.auto_update",

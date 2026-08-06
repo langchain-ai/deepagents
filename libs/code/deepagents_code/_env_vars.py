@@ -355,6 +355,13 @@ option declares `empty_env_is_false`. Other tokens are parsed by
 user-supplied key is always preserved.
 """
 
+PLUGIN_AUTO_UPDATE = "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE"
+"""Toggle background updates for installed marketplace plugins.
+
+Disabled by default. Set to a truthy value (`1`, `true`, `yes`, or `on`) or use
+`[plugins].auto_update` in config.toml to enable it.
+"""
+
 PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 

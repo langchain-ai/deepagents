@@ -15093,12 +15093,12 @@ class DeepAgentsApp(App):
 
         Args:
             config: Config with `configurable.thread_id`.
-            state_values: Pre-run thread state, used only as a fallback if the
-                fresh re-read below fails. Only `messages` is replayed as run
-                input, and that replay *replaces* the channel on a real server
-                (see the comment at the `stream_input` construction), so it must
-                be current. Every other channel is deliberately withheld,
-                because replaying the cost channels corrupts them.
+            state_values: Pre-run thread state, refreshed by the re-read below
+                before use. Only `messages` is replayed as run input, and that
+                replay *replaces* the channel on a real server (see the comment
+                at the `stream_input` construction), so it must be current.
+                Every other channel is deliberately withheld, because replaying
+                the cost channels corrupts them.
 
         Returns:
             An error string when the run could not be driven to completion
@@ -15115,8 +15115,9 @@ class DeepAgentsApp(App):
             _MissingOffloadGraphError: If a custom server graph does not
                 register the optional `offload` operation graph.
             RuntimeError: If the app is not connected to its server graph, or if
-                the thread's messages could not be read back before the run
-                (replaying an empty list would truncate the conversation).
+                current thread state could not be read before the run --
+                replaying the pre-run snapshot would delete messages committed
+                since it was taken.
         """
         from langgraph.types import Command
         from langgraph_sdk.errors import NotFoundError
@@ -15136,27 +15137,36 @@ class DeepAgentsApp(App):
         # taken before `_set_agent_running(True)`, so a turn committed in
         # between would be missing from it -- and because the replay below
         # *replaces* the `messages` channel, a stale list is not a stale read
-        # but a destructive write. Fall back to the caller's copy if the re-read
-        # fails, since it is still better than an empty replay.
-        #
-        # This also registers the thread server-side: `_get_thread_state_values`
-        # calls `aensure_thread` before reading, so a separate call here would
-        # be redundant.
+        # but a destructive write. Do NOT fall back to the caller's copy when
+        # the re-read cannot produce current state: the gap that motivates the
+        # re-read (an externally managed/shared remote thread, or a turn
+        # completing concurrently with the initial read) is exactly when the
+        # caller's copy is missing messages, so replaying it would delete the
+        # messages the re-read was meant to preserve. Abort instead.
         thread_id = self._lc_thread_id
         if thread_id is None:
             await remote.aensure_thread(dict(config))
         else:
             try:
-                state_values = (
-                    await self._get_thread_state_values(thread_id) or state_values
+                fresh_values = await self._get_thread_state_values(thread_id)
+            except Exception as exc:
+                msg = (
+                    "Could not refresh thread state before /offload; not "
+                    "replaying the stale pre-run snapshot."
                 )
-            except Exception:
-                logger.warning(
-                    "Could not refresh thread state before /offload; replaying "
-                    "the pre-run snapshot instead",
-                    exc_info=True,
+                raise RuntimeError(msg) from exc
+            # `_get_thread_state_values` collapses a missing snapshot (a 404
+            # after a rebind, a server restart, an un-flushed checkpoint) to
+            # `{}`, and the fallback snapshot was read before this run marked
+            # the agent busy, so it cannot be trusted to fill in.
+            if not fresh_values:
+                msg = (
+                    "Could not read current thread state before /offload "
+                    "(the state read came back empty); not replaying the "
+                    "stale pre-run snapshot."
                 )
-                await remote.aensure_thread(dict(config))
+                raise RuntimeError(msg)
+            state_values = fresh_values
 
         stream_context = CLIContext(
             model=self._effective_model_spec(),

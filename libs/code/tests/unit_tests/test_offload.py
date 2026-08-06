@@ -2102,6 +2102,87 @@ class TestOffloadSessionStartHook:
 class TestServerOperationOffload:
     """The slash command uses the explicit server operation graph."""
 
+    async def test_aborts_when_the_state_refresh_fails(self) -> None:
+        """A failed re-read aborts the offload instead of replaying the stale snapshot.
+
+        The run input replaces the thread's `messages` channel, so falling back
+        to the caller's pre-run snapshot — taken before `_set_agent_running`
+        blocked new turns — would delete any message committed in the gap
+        (shared/external threads, a concurrent completion). No stream may
+        start when the fresh state cannot be obtained.
+        """
+        app = DeepAgentsApp()
+        operation = MagicMock()
+        streamed = False
+
+        async def stream(*_args: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            nonlocal streamed
+            streamed = True
+            yield (), "updates", {"force_compact": {}}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.arebind_thread = AsyncMock()
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                side_effect=RuntimeError("checkpoint store unreachable")
+            )
+            app._lc_thread_id = "test-thread"
+            with (
+                patch.object(app, "_remote_agent", return_value=remote),
+                pytest.raises(RuntimeError, match="Could not refresh thread state"),
+            ):
+                await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+
+        assert streamed is False
+
+    async def test_aborts_when_the_state_refresh_comes_back_empty(self) -> None:
+        """An empty re-read aborts the offload rather than replaying stale state.
+
+        `_get_thread_state_values` collapses a missing snapshot (a 404 after a
+        rebind, a server restart, an un-flushed checkpoint) to `{}`, which the
+        old `or state_values` fallback silently replaced with the pre-run
+        snapshot — replaying that would truncate the live conversation.
+        """
+        app = DeepAgentsApp()
+        operation = MagicMock()
+        streamed = False
+
+        async def stream(*_args: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            nonlocal streamed
+            streamed = True
+            yield (), "updates", {"force_compact": {}}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.arebind_thread = AsyncMock()
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(return_value=SimpleNamespace(values={}))
+            app._lc_thread_id = "test-thread"
+            with (
+                patch.object(app, "_remote_agent", return_value=remote),
+                pytest.raises(RuntimeError, match="came back empty"),
+            ):
+                await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+
+        assert streamed is False
+
     async def test_streams_named_offload_graph_without_seed_context(self) -> None:
         """The operation has no synthetic model call or HITL resume loop."""
         app = DeepAgentsApp()
@@ -2189,6 +2270,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             app._model_params_override = {"temperature": 0.1}
             app._profile_override = {"reasoning": "high"}
@@ -2244,6 +2330,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             manager = MagicMock(spec=HooksManager)
             manager.apply_graph_context = MagicMock()
@@ -2287,6 +2378,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             with patch.object(app, "_remote_agent", return_value=remote):
                 await app._drive_offload_operation_graph(
@@ -2325,6 +2421,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             with (
                 patch.object(app, "_remote_agent", return_value=remote),
@@ -2376,6 +2477,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             with (
                 patch.object(app, "_remote_agent", return_value=remote),
@@ -2437,6 +2543,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             manager = MagicMock(spec=HooksManager)
             manager.apply_graph_context = MagicMock()
@@ -2488,6 +2599,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             manager = MagicMock(spec=HooksManager)
             manager.apply_graph_context = MagicMock()
@@ -2540,6 +2656,11 @@ class TestServerOperationOffload:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
+            app._agent.aget_state = AsyncMock(
+                return_value=SimpleNamespace(
+                    values=_state_values([_make_dict_message("hi")])
+                )
+            )
             app._lc_thread_id = "test-thread"
             manager = MagicMock(spec=HooksManager)
             manager.apply_graph_context = MagicMock()
@@ -4316,38 +4437,6 @@ class TestOffloadReplaySafety:
                 )
 
         remote.for_graph.assert_not_called()
-
-    async def test_falls_back_to_the_snapshot_when_the_reread_fails(self) -> None:
-        """A failed re-read must not escalate into a refused offload."""
-        app = DeepAgentsApp()
-        snapshot = [_make_dict_message("one")]
-        captured: list[object] = []
-
-        operation = MagicMock()
-
-        async def stream(*args: object, **_kwargs: object):  # noqa: ANN202, RUF029
-            captured.extend(args)
-            yield (), "updates", {"force_compact": {}}
-
-        operation.astream = stream
-        remote = MagicMock()
-        remote.aensure_thread = AsyncMock()
-        remote.arebind_thread = AsyncMock()
-        remote.for_graph.return_value = operation
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = MagicMock()
-            app._agent.aget_state = AsyncMock(side_effect=RuntimeError("server down"))
-            app._lc_thread_id = "test-thread"
-            with patch.object(app, "_remote_agent", return_value=remote):
-                result = await app._drive_offload_operation_graph(
-                    {"configurable": {"thread_id": "test-thread"}},
-                    _state_values(snapshot),
-                )
-
-        assert result is None
-        assert captured == [{"messages": snapshot}]
 
 
 class TestOffloadDrainCompletion:

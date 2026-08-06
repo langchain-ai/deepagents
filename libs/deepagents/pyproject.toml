@@ -1,8 +1,8 @@
 [project]
 name = "deepagents"
-version = "0.7.4"
+version = "0.7.5"
 
-description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
+description = "Production-ready, extensible agent harness with a built-in filesystem and context management, sub-agent delegation, skills, and long-term memory."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"

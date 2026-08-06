@@ -140,10 +140,14 @@ class CLIContext(TypedDict, total=False):
     """Current user-turn ID for binding trusted interactive responses."""
 
     offload_tool_call_id: str | None
-    """The sole tool-call ID authorized during a server-driven `/offload` run.
+    """The sole tool-call ID authorized during a seeded `/offload` run.
 
     This is set by the client, not graph state, so model-generated calls cannot
     grant themselves permission to execute during the hidden compaction turn.
+
+    Only the seeded driver sets it (local in-process agents). A server-backed
+    `/offload` runs the dedicated operation graph, which has no tool node and so
+    nothing to authorize; it leaves this `None`.
     """
 
     hooks_snapshot_id: str | None

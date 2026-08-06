@@ -1170,6 +1170,23 @@ class TestArebindThread:
         with pytest.raises(ValueError, match="thread_id"):
             await agent.arebind_thread({"configurable": {}})
 
+    async def test_missing_sdk_accessor_reports_the_real_cause(self) -> None:
+        """An SDK rename must not degrade into a generic rebind warning.
+
+        `_validate_client` is private. If it disappears, the bare attribute
+        access would raise inside the caller's blanket rebind handler, which
+        downgrades everything to a warning -- `/offload` would keep "working"
+        while every later `/goal` and `/rubric` failed on a mis-bound thread,
+        permanently and with nothing connecting the two.
+        """
+        agent = self._agent()
+
+        with (
+            patch.object(agent, "_get_graph", return_value=SimpleNamespace()),
+            pytest.raises(AttributeError, match="_validate_client is unavailable"),
+        ):
+            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})
+
     async def test_transport_failure_propagates(self) -> None:
         """The caller decides whether a failed rebind is fatal, so re-raise."""
         agent = self._agent()

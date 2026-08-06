@@ -389,9 +389,27 @@ async def _make_graphs() -> ServerRuntime:
     return await asyncio.to_thread(_create_cli_graphs_sync)
 
 
+class GraphFactories(NamedTuple):
+    """The factory pair `langgraph.json` resolves its two graph refs against.
+
+    Named for the same reason as `ServerRuntime`, one level up and with a worse
+    failure: both slots are zero-arg async callables returning `Any`, so a
+    positional transposition type-checks, registers the offload graph as `agent`
+    and the agent graph as `offload`, and — because `generate_langgraph_json`
+    derives both refs from one module — starts the server cleanly. The first
+    user message would then run a graph with no model node.
+    """
+
+    agent: Callable[[], Awaitable[Any]]
+    """Factory for the interactive graph served as `agent`."""
+
+    offload: Callable[[], Awaitable[Any]]
+    """Factory for the `/offload` operation graph served as `offload`."""
+
+
 def _build_graph_factories(
     builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
-) -> tuple[Callable[[], Awaitable[Any]], Callable[[], Awaitable[Any]]]:
+) -> GraphFactories:
     """Build paired factories that share one server-resource initialization.
 
     The LangGraph server resolves named graphs independently. Keeping the cache
@@ -407,7 +425,8 @@ def _build_graph_factories(
         builder: Optional alternate builder for the shared server resources.
 
     Returns:
-        Factories for the interactive agent and `/offload` operation graphs.
+        Named factories for the interactive agent and `/offload` operation
+            graphs.
     """
     # `None` is a sound sentinel for both: the builder always returns a
     # `ServerRuntime`, and `create_forced_compaction_graph` always a graph.
@@ -482,7 +501,9 @@ def _build_graph_factories(
                     )
         return offload_graph
 
-    return make_graph, make_offload_graph
+    return GraphFactories(agent=make_graph, offload=make_offload_graph)
 
 
-make_graph, make_offload_graph = _build_graph_factories()
+_factories = _build_graph_factories()
+make_graph = _factories.agent
+make_offload_graph = _factories.offload

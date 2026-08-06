@@ -120,6 +120,45 @@ class TestServerGraph:
 
         create_graph.assert_called_once_with(compaction, hooks_middleware=hooks)
 
+    def test_factories_are_addressed_by_name(self) -> None:
+        """The two graph factories must not be a bare positional pair.
+
+        Both are zero-arg async callables returning `Any`, so a transposition
+        type-checks — and because `generate_langgraph_json` derives both refs
+        from one module, the server would start cleanly with the offload graph
+        registered as `agent`. The first user message would then run a graph
+        with no model node.
+        """
+        module = _import_fresh_server_graph()
+
+        factories = module._build_graph_factories()
+
+        assert factories._fields == ("agent", "offload")
+        # The closures are named after the graph they build, so this also pins
+        # that the module-level bindings did not get crossed.
+        assert factories.agent.__name__ == "make_graph"
+        assert factories.offload.__name__ == "make_offload_graph"
+        assert module.make_graph.__name__ == "make_graph"
+        assert module.make_offload_graph.__name__ == "make_offload_graph"
+
+    def test_resources_of_the_wrong_type_are_rejected(self) -> None:
+        """A foreign attribute value must read as absent, not be trusted.
+
+        `offload_resources_from` narrows with `isinstance` so a backend carrying
+        something else under the same attribute name fails closed with the
+        caller's own message instead of an `AttributeError` deep inside the
+        graph build.
+        """
+        from deepagents_code.offload_middleware import (
+            _OFFLOAD_RESOURCES_ATTR,
+            offload_resources_from,
+        )
+
+        backend = SimpleNamespace()
+        setattr(backend, _OFFLOAD_RESOURCES_ATTR, ("compaction", "hooks"))
+
+        assert offload_resources_from(cast("Any", backend)) is None
+
     async def test_offload_graph_fails_closed_without_published_middleware(
         self,
     ) -> None:

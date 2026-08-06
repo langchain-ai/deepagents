@@ -503,17 +503,37 @@ class RemoteAgent:
         `graph_id`. Restore it before a caller makes an out-of-run state
         update, whose `as_node` is resolved against that association.
 
+        The metadata write merges server-side, so it does not clobber other
+        thread metadata.
+
         Args:
             config: Config with `configurable.thread_id`.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
-        """  # noqa: DOC502 — raised by `_require_thread_id`
+            AttributeError: If the installed LangGraph SDK no longer exposes
+                `RemoteGraph._validate_client`.
+            Exception: Any transport or API failure from the metadata update,
+                logged at WARNING and re-raised for the caller to classify.
+        """  # noqa: DOC502 — `ValueError` raised by `_require_thread_id`
         thread_id = _require_thread_id(config)
         graph = self._get_graph()
 
+        # Private SDK accessor. Checked explicitly because the alternative is an
+        # `AttributeError` that the caller's blanket rebind handler downgrades
+        # to a warning -- `/offload` would keep "working" while every later
+        # `/goal` and `/rubric` failed on a mis-bound thread, permanently and
+        # with nothing connecting the two.
+        validate_client = getattr(graph, "_validate_client", None)
+        if validate_client is None:
+            msg = (
+                "RemoteGraph._validate_client is unavailable; the LangGraph SDK "
+                "changed and threads can no longer be rebound to their graph."
+            )
+            raise AttributeError(msg)
+
         try:
-            client = graph._validate_client()
+            client = validate_client()
             await client.threads.update(
                 thread_id, metadata={"graph_id": self._graph_name}
             )

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import warnings
 from types import MethodType, SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -261,6 +261,69 @@ class TestCLICompactionMiddleware:
         write_backend = summarization._aoffload_to_backend.await_args.args[0]
         assert isinstance(write_backend, _ArchiveReadGuard)
         assert write_backend._backend is summarization._backend
+
+    async def test_operation_path_returns_an_absolute_cutoff(self) -> None:
+        """The committed event must carry the absolute cutoff, not the relative one.
+
+        `_determine_cutoff_index` is relative to the *effective* conversation
+        (post-previous-summary), while the persisted `cutoff_index` indexes the
+        full message list — `_compute_state_cutoff` converts between them. The
+        two coincide on a thread's first `/offload`, so returning the relative
+        value passes every other test here and only corrupts the *second*
+        `/offload`, which reads this back as its base.
+        """
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 2
+        summarization._compute_state_cutoff.return_value = 9
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        prior = {"cutoff_index": 7, "summary_message": None, "file_path": None}
+
+        result = await middleware.arun_forced_compaction_update(
+            cast(
+                "Any",
+                {
+                    "messages": [HumanMessage("one"), HumanMessage("two")],
+                    "_summarization_event": prior,
+                },
+            ),
+            runtime,
+        )
+
+        assert result is not None
+        event = result["_summarization_event"]
+        summarization._compute_state_cutoff.assert_called_once_with(prior, 2)
+        assert event["cutoff_index"] == 9
+        assert event["file_path"] == "/conversation_history/thread.md"
+        assert isinstance(event["summary_message"], HumanMessage)
+
+    async def test_operation_path_logs_a_failed_archive_write(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `None` archive path must leave a trace naming this call site.
+
+        `_aoffload_to_backend` catches every write failure and returns `None` —
+        including `_ArchiveReadGuard`'s deliberate "refusing to overwrite
+        existing history" `RuntimeError`. The compaction still commits (the
+        client reports the missing archive to the user), but without this the
+        only server-side record is a warning inside the SDK that names neither
+        the thread nor `/offload`.
+        """
+        summarization = self._summarization()
+        summarization._aoffload_to_backend = AsyncMock(return_value=None)
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        with caplog.at_level("ERROR"):
+            result = await middleware.arun_forced_compaction_update(
+                {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+            )
+
+        assert result is not None
+        assert result["_summarization_event"]["file_path"] is None
+        assert "archive write failed" in caplog.text
 
     async def test_operation_path_returns_none_when_nothing_to_compact(self) -> None:
         """A cutoff of 0 must be `None`, not an event pinning cutoff 0.

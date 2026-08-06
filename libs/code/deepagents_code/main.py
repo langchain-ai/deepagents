@@ -2955,8 +2955,7 @@ async def _run_acp_cli_async(
                         profile_overrides=profile_override,
                     )
                 )
-                if session_model is not model_result:
-                    session_model.apply_to_settings()
+                session_model.apply_to_settings()
                 agent_graph, _backend = create_cli_agent(
                     model=session_model.model,
                     assistant_id=assistant_id,

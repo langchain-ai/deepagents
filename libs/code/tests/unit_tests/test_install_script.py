@@ -1239,8 +1239,8 @@ def _write_uv_receipt(
     return receipt
 
 
-def test_install_script_upgrade_footer_says_upgrade_complete(tmp_path: Path) -> None:
-    """A version move ends with `Upgrade complete.`, not `Setup complete.`."""
+def test_install_script_upgrade_footer_says_version_changed(tmp_path: Path) -> None:
+    """A version move gets a useful footer without assuming its direction."""
     proc, _ = _invoke(
         tmp_path,
         {
@@ -1255,16 +1255,37 @@ def test_install_script_upgrade_footer_says_upgrade_complete(tmp_path: Path) -> 
     )
 
     assert proc.returncode == 0
-    assert "✔ Upgrade complete. Run: dcode" in proc.stdout
+    assert "✔ Version changed. Run: dcode" in proc.stdout
+    assert "Upgrade complete" not in proc.stdout
     assert "Setup complete" not in proc.stdout
+
+
+def test_install_script_custom_index_downgrade_footer_is_neutral(
+    tmp_path: Path,
+) -> None:
+    """An unpinned custom index can resolve an older available version."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "UV_INDEX_URL": "https://packages.example.invalid/simple",
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.18",
+        },
+        installed_version="0.1.19",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert "✔ Version changed. Run: dcode" in proc.stdout
+    assert "Upgrade complete" not in proc.stdout
 
 
 def test_install_script_pinned_downgrade_footer_is_not_upgrade(tmp_path: Path) -> None:
     """Pinning an older version must not claim an upgrade.
 
     `bash -s -- 0.1.0` over an installed 0.1.19 moves the version but downwards.
-    The script has no semantic version comparison available in shell, so only an
-    unpinned run — which always resolves to latest — may say "Upgrade complete."
+    The pinned path retains the general setup footer rather than the neutral
+    unpinned-version-change footer.
     """
     proc, _ = _invoke(
         tmp_path,
@@ -1971,8 +1992,6 @@ def _run_copy_install_log(
         "TEMP_FILES=()\n"
         'register_temp() { TEMP_FILES+=("$1"); }\n'
         f"{_extract_shell_function('path_is_under_home')}\n"
-        f"{_extract_shell_function('path_device')}\n"
-        f"{_extract_shell_function('paths_share_filesystem')}\n"
         f"{_extract_shell_function('copy_install_log')}\n"
         f"HOME={str(home)!r}\n"
         f"install_log_dir={str(install_log_dir)!r}\n"
@@ -2032,27 +2051,6 @@ def test_copy_install_log_stages_outside_user_writable_log_dir(
     assert published.read_text() == "captured uv stderr\n"
 
 
-def test_copy_install_log_skips_privileged_cross_device_publication(
-    tmp_path: Path,
-) -> None:
-    """A root install never lets `mv` fall back to a symlink-following copy."""
-    rc, _log_dir, published = _run_copy_install_log(
-        tmp_path,
-        race_hook=(
-            'id() { printf "0\\n"; }\n'
-            "path_device() {\n"
-            '  case "$1" in\n'
-            '    "$install_log_dir") printf "destination\\n" ;;\n'
-            '    *) printf "staging\\n" ;;\n'
-            "  esac\n"
-            "}\n"
-        ),
-    )
-
-    assert rc == 1
-    assert not published.exists()
-
-
 def test_copy_install_log_replaces_symlink_planted_during_the_race(
     tmp_path: Path,
 ) -> None:
@@ -2100,6 +2098,34 @@ def test_copy_install_log_refuses_publish_when_log_dir_is_swapped(
     assert list(elsewhere.glob(".install.log.*")) == []
 
 
+def test_copy_install_log_pins_parent_during_privileged_publication(
+    tmp_path: Path,
+) -> None:
+    """A parent swap after validation cannot redirect root's rm or create."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    rc, log_dir, _published = _run_copy_install_log(
+        tmp_path,
+        race_hook=(
+            'id() { printf "0\\n"; }\n'
+            "rm() {\n"
+            '  if [ "${1:-}" = "-f" ] && [ "${2:-}" = "install.log" ]; then\n'
+            '    mv "$install_log_dir" "${install_log_dir}.moved"\n'
+            f'    command ln -s {str(elsewhere)!r} "$install_log_dir"\n'
+            "  fi\n"
+            '  command rm "$@"\n'
+            "}\n"
+        ),
+    )
+
+    assert rc == 0
+    assert log_dir.is_symlink()
+    assert not (elsewhere / "install.log").exists()
+    assert (log_dir.with_name(f"{log_dir.name}.moved") / "install.log").read_text() == (
+        "captured uv stderr\n"
+    )
+
+
 def test_copy_install_log_refuses_directory_target(tmp_path: Path) -> None:
     """A directory at the publication path is not treated as a successful move."""
     log_dir = tmp_path / "home" / "cache"
@@ -2122,11 +2148,10 @@ def test_copy_install_log_cleans_up_staged_file_when_publish_fails(
     The staged file holds the full captured stderr, so an orphan is both litter
     and a disclosure; repeated failures would accumulate them.
     """
-    # Fail the root-safe hard-link publication itself, leaving the staged file
-    # in place for the cleanup to find. Contriving a filesystem state that
-    # breaks `ln` is unreliable.
+    # Fail the root-safe publication copy after noclobber creates the target,
+    # leaving both files in place for the cleanup to find.
     rc, log_dir, published = _run_copy_install_log(
-        tmp_path, race_hook='id() { printf "0\\n"; }\nln() { return 1; }\n'
+        tmp_path, race_hook='id() { printf "0\\n"; }\ncat() { return 1; }\n'
     )
 
     assert rc == 2

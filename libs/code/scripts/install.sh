@@ -531,39 +531,22 @@ fix_install_log_owner() {
   [ "$(id -u)" -eq 0 ] || return 0
   [ -n "${TARGET_USER:-}" ] && [ "$TARGET_USER" != "root" ] || return 0
   [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 0
-  path_is_under_home "$install_log_dir" || return 0
-  if ! chown -h "$TARGET_USER" "$install_log_dir" 2>&1; then
-    log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
-  fi
-  if [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ]; then
-    if ! chown -h "$TARGET_USER" "$INSTALL_LOG" 2>&1; then
-      log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+  # Enter the directory before validating it, then use only relative paths.
+  # The target user owns its parent and can rename or replace this directory;
+  # keeping it as the subshell's cwd pins the validated inode throughout both
+  # chown calls instead of resolving an attacker-swappable parent as root.
+  (
+    cd "$install_log_dir" 2>/dev/null || exit 0
+    path_is_under_home "." || exit 0
+    if ! chown -h "$TARGET_USER" "." 2>&1; then
+      log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
     fi
-  fi
-}
-
-path_device() {
-  local device
-  # GNU and BSD `stat` use different format flags. The device number is enough
-  # here: `rename(2)` cannot cross a filesystem boundary.
-  device="$(stat -c %d "$1" 2>/dev/null || true)"
-  case "$device" in
-    ''|*[!0-9]*) ;;
-    *) printf '%s\n' "$device"; return 0 ;;
-  esac
-
-  device="$(stat -f %d "$1" 2>/dev/null || true)"
-  case "$device" in
-    ''|*[!0-9]*) return 1 ;;
-    *) printf '%s\n' "$device" ;;
-  esac
-}
-
-paths_share_filesystem() {
-  local first_device second_device
-  first_device="$(path_device "$1")" || return 1
-  second_device="$(path_device "$2")" || return 1
-  [ "$first_device" = "$second_device" ]
+    if [ -f "install.log" ] && [ ! -L "install.log" ]; then
+      if ! chown -h "$TARGET_USER" "install.log" 2>&1; then
+        log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+      fi
+    fi
+  )
 }
 
 copy_install_log() {
@@ -581,18 +564,11 @@ copy_install_log() {
   # still be user-writable and the user could replace a freshly-created staging
   # directory before `cp` enters it. `/tmp` is sticky, so a root-owned 0700
   # directory created there cannot be renamed or replaced by another user.
-  # Privileged publication uses an atomic hard link below, which never follows
-  # a planted INSTALL_LOG symlink.
+  # Privileged publication pins the destination directory and uses a
+  # noclobber create below, which never follows a planted INSTALL_LOG symlink.
   local stage_dir staged
   stage_dir=$(mktemp -d "/tmp/deepagents-code-install-log.XXXXXX" 2>/dev/null) || return 2
   staged="${stage_dir}/install.log"
-  # Do not persist a privileged log when `mv` would cross a filesystem
-  # boundary. Its copy-and-delete fallback could follow a symlink planted at
-  # INSTALL_LOG by the user who owns the cache directory.
-  if [ "$(id -u)" -eq 0 ] && ! paths_share_filesystem "$stage_dir" "$install_log_dir"; then
-    rmdir "$stage_dir" 2>/dev/null || true
-    return 1
-  fi
   if ! (cd "$stage_dir" && cp "$uv_stderr" install.log) 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
     rmdir "$stage_dir" 2>/dev/null || true
@@ -617,29 +593,43 @@ copy_install_log() {
       return 1
     }
   fi
-  # `mv file directory` moves the file *into* the directory and reports
-  # success. Reject that state rather than publishing an undiscoverable log.
-  [ ! -d "$INSTALL_LOG" ] || {
-    rm -f "$staged" 2>/dev/null || true
-    rmdir "$stage_dir" 2>/dev/null || true
-    return 1
-  }
   if [ "$(id -u)" -eq 0 ]; then
-    # Unlinking a symlink removes the directory entry without following it.
-    # `ln` then atomically creates INSTALL_LOG only if the attacker has not
-    # replaced that entry in the meantime; unlike cross-device `mv`, it never
-    # copies through a planted symlink.
-    rm -f "$INSTALL_LOG" 2>/dev/null || true
-    if ! ln "$staged" "$INSTALL_LOG" 2>/dev/null; then
+    # Pin the validated directory as cwd before publishing. The target user can
+    # replace its path after any pathname check, so no privileged mutation may
+    # resolve that parent again. Noclobber makes the final create atomic: if the
+    # user races in a symlink, file, or directory after rm, the redirection
+    # fails instead of following it or treating it as a destination directory.
+    local publish_rc=0
+    (
+      cd "$install_log_dir" 2>/dev/null || exit 1
+      path_is_under_home "." || exit 1
+      [ ! -d "install.log" ] || exit 1
+      rm -f "install.log" 2>/dev/null || exit 2
+      set -o noclobber
+      if ! cat "$staged" > "install.log" 2>/dev/null; then
+        rm -f "install.log" 2>/dev/null || true
+        exit 2
+      fi
+    ) || publish_rc=$?
+    if [ "$publish_rc" -ne 0 ]; then
+      rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return "$publish_rc"
+    fi
+    rm -f "$staged" 2>/dev/null || true
+  else
+    # `mv file directory` moves the file *into* the directory and reports
+    # success. Reject that state rather than publishing an undiscoverable log.
+    [ ! -d "$INSTALL_LOG" ] || {
+      rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return 1
+    }
+    if ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
       rm -f "$staged" 2>/dev/null || true
       rmdir "$stage_dir" 2>/dev/null || true
       return 2
     fi
-    rm -f "$staged" 2>/dev/null || true
-  elif ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
-    rm -f "$staged" 2>/dev/null || true
-    rmdir "$stage_dir" 2>/dev/null || true
-    return 2
   fi
   rmdir "$stage_dir" 2>/dev/null || true
 }
@@ -3028,14 +3018,14 @@ fi
 # catch-all, even when its reinstall moved dependencies):
 #   - same app version + dependency changes → "Dependencies updated."
 #   - already up to date                    → "Already installed."
-#   - unpinned, default-prerelease run that moved version → "Upgrade complete."
+#   - unpinned, default-prerelease run that moved version → "Version changed."
 #   - everything else                       → "Setup complete."
 #
 # The last branch is a catch-all, not an enumerated set. It covers a fresh
-# install and an editable→PyPI swap, but also every version move the script
-# cannot prove went forward — it has no version comparison, so it can only rely
-# on resolution always picking the newest candidate. Two things break that, and
-# both are therefore excluded from the upgrade branch:
+# install and an editable→PyPI swap. The version-move branch stays neutral
+# because uv honors custom indexes and configuration whose newest available
+# package can be older than the installed version. Two other known downgrade
+# paths remain in the catch-all branch:
 #   - a *pinned* version (VERSION set): `bash -s -- 0.1.0` over an installed
 #     0.2.0 is a downgrade.
 #   - an explicit DEEPAGENTS_CODE_PRERELEASE (PRERELEASE_REQUESTED set): with
@@ -3053,7 +3043,7 @@ elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" 
   footer_msg="Already installed."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then
-  footer_msg="Upgrade complete."
+  footer_msg="Version changed."
 else
   footer_msg="Setup complete."
 fi

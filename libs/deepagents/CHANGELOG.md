@@ -4,10 +4,9 @@
 
 ## [0.7.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.4...deepagents==0.7.5) (2026-08-06)
 
-
 ### Bug Fixes
 
-* **sdk:** identify file-capable provider classes ([#5326](https://github.com/langchain-ai/deepagents/issues/5326)) ([e5d5391](https://github.com/langchain-ai/deepagents/commit/e5d53917c01aadcebe4e7e4a1974322033ae6c87))
+- Identify SDK provider classes that support files. ([#5326](https://github.com/langchain-ai/deepagents/issues/5326))
 
 ## [0.7.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.3...deepagents==0.7.4) (2026-08-04)
 

@@ -543,6 +543,33 @@ class TestMultiCompletionManager:
         manager.reset()
         assert manager._active is None
 
+    def test_excluded_controller_does_not_activate(self, manager):
+        """An excluded controller is skipped even when it can handle the text."""
+        slash_ctrl = manager._controllers[0]
+        assert isinstance(slash_ctrl, SlashCommandController)
+
+        manager.on_text_changed("/help", 5, exclude=(slash_ctrl,))
+
+        assert manager._active is None
+
+    def test_exclude_leaves_other_controllers_active(self, manager):
+        """Excluding the slash controller must not disable `@` completions."""
+        slash_ctrl = manager._controllers[0]
+
+        manager.on_text_changed("@file", 5, exclude=(slash_ctrl,))
+
+        assert isinstance(manager._active, FuzzyFileController)
+
+    def test_exclude_deactivates_already_active_controller(self, manager):
+        """A controller active from a prior change is dropped once excluded."""
+        manager.on_text_changed("/help", 5)
+        assert isinstance(manager._active, SlashCommandController)
+
+        slash_ctrl = manager._controllers[0]
+        manager.on_text_changed("/help", 5, exclude=(slash_ctrl,))
+
+        assert manager._active is None
+
     def test_reactivates_after_reset(self, manager, mock_view):
         """Controller reactivates for new input after a full reset."""
         manager.on_text_changed("/", 1)

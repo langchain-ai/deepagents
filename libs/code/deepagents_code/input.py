@@ -556,8 +556,11 @@ def parse_pasted_directory_paths(text: str) -> list[Path]:
     to recognize such a payload as a path and leave it as literal text;
     directories are not attachable, so nothing is loaded from them.
 
-    Like `parse_pasted_file_paths`, parsing is strict: every token must resolve
-    to an existing directory, otherwise the payload is ordinary text.
+    Tokens are resolved strictly first: every shell token must resolve to an
+    existing directory. When that fails the whole payload is retried as one
+    unquoted path, because some terminals paste folder paths verbatim with
+    spaces left intact — an asymmetry with `parse_pasted_file_paths`, which has
+    no such fallback. A payload that satisfies neither is ordinary text.
 
     Args:
         text: Raw paste payload from the terminal.
@@ -570,7 +573,8 @@ def parse_pasted_directory_paths(text: str) -> list[Path]:
         return paths
 
     # Terminals that paste an unquoted path verbatim leave spaces intact, which
-    # shell tokenization above splits into unresolvable tokens.
+    # the shell tokenization in `_parse_pasted_payload_paths` splits into
+    # unresolvable tokens.
     candidate = normalize_pasted_path(text)
     if candidate is None:
         return []
@@ -764,6 +768,41 @@ def extract_leading_pasted_file_path(text: str) -> tuple[Path, int] | None:
         Tuple of `(resolved_path, token_end_index)` or `None` when no valid
         leading file path token exists.
     """
+    return _extract_leading_pasted_path(text, _resolve_existing_pasted_path)
+
+
+def extract_leading_pasted_entry_path(text: str) -> tuple[Path, int] | None:
+    """Extract a leading pasted path token that may be a file or a directory.
+
+    The directory case is why this exists: a dragged folder followed by a typed
+    question (`/srv/assets what is in here`) is the payload shape the chat input
+    must keep out of slash-command mode, and the file-only extractor rejects it
+    because the folder does not resolve as a file.
+
+    Args:
+        text: Input text to inspect.
+
+    Returns:
+        Tuple of `(resolved_path, token_end_index)` or `None` when no valid
+        leading path token exists.
+    """
+    return _extract_leading_pasted_path(text, _resolve_existing_pasted_entry_any)
+
+
+def _extract_leading_pasted_path(
+    text: str, resolve: Callable[[Path], Path | None]
+) -> tuple[Path, int] | None:
+    """Extract a leading path token, resolving candidates through `resolve`.
+
+    Args:
+        text: Input text to inspect.
+        resolve: Resolver deciding whether a candidate exists in the shape the
+            caller accepts.
+
+    Returns:
+        Tuple of `(resolved_path, token_end_index)` or `None` when no valid
+        leading path token exists.
+    """
     if not text:
         return None
 
@@ -774,15 +813,34 @@ def extract_leading_pasted_file_path(text: str) -> tuple[Path, int] | None:
         return None
 
     token_text = payload[:token_end]
-    path = parse_single_pasted_file_path(token_text)
+    path = _parse_single_pasted_path(token_text, resolve)
     if path is None:
-        spaced = _extract_unquoted_leading_path_with_spaces(payload)
+        spaced = _extract_unquoted_leading_path_with_spaces(payload, resolve)
         if spaced is None:
             return None
         spaced_path, spaced_end = spaced
         return spaced_path, start + spaced_end
 
     return path, start + token_end
+
+
+def _parse_single_pasted_path(
+    text: str, resolve: Callable[[Path], Path | None]
+) -> Path | None:
+    """Normalize a single path token and resolve it through `resolve`.
+
+    Args:
+        text: Raw pasted text payload.
+        resolve: Resolver deciding whether the candidate exists in the shape
+            the caller accepts.
+
+    Returns:
+        Resolved path, otherwise `None`.
+    """
+    candidate = normalize_pasted_path(text)
+    if candidate is None:
+        return None
+    return resolve(candidate)
 
 
 def normalize_pasted_path(text: str) -> Path | None:
@@ -935,7 +993,9 @@ def _leading_token_end(text: str) -> int | None:
     return len(text)
 
 
-def _extract_unquoted_leading_path_with_spaces(text: str) -> tuple[Path, int] | None:
+def _extract_unquoted_leading_path_with_spaces(
+    text: str, resolve: Callable[[Path], Path | None]
+) -> tuple[Path, int] | None:
     """Extract a leading unquoted path that may contain spaces.
 
     This fallback is intentionally POSIX-oriented (`/` and `~/`) because the
@@ -944,10 +1004,12 @@ def _extract_unquoted_leading_path_with_spaces(text: str) -> tuple[Path, int] | 
 
     Args:
         text: Input text beginning with a potential path.
+        resolve: Resolver deciding whether a candidate prefix exists in the
+            shape the caller accepts.
 
     Returns:
         Tuple of `(resolved_path, token_end_index)` or `None` when no matching
-        leading path prefix resolves to an existing file.
+        leading path prefix resolves.
     """
     if not text or ("\n" in text or "\r" in text):
         return None
@@ -962,7 +1024,7 @@ def _extract_unquoted_leading_path_with_spaces(text: str) -> tuple[Path, int] | 
         candidate = text[:end].rstrip()
         if not candidate:
             continue
-        path = parse_single_pasted_file_path(candidate)
+        path = _parse_single_pasted_path(candidate, resolve)
         if path is not None:
             return path, len(candidate)
     return None
@@ -1158,7 +1220,7 @@ def _normalize_unicode_spaces(text: str) -> str:
 
 
 def _resolve_with_unicode_space_variants(
-    path: Path, *, prefer: Callable[[Path], bool] = _safe_is_file
+    path: Path, *, prefer: Callable[[Path], bool]
 ) -> Path | None:
     """Resolve path by matching filename segments with Unicode space variants.
 

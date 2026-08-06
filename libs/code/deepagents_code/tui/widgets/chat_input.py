@@ -1518,8 +1518,11 @@ class ChatInput(Vertical):
 
         # Draft text that filesystem path-detection already accepted as a
         # dropped path. Keystrokes that only extend it (typing a question after
-        # dropping a file or folder) keep mode detection out of command mode
-        # without re-running the stat calls that single-character edits skip.
+        # dropping a file or folder) keep mode detection out of command mode:
+        # single-character edits deliberately skip those stat calls, so the
+        # remembered draft stands in for them. Also load-bearing at submission
+        # time via `_starts_with_dropped_path`, which keeps `_submit_value` from
+        # re-tagging the message as a command.
         self._dropped_path_draft: str | None = None
 
         # Track current suggestions for click handling
@@ -1748,8 +1751,12 @@ class ChatInput(Vertical):
             text, previous_text=previous_text, cursor_offset=self._get_cursor_offset()
         )
         self._prev_text = text
+        # Drop the accepted draft as soon as the text stops starting with it, so
+        # editing the path away restores `/` as a mode trigger. This runs before
+        # the re-detection below (and before the history early-return) so an
+        # edited payload is revalidated rather than grandfathered.
         if self._dropped_path_draft is not None and not text.startswith(
-            self._dropped_path_draft
+            self._dropped_path_draft.strip()
         ):
             self._dropped_path_draft = None
 
@@ -1783,10 +1790,11 @@ class ChatInput(Vertical):
         )
         if is_path_payload:
             self._dropped_path_draft = text
-        # Keystrokes that extend a recognized dropped path (typing a question
-        # after dropping a file or folder) arrive one character at a time, so
-        # they skip the stat calls above. Remembering the accepted draft keeps
-        # its leading `/` from being re-read as a slash-command trigger.
+        # The draft suppresses `/` mode detection for as long as the text still
+        # starts with the accepted payload. Single-character keystrokes are the
+        # motivating case -- typing a question after dropping a file or folder
+        # bypasses the stat calls in `_is_dropped_path_payload` entirely -- but
+        # the rule is the prefix, not the edit size.
         keeps_dropped_path = is_path_payload or self._dropped_path_draft is not None
 
         # Guard: skip mode re-detection after we programmatically stripped
@@ -1827,7 +1835,17 @@ class ChatInput(Vertical):
                 self._completion_manager.reset()
             else:
                 vtext, vcursor = self._completion_text_and_cursor()
-                self._completion_manager.on_text_changed(vtext, vcursor)
+                # `SlashCommandController.can_handle` is a bare `startswith("/")`
+                # with no mode awareness, so a dropped path's leading `/` would
+                # open the command popup while the input sits in normal mode --
+                # and Enter would then accept a fuzzy-matched command instead of
+                # submitting the draft. Keep it out while the path stands; the
+                # file controller still runs so `@` mentions keep completing.
+                self._completion_manager.on_text_changed(
+                    vtext,
+                    vcursor,
+                    exclude=(self._slash_controller,) if keeps_dropped_path else (),
+                )
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
@@ -1950,23 +1968,43 @@ class ChatInput(Vertical):
         Mixed drops (a folder and one or more files) are accepted as well:
         requiring every token to share one shape leaves those payloads
         unrecognized even though the terminal delivers them the same way.
+
+        A leading folder followed by typed prose counts too, mirroring the
+        file-plus-prose case, so dropping a folder and asking a question about
+        it stays one ordinary message.
         """
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
         from deepagents_code.input import (
+            extract_leading_pasted_entry_path,
+            looks_like_dropped_payload,
             parse_pasted_any_entry_paths,
             parse_pasted_directory_paths,
             parse_pasted_path_payload,
         )
 
+        # "Exists and is a directory" is a far weaker filter than "exists and is
+        # a file", so without the drop-shape guard a bare word matching a
+        # working-directory entry (`tests`, `docs`, `..`) would be read as a
+        # dropped path. Terminals always deliver drops as absolute, `~/`, or
+        # `file://` paths, so requiring that shape costs nothing real.
+        if not looks_like_dropped_payload(text):
+            return False
+
         if parse_pasted_path_payload(text, allow_leading_path=True) is not None:
             return True
         if parse_pasted_directory_paths(text):
             return True
-        return bool(parse_pasted_any_entry_paths(text))
+        if parse_pasted_any_entry_paths(text):
+            return True
+        return extract_leading_pasted_entry_path(text) is not None
 
     def _is_dropped_path_payload(self, text: str) -> bool:
-        """Return whether current text looks like a dropped file-path payload."""
+        """Return whether current text looks like a dropped path payload.
+
+        Files and folders both qualify -- see `_is_existing_path_payload` for
+        why a dragged directory is indistinguishable from a dragged file.
+        """
         if not text:
             return False
         if self._is_existing_path_payload(text):
@@ -1977,13 +2015,20 @@ class ChatInput(Vertical):
         return False
 
     def _is_dropped_path_submission(self, value: str) -> bool:
-        """Return whether a normal-mode submission begins with an existing path."""
+        """Return whether a submission begins with -- or wholly is -- a path.
+
+        The transient draft is authoritative when present: it records a payload
+        that path detection already accepted, and trusting it means a folder
+        that was renamed or deleted since the drop still submits as text rather
+        than being re-tagged as a command. Revalidation covers the cases where
+        the draft is gone, such as a submission driven straight from history.
+        """
         if self._starts_with_dropped_path(value):
             return True
         return self._is_existing_path_payload(value)
 
     def _starts_with_dropped_path(self, value: str) -> bool:
-        """Return whether `value` still begins with a recognized dropped path."""
+        """Return whether `value` still begins with the accepted drop payload."""
         draft = self._dropped_path_draft
         return draft is not None and value.startswith(draft.strip())
 

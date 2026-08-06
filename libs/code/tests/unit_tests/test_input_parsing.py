@@ -7,6 +7,7 @@ import pytest
 from deepagents_code.input import (
     ParsedPastedPathPayload,
     dropped_payload_paths,
+    extract_leading_pasted_entry_path,
     extract_leading_pasted_file_path,
     normalize_pasted_path,
     parse_file_mentions,
@@ -422,6 +423,53 @@ def test_parse_pasted_any_entry_paths_rejects_missing_token(tmp_path: Path) -> N
     folder.mkdir()
 
     assert parse_pasted_any_entry_paths(f"{folder} {tmp_path / 'missing'}") == []
+
+
+def test_extract_leading_pasted_entry_path_accepts_folder_then_prose(
+    tmp_path: Path,
+) -> None:
+    """A leading folder followed by a question resolves like a leading file."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    result = extract_leading_pasted_entry_path(f"{folder} what is in here")
+
+    assert result is not None
+    path, token_end = result
+    assert path == folder.resolve()
+    assert token_end == len(str(folder))
+
+
+def test_extract_leading_pasted_entry_path_accepts_file_then_prose(
+    tmp_path: Path,
+) -> None:
+    """The file case keeps working through the shared extractor."""
+    note = tmp_path / "note.txt"
+    note.write_text("hi")
+
+    result = extract_leading_pasted_entry_path(f"{note} explain this")
+
+    assert result is not None
+    assert result[0] == note.resolve()
+
+
+def test_extract_leading_pasted_entry_path_handles_unquoted_spaces(
+    tmp_path: Path,
+) -> None:
+    """A folder whose name contains spaces still splits from trailing prose."""
+    folder = tmp_path / "my assets"
+    folder.mkdir()
+
+    result = extract_leading_pasted_entry_path(f"{folder} what is in here")
+
+    assert result is not None
+    assert result[0] == folder.resolve()
+
+
+def test_extract_leading_pasted_entry_path_rejects_prose(tmp_path: Path) -> None:
+    """Text with no resolvable leading path stays ordinary prose."""
+    assert extract_leading_pasted_entry_path("please inspect this") is None
+    assert extract_leading_pasted_entry_path(f"{tmp_path / 'missing'} hi") is None
 
 
 def test_normalize_pasted_path_rejects_mixed_payload() -> None:

@@ -3709,6 +3709,140 @@ class TestDroppedFolderPaste:
             assert chat.mode == "normal"
             assert chat._text_area.text == str(folder)
 
+    async def test_bulk_folder_and_prose_edit_keeps_normal_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """A folder and a question arriving in one edit stay one message."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        value = f"{folder} what is in here"
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = value
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == value
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == value
+            assert app.submitted[0].mode == "normal"
+
+    async def test_submit_folder_with_prose_without_drop_draft_stays_normal(
+        self, tmp_path: Path
+    ) -> None:
+        """Revalidation must accept a leading folder plus prose, like a file."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        value = f"{folder} what is in here"
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+
+            assert chat._dropped_path_draft is None
+            chat._submit_value(value)
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == value
+            assert app.submitted[0].mode == "normal"
+
+    async def test_recalled_dropped_folder_with_prose_stays_normal_text(
+        self, tmp_path: Path
+    ) -> None:
+        """History recall must revalidate a folder-plus-prose entry too."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        entry = f"{folder} what is in here"
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append(entry)
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == entry
+
+    async def test_typing_after_folder_drop_keeps_command_popup_closed(
+        self, tmp_path: Path
+    ) -> None:
+        """A dropped path's `/` must not open the slash popup as the user types.
+
+        `SlashCommandController.can_handle` is a bare `startswith("/")` with no
+        mode awareness, so a dropped path short enough to fuzzy-match a real
+        command would open the popup while the input sits in normal mode, and
+        Enter would accept the highlighted command instead of submitting the
+        draft. A command is registered to match the drafted path exactly, so the
+        match is deterministic rather than dependent on a short real path.
+        """
+        from deepagents_code.command_registry import CommandEntry
+
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        dropped = str(folder)
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Guarantee a fuzzy hit on the drafted path so the popup would open
+            # if the slash controller were still consulted.
+            chat.update_slash_commands([CommandEntry(f"{dropped}o", "stub", "", "")])
+
+            chat._text_area.text = dropped
+            chat._text_area.move_cursor_to_end()
+            await _pause_for_strip(pilot)
+
+            await pilot.press("o")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._current_suggestions == []
+            assert popup.styles.display == "none"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == f"{dropped}o"
+            assert app.submitted[0].mode == "normal"
+
+    async def test_relative_directory_word_is_not_a_dropped_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare word matching a cwd folder is prose, not a drop.
+
+        Terminals always deliver drops as absolute, `~/`, or `file://` paths, so
+        requiring that shape keeps `tests` or `..` from resolving against the
+        working directory and installing a bogus dropped-path draft.
+        """
+        (tmp_path / "assets").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "assets"
+            await _pause_for_strip(pilot)
+
+            assert chat._dropped_path_draft is None
+
 
 class TestPathPayloadDetectionGating:
     """Single-keystroke edits should skip the blocking path-detection helpers.

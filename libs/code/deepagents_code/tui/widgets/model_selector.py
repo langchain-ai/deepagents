@@ -2034,9 +2034,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # A restore timer left over from an immediately preceding
             # successful Ctrl+S would fire mid-error and wipe this notice;
             # cancel it so the failure stays visible as intended.
-            if self._help_restore_timer is not None:
-                self._help_restore_timer.stop()
-                self._help_restore_timer = None
+            self._stop_help_restore_timer()
             if self.is_running:
                 self.notify(remedy, severity="error", timeout=10, markup=False)
 
@@ -2072,7 +2070,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._default_spec = None
                 self.call_after_refresh(self._update_display)
                 help_widget.update(Content.styled(f"{sentence_noun} cleared", "bold"))
-                self._help_restore_timer = self.set_timer(3.0, self._restore_help_text)
+                self._restart_help_restore_timer()
             else:
                 _fail(
                     f"Failed to clear {noun}",
@@ -2089,13 +2087,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     spec=model_spec,
                 )
             )
-            self._help_restore_timer = self.set_timer(3.0, self._restore_help_text)
+            self._restart_help_restore_timer()
         else:
             _fail(
                 f"Failed to save {noun}",
                 "Could not write ~/.deepagents/config.toml. "
                 "Check permissions for ~/.deepagents/",
             )
+
+    def _stop_help_restore_timer(self) -> None:
+        """Stop the pending footer-restore timer, if any, and drop the handle."""
+        if self._help_restore_timer is not None:
+            self._help_restore_timer.stop()
+            self._help_restore_timer = None
+
+    def _restart_help_restore_timer(self) -> None:
+        """Schedule a fresh footer restore, stopping any timer already pending.
+
+        Two quick successful Ctrl+S toggles must not orphan the first timer:
+        its callback would clear the handle while the second timer is still
+        pending, leaving nothing for `_fail` to cancel.
+        """
+        self._stop_help_restore_timer()
+        self._help_restore_timer = self.set_timer(3.0, self._restore_help_text)
 
     def _restore_help_text(self) -> None:
         """Restore the default help text after a temporary message.

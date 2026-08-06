@@ -888,6 +888,47 @@ class TestDefaultModelScope:
             # timer can never fire and erase the error notice.
             assert timer._task is None
 
+    async def test_success_restarts_pending_restore_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second successful Ctrl+S must not orphan the first timer.
+
+        Two quick successful toggles schedule two restores; overwriting the
+        handle without stopping the first leaves it active but untracked. Its
+        callback would clear the handle while the second timer is pending, so
+        a later `_fail` could not cancel the real timer — and that timer would
+        erase the persistent error notice. The first timer must be stopped
+        before the second is scheduled.
+        """
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
+            first_timer = screen._help_restore_timer
+            assert first_timer is not None
+
+            # The row just saved is now the stored spec, so the next Ctrl+S
+            # takes the clear branch — a second success.
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default cleared" in str(help_widget.content)
+
+            second_timer = screen._help_restore_timer
+            assert second_timer is not None
+            assert second_timer is not first_timer
+            # `Timer.stop()` cancels the underlying task, so the superseded
+            # timer can never fire and clobber the newer handle or message.
+            assert first_timer._task is None
+
 
 class TestNamesToggle:
     """Tests for the Ctrl+N names/raw-spec toggle in `/model`."""

@@ -1769,9 +1769,9 @@ class TestFormatRubricEvent:
             "Unmet criteria\n- Lists 15 shops\n  Only 5.\n- Two sources each" in details
         )
         assert "Satisfied criteria\n- Reports infeasibility" in details
-        # Unmet criteria stay above the satisfied list; the panel leads with
-        # what the user has to act on.
-        assert details.index("Unmet criteria") < details.index("Satisfied criteria")
+        # The satisfied list comes first so the panel reads as an accounting of
+        # the whole rubric rather than a list of defects.
+        assert details.index("Satisfied criteria") < details.index("Unmet criteria")
 
     def test_criterion_without_a_boolean_verdict_is_listed_in_neither_section(
         self,

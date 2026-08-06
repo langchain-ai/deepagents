@@ -646,17 +646,17 @@ def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -
                 passing.append(
                     str(criterion.get("name") or "Unnamed criterion").strip()
                 )
-    if failing:
-        lines = ["Unmet criteria"]
-        for name, gap in failing:
-            lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
-        sections.append("\n".join(lines))
     if passing:
         # Shown so the panel reports the grader's full accounting; without it a
         # partial evaluation is indistinguishable from a complete one.
         sections.append(
             "\n".join(["Satisfied criteria", *(f"- {name}" for name in passing)])
         )
+    if failing:
+        lines = ["Unmet criteria"]
+        for name, gap in failing:
+            lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
+        sections.append("\n".join(lines))
 
     unverified = data.get("unverified") is True
 

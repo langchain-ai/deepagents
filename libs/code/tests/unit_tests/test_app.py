@@ -22855,6 +22855,11 @@ class TestDeferredActions:
             await pilot.pause()
             assert app._can_bypass_queue("/auto") is True
             assert app._can_bypass_queue("/auto model") is True
+            # `_handle_auto_command` strips and reparses the remainder, so
+            # whitespace-variant spellings reach the same selector branch and
+            # must bypass too.
+            assert app._can_bypass_queue("/auto  model") is True
+            assert app._can_bypass_queue("/auto\tmodel") is True
             assert app._can_bypass_queue("/auto model openai:gpt-5.5-mini") is False
             assert app._can_bypass_queue("/auto model clear") is False
 

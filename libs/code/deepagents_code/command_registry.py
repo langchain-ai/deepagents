@@ -368,9 +368,10 @@ handler routes straight to a modal open and defers all real work (validation,
 mutation) to the dismiss callback, exactly like the bare form. `/auto model`
 with no further arguments qualifies — it only pushes the classifier-model
 picker — while `/auto model <spec>` and `/auto model clear` validate and
-mutate classifier state, so they stay queue-bound. Each entry must be an
-exact lowered command-plus-subcommand string with no further arguments; the
-bypass compares the full submitted value against it.
+mutate classifier state, so they stay queue-bound. Each entry must be an exact
+lowered command-plus-subcommand string with single-space separators and no
+further arguments; the bypass canonicalizes the submitted value's whitespace
+before comparing against it.
 """
 
 SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE)

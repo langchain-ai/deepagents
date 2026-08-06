@@ -10225,8 +10225,11 @@ class DeepAgentsApp(App):
             # which opens the classifier picker). Other argument forms do a
             # direct action that shouldn't race the agent (e.g. `/model <name>`
             # switches models, `/threads -r <id>` resumes a thread,
-            # `/auto model <spec>` mutates classifier state).
-            return value == cmd or value in IMMEDIATE_UI_ARG_FORMS
+            # `/auto model <spec>` mutates classifier state). Whitespace is
+            # canonicalized for the whitelist check because `_handle_command`
+            # strips and reparses the same way — `/auto  model` (double space,
+            # tab) reaches the selector branch once processed.
+            return value == cmd or " ".join(value.split()) in IMMEDIATE_UI_ARG_FORMS
         return cmd in SIDE_EFFECT_FREE
 
     async def _submit_input(

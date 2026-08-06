@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib
 import json
 import keyword
@@ -175,6 +176,7 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
         AUTO_CLASSIFIER_TIMEOUT,
+        "TERM_PROGRAM",
     }
 )
 """Env keys a *project* `.env` must not inject, even though they are otherwise
@@ -204,6 +206,11 @@ batch up to the ceiling, or squeeze the budget until reviews time out and the
 session degrades into repeated denials and approval prompts.
 `[models].auto_classifier_timeout` in
 `~/.deepagents/config.toml` and the trusted env surfaces still set it.
+
+`TERM_PROGRAM` identifies the terminal from which the user launched Deep
+Agents Code and is included in trace metadata. A project `.env` must not
+replace it: python-dotenv expands environment-variable references, which could
+otherwise forward a launch-environment value to the trace backend.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
 `.env` loading into code execution), these are denied only from the *project*
@@ -560,6 +567,147 @@ _QUIET_SDK_LOGGER_NAMES = (
     "langsmith",
 )
 
+_MCP_STREAMABLE_HTTP_LOGGER_NAME = "mcp.client.streamable_http"
+_MCP_SSE_LOGGER_NAME = "mcp.client.sse"
+
+_MCP_SHUTDOWN_RACE_MESSAGES: Mapping[str, frozenset[str]] = {
+    _MCP_STREAMABLE_HTTP_LOGGER_NAME: frozenset(
+        {"Error parsing JSON response", "Error parsing SSE message"}
+    ),
+    _MCP_SSE_LOGGER_NAME: frozenset({"Error in sse_reader"}),
+}
+"""MCP transport log messages whose `try` block writes to the session stream.
+
+Keyed by the logger that emits them. Every listed `except` clause wraps an
+`await read_stream_writer.send(session_message)`, so a closed/broken-resource
+error reaching one of them means the session's streams are already torn down —
+the app is quitting — and the record says nothing actionable.
+
+Both streamable-HTTP messages are needed: a server that answers with a single
+JSON body takes `_handle_json_response`, while one that streams its response
+takes `_handle_sse_event`, and both send into the read stream from inside the
+logging `try`. `Error in post_writer` is deliberately absent — it wraps the
+entire write loop, so a closed stream there can also mean the transport was
+orphaned while the session was still live, which is worth seeing.
+"""
+
+
+@functools.cache
+def _closed_resource_error_types() -> tuple[type[BaseException], ...]:
+    """Return anyio's closed/broken-resource exception types.
+
+    Imported lazily and cached rather than at module scope: nothing has pulled
+    in `anyio` by the time `_quiet_sdk_logging` runs, so importing it there
+    would add work to the startup path of every invocation.
+
+    The import is guarded because this runs on the logging path. `logging`
+    swallows exceptions raised by `Handler.emit`, but *not* those raised by
+    `Logger.filter` — they propagate into the `except` block that called
+    `logger.exception`. Returning an empty tuple degrades to keeping the record.
+    In practice the import always succeeds: the transports that emit these
+    records import `anyio` themselves.
+    """
+    try:
+        import anyio
+    except ImportError:  # pragma: no cover
+        return ()
+    return (anyio.ClosedResourceError, anyio.BrokenResourceError)
+
+
+class _McpShutdownRaceFilter(logging.Filter):
+    """Drop an MCP client transport's shutdown-race records.
+
+    When the app quits while an MCP response is in flight, the transport's
+    reader task sends the parsed message into a session stream that is already
+    closed, and the surrounding `except` logs the resulting closed-resource
+    error with a full traceback. Nothing downstream can act on that record: the
+    `send` that raised *is* the transport's only channel back to the caller, so
+    the follow-up `await read_stream_writer.send(exc)` raises the same error
+    instead of delivering it. The in-flight request still fails loudly by
+    another route — the session's receive loop hands every pending response
+    stream an `ErrorData(CONNECTION_CLOSED)` on its way out, so the waiting
+    `send_request` raises `McpError("Connection closed")`.
+
+    Matching is deliberately narrow — a per-logger message list, and only anyio
+    stream errors — so real transport faults stay on stderr. A network-level
+    drop cannot reach this filter: `httpcore` remaps anyio's
+    `BrokenResourceError`/`ClosedResourceError` onto `httpx.ReadError` and
+    friends before httpx re-raises, and this filter never walks `__cause__`, so
+    those records are kept. What remains matches only the teardown of an
+    in-process memory stream.
+    """
+
+    def __init__(self, messages: frozenset[str]) -> None:
+        """Build a filter for one transport logger's shutdown-race messages.
+
+        Args:
+            messages: Exact `logger.exception` messages to drop when they carry
+                a closed/broken-resource error.
+        """
+        super().__init__()
+        self._messages = messages
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return `False` for shutdown-race records, `True` for everything else."""
+        if record.msg not in self._messages:
+            return True
+        if record.exc_info is None or record.exc_info[1] is None:
+            # `logger.exception()` outside an active exception yields
+            # `(None, None, None)` — there is no error to classify.
+            return True
+        return not self._is_closed_resource(record.exc_info[1])
+
+    @classmethod
+    def _is_closed_resource(cls, exc: BaseException) -> bool:
+        """Check for anyio closed/broken-resource errors, including grouped ones.
+
+        Args:
+            exc: The exception from the log record's `exc_info`.
+
+        Returns:
+            `True` if *exc* is an anyio closed/broken-resource error, or a
+            `BaseExceptionGroup` whose every leaf is one, `False` otherwise.
+        """
+        if isinstance(exc, _closed_resource_error_types()):
+            return True
+        if isinstance(exc, BaseExceptionGroup):
+            # Defensive: no current call site logs from a task-group boundary,
+            # but if one ever does, the error arrives wrapped. Every leaf must
+            # be a stream teardown — a group that also carries a real fault
+            # stays visible rather than being suppressed wholesale.
+            return bool(exc.exceptions) and all(
+                cls._is_closed_resource(sub) for sub in exc.exceptions
+            )
+        return False
+
+
+def _install_mcp_shutdown_race_filter(*, debug_enabled: bool) -> None:
+    """Filter the MCP transports' shutdown-race records unless debug is on.
+
+    Each filter must live on the logger that emits the records: logger-level
+    filters only run for records logged directly on that logger, so attaching
+    one to the `mcp` root would never see the transports' records.
+
+    With `DEEPAGENTS_CODE_DEBUG` set, an already-installed filter is *removed*
+    rather than merely not added. A logger-level filter drops the record for
+    every handler, including the debug file handler `_quiet_sdk_logging`
+    attaches, so leaving one in place would keep the race out of the debug log.
+
+    Args:
+        debug_enabled: Whether `DEEPAGENTS_CODE_DEBUG` is truthy.
+    """
+    for name, messages in _MCP_SHUTDOWN_RACE_MESSAGES.items():
+        transport_logger = logging.getLogger(name)
+        existing = [
+            f for f in transport_logger.filters if isinstance(f, _McpShutdownRaceFilter)
+        ]
+        if debug_enabled:
+            for f in existing:
+                transport_logger.removeFilter(f)
+            continue
+        if not existing:
+            transport_logger.addFilter(_McpShutdownRaceFilter(messages))
+
 
 def _quiet_sdk_logging() -> None:
     """Keep non-actionable SDK diagnostics off the terminal.
@@ -574,11 +722,21 @@ def _quiet_sdk_logging() -> None:
     `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they stay
     off the terminal. Other Deep Agents loggers remain untouched so actionable
     runtime warnings are still visible.
+
+    The `mcp` hierarchy is handled differently: it gets no `NullHandler`, so its
+    diagnostics stay on stderr, and only the shutdown-race records named in
+    `_MCP_SHUTDOWN_RACE_MESSAGES` are filtered out. Under debug those transport
+    loggers get the file handler instead, so the filtered records are still
+    recorded rather than reaching last-resort stderr over the TUI.
     """
     from deepagents_code._debug import configure_debug_logging
     from deepagents_code._env_vars import DEBUG, is_env_truthy
 
     debug_enabled = is_env_truthy(DEBUG)
+    _install_mcp_shutdown_race_filter(debug_enabled=debug_enabled)
+    if debug_enabled:
+        for mcp_logger_name in _MCP_SHUTDOWN_RACE_MESSAGES:
+            configure_debug_logging(logging.getLogger(mcp_logger_name))
     for name in _QUIET_SDK_LOGGER_NAMES:
         sdk_logger = logging.getLogger(name)
         if debug_enabled:
@@ -1779,6 +1937,15 @@ def build_stream_config(
     metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
     key (see above), so it is safe to stamp trace-wide.
 
+    Also records `dcode_term_program` from `TERM_PROGRAM` when that is non-empty
+    after stripping, so traces are groupable by launch environment (e.g.
+    "iTerm.app", "vscode", "Apple_Terminal"). Blank values are treated as unset
+    to match every other reader of this variable — some shells export
+    `TERM_PROGRAM=""` rather than leaving it unset, and terminals that never set
+    it (Windows Terminal, ssh, the Linux console) omit the key entirely rather
+    than forming a junk grouping bucket. This is a diagnostic key, not part of
+    the contract.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1823,6 +1990,12 @@ def build_stream_config(
     # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
     if auto_approve:
         metadata["dcode_auto_approve"] = True
+
+    # Record the launch environment so traces are groupable by terminal.
+    # Blank is treated as unset, matching the other readers. Not a contract key.
+    term_program = os.environ.get("TERM_PROGRAM", "").strip()
+    if term_program:
+        metadata["dcode_term_program"] = term_program
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).

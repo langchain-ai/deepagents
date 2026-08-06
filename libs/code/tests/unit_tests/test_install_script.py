@@ -8,8 +8,12 @@ import re
 import stat
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "install.sh"
 
@@ -24,6 +28,28 @@ PRERELEASE_STRATEGIES = (
 
 def _make_executable(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def _clean_environ() -> dict[str, str]:
+    """Return `os.environ` without vars that redirect the installer's writes.
+
+    A developer with `ZDOTDIR` or `XDG_CONFIG_HOME` set in their own shell would
+    otherwise have the PATH entry written into their real dotfiles instead of
+    the fake HOME, so profile assertions fail locally but pass in CI. Tests that
+    exercise those variables set them explicitly.
+
+    `SHELL` is dropped for the same reason: it selects the candidate profile
+    set, so a contributor whose login shell is fish would otherwise exercise a
+    different code path than CI. Callers that care set it explicitly.
+    `DEEPAGENTS_CODE_*` is dropped so a developer's own installer settings
+    (an assumed-yes, a pinned version, an opt-out) can't leak into a run.
+    """
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"ZDOTDIR", "XDG_CONFIG_HOME", "SHELL"}
+        and not key.startswith("DEEPAGENTS_CODE_")
+    }
 
 
 def _write_fake_tools(
@@ -176,7 +202,7 @@ def _env(
         mktemp_fails=mktemp_fails,
     )
     return {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -1437,7 +1463,7 @@ def test_install_script_ignores_symlinked_legacy_lock_file(tmp_path: Path) -> No
     target.write_text("precious")
     (deepagents / "install.lock").symlink_to(target)
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -1735,7 +1761,7 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
     (lock_dir / "started_at").write_text("1\n")  # 1970 => well past the window
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -1789,7 +1815,7 @@ def test_install_script_aborts_on_unremovable_stale_lock(tmp_path: Path) -> None
     # the `mv` and the fallback `rm -rf` fail with EACCES.
     deepagents.chmod(0o555)
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -1904,7 +1930,7 @@ def _invoke_with_os(
         _make_executable(lockf)
 
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -1934,6 +1960,8 @@ def _run_install_uv(
     download_fails: bool = False,
     download_failures_before_success: int = 0,
     use_wget: bool = False,
+    busybox_wget: bool = False,
+    truncated: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real `install_uv` from `install.sh` against a fake uv installer.
 
@@ -1943,7 +1971,9 @@ def _run_install_uv(
     the captured output. When ``fails`` is set, that installer also exits
     non-zero, exercising the surface-output-on-failure branch. When ``no_shebang``
     is set, the installer content starts with an HTML tag instead of a shell
-    shebang, exercising the shebang-verification rejection. When ``download_fails``
+    shebang, exercising the shebang-verification rejection. When ``truncated`` is
+    set, the content keeps a valid shebang but is cut mid-``if``, which only the
+    parse check can catch. When ``download_fails``
     is set, the fake downloader writes an error to stderr and exits non-zero
     *without* creating the file, exercising the download-failure branch and
     proving the downloader's own error is surfaced. Returns the completed process
@@ -1953,7 +1983,12 @@ def _run_install_uv(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     first_line = "'<html>error</html>'" if no_shebang else "'#!/bin/sh'"
-    installer = first_line + " 'echo UV_INSTALLER_NOISE'"
+    installer = first_line
+    if truncated:
+        # A body cut mid-`if`: the shebang is intact, so only a parse check
+        # rejects this. Exactly the shape a dropped connection leaves behind.
+        installer += " 'if [ 1 = 1 ]; then'"
+    installer += " 'echo UV_INSTALLER_NOISE'"
     if fails:
         installer += " 'exit 3'"
 
@@ -1983,9 +2018,49 @@ def _run_install_uv(
     else:
         write_body = f"printf '%s\\n' {installer} >\"${{out:-/dev/stdout}}\"\n"
     downloader = bin_dir / downloader_name
+    # `wget_download` probes `wget --help` to decide which hardening flags this
+    # wget implements. Answer those probes *before* any counting or output, so
+    # capability probes are never mistaken for download attempts.
+    #
+    # BusyBox advertises none of the long options this function probes for and
+    # errors out if one is passed anyway; GNU advertises all of them. Modelling
+    # both is what lets the BusyBox test prove the flags were actually withheld.
+    #
+    # BusyBox also *exits 1* from `--help` (it prints usage and returns
+    # EXIT_FAILURE). That matters: the probe runs under `set -o pipefail`, so a
+    # piped `grep` would inherit the failure and report every option as
+    # unsupported — silently disabling `-S` and the redirect audit with it.
+    # Modelling the real exit code is what keeps that from regressing.
+    if busybox_wget:
+        help_text = "BusyBox v1.36.0 wget"
+        help_rc = "1"
+        reject_unsupported = (
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            "    --max-redirect=*|--https-only|-S)\n"
+            "      printf '%s\\n' \"wget: unrecognized option $arg\" >&2\n"
+            "      exit 1\n"
+            "      ;;\n"
+            "  esac\n"
+            "done\n"
+        )
+    else:
+        help_text = "--header --max-redirect --https-only -S"
+        help_rc = "0"
+        reject_unsupported = ""
+    help_handler = (
+        'if [ "${1:-}" = "--help" ]; then\n'
+        f"  printf '%s\\n' {help_text!r}\n"
+        f"  exit {help_rc}\n"
+        "fi\n"
+    ) + reject_unsupported
+    # Record the argv of every real (non-probe) invocation so tests can assert
+    # which hardening flags were actually passed. Without this the fakes ignore
+    # argv entirely and the flags could be deleted with no test failing.
+    argv_log = tmp_path / "downloader-argv.txt"
+    record_argv = f"printf '%s\\n' \"$*\" >> {str(argv_log)!r}\n"
     downloader.write_text(
-        "#!/usr/bin/env bash\n"
-        "out=''\n"
+        "#!/usr/bin/env bash\n" + help_handler + record_argv + "out=''\n"
         "while [ $# -gt 0 ]; do\n"
         '  case "$1" in\n'
         f'    {out_flag}) out="$2"; shift 2 ;;\n'
@@ -2016,6 +2091,8 @@ def _run_install_uv(
         "register_temp() { :; }\n"
         f"is_snap_curl() {{ return {is_snap_curl_rc}; }}\n"
         f"VERBOSE={'1' if verbose else '0'}\n"
+        f"{_extract_shell_function('wget_supports_option')}\n"
+        f"{_extract_shell_function('wget_download')}\n"
         f"{_extract_shell_function('install_uv')}\n"
         "install_uv\n",
         encoding="utf-8",
@@ -2086,6 +2163,212 @@ def test_install_uv_rejects_non_shell_response(tmp_path: Path) -> None:
     assert "UV_INSTALLER_NOISE" not in proc.stdout
 
 
+def test_install_uv_rejects_truncated_download(tmp_path: Path) -> None:
+    """A download cut mid-statement is rejected by the parse check before exec.
+
+    The shebang is intact, so the shebang check passes: only reading the whole
+    file without running it catches the unbalanced `if`. The payload must never
+    execute.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, truncated=True)
+
+    assert proc.returncode != 0
+    assert "failed a shell syntax check" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_curl_pins_https_for_request_and_redirects(
+    tmp_path: Path,
+) -> None:
+    """Scheme pinning and a bounded redirect chain are passed to curl.
+
+    `--proto-redir` is the only thing stopping a 3xx from downgrading the
+    fetch to plaintext, and nothing else in the suite would notice if the
+    flags were dropped.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False)
+
+    assert proc.returncode == 0
+    argv = (tmp_path / "downloader-argv.txt").read_text()
+    assert "--proto =https" in argv
+    assert "--proto-redir =https" in argv
+    assert "--max-redirs 3" in argv
+
+
+def test_install_uv_wget_passes_hardening_flags_when_supported(
+    tmp_path: Path,
+) -> None:
+    """A GNU-shaped wget receives the redirect controls it advertises.
+
+    The BusyBox test proves the flags are *withheld* when unsupported; this is
+    the mirror that proves they are sent when they are supported, so the
+    capability probe can't silently start answering "no" to everything.
+    """
+    proc = _run_install_uv(tmp_path, verbose=True, use_wget=True)
+
+    assert proc.returncode == 0
+    argv = (tmp_path / "downloader-argv.txt").read_text()
+    assert "--max-redirect=3" in argv
+    assert "--https-only" in argv
+    assert "-S" in argv
+
+
+def _eval_wget_supports_option(
+    tmp_path: Path, *, option: str, help_text: str, help_rc: int
+) -> bool:
+    """Return `wget_supports_option`'s verdict against a fake `wget --help`."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    wget = bin_dir / "wget"
+    wget.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' {help_text!r}\nexit {help_rc}\n",
+        encoding="utf-8",
+    )
+    _make_executable(wget)
+    script = tmp_path / "wget_probe_harness.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        f"{_extract_shell_function('wget_supports_option')}\n"
+        f"if wget_supports_option {option!r}; then echo YES; else echo NO; fi\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    proc = subprocess.run(
+        ["bash", str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip() == "YES"
+
+
+def test_wget_supports_option_ignores_help_exit_status(tmp_path: Path) -> None:
+    """An advertised option is detected even when `--help` exits non-zero.
+
+    BusyBox prints its usage and returns EXIT_FAILURE. Piping `wget --help`
+    straight into `grep` under `set -o pipefail` makes that exit status the
+    pipeline's, so every option reports as unsupported — which silently drops
+    `-S` and disables the redirect-downgrade audit on exactly the minimal
+    systems the capability probe exists to support. Failing *open* like that is
+    invisible without this test.
+    """
+    assert _eval_wget_supports_option(
+        tmp_path, option="-S", help_text="-S --max-redirect --https-only", help_rc=1
+    )
+
+
+def test_wget_supports_option_reports_absent_option(tmp_path: Path) -> None:
+    """An option the help text doesn't mention is still reported unsupported."""
+    assert not _eval_wget_supports_option(
+        tmp_path, option="-S", help_text="BusyBox v1.36.0 wget", help_rc=1
+    )
+
+
+def _run_wget_download(
+    tmp_path: Path,
+    *,
+    url: str,
+    response_headers: str = "",
+) -> subprocess.CompletedProcess[str]:
+    """Drive the real `wget_download` against a fake wget.
+
+    ``response_headers`` is echoed to stderr the way ``wget -S`` reports a
+    response, which is what the downgrade audit inspects.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    wget = bin_dir / "wget"
+    wget.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "--help" ]; then\n'
+        "  printf '%s\\n' '--header --max-redirect --https-only -S'\n"
+        "  exit 0\n"
+        "fi\n"
+        # %b, not %s: the audit's grep anchors Location: at the start of a
+        # line, so the \n escapes have to become real newlines.
+        f"printf '%b' {response_headers!r} >&2\n"
+        "out=''\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  case "$1" in\n'
+        '    -O|-qO) out="$2"; shift 2 ;;\n'
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        # `-` means stdout to real wget; writing it literally would drop a file
+        # named "-" into the working directory.
+        'if [ -z "$out" ] || [ "$out" = "-" ]; then out=/dev/stdout; fi\n'
+        "printf 'DOWNLOADED_BODY\\n' >\"$out\"\n",
+        encoding="utf-8",
+    )
+    _make_executable(wget)
+    script = tmp_path / "wget_download_harness.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        "register_temp() { :; }\n"
+        f"{_extract_shell_function('wget_supports_option')}\n"
+        f"{_extract_shell_function('wget_download')}\n"
+        f"rc=0\nwget_download - {url!r} '' true || rc=$?\n"
+        'printf "RC=%s\\n" "$rc"\n',
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    return subprocess.run(
+        ["bash", str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def test_wget_download_refuses_non_https_url(tmp_path: Path) -> None:
+    """Plaintext request URLs are refused, since wget has no `--proto`.
+
+    The request URL must be HTTPS; a plaintext URL is refused before wget runs.
+    """
+    proc = _run_wget_download(tmp_path, url="http://plain.example/uv.sh")
+
+    assert "RC=1" in proc.stdout
+    assert "Refusing to download over a non-HTTPS URL" in proc.stderr
+    assert "DOWNLOADED_BODY" not in proc.stdout
+
+
+def test_wget_download_refuses_plaintext_redirect(tmp_path: Path) -> None:
+    """A 3xx pointing at http:// fails closed.
+
+    `--https-only` only applies in recursive mode, so it does not stop a
+    one-shot fetch from being downgraded. Auditing the response headers for a
+    plaintext Location is the only wget-side defense, and it must abort rather
+    than warn and continue.
+    """
+    proc = _run_wget_download(
+        tmp_path,
+        url="https://ok.example/uv.sh",
+        response_headers="  HTTP/1.1 302 Found\n  Location: http://plain.example/uv.sh\n",
+    )
+
+    assert "RC=1" in proc.stdout
+    assert "Refusing a plaintext HTTP redirect" in proc.stderr
+
+
+def test_wget_download_allows_https_redirect(tmp_path: Path) -> None:
+    """The audit keys on the scheme, not on the presence of a redirect."""
+    proc = _run_wget_download(
+        tmp_path,
+        url="https://ok.example/uv.sh",
+        response_headers="  HTTP/1.1 302 Found\n  Location: https://cdn.example/uv.sh\n",
+    )
+
+    assert "RC=0" in proc.stdout
+    assert "Refusing" not in proc.stderr
+
+
 def test_install_uv_surfaces_download_failure(tmp_path: Path) -> None:
     """A failed download exits non-zero and surfaces the downloader's own error.
 
@@ -2133,14 +2416,24 @@ def test_install_uv_downloads_via_wget(tmp_path: Path) -> None:
     assert "UV_INSTALLER_NOISE" in proc.stderr
 
 
-def _run_signal_traps(tmp_path: Path, *, interrupt: bool) -> str:
+def test_install_uv_downloads_via_busybox_wget(tmp_path: Path) -> None:
+    """BusyBox wget works even though it lacks GNU-only hardening options."""
+    proc = _run_install_uv(tmp_path, verbose=True, use_wget=True, busybox_wget=True)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "UV_INSTALLER_NOISE" in proc.stderr
+
+
+def _run_signal_traps(
+    tmp_path: Path, *, interrupt: bool
+) -> subprocess.CompletedProcess[str]:
     """Wire the real EXIT + INT/TERM traps from `install.sh` and trip one.
 
     Extracts the shipped `cleanup_on_signal`/`cleanup_on_interrupt` handlers and
     installs them exactly as the script does. With `interrupt=True` the process
     sends itself SIGINT (the Ctrl-C path); otherwise it exits non-zero without a
-    signal (the ordinary-failure path). Returns combined stderr so callers can
-    assert which trap message the user actually sees.
+    signal (the ordinary-failure path). Returns the completed process so callers
+    can assert both the trap message the user sees and the exit code reported.
     """
     script = tmp_path / "signal_trap_harness.sh"
     body = "kill -INT $$\nsleep 5\n" if interrupt else "exit 2\n"
@@ -2158,11 +2451,15 @@ def _run_signal_traps(tmp_path: Path, *, interrupt: bool) -> str:
         f"{_extract_shell_function('cleanup_on_signal')}\n"
         f"{_extract_shell_function('cleanup_on_interrupt')}\n"
         "trap cleanup_on_signal EXIT\n"
-        "trap cleanup_on_interrupt INT TERM\n"
+        # Wire the traps exactly as install.sh does, passing the signal number
+        # so the harness exercises the real 128+signo exit path.
+        "trap 'cleanup_on_interrupt 2' INT\n"
+        "trap 'cleanup_on_interrupt 15' TERM\n"
+        "trap 'cleanup_on_interrupt 1' HUP\n"
         f"{body}",
         encoding="utf-8",
     )
-    proc = subprocess.run(
+    return subprocess.run(
         ["bash", str(script)],
         capture_output=True,
         text=True,
@@ -2170,7 +2467,17 @@ def _run_signal_traps(tmp_path: Path, *, interrupt: bool) -> str:
         check=False,
         start_new_session=True,
     )
-    return proc.stderr
+
+
+def test_interrupt_exits_with_128_plus_signal(tmp_path: Path) -> None:
+    """Ctrl-C exits 130 (128+SIGINT), not a generic 1.
+
+    CI and wrapper scripts use the 128+signo convention to tell an interrupted
+    install apart from an ordinary failure.
+    """
+    proc = _run_signal_traps(tmp_path, interrupt=True)
+
+    assert proc.returncode == 130
 
 
 def test_interrupt_shows_notice_without_failure_message(tmp_path: Path) -> None:
@@ -2181,7 +2488,7 @@ def test_interrupt_shows_notice_without_failure_message(tmp_path: Path) -> None:
     contradictory "Installation failed (exit code 1)". Guards against dropping
     that disarm, which would surface both messages on a single Ctrl-C.
     """
-    stderr = _run_signal_traps(tmp_path, interrupt=True)
+    stderr = _run_signal_traps(tmp_path, interrupt=True).stderr
 
     assert "Installation interrupted." in stderr
     assert "Installation failed" not in stderr
@@ -2197,7 +2504,7 @@ def test_exit_trap_reports_failure_on_ordinary_error(tmp_path: Path) -> None:
     only: an ordinary failure exit still needs `cleanup_on_signal` to tell the
     user the install failed and where to get help.
     """
-    stderr = _run_signal_traps(tmp_path, interrupt=False)
+    stderr = _run_signal_traps(tmp_path, interrupt=False).stderr
 
     assert "Installation failed (exit code 2)." in stderr
     assert "Installation interrupted." not in stderr
@@ -2322,7 +2629,7 @@ def _invoke_with_local_uv_not_on_path(
         if entry and not (Path(entry) / "uv").exists()
     )
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{path_without_uv}",
@@ -2435,6 +2742,25 @@ def test_install_script_honors_uv_tool_bin_dir(tmp_path: Path) -> None:
     assert exposed.resolve() == installed.resolve()
     assert "deepagents-code 0.2.0 installed" in proc.stdout
     assert "command not found in PATH" not in proc.stderr
+
+
+def test_install_script_no_modify_path_prints_custom_tool_bin(tmp_path: Path) -> None:
+    """The no-modify hint exposes the directory where uv installed `dcode`."""
+    tool_bin = tmp_path / "home" / "custom-bin"
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "UV_TOOL_BIN_DIR": str(tool_bin),
+            "FAKE_UV_TOOL_BIN_DIR": str(tool_bin),
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "DEEPAGENTS_CODE_NO_MODIFY_PATH": "1",
+        },
+        installed_version=None,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert f'export PATH="{tool_bin}:$PATH"' in proc.stdout
+    assert "$HOME/.local/bin:$PATH" not in proc.stdout
 
 
 def test_install_script_old_uv_ignores_unsupported_tool_bin_override(
@@ -2569,10 +2895,38 @@ def test_install_script_root_does_not_execute_existing_dcode_before_install(
 
 
 def _invoke_with_local_dcode_not_on_path(
-    tmp_path: Path, *, create_env_file: bool = False
+    tmp_path: Path,
+    *,
+    create_env_file: bool = False,
+    shell: str = "/bin/zsh",
+    extra_env: dict[str, str] | None = None,
+    seed_home: Callable[[Path], None] | None = None,
+    answer: str | None = None,
+    uname_os: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run with a working `dcode` in ~/.local/bin but outside the original PATH."""
+    """Run with a working `dcode` in ~/.local/bin but outside the original PATH.
+
+    `seed_home` runs after the fake HOME is created but before the installer,
+    for tests that need pre-existing dotfiles in place.
+
+    `answer` attaches a pty to stdin and feeds that reply to the PATH prompt.
+    Without it the run is non-interactive and PATH setup auto-adds instead of
+    asking, so it is the only way to reach the prompt (and the decline branch).
+
+    `uname_os` pins the detected OS, which the candidate builder branches on
+    (macOS skips creating a ~/.bashrc). Without it the result would depend on
+    the host running the suite. A Darwin pin also bypasses the Xcode CLT
+    preflight: these runs exercise profile selection, not that gate, and on
+    the Linux CI runner `xcode-select` is absent so the script would exit
+    there first.
+    """
     bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
+    if uname_os is not None:
+        uname = bin_dir / "uname"
+        uname.write_text(f"#!/usr/bin/env bash\necho {uname_os}\n")
+        _make_executable(uname)
+    if seed_home is not None:
+        seed_home(home)
 
     local_bin = home / ".local" / "bin"
     local_bin.mkdir(parents=True)
@@ -2587,14 +2941,38 @@ def _invoke_with_local_dcode_not_on_path(
         (local_bin / "env").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
 
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
         "UV_BIN": str(uv),
         "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
-        "SHELL": "/bin/zsh",
+        "SHELL": shell,
+        **({"DEEPAGENTS_CODE_SKIP_XCODE_CHECK": "1"} if uname_os == "Darwin" else {}),
+        **(extra_env or {}),
     }
+    if answer is not None:
+        primary, secondary = pty.openpty()
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT)],
+            env=env,
+            stdin=secondary,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        os.close(secondary)
+        os.write(primary, f"{answer}\n".encode())
+        output = proc.stdout.read() if proc.stdout else ""
+        proc.wait(timeout=30)
+        os.close(primary)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+        return subprocess.CompletedProcess(
+            args=["bash", str(SCRIPT)],
+            returncode=proc.returncode,
+            stdout=clean,
+            stderr="",
+        )
     return subprocess.run(
         ["bash", str(SCRIPT)],
         env=env,
@@ -2626,19 +3004,652 @@ def test_install_script_adds_local_bin_when_dcode_installed_but_not_on_path(
     assert "deepagents-code 0.1.0" in dcode.read_text()
     assert "Added ~/.local/bin to PATH" in combined
     assert "isn't on your PATH yet" not in combined
-    profile_texts = [
-        profile.read_text()
-        for profile in (
-            tmp_path / "home/.zshrc",
-            tmp_path / "home/.bashrc",
-            tmp_path / "home/.bash_profile",
-        )
-        if profile.exists()
-    ]
-    assert any("# >>> deepagents-code installer >>>" in text for text in profile_texts)
-    assert any('export PATH="$HOME/.local/bin:$PATH"' in text for text in profile_texts)
-    assert any("# <<< deepagents-code installer <<<" in text for text in profile_texts)
+    # SHELL is zsh and HOME starts empty, so the candidate set is exactly
+    # ~/.zshrc. Naming it beats `any(...)` over three files, which would still
+    # pass if the block landed in the wrong one.
+    zshrc = (tmp_path / "home/.zshrc").read_text()
+    assert "# >>> deepagents-code installer >>>" in zshrc
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc
+    assert "# <<< deepagents-code installer <<<" in zshrc
     assert "source ~/.local/bin/env" not in combined
+
+
+def test_install_script_never_writes_fish_syntax_to_posix_profiles(
+    tmp_path: Path,
+) -> None:
+    """A fish user's ~/.zshrc gets POSIX syntax, not `fish_add_path`.
+
+    The export line is a property of the file being written, not of the shell
+    the user happens to run. Keying it off the current shell would put
+    `fish_add_path ...` into every non-fish candidate, so each new zsh session
+    would fail with `command not found: fish_add_path` and never get
+    ~/.local/bin.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".zshrc").write_text("# pre-existing zsh config\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path, shell="/usr/local/bin/fish", seed_home=seed
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    zshrc = (home / ".zshrc").read_text()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc
+    assert "fish_add_path" not in zshrc
+
+    # Asserted unconditionally: with SHELL=fish the conf.d file is always a
+    # candidate, so guarding on existence would let "the fish file stopped
+    # being written at all" pass silently.
+    fish_conf = home / ".config/fish/conf.d/deepagents-code.fish"
+    assert fish_conf.exists()
+    # The fish file is the one place fish syntax belongs.
+    assert "set -gx PATH" in fish_conf.read_text()
+
+
+def test_install_script_emits_reload_hint_after_writing_a_profile(
+    tmp_path: Path,
+) -> None:
+    """Writing a startup file still leaves the *running* shell without PATH.
+
+    `ensure_path_setup` used to return 0 after a successful write, which the
+    caller reads as "PATH is fixed for the current shell" and so suppressed the
+    reload hint — the user was told setup was complete and then got
+    `command not found: dcode`.
+    """
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path)
+
+    assert proc.returncode == 0, proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "Added ~/.local/bin to PATH" in combined
+    assert "Restart your shell, or run:" in combined
+
+
+def test_install_script_tilde_display_has_no_literal_backslash(
+    tmp_path: Path,
+) -> None:
+    r"""Paths render as `~/.zshrc`, not `\~/.zshrc`.
+
+    bash 3.2 — still the default /bin/bash on macOS, and this script is run as
+    `curl ... | bash` — does not unescape `\~` in a pattern-substitution
+    replacement, so the old form leaked a backslash into user-facing messages.
+    """
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path)
+
+    combined = proc.stdout + proc.stderr
+    assert "\\~" not in combined
+
+
+def test_install_script_rewrites_fish_block_instead_of_duplicating(
+    tmp_path: Path,
+) -> None:
+    """A stale managed block in the fish conf.d file is rewritten, not appended.
+
+    The conf.d file is ours alone, but our block can still collide with itself:
+    appending unconditionally would leave another dead block behind on every
+    change to the fish export line.
+    """
+
+    def seed(home: Path) -> None:
+        conf = home / ".config/fish/conf.d/deepagents-code.fish"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(
+            "\n# >>> deepagents-code installer >>>\n"
+            "set -gx PATH /some/stale/entry $PATH\n"
+            "# <<< deepagents-code installer <<<\n"
+        )
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path, shell="/usr/local/bin/fish", seed_home=seed
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    fish_conf = tmp_path / "home/.config/fish/conf.d/deepagents-code.fish"
+    assert fish_conf.read_text().count("# >>> deepagents-code installer >>>") == 1
+    assert "/some/stale/entry" not in fish_conf.read_text()
+
+
+def test_install_script_preserves_symlinked_profile(tmp_path: Path) -> None:
+    """A symlinked ~/.zshrc is edited through, not replaced by a regular file.
+
+    Dotfile managers (chezmoi, stow, home-manager) symlink startup files into a
+    repo. Replacing the link with a regular file meant the next `apply` silently
+    reverted the PATH entry after we reported success.
+    """
+
+    def seed(home: Path) -> None:
+        dotfiles = home / "dotfiles"
+        dotfiles.mkdir()
+        target = dotfiles / "zshrc"
+        # A stale managed block forces the rewrite path, which is the one
+        # that used to `mv` over the symlink.
+        target.write_text(
+            "# managed by dotfiles\n"
+            "# >>> deepagents-code installer >>>\n"
+            "export PATH=/stale/entry:$PATH\n"
+            "# <<< deepagents-code installer <<<\n"
+        )
+        (home / ".zshrc").symlink_to(target)
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    real_zshrc = home / "dotfiles/zshrc"
+    assert (home / ".zshrc").is_symlink()
+    assert "/stale/entry" not in real_zshrc.read_text()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
+
+
+def test_rewrite_managed_path_block_fixes_resolved_symlink_target_owner(
+    tmp_path: Path,
+) -> None:
+    """A root rewrite restores ownership of the replaced dotfile target."""
+    target = tmp_path / "dotfiles/zshrc"
+    target.parent.mkdir()
+    target.write_text(
+        "# >>> deepagents-code installer >>>\n"
+        "export PATH=/stale/entry:$PATH\n"
+        "# <<< deepagents-code installer <<<\n"
+    )
+    profile = tmp_path / ".zshrc"
+    profile.symlink_to(target)
+    chown_log = tmp_path / "chown-paths.txt"
+    harness = tmp_path / "rewrite_profile.sh"
+    harness.write_text(
+        "log_warn() { :; }\n"
+        "register_temp() { :; }\n"
+        'fix_file_owner() { printf \'%s\\n\' "$1" >>"$CHOWN_LOG"; }\n'
+        f"{_extract_shell_function('resolve_link_target')}\n"
+        f"{_extract_shell_function('rewrite_managed_path_block')}\n"
+        "rewrite_managed_path_block "
+        f"{str(profile)!r} 'export PATH=/fresh/entry:$PATH'\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(harness)],
+        env={**_clean_environ(), "CHOWN_LOG": str(chown_log)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert profile.is_symlink()
+    assert chown_log.read_text().splitlines() == [str(target)]
+    assert "export PATH=/fresh/entry:$PATH" in target.read_text()
+
+
+def test_install_script_follows_symlink_chain_to_final_target(tmp_path: Path) -> None:
+    """A symlink chain (~/.zshrc -> links/zshrc -> ../dotfiles/zshrc) is followed.
+
+    Resolving only the first hop would `mv` over the intermediate link with a
+    regular file: the real dotfile-manager source stays stale, and the next
+    restow recreates the link and reverts the PATH entry. The rewrite must
+    land on the final regular file, leaving both links intact.
+    """
+
+    def seed(home: Path) -> None:
+        dotfiles = home / "dotfiles"
+        links = home / "links"
+        dotfiles.mkdir()
+        links.mkdir()
+        target = dotfiles / "zshrc"
+        target.write_text(
+            "# managed by dotfiles\n"
+            "# >>> deepagents-code installer >>>\n"
+            "export PATH=/stale/entry:$PATH\n"
+            "# <<< deepagents-code installer <<<\n"
+        )
+        (links / "zshrc").symlink_to("../dotfiles/zshrc")
+        (home / ".zshrc").symlink_to("links/zshrc")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    real_zshrc = home / "dotfiles/zshrc"
+    assert (home / ".zshrc").is_symlink()
+    assert (home / "links/zshrc").is_symlink()
+    assert "/stale/entry" not in real_zshrc.read_text()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "TRUE", " 1 ", "banana"])
+def test_install_script_no_modify_path_accepts_truthy_spellings(
+    tmp_path: Path, value: str
+) -> None:
+    """The opt-out honors the same spellings as DEEPAGENTS_CODE_YES.
+
+    An unrecognized value ("banana") must also leave startup files alone: this
+    variable exists to protect version-managed dotfiles, so an unparsed value
+    has to fail toward *not* editing them.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".zshrc").write_text("# pre-existing zsh config\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path,
+        extra_env={"DEEPAGENTS_CODE_NO_MODIFY_PATH": value},
+        seed_home=seed,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Skipping PATH setup" in proc.stdout + proc.stderr
+    zshrc = (tmp_path / "home/.zshrc").read_text()
+    assert "deepagents-code installer" not in zshrc
+
+
+def test_install_script_uses_zdotdir_pointing_at_missing_dir(
+    tmp_path: Path,
+) -> None:
+    """A ~/.zshenv ZDOTDIR naming a nonexistent directory is still honored.
+
+    ZDOTDIR is authoritative for zsh even when the directory doesn't exist
+    yet: zsh reads only ${ZDOTDIR}/.zshrc, so writing ~/.zshrc instead would
+    leave `dcode` off PATH. The installer creates the missing directory and
+    writes the PATH block into the zshrc at the ZDOTDIR location.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".zshenv").write_text("ZDOTDIR=$HOME/.config/zsh\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    zshrc = home / ".config/zsh/.zshrc"
+    assert zshrc.exists()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc.read_text()
+    assert not (home / ".zshrc").exists()
+
+
+def test_install_script_macos_does_not_create_missing_bashrc(
+    tmp_path: Path,
+) -> None:
+    """On macOS no ~/.bashrc is created: Terminal's login shell won't read it.
+
+    A deliberate divergence from the upstream installer this borrows from, and
+    a user-visible difference: creating the file there would leave a dotfile
+    the default Terminal session ignores.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".bash_profile").write_text("# bash login\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path, shell="/bin/bash", uname_os="Darwin", seed_home=seed
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert not (home / ".bashrc").exists()
+    assert (
+        'export PATH="$HOME/.local/bin:$PATH"' in (home / ".bash_profile").read_text()
+    )
+
+
+def test_install_script_linux_creates_missing_bashrc(tmp_path: Path) -> None:
+    """The same setup on Linux does create ~/.bashrc, where it is read."""
+
+    def seed(home: Path) -> None:
+        (home / ".bash_profile").write_text("# bash login\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path, shell="/bin/bash", uname_os="Linux", seed_home=seed
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in (home / ".bashrc").read_text()
+
+
+def test_install_script_does_not_create_both_bash_profile_and_profile(
+    tmp_path: Path,
+) -> None:
+    """On macOS, bash with no dotfiles gets one login file, not two.
+
+    There ~/.bash_profile is queued as the shell's primary file before it
+    exists. A fallback that only checks the filesystem would not see it, add
+    ~/.profile too, and create both — after which bash reads .bash_profile and
+    the .profile is dead weight. (On Linux the primary file is ~/.bashrc, so
+    ~/.profile genuinely is the login file to write.)
+    """
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path, shell="/bin/bash", uname_os="Darwin"
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert (home / ".bash_profile").exists()
+    assert not (home / ".profile").exists()
+
+
+def test_install_script_writes_profile_for_unknown_shell(tmp_path: Path) -> None:
+    """A shell that is neither zsh, bash nor fish falls back to ~/.profile."""
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path, shell="/usr/bin/ksh", uname_os="Linux"
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    profile = tmp_path / "home/.profile"
+    assert profile.exists()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in profile.read_text()
+
+
+def test_install_script_prompt_names_every_file_it_will_edit(
+    tmp_path: Path,
+) -> None:
+    """One prompt lists every startup file the answer covers.
+
+    Consent for ~/.zshrc must not be read as consent to also edit
+    ~/.bash_profile, so the file list is part of the question.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".zshrc").write_text("# zsh\n")
+        (home / ".bash_profile").write_text("# bash\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed, answer="y")
+
+    assert proc.returncode == 0, proc.stdout
+    assert "~/.zshrc" in proc.stdout
+    assert "~/.bash_profile" in proc.stdout
+    assert (
+        'export PATH="$HOME/.local/bin:$PATH"' in (tmp_path / "home/.zshrc").read_text()
+    )
+
+
+def test_install_script_declining_prompt_writes_nothing_and_omits_reload_hint(
+    tmp_path: Path,
+) -> None:
+    """Declining leaves startup files untouched and skips the restart advice.
+
+    "Restart your shell" is only true when something was written. After a
+    decline a restart changes nothing, so the hint would send the user to do
+    something that cannot work; the manual export line is the only useful
+    guidance and is printed instead.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".zshrc").write_text("# zsh\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed, answer="n")
+
+    assert proc.returncode == 0, proc.stdout
+    assert "Skipped modifying shell startup files." in proc.stdout
+    assert "Restart your shell" not in proc.stdout
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in proc.stdout
+    assert "deepagents-code installer" not in (tmp_path / "home/.zshrc").read_text()
+
+
+def _eval_resolve_zdotdir(tmp_path: Path, zshenv: str | None) -> str:
+    """Return `resolve_zdotdir`'s output for a given ~/.zshenv body.
+
+    Drives the shipped parser directly. `None` means no ~/.zshenv at all.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    if zshenv is not None:
+        (home / ".zshenv").write_text(zshenv)
+    script = tmp_path / "resolve_zdotdir_harness.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        f"HOME={str(home)!r}\n"
+        "unset ZDOTDIR\n"
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f"{_extract_shell_function('shell_block_delta')}\n"
+        f"{_extract_shell_function('resolve_zdotdir')}\n"
+        "resolve_zdotdir\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    ("zshenv", "expected"),
+    [
+        pytest.param(None, "", id="no-zshenv"),
+        pytest.param("", "", id="empty"),
+        pytest.param("ZDOTDIR=$HOME/.config/zsh\n", "{home}/.config/zsh", id="bare"),
+        pytest.param(
+            'export ZDOTDIR="$HOME/.config/zsh"\n',
+            "{home}/.config/zsh",
+            id="export-double-quoted",
+        ),
+        pytest.param(
+            "export ZDOTDIR='$HOME/.config/zsh'\n",
+            "{home}/.config/zsh",
+            id="export-single-quoted",
+        ),
+        pytest.param("ZDOTDIR=~/.config/zsh\n", "{home}/.config/zsh", id="tilde"),
+        pytest.param(
+            "ZDOTDIR=${HOME}/.config/zsh\n", "{home}/.config/zsh", id="braced-home"
+        ),
+        pytest.param(
+            "ZDOTDIR=$HOME/.config/zsh;\n",
+            "{home}/.config/zsh",
+            id="trailing-semicolon",
+        ),
+        pytest.param(
+            "ZDOTDIR=$HOME/.config/zsh # relocate\n",
+            "{home}/.config/zsh",
+            id="trailing-comment",
+        ),
+        pytest.param(
+            "ZDOTDIR=$HOME/first\nZDOTDIR=$HOME/second\n",
+            "{home}/second",
+            id="last-assignment-wins",
+        ),
+        # A relative ZDOTDIR is meaningless to zsh, which resolves it against
+        # whatever cwd the shell happened to start in.
+        pytest.param("ZDOTDIR=relative/path\n", "", id="rejects-relative"),
+        pytest.param("# ZDOTDIR=$HOME/.config/zsh\n", "", id="commented-out"),
+        pytest.param(
+            'if [ -d "$HOME/x" ]; then\n  export ZDOTDIR="$HOME/x"\nfi\n',
+            "",
+            id="skips-if-block",
+        ),
+        pytest.param(
+            'case "$OSTYPE" in\n  darwin*) ZDOTDIR=$HOME/x ;;\nesac\n',
+            "",
+            id="skips-case-block",
+        ),
+        pytest.param(
+            'if [ -d "$HOME/x" ]; then export ZDOTDIR="$HOME/x"; fi\n'
+            "ZDOTDIR=$HOME/after\n",
+            "{home}/after",
+            id="one-line-block-does-not-swallow-later",
+        ),
+    ],
+)
+def test_resolve_zdotdir_parses_zshenv(
+    tmp_path: Path, zshenv: str | None, expected: str
+) -> None:
+    """The hand-rolled ~/.zshenv parser handles the spellings people write.
+
+    This runs over user-authored files, so the surface is wide: quoting,
+    `export`, trailing punctuation, `~`/`$HOME` expansion, last-wins, and the
+    conditional blocks that must not be treated as authoritative.
+    """
+    result = _eval_resolve_zdotdir(tmp_path, zshenv)
+
+    assert result == expected.format(home=tmp_path / "home")
+
+
+def test_install_script_ignores_conditional_zdotdir_assignment(
+    tmp_path: Path,
+) -> None:
+    """A ZDOTDIR guarded by `if [ -d ... ]` is not treated as authoritative.
+
+    The portable-dotfiles idiom relocates zsh only when the directory exists.
+    While it doesn't, zsh reads ~/.zshrc. Honoring the assignment anyway would
+    make the installer *create* that directory, which flips the guard true and
+    strands every later shell in a config dir holding nothing but our PATH
+    block — the user's aliases, prompt and plugins silently stop loading.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".zshenv").write_text(
+            'if [ -d "$HOME/.config/zsh" ]; then\n'
+            '  export ZDOTDIR="$HOME/.config/zsh"\n'
+            "fi\n"
+        )
+        (home / ".zshrc").write_text("alias ll='ls -la'\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    # The directory must not be created: creating it is what activates the guard.
+    assert not (home / ".config/zsh").exists()
+    zshrc = (home / ".zshrc").read_text()
+    assert "alias ll='ls -la'" in zshrc
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc
+
+
+def test_install_script_ignores_one_line_guarded_zdotdir(tmp_path: Path) -> None:
+    """The `[ -d x ] && export ZDOTDIR=y` spelling is skipped too."""
+
+    def seed(home: Path) -> None:
+        (home / ".zshenv").write_text(
+            '[ -d "$HOME/.config/zsh" ] && export ZDOTDIR="$HOME/.config/zsh"\n'
+        )
+        (home / ".zshrc").write_text("# existing\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert not (home / ".config/zsh").exists()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in (home / ".zshrc").read_text()
+
+
+def test_install_script_honors_zdotdir_after_a_guarded_block(
+    tmp_path: Path,
+) -> None:
+    """Skipping guarded assignments must not swallow a later top-level one.
+
+    Guards the nesting counter: if depth never returned to zero after the `fi`,
+    every subsequent assignment would be ignored and relocated zsh setups would
+    silently regress to ~/.zshrc.
+    """
+
+    def seed(home: Path) -> None:
+        (home / ".zshenv").write_text(
+            'if [ -d "$HOME/nope" ]; then\n'
+            '  export ZDOTDIR="$HOME/nope"\n'
+            "fi\n"
+            'export ZDOTDIR="$HOME/.config/zsh"\n'
+        )
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert (
+        'export PATH="$HOME/.local/bin:$PATH"'
+        in (home / ".config/zsh/.zshrc").read_text()
+    )
+    assert not (home / "nope").exists()
+
+
+def test_install_script_updates_existing_zdotdir_zshrc_from_bash(
+    tmp_path: Path,
+) -> None:
+    """An existing relocated zshrc is updated even when bash runs the installer."""
+
+    def seed(home: Path) -> None:
+        zdot = home / ".config/zsh"
+        zdot.mkdir(parents=True)
+        (zdot / ".zshrc").write_text("# zdotdir config\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path,
+        shell="/bin/bash",
+        extra_env={"ZDOTDIR": str(tmp_path / "home/.config/zsh")},
+        seed_home=seed,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert (
+        'export PATH="$HOME/.local/bin:$PATH"'
+        in (home / ".config/zsh/.zshrc").read_text()
+    )
+    assert not (home / ".zshrc").exists()
+
+
+def test_install_script_writes_both_zdotdir_and_legacy_zshrc(
+    tmp_path: Path,
+) -> None:
+    """A ZDOTDIR zshrc and a legacy ~/.zshrc both get the PATH block.
+
+    The shell itself reads only the ZDOTDIR zshrc, but a stale ~/.zshrc is a
+    trap for any later unset of ZDOTDIR, so it is updated too.
+    """
+
+    def seed(home: Path) -> None:
+        zdot = home / ".config/zsh"
+        zdot.mkdir(parents=True)
+        (zdot / ".zshrc").write_text("# zdotdir config\n")
+        (home / ".zshrc").write_text("# legacy config\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path,
+        extra_env={"ZDOTDIR": str(tmp_path / "home/.config/zsh")},
+        seed_home=seed,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert (
+        'export PATH="$HOME/.local/bin:$PATH"'
+        in (home / ".config/zsh/.zshrc").read_text()
+    )
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in (home / ".zshrc").read_text()
+
+
+def test_install_script_preserves_relative_symlinked_profile(tmp_path: Path) -> None:
+    """A relative symlink (~/.zshrc -> dotfiles/zshrc) is rewritten atomically.
+
+    The rewrite resolves the link target relative to the link's directory, so
+    the temp file lands in the target's directory and the `mv` over it is
+    atomic — an interrupted install can't leave the dotfile-manager source
+    truncated, as writing through the link in place would.
+    """
+
+    def seed(home: Path) -> None:
+        dotfiles = home / "dotfiles"
+        dotfiles.mkdir()
+        target = dotfiles / "zshrc"
+        target.write_text(
+            "# managed by dotfiles\n"
+            "# >>> deepagents-code installer >>>\n"
+            "export PATH=/stale/entry:$PATH\n"
+            "# <<< deepagents-code installer <<<\n"
+        )
+        (home / ".zshrc").symlink_to("dotfiles/zshrc")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    real_zshrc = home / "dotfiles/zshrc"
+    assert (home / ".zshrc").is_symlink()
+    assert "/stale/entry" not in real_zshrc.read_text()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
 
 
 def test_install_script_uses_uv_env_file_path_hint_when_available(
@@ -2692,7 +3703,7 @@ def test_install_script_stale_shell_with_profile_already_set_shows_reload_hint(
     zshrc.write_text('export PATH="$HOME/.local/bin:$PATH"\n')
 
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
@@ -2743,7 +3754,7 @@ def test_install_script_rewrites_existing_managed_path_block(tmp_path: Path) -> 
     )
 
     env = {
-        **os.environ,
+        **_clean_environ(),
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
@@ -2889,7 +3900,7 @@ def _run_detect_shadowing_install(
     )
     proc = subprocess.run(
         ["bash", str(script)],
-        env={**os.environ, "HOME": str(home)},
+        env={**_clean_environ(), "HOME": str(home)},
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,

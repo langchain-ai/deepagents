@@ -49,6 +49,8 @@ from deepagents_code.hooks.models.domain import (
     HookInvocation,
     PermissionEffect,
     PostToolUseDecision,
+    PostToolUseFailureDecision,
+    PostToolUseFailureEvent,
     PreCompactDecision,
     PreCompactEvent,
     PreToolUseDecision,
@@ -76,7 +78,7 @@ from deepagents_code.hooks.server_middleware import (
     _invoke_hook,
     _merge_tool_message_content,
     _session_gate,
-    _tool_result_failed,
+    _tool_result_error,
     _tool_result_text,
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
@@ -787,24 +789,38 @@ def test_tool_result_text_reads_only_matching_call() -> None:
     assert _tool_result_text(_multi_result_command(), "c1") == "mine"
 
 
-def test_tool_result_failed_ignores_unrelated_failure() -> None:
+def test_tool_result_error_ignores_unrelated_failure() -> None:
     result = _multi_result_command()
 
-    assert _tool_result_failed(result, "c1") is False
-    assert _tool_result_failed(result, "c2") is True
+    assert (
+        _tool_result_error(result, ToolCallData(id="c1", name="execute", args={}))
+        is None
+    )
+    assert (
+        _tool_result_error(
+            result,
+            ToolCallData(id="c2", name="execute", args={}),
+        )
+        == "theirs"
+    )
 
 
-def test_post_tool_use_skips_failed_tool_message(
+def test_failed_execute_routes_to_post_tool_use_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
     result = ToolMessage(
-        content="failed",
+        content="[Command failed with exit code 42]",
         name="execute",
         tool_call_id="c1",
-        status="error",
+        artifact={"exit_code": 42},
+        status="success",
     )
-    invoke = MagicMock()
+    invoke = MagicMock(
+        return_value=PostToolUseFailureDecision(
+            event=HookEvent.POST_TOOL_USE_FAILURE,
+        )
+    )
     monkeypatch.setattr(
         "deepagents_code.hooks.server_middleware._invoke_hook",
         invoke,
@@ -817,14 +833,17 @@ def test_post_tool_use_skips_failed_tool_message(
             cwd=Path("/tmp"),
             approval_mode=ApprovalMode.MANUAL,
         ),
-        {"snapshot_id": "snap", "events": frozenset({"PostToolUse"})},
+        {"snapshot_id": "snap", "events": frozenset({"PostToolUseFailure"})},
         {"configurable": {"thread_id": "thread-1"}},
         result,
         5,
     )
 
     assert updated is result
-    invoke.assert_not_called()
+    event = invoke.call_args.args[1]
+    assert isinstance(event, PostToolUseFailureEvent)
+    assert event.error == "Command exited with non-zero status code 42"
+    assert event.duration_ms == 5
 
 
 def test_append_pretool_context_to_result() -> None:

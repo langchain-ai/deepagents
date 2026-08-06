@@ -1336,6 +1336,38 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-default-approve", assistant_id=None)
         assert "dcode_auto_approve" not in config["metadata"]
 
+    def test_term_program_included_when_set(self) -> None:
+        """The launch terminal should be identifiable in trace metadata."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}):
+            config = build_stream_config("t-term", assistant_id=None)
+        assert config["metadata"]["dcode_term_program"] == "iTerm.app"
+
+    def test_term_program_absent_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Terminals that never set `TERM_PROGRAM` omit the key entirely."""
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        config = build_stream_config("t-no-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_absent_when_empty(self) -> None:
+        """Shells that export `TERM_PROGRAM=""` are treated as unset."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": ""}):
+            config = build_stream_config("t-empty-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_absent_when_whitespace_only(self) -> None:
+        """A whitespace-only `TERM_PROGRAM` must not form a grouping bucket."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "   "}):
+            config = build_stream_config("t-blank-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_stripped(self) -> None:
+        """A padded `TERM_PROGRAM` groups with its unpadded form."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "  vscode\n"}):
+            config = build_stream_config("t-padded-term", assistant_id=None)
+        assert config["metadata"]["dcode_term_program"] == "vscode"
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -5351,7 +5383,17 @@ class TestExecuteTaskTextualAskUser:
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
-    async def test_ask_user_cancelled_marks_row_rejected_and_halts(self) -> None:
+    @pytest.mark.parametrize(
+        ("question_count", "expected_message"),
+        [
+            (0, "Question dismissed. Tell the agent what you'd like instead."),
+            (1, "Question dismissed. Tell the agent what you'd like instead."),
+            (2, "Questions dismissed. Tell the agent what you'd like instead."),
+        ],
+    )
+    async def test_ask_user_cancelled_marks_row_rejected_and_halts(
+        self, question_count: int, expected_message: str
+    ) -> None:
         """Cancelled result should reject the row and not resume generation."""
         mounted: list[object] = []
         token_events: list[str] = []
@@ -5374,7 +5416,10 @@ class TestExecuteTaskTextualAskUser:
                     _ask_user_interrupt_chunk(
                         {
                             "type": "ask_user",
-                            "questions": [{"question": "Name?", "type": "text"}],
+                            "questions": [
+                                {"question": f"Question {index}?", "type": "text"}
+                                for index in range(1, question_count + 1)
+                            ],
                             "tool_call_id": "tool-1",
                         }
                     )
@@ -5405,8 +5450,165 @@ class TestExecuteTaskTextualAskUser:
         assert "tool-1" not in adapter._current_tool_messages
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert len(app_messages) == 1
-        assert "Question cancelled" in str(app_messages[0]._content)
+        assert str(app_messages[0]._content) == expected_message
         assert token_events == ["pending", "show:False"]
+
+    async def test_dismissed_questions_accumulate_across_cancelled_calls(self) -> None:
+        """Two dismissed calls of one question each read as plural.
+
+        The subject counts questions across every cancelled call in the batch, not
+        questions within one call, so two single-question prompts still say
+        "Questions". Pins the accumulation: overwriting instead of adding would
+        leave the count at 1 and silently read as singular.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+            future.set_result({"type": "cancelled"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "updates",
+                        {
+                            "__interrupt__": [
+                                SimpleNamespace(
+                                    id=f"interrupt-{index}",
+                                    value={
+                                        "type": "ask_user",
+                                        "questions": [
+                                            {
+                                                "question": f"Deploy {index}?",
+                                                "type": "text",
+                                            }
+                                        ],
+                                        "tool_call_id": f"ask-{index}",
+                                    },
+                                )
+                                for index in (1, 2)
+                            ]
+                        },
+                    )
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert len(app_messages) == 1
+        assert str(app_messages[0]._content) == (
+            "Questions dismissed. Tell the agent what you'd like instead."
+        )
+
+    async def test_undelivered_banner_names_a_rejection_when_nothing_was_dismissed(
+        self,
+    ) -> None:
+        """A later-iteration rejection discards earlier answers and says so.
+
+        `pending_ask_user` resets each stream iteration, so a rejection in a second
+        iteration enters the halt branch via `not pending_ask_user` while the first
+        iteration's answered row is still awaiting its deferred result. Those
+        answers are discarded exactly as a dismissal would discard them, but no
+        question was dismissed — the banner must name the rejection instead.
+        """
+        mounted: list[object] = []
+        approval: asyncio.Future[object] = asyncio.Future()
+        approval.set_result({"type": "reject"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            return approval
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+            future.set_result({"type": "answered", "answers": ["Alice"]})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "read_file", "args": {"path": "notes.txt"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "read_file",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert [str(widget._content) for widget in app_messages] == [
+            (
+                "Command rejected, so answers to the other question(s) in this "
+                "batch were not sent. Tell the agent what you'd like instead."
+            )
+        ]
 
     async def test_hitl_rejection_restores_token_display_before_halt(self) -> None:
         """Rejected approval should restore tokens before returning early."""
@@ -8337,8 +8539,14 @@ class TestToolHooksTextual:
             if c[0][0] == "tool.error"
         ] == [["execute"]]
 
+    @pytest.mark.parametrize(
+        ("cancelled_question_count", "expected_subject"),
+        [(1, "Question"), (2, "Questions")],
+    )
     async def test_answered_ask_user_settles_when_a_sibling_is_cancelled(
         self,
+        cancelled_question_count: int,
+        expected_subject: str,
     ) -> None:
         """Cancelling one `ask_user` call reports an answered sibling as undelivered.
 
@@ -8359,13 +8567,20 @@ class TestToolHooksTextual:
         `ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY`, distinct from
         `ASK_USER_ANSWERED_NO_RESULT_SUMMARY` (answers delivered, tool never
         completed).
+
+        The banner naming that loss is asserted here too, parametrized so the
+        dismissed subject is exercised in both singular and plural: this is the
+        only path that renders it inside the longer sentence.
         """
         mounted: list[ToolCallMessage] = []
+        app_messages: list[AppMessage] = []
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            elif isinstance(widget, AppMessage):
+                app_messages.append(widget)
 
         results: list[AskUserWidgetResult] = [
             {"type": "answered", "answers": ["Alice"]},
@@ -8381,7 +8596,10 @@ class TestToolHooksTextual:
             return future
 
         answered_qs: list[Question] = [{"question": "Name?", "type": "text"}]
-        cancelled_qs: list[Question] = [{"question": "Deploy?", "type": "text"}]
+        cancelled_qs: list[Question] = [
+            {"question": f"Deploy {index}?", "type": "text"}
+            for index in range(1, cancelled_question_count + 1)
+        ]
         agent = _SequencedAgent(
             streams_by_call=[
                 [
@@ -8464,6 +8682,13 @@ class TestToolHooksTextual:
         assert "Alice" not in str(mock_dispatch_background.call_args_list)
         assert payloads["ask-2"]["tool_status"] == "error"
         assert payloads["ask-2"]["tool_output"] == ASK_USER_CANCELLED_SUMMARY
+        # The banner is the user's only signal that the answers are gone, so pin
+        # it exactly — a dropped space in the implicit concatenation would show.
+        assert len(app_messages) == 1
+        assert str(app_messages[0]._content) == (
+            f"{expected_subject} dismissed, so answers to the other question(s) "
+            "in this batch were not sent. Tell the agent what you'd like instead."
+        )
 
     @pytest.mark.parametrize(
         ("tool_status", "transcript"),

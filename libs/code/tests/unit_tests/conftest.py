@@ -293,6 +293,39 @@ def _disable_prices_auto_update(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_price_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Isolate the process-wide pricing-override state and redirect the user file.
+
+    Suite-wide for the same reason `_disable_prices_auto_update` is: every test
+    that prices a model the genai-prices catalog does not cover now reaches the
+    local override loader, which reads `prices.json` from the user config
+    directory. `test_session_stats.py` prices deliberately uncatalogued models
+    through the real `estimate_cost`, so without this those tests read the
+    developer's own `~/.deepagents/prices.json` — passing in CI and failing on
+    the machine of anyone who has written one.
+
+    The redirect goes through the `DEFAULT_CONFIG_DIR` constant the loader
+    imports, with `monkeypatch`'s default `raising=True`: if that name moves, the
+    production import fails and `_override_price` swallows it, so the tests must
+    fail loudly here rather than patch an attribute into existence and keep
+    passing. `tmp_path` starts empty, so the default state is "user has no
+    override file".
+    """
+    import deepagents_code.model_config
+    from deepagents_code import cost_tracking
+
+    monkeypatch.setattr(deepagents_code.model_config, "DEFAULT_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cost_tracking, "_PRICE_OVERRIDES", None)
+    monkeypatch.setattr(cost_tracking, "_USER_OVERRIDE_ENTRIES", 0)
+    monkeypatch.setattr(
+        cost_tracking,
+        "_USER_OVERRIDE_LABEL",
+        f"override file {cost_tracking._USER_OVERRIDES_FILENAME!r}",
+    )
+    monkeypatch.setattr(cost_tracking, "_OVERRIDE_REPORTED", set())
+
+
+@pytest.fixture(autouse=True)
 def _clear_update_env(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,

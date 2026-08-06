@@ -761,6 +761,50 @@ class TestStartupAutoUpdate:
         # command name the user is told to "run again" with nothing to run.
         assert "again to start on v9.9.9" in printed
 
+    def test_shadowed_windows_install_restarts_with_executable_suffix(self) -> None:
+        """A shadowed Windows install must re-exec uv's `dcode.exe` shim."""
+        from deepagents_code.update_check import ShadowedDcode
+
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+        shadow = ShadowedDcode(
+            shadowing_bin=Path("C:/old/bin/dcode.exe"),
+            upgraded_bin_dir=Path("C:/uv/bin"),
+        )
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.update_check.detect_shadowed_dcode",
+                return_value=shadow,
+            ),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=SystemExit(0),
+            ) as restart,
+            pytest.raises(SystemExit),
+        ):
+            _run_startup_auto_update(console)
+
+        restart.assert_called_once_with(restart_path=Path("C:/uv/bin/dcode.exe"))
+
     def test_error_after_successful_install_exits_instead_of_launching(self) -> None:
         """A post-install exception must not launch a mixed-version process.
 

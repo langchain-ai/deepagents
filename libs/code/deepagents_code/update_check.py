@@ -1510,12 +1510,13 @@ class ShadowedDcode:
 
     @property
     def upgraded_bin(self) -> Path:
-        """Absolute path to the upgraded `dcode` shim uv installed.
+        """Absolute path to the upgraded console-script shim uv installed.
 
-        Keeps the `dcode` entry-point name owned by the type rather than
-        re-derived at each call site (mirrors `DependencyChange.kind`).
+        Reuses the resolved PATH entry point's filename so Windows restarts
+        retain the required `.exe` suffix. This also preserves the
+        `deepagents-code` entry point when that is the shadowed command.
         """
-        return self.upgraded_bin_dir / "dcode"
+        return self.upgraded_bin_dir / self.shadowing_bin.name
 
 
 def _uv_tool_bin_dir() -> Path | None:

@@ -2118,6 +2118,15 @@ class TestDetectShadowedDcode:
         assert "hash -r" in rendered
         assert "rm " not in rendered
 
+    def test_upgraded_bin_preserves_windows_executable_suffix(self, tmp_path) -> None:
+        """The direct restart target must retain Windows' `.exe` suffix."""
+        shadow = ShadowedDcode(
+            shadowing_bin=tmp_path / "old-bin" / "dcode.exe",
+            upgraded_bin_dir=tmp_path / "uv-bin",
+        )
+
+        assert shadow.upgraded_bin == tmp_path / "uv-bin" / "dcode.exe"
+
     def test_warning_text_quotes_fix_command_path(self, tmp_path) -> None:
         """The suggested PATH command must be safe to copy with odd paths."""
         shadow = ShadowedDcode(

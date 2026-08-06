@@ -2474,6 +2474,48 @@ class TestFormatRubricEvent:
         assert "The goal remains active" in details
         assert "`/goal clear`" in details
 
+    def test_unverified_verdict_reads_as_a_verification_gap(self) -> None:
+        """A downgraded `satisfied` has no failing criteria to address."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "needs_revision",
+            "unverified": True,
+            "explanation": "Grading was incomplete.",
+            "criteria": [{"name": "compiles", "passed": True}],
+        }
+
+        assert _format_rubric_event(event) == (
+            "↻ Acceptance criteria could not be verified"
+        )
+        details = _format_rubric_details(event)
+        assert "Unmet criteria" not in details
+        assert "Address every unmet criterion" not in details
+        assert "could not account for every criterion" in details
+
+    def test_unverified_max_iterations_marks_the_limit_and_the_gap(self) -> None:
+        """The iteration-limit verdict keeps its suffix when nothing was verified."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "max_iterations_reached",
+            "unverified": True,
+        }
+
+        assert _format_rubric_event(event) == (
+            "⚠ Acceptance criteria could not be verified (iteration limit reached)"
+        )
+
+    def test_verified_revision_keeps_the_unmet_criteria_wording(self) -> None:
+        """Without `unverified`, confirmed defects still drive the next step."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "needs_revision",
+            "unverified": False,
+            "criteria": [{"name": "tests pass", "passed": False}],
+        }
+
+        assert _format_rubric_event(event) == "↻ Acceptance criteria not yet satisfied"
+        assert "Address every unmet criterion" in _format_rubric_details(event)
+
     def test_end_event_without_result_returns_none(self) -> None:
         """Partial end events should not render a spurious warning."""
         assert _format_rubric_event({"type": "rubric_evaluation_end"}) is None

@@ -1155,7 +1155,10 @@ def test_install_script_refuses_symlinked_log_dir(tmp_path: Path) -> None:
 
 
 def _write_uv_receipt(
-    tools: Path, extras: list[str], *, with_packages: dict[str, list[str]] | None = None
+    tools: Path,
+    extras: list[str] | None,
+    *,
+    with_packages: dict[str, list[str]] | None = None,
 ) -> Path:
     """Stage a uv tool receipt recording the extras the install was built with.
 
@@ -1165,24 +1168,47 @@ def _write_uv_receipt(
     creates `tools` as a side effect, which is why `_write_fake_tools` tolerates
     a pre-existing `tools` — the two helpers may run in either order.
 
+    `extras=None` omits the `extras` key entirely, which is what uv actually
+    writes for an install that has none — the shape every ordinary user has.
+    Passing `[]` writes an explicit `extras = []` instead; both are exercised,
+    since a parser can easily handle one and not the other.
+
     `with_packages` maps supplemental `uv tool install --with` package names to
     their own extras. uv records these in the *same* `requirements` array as the
     tool itself, so a receipt with them is what distinguishes a parser scoped to
     the `deepagents-code` entry from one that grabs any `extras = [...]`.
 
+    The `entrypoints` array is always emitted, and always includes the console
+    script literally named `deepagents-code` that this package declares. That
+    inline table's `name` matches the same pattern the requirements entry does
+    but never carries extras, so omitting it from the fixture would hide a
+    parser that matches it instead of the real requirement.
+
     Returns the receipt path so tests can mangle its permissions or contents.
     """
     receipt_dir = tools / "deepagents-code"
     receipt_dir.mkdir(parents=True, exist_ok=True)
-    quoted = ", ".join(f'"{extra}"' for extra in extras)
-    entries = [
-        f'{{ name = "deepagents-code", extras = [{quoted}], specifier = "==0.1.0" }}'
-    ]
+    if extras is None:
+        entries = ['{ name = "deepagents-code", specifier = "==0.1.0" }']
+    else:
+        quoted = ", ".join(f'"{extra}"' for extra in extras)
+        entry = f'{{ name = "deepagents-code", extras = [{quoted}], '
+        entries = [entry + 'specifier = "==0.1.0" }']
     for name, pkg_extras in (with_packages or {}).items():
         pkg_quoted = ", ".join(f'"{extra}"' for extra in pkg_extras)
         entries.append(f'{{ name = "{name}", extras = [{pkg_quoted}] }}')
     receipt = receipt_dir / "uv-receipt.toml"
-    receipt.write_text("[tool]\nrequirements = [" + ", ".join(entries) + "]\n")
+    receipt.write_text(
+        "[tool]\n"
+        "requirements = [" + ", ".join(entries) + "]\n"
+        'python = "3.13"\n'
+        "entrypoints = [\n"
+        '    { name = "dcode", install-path = "/h/bin/dcode",'
+        ' from = "deepagents-code" },\n'
+        '    { name = "deepagents-code",'
+        ' install-path = "/h/bin/deepagents-code", from = "deepagents-code" },\n'
+        "]\n"
+    )
     return receipt
 
 
@@ -1222,6 +1248,33 @@ def test_install_script_pinned_downgrade_footer_is_not_upgrade(tmp_path: Path) -
         },
         installed_version="0.1.19",
         latest_version="0.1.19",
+    )
+
+    assert proc.returncode == 0
+    assert "Upgrade complete" not in proc.stdout
+    assert "✔ Setup complete. Run: dcode" in proc.stdout
+
+
+def test_install_script_prerelease_downgrade_footer_is_not_upgrade(
+    tmp_path: Path,
+) -> None:
+    """An explicit prerelease strategy must not claim an upgrade either.
+
+    The version pin is not the only way an unpinned-looking run moves backwards.
+    `DEEPAGENTS_CODE_PRERELEASE=disallow` over an installed `0.2.0rc1` resolves
+    to the latest *stable*, which can be older than what is there — so the
+    footer's "resolution always picks the newest candidate" assumption only
+    holds when no prerelease strategy was requested.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "DEEPAGENTS_CODE_PRERELEASE": "disallow",
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.9",
+        },
+        installed_version="0.2.0rc1",
+        latest_version="0.1.9",
     )
 
     assert proc.returncode == 0
@@ -1408,11 +1461,25 @@ def test_install_script_warns_when_receipt_is_unparseable(tmp_path: Path) -> Non
     uv currently keeps each requirement's inline table on one line. If a future
     formatter wraps it, the extras are unreadable — but the rebuild still drops
     them, so "couldn't tell" must not be reported the same way as "none".
+
+    The `entrypoints` array is the trap here, and it is why this receipt is
+    written out in full rather than mangling only the requirements line. uv
+    records one entry per console script, and this package declares one named
+    `deepagents-code` — an inline table that matches the requirement pattern on
+    a single line but carries no extras. A parser that isn't scoped to the
+    `requirements` assignment matches it once the real requirement wraps, reads
+    "no extras" off it, and drops the user's packages in total silence.
     """
     receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
     receipt.write_text(
-        '[tool]\nrequirements = [\n    { name = "deepagents-code", extras = [\n'
+        "[tool]\n"
+        'requirements = [\n    { name = "deepagents-code", extras = [\n'
         '        "anthropic",\n    ] },\n]\n'
+        'python = "3.13"\n'
+        "entrypoints = [\n"
+        '    { name = "deepagents-code",'
+        ' install-path = "/h/bin/deepagents-code", from = "deepagents-code" },\n'
+        "]\n"
     )
 
     proc, _ = _invoke(
@@ -1456,6 +1523,125 @@ def test_install_script_receipt_extras_with_metacharacters_warns(
     assert "DEEPAGENTS_CODE_EXTRAS=" not in proc.stderr
     assert "$(touch" not in proc.stderr
     assert not Path("/tmp/pwned").exists()
+
+
+def test_install_script_no_extras_warning_when_receipt_omits_extras_key(
+    tmp_path: Path,
+) -> None:
+    """The receipt shape uv writes for a plain install stays silent.
+
+    uv omits the `extras` key entirely rather than writing `extras = []`, so
+    this — not the explicit-empty form — is the receipt every ordinary user
+    has. A parser that only recognises the explicit form would fall through to
+    the unreadable branch and warn on every single re-run.
+    """
+    _write_uv_receipt(tmp_path / "tools", None)
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "extras that a bare re-run will remove" not in proc.stderr
+    assert "Could not read" not in proc.stderr
+
+
+def test_install_script_warns_when_receipt_is_absent(tmp_path: Path) -> None:
+    """An install with no receipt at all is "couldn't tell", not "no extras".
+
+    uv predating `uv-receipt.toml`, a future relocation of the file, or a
+    partially-deleted tool dir all leave the install present but unexplained.
+    Treating that as extras-free drops the packages silently — the exact
+    outcome the warning exists to prevent.
+    """
+    (tmp_path / "tools" / "deepagents-code").mkdir(parents=True, exist_ok=True)
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert "re-run with the same value" in proc.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_install_script_warns_when_tool_dir_is_unsearchable(tmp_path: Path) -> None:
+    """A tool dir left root-owned and 0700 by a prior sudo run must warn.
+
+    This is the common shape of the sudo-then-user case (a root umask of 077
+    produces it), and it defeats every test on the receipt file itself: `-f`
+    reports false through an unsearchable parent, which is indistinguishable
+    from an absent receipt and, without a directory check, from no extras.
+    """
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    install_dir = receipt.parent
+    install_dir.chmod(0o000)
+    try:
+        proc, _ = _invoke(
+            tmp_path,
+            {},
+            installed_version="0.1.0",
+            latest_version="0.2.0",
+        )
+    finally:
+        install_dir.chmod(0o755)
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert "re-run with the same value" in proc.stderr
+
+
+def test_install_script_extras_without_tty_proceeds_with_install(
+    tmp_path: Path,
+) -> None:
+    """With no TTY the extras warning is printed and the install still runs.
+
+    `prompt_yn` returns non-zero whenever it cannot ask, so a guard that lost
+    its `can_prompt` half would read "nobody can answer" as "the user said no"
+    and turn every CI job, Dockerfile, and piped `curl | bash` upgrade of an
+    extras install into a silent no-op that still exits 0. Asserting the exit
+    code alone cannot see that: abort and proceed both return 0. Assert uv was
+    actually invoked.
+    """
+    _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+
+    proc, args_path = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "extras that a bare re-run will remove: anthropic" in proc.stderr
+    assert "Aborted." not in proc.stdout
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_unreadable_receipt_without_tty_proceeds_with_install(
+    tmp_path: Path,
+) -> None:
+    """The unreadable-receipt branch must also proceed when it cannot ask."""
+    (tmp_path / "tools" / "deepagents-code").mkdir(parents=True, exist_ok=True)
+
+    proc, args_path = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert "Aborted." not in proc.stdout
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
 def test_install_script_warns_when_receipt_is_symlinked(tmp_path: Path) -> None:
@@ -1727,19 +1913,204 @@ def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:
     assert target.read_text() == "keep me\n"
 
 
-def test_install_script_stages_log_copy_inside_log_dir() -> None:
-    """The log copy is staged inside the log dir so the publish is a rename.
+def _run_copy_install_log(
+    tmp_path: Path, *, race_hook: str = "", log_dir: Path | None = None
+) -> tuple[int, Path, Path]:
+    """Run the real `copy_install_log` from `install.sh` in isolation.
 
-    A cross-filesystem `mv` degrades to copy+unlink, which opens the
-    destination path and follows symlinks planted there; staging under a
-    mktemp name inside `install_log_dir` keeps the publish an atomic rename
-    that replaces a planted symlink instead of following it.
+    Whole-script runs cannot reach most of this function: the only way they can
+    make the publish fail is by making the log dir unwritable, which fails at
+    the very first `mktemp` and leaves the staging, re-validation, and rename
+    paths unexercised. Driving the function directly lets a test stand in the
+    race window instead.
+
+    `race_hook` is shell injected as a `cp` override, so it runs *after* the
+    staged file exists and *before* the rename — exactly where an attacker who
+    owns the log dir would act. It must copy the file itself (`command cp`) if
+    it wants the publish to get that far.
+
+    Returns the function's exit status, the log dir, and the publish path.
     """
-    script = SCRIPT.read_text()
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    install_log_dir = log_dir if log_dir is not None else home / "cache"
+    install_log_dir.mkdir(parents=True, exist_ok=True)
+    source = tmp_path / "uv-stderr.txt"
+    source.write_text("captured uv stderr\n")
 
-    assert 'staged=$(mktemp "${install_log_dir}/.install.log.XXXXXX"' in script
-    assert "mktemp -d /tmp/deepagents-code-install-log.XXXXXX" not in script
-    assert 'staged="${INSTALL_LOG}.$$"' not in script
+    harness = tmp_path / "copy_install_log_harness.sh"
+    harness.write_text(
+        "set -uo pipefail\n"
+        "TEMP_FILES=()\n"
+        'register_temp() { TEMP_FILES+=("$1"); }\n'
+        f"{_extract_shell_function('path_is_under_home')}\n"
+        f"{_extract_shell_function('copy_install_log')}\n"
+        f"HOME={str(home)!r}\n"
+        f"install_log_dir={str(install_log_dir)!r}\n"
+        # `${install_log_dir}` below is shell, not a Python f-string.
+        'INSTALL_LOG="${install_log_dir}/install.log"\n'  # noqa: RUF027
+        f"uv_stderr={str(source)!r}\n"
+        f"{race_hook}\n"
+        "copy_install_log\n"
+        'printf "rc=%s\\n" "$?"\n'
+    )
+    proc = subprocess.run(
+        ["bash", str(harness)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r"rc=(\d+)", proc.stdout)
+    assert match is not None, f"harness produced no status: {proc.stdout!r}"
+    return int(match.group(1)), install_log_dir, install_log_dir / "install.log"
+
+
+def test_copy_install_log_publishes_captured_stderr(tmp_path: Path) -> None:
+    """The happy path publishes the content and leaves no staged file behind."""
+    rc, log_dir, published = _run_copy_install_log(tmp_path)
+
+    assert rc == 0
+    assert published.read_text() == "captured uv stderr\n"
+    assert list(log_dir.glob(".install.log.*")) == []
+
+
+def test_copy_install_log_replaces_symlink_planted_during_the_race(
+    tmp_path: Path,
+) -> None:
+    """A symlink planted at the publish path is replaced, never written through.
+
+    This is the property that made the implementation switch from `ln` to a
+    same-directory `mv`. The `-L` guard runs before staging, so it cannot cover
+    a link planted after it — only `rename(2)` swapping the directory entry
+    can. Plant the link in the race window and assert the attacker's target is
+    untouched.
+    """
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not clobber\n")
+    rc, _log_dir, published = _run_copy_install_log(
+        tmp_path,
+        race_hook=(
+            f'cp() {{\n  command cp "$@"\n  ln -s {str(outside)!r} "$INSTALL_LOG"\n}}\n'
+        ),
+    )
+
+    assert rc == 0
+    assert outside.read_text() == "do not clobber\n"
+    assert not published.is_symlink()
+    assert published.read_text() == "captured uv stderr\n"
+
+
+def test_copy_install_log_refuses_publish_when_log_dir_is_swapped(
+    tmp_path: Path,
+) -> None:
+    """Swapping the log dir for a symlink mid-run must not publish through it."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    rc, log_dir, _published = _run_copy_install_log(
+        tmp_path,
+        race_hook=(
+            "cp() {\n"
+            '  command cp "$@"\n'
+            '  rm -f "$1" "$2"\n'
+            '  rmdir "$install_log_dir"\n'
+            f'  ln -s {str(elsewhere)!r} "$install_log_dir"\n'
+            "}\n"
+        ),
+    )
+
+    assert rc != 0
+    assert not (elsewhere / "install.log").exists()
+    assert log_dir.is_symlink()
+    assert list(elsewhere.glob(".install.log.*")) == []
+
+
+def test_copy_install_log_cleans_up_staged_file_when_publish_fails(
+    tmp_path: Path,
+) -> None:
+    """A failed publish leaves no staged copy of uv's stderr in the log dir.
+
+    The staged file holds the full captured stderr, so an orphan is both litter
+    and a disclosure; repeated failures would accumulate them.
+    """
+    # Fail the rename itself, leaving the staged file in place for the cleanup
+    # to find. Contriving a filesystem state that breaks `mv` is unreliable —
+    # `mv file dir/` moves *into* the directory rather than failing.
+    rc, log_dir, published = _run_copy_install_log(
+        tmp_path, race_hook="mv() { return 1; }\n"
+    )
+
+    assert rc == 2
+    assert list(log_dir.glob(".install.log.*")) == []
+    assert not published.exists()
+
+
+def test_copy_install_log_reports_operational_failure_distinctly(
+    tmp_path: Path,
+) -> None:
+    """Failures the user can act on return 2; rejected paths return 1.
+
+    The caller only warns on 2. Collapsing the two would either go silent on a
+    full disk and a root-owned cache dir — leaving a `curl | bash` user with no
+    log and no reason why — or cry wolf on every hostile path it correctly
+    refused.
+    """
+    # A read-only log dir: staging cannot be created. Operational → 2.
+    readonly_dir = tmp_path / "home" / "readonly"
+    readonly_dir.mkdir(parents=True)
+    readonly_dir.chmod(0o500)
+    try:
+        rc_operational, _, _ = _run_copy_install_log(tmp_path, log_dir=readonly_dir)
+    finally:
+        readonly_dir.chmod(0o755)
+
+    # A symlinked log dir is refused outright, and the user cannot act on it.
+    rc_rejected, _, _ = _run_copy_install_log(
+        tmp_path,
+        race_hook=(
+            "cp() {\n"
+            '  command cp "$@"\n'
+            '  rm -f "$1" "$2"\n'
+            '  rmdir "$install_log_dir"\n'
+            f'  ln -s {str(tmp_path / "swap")!r} "$install_log_dir"\n'
+            "}\n"
+        ),
+    )
+
+    assert rc_operational == 2
+    assert rc_rejected == 1
+
+
+def test_install_script_warns_when_the_install_log_cannot_be_written(
+    tmp_path: Path,
+) -> None:
+    """An unwritable cache dir is reported, not silently dropped.
+
+    `prepare_install_log_dir` only checks that the path is a real directory, so
+    one left root-owned by an earlier sudo run passes and the failure surfaces
+    later at staging. Without a warning the user cannot tell a run that logged
+    nothing from one whose logging broke.
+    """
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    log_dir = cache / "deepagents-code"
+    log_dir.mkdir()
+    log_dir.chmod(0o500)
+    try:
+        proc, _ = _invoke(
+            tmp_path,
+            {
+                "XDG_CACHE_HOME": str(cache),
+                "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
+            },
+            installed_version="0.1.0",
+            latest_version="0.2.0",
+        )
+    finally:
+        log_dir.chmod(0o755)
+
+    assert proc.returncode == 0
+    assert "Could not write the install log" in proc.stderr
+    assert "Full log:" not in proc.stdout
 
 
 def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(

@@ -47,6 +47,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables import RunnableConfig, ensure_config
+from langgraph.errors import GraphBubbleUp
 from langsmith.run_helpers import get_current_run_tree
 from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
@@ -629,6 +630,9 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             State update dict. May include `jump_to='model'` (with an
             injected revision `HumanMessage`) to loop, or omit `jump_to`
             to fall through the default edge to END.
+
+        Raises:
+            GraphBubbleUp: If the grader pauses or otherwise bubbles control.
         """
         prep = self._prepare_evaluation(state, runtime)
         if prep is None:
@@ -636,7 +640,12 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         grading_run_id, iteration = prep
 
         try:
-            graded = self._grade(state, iteration)
+            graded = self._grade(state, iteration, context=getattr(runtime, "context", None))
+        except GraphBubbleUp:
+            # A grader with tools can interrupt (e.g. human-in-the-loop).
+            # That is control flow, not a grading failure, so it must not be
+            # recorded as `grader_error`.
+            raise
         except Exception as exc:  # noqa: BLE001
             return self._handle_grader_exception(runtime, state, grading_run_id, iteration, exc)
 
@@ -647,14 +656,20 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         state: RubricState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
-        """Async variant of `after_agent`. See that method for details."""
+        """Async variant of `after_agent`. See that method for details.
+
+        Raises:
+            GraphBubbleUp: If the grader pauses or otherwise bubbles control.
+        """
         prep = self._prepare_evaluation(state, runtime)
         if prep is None:
             return None
         grading_run_id, iteration = prep
 
         try:
-            graded = await self._agrade(state, iteration)
+            graded = await self._agrade(state, iteration, context=getattr(runtime, "context", None))
+        except GraphBubbleUp:
+            raise
         except Exception as exc:  # noqa: BLE001
             return self._handle_grader_exception(runtime, state, grading_run_id, iteration, exc)
 
@@ -816,38 +831,81 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             return "A previous attempt returned no per-criterion verdicts at all."
         return None
 
-    def _grade(self, state: RubricState, iteration: int) -> GraderResponse:
-        """Grade the transcript, retrying once if the response is unusable."""
-        graded = self._invoke_grader(state, iteration)
-        correction = self._usability_correction(state, graded)
-        if correction is None:
-            return graded
-        logger.warning("RubricMiddleware grader returned an unusable response; retrying once. %s", correction)
-        return self._invoke_grader(state, iteration, correction)
+    def _grade(
+        self,
+        state: RubricState,
+        iteration: int,
+        *,
+        context: object | None = None,
+    ) -> GraderResponse:
+        """Grade the transcript, retrying once if the response is unusable.
 
-    async def _agrade(self, state: RubricState, iteration: int) -> GraderResponse:
-        """Async variant of `_grade`. See that method for details."""
-        graded = await self._ainvoke_grader(state, iteration)
+        Subclasses that need to wrap a single grader call (e.g. to retry a
+        transport failure) should override `_invoke_grader` rather than this
+        method, so the coverage retry below still applies.
+        """
+        graded = self._invoke_grader(state, iteration, context=context)
         correction = self._usability_correction(state, graded)
         if correction is None:
             return graded
         logger.warning("RubricMiddleware grader returned an unusable response; retrying once. %s", correction)
-        return await self._ainvoke_grader(state, iteration, correction)
+        return self._invoke_grader(state, iteration, correction, context=context)
+
+    async def _agrade(
+        self,
+        state: RubricState,
+        iteration: int,
+        *,
+        context: object | None = None,
+    ) -> GraderResponse:
+        """Async variant of `_grade`. See that method for details."""
+        graded = await self._ainvoke_grader(state, iteration, context=context)
+        correction = self._usability_correction(state, graded)
+        if correction is None:
+            return graded
+        logger.warning("RubricMiddleware grader returned an unusable response; retrying once. %s", correction)
+        return await self._ainvoke_grader(state, iteration, correction, context=context)
+
+    def _grader_input(
+        self,
+        state: RubricState,
+        iteration: int,
+        correction: str | None = None,
+    ) -> dict[str, Any]:
+        """Build the nested grader's input state.
+
+        The override seam for subclasses that need extra input channels or a
+        filtered transcript. Overrides must keep building their payload through
+        `_build_grader_payload`, which applies the delimiter sanitization that
+        keeps untrusted transcript content from being read as instructions.
+
+        Args:
+            state: Agent state, read for the rubric and transcript.
+            iteration: Zero-based grading iteration.
+            correction: Feedback about a previous unusable response, if any.
+
+        Returns:
+            The nested grader's input state.
+        """
+        payload = self._build_grader_payload(state, iteration, correction)
+        return {"messages": [HumanMessage(content=payload)]}
 
     def _invoke_grader(
         self,
         state: RubricState,
         iteration: int,
         correction: str | None = None,
+        *,
+        context: object | None = None,
     ) -> GraderResponse:
         """Run one grader call. A retry re-enters here with `correction` set."""
         grader = self._ensure_grader()
-        payload = self._build_grader_payload(state, iteration, correction)
         metadata = self._grader_trace_metadata()
         self._record_grader_trace_metadata(metadata)
         result = grader.invoke(
-            {"messages": [HumanMessage(content=payload)]},
+            self._grader_input(state, iteration, correction),
             config=self._grader_invocation_config(metadata),
+            context=context,
         )
         self._record_grader_trace_metadata(
             self._grader_trace_metadata(
@@ -861,15 +919,17 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         state: RubricState,
         iteration: int,
         correction: str | None = None,
+        *,
+        context: object | None = None,
     ) -> GraderResponse:
         """Async variant of `_invoke_grader`. See that method for details."""
         grader = self._ensure_grader()
-        payload = self._build_grader_payload(state, iteration, correction)
         metadata = self._grader_trace_metadata()
         self._record_grader_trace_metadata(metadata)
         result = await grader.ainvoke(
-            {"messages": [HumanMessage(content=payload)]},
+            self._grader_input(state, iteration, correction),
             config=self._grader_invocation_config(metadata),
+            context=context,
         )
         self._record_grader_trace_metadata(
             self._grader_trace_metadata(
@@ -1133,6 +1193,10 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             payload["result"] = evaluation.get("result")
             payload["explanation"] = evaluation.get("explanation")
             payload["criteria"] = evaluation.get("criteria", [])
+            # Consumers need this to tell a verification gap apart from a list
+            # of confirmed defects; without it a downgraded verdict renders as
+            # "needs_revision" with no failing criteria to show.
+            payload["unverified"] = evaluation.get("unverified", False)
         try:
             writer(payload)
         except Exception:  # noqa: BLE001

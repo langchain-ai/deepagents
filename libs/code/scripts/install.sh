@@ -928,8 +928,25 @@ is_snap_curl() {
 # long options. Keep the stricter redirect controls when this wget supports
 # them, while still allowing minimal Linux systems to download from an HTTPS
 # URL with normal TLS certificate validation.
+#
+# The help text is captured rather than piped straight into grep: BusyBox exits
+# 1 from `--help`, and under `set -o pipefail` that failure becomes the
+# pipeline's status even when grep matched, so every option would report as
+# unsupported. That fails *open* — it silently drops `-S` and disables the
+# redirect audit below on exactly the minimal systems this branch exists for.
+# `|| true` because a nonzero `--help` is a BusyBox quirk, not "unsupported".
+#
+# The result is cached: this is probed once per hardening flag per attempt, and
+# the defaults keep the function self-contained so it can be extracted and
+# exercised on its own.
+WGET_HELP_TEXT=""
+WGET_HELP_CACHED=false
 wget_supports_option() {
-  wget --help 2>&1 | grep -Fq -- "$1"
+  if [ "${WGET_HELP_CACHED:-false}" = false ]; then
+    WGET_HELP_TEXT="$(wget --help 2>&1 || true)"
+    WGET_HELP_CACHED=true
+  fi
+  printf '%s\n' "${WGET_HELP_TEXT:-}" | grep -Fq -- "$1"
 }
 
 # Download with wget, adding hardening options only when this wget implements
@@ -973,6 +990,12 @@ wget_download() {
   if wget_supports_option "-S"; then
     args+=(-S)
     can_audit=true
+  else
+    # Say so rather than degrading in silence: without -S there is no
+    # downgrade check at all on the wget path (--https-only does not stop a
+    # one-shot redirect), and a control that is believed active but inert is
+    # worse than one the user knows is missing.
+    log_warn "This wget cannot report response headers (-S); cannot verify redirects stay on HTTPS."
   fi
 
   local wget_err rc=0
@@ -1027,6 +1050,9 @@ download_to_stdout() {
     else
       return 1
     fi
+    # 2s then 4s. A 1s/2s backoff is too short to outlast the transient it is
+    # meant to absorb (a captive-portal redirect settling, a CDN edge failing
+    # over); 6s of total waiting is still well inside a user's patience.
     if [ "$attempt" -lt 3 ]; then
       sleep $((attempt * 2))
     fi
@@ -1151,7 +1177,10 @@ install_uv() {
   # Use the interpreter named in the script's own shebang rather than always
   # `sh`. Upstream currently ships POSIX sh, but if it ever ships bash-only
   # syntax, checking with dash would report a syntax error and send the user
-  # chasing a nonexistent truncated download.
+  # chasing a nonexistent truncated download. The same interpreter runs the
+  # script below — checking with bash and then executing with sh would let
+  # bash-only syntax pass the check and fail at execution instead, which is
+  # the confusing outcome this branch exists to avoid.
   local uv_checker="sh"
   case "$uv_shebang" in
     *bash*) command -v bash >/dev/null 2>&1 && uv_checker="bash" ;;
@@ -1164,7 +1193,7 @@ install_uv() {
     exit 1
   fi
 
-  sh "$uv_script" >"$uv_install_out" 2>&1 || uv_install_rc=$?
+  "$uv_checker" "$uv_script" >"$uv_install_out" 2>&1 || uv_install_rc=$?
   if [ "$VERBOSE" = "1" ] || [ "$uv_install_rc" -ne 0 ]; then
     cat "$uv_install_out" >&2
   fi
@@ -1756,6 +1785,34 @@ local_bin_in_profile() {
     || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE '(fish_add_path|set[[:space:]].*PATH).*(\.local/bin|\.local/share/\.\./bin)'
 }
 
+# Net block-nesting change contributed by one shell line, into
+# SHELL_BLOCK_DELTA (a global: returning it via $(...) would fork per line).
+# Separators that can abut a keyword are flattened to spaces first, so a
+# self-contained `if [ x ]; then y; fi` nets zero rather than opening a block
+# that never closes. This is a line-oriented approximation, not a shell parser:
+# it does not know about quoting or heredocs. It only has to be right about the
+# ordinary conditional wrapper in a hand-written ~/.zshenv.
+SHELL_BLOCK_DELTA=0
+shell_block_delta() {
+  local haystack="$1" word
+  SHELL_BLOCK_DELTA=0
+  haystack="${haystack//;/ }"
+  haystack="${haystack//&/ }"
+  haystack="${haystack//|/ }"
+  haystack="${haystack//(/ }"
+  haystack="${haystack//)/ }"
+  # Unquoted expansion below is deliberate (word splitting); disable globbing so
+  # a `*` in the line can't expand against the cwd.
+  set -f
+  for word in $haystack; do
+    case "$word" in
+      if|case|while|for|until) SHELL_BLOCK_DELTA=$((SHELL_BLOCK_DELTA + 1)) ;;
+      fi|esac|done)            SHELL_BLOCK_DELTA=$((SHELL_BLOCK_DELTA - 1)) ;;
+    esac
+  done
+  set +f
+}
+
 # Resolve the directory holding zsh's .zshrc. ZDOTDIR, when set, relocates all
 # of zsh's dotfiles; users who keep ~/.zshrc elsewhere (e.g.
 # ~/.config/zsh/.zshrc) would otherwise get a stray new ~/.zshrc that zsh never
@@ -1764,21 +1821,50 @@ local_bin_in_profile() {
 # ~/.zshenv (the one file zsh always reads from $HOME, and the canonical place
 # to set ZDOTDIR). Prints the resolved directory, or nothing when unresolved.
 resolve_zdotdir() {
-  local line value=""
+  local line value="" depth=0 scan
   if [ -n "${ZDOTDIR:-}" ]; then
     printf '%s\n' "$ZDOTDIR"
     return 0
   fi
-  [ -n "${HOME:-}" ] && [ -f "$HOME/.zshenv" ] || return 0
+  [ -n "${HOME:-}" ] || return 0
+  # `-r`, not just `-f`: a root-owned or 0600 .zshenv belonging to another user
+  # passes `-f` but the redirect below then fails, leaving `value` empty and
+  # silently sending the zshrc to ~/.zshrc — the exact misplacement this
+  # function exists to prevent. Say so instead of guessing.
+  if [ -f "$HOME/.zshenv" ] && [ ! -r "$HOME/.zshenv" ]; then
+    log_warn "Cannot read ~/.zshenv to check for a ZDOTDIR setting; assuming zsh reads ~/.zshrc."
+    return 0
+  fi
+  [ -f "$HOME/.zshenv" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
-    # Strip leading whitespace, then an optional leading `export`.
-    while [[ "$line" == [[:space:]]* ]]; do line="${line#?}"; done
-    if [[ "$line" == export[[:space:]]* ]]; then
-      line="${line#export}"
+    scan="${line%%#*}"
+    # Only a top-level assignment is authoritative. The common portable-dotfiles
+    # idiom guards the relocation:
+    #
+    #     if [ -d "$HOME/.config/zsh" ]; then export ZDOTDIR="$HOME/.config/zsh"; fi
+    #
+    # While that directory is absent the guard is false and zsh reads ~/.zshrc.
+    # Honoring the assignment anyway would make the caller create the directory,
+    # which flips the guard true and strands every later shell in a config dir
+    # holding nothing but our PATH block. Assignments nested in any block are
+    # therefore skipped; the one-line `[ -d x ] && export ZDOTDIR=y` form is
+    # already skipped because such a line doesn't begin with the assignment.
+    if [ "$depth" -eq 0 ]; then
+      # Strip leading whitespace, then an optional leading `export`.
       while [[ "$line" == [[:space:]]* ]]; do line="${line#?}"; done
+      if [[ "$line" == export[[:space:]]* ]]; then
+        line="${line#export}"
+        while [[ "$line" == [[:space:]]* ]]; do line="${line#?}"; done
+      fi
+      if [[ "$line" == ZDOTDIR=* ]]; then
+        value="${line#ZDOTDIR=}"
+      fi
     fi
-    [[ "$line" == ZDOTDIR=* ]] || continue
-    value="${line#ZDOTDIR=}"
+    shell_block_delta "$scan"
+    depth=$((depth + SHELL_BLOCK_DELTA))
+    # A stray closer (or a construct this line-oriented scan misreads) must not
+    # drive the depth negative and re-arm the top-level branch inside a block.
+    [ "$depth" -lt 0 ] && depth=0
   done <"$HOME/.zshenv"
   # Strip surrounding quotes, or a trailing `;`, `# comment`, or whitespace for
   # the unquoted form.
@@ -1813,9 +1899,13 @@ resolve_zdotdir() {
   # failure mode backwards: on a fresh setup with `ZDOTDIR=$HOME/.config/zsh`,
   # rejecting the value writes ~/.zshrc, a file zsh never reads once ZDOTDIR
   # is set, so `dcode` stays off PATH. The caller creates a missing candidate
-  # directory before writing. The parser's actual limit is that the loop above
-  # takes the last ZDOTDIR= assignment and can't evaluate control flow; the
-  # candidate builder's ~/.zshrc handling covers that case.
+  # directory before writing, which is safe only because guarded assignments
+  # were skipped above — creating a directory an `if [ -d ... ]` is waiting on
+  # would silently activate a ZDOTDIR the user has not opted into yet.
+  # Remaining limit: the loop takes the last top-level ZDOTDIR= assignment, so
+  # a value set from a sourced file or a shell function is still missed. That
+  # errs toward ~/.zshrc, which is where zsh looks when the assignment never
+  # runs, and ~/.zshrc is added alongside a ZDOTDIR zshrc whenever it exists.
   case "$value" in
     /*) printf '%s\n' "$value" ;;
   esac
@@ -1844,13 +1934,17 @@ append_managed_path_block() {
   } >>"$profile"
 }
 
-# Resolve a symlink to the absolute path of the final regular file in the
-# chain. Read-only; used to pick the directory an atomic temp-file rewrite
-# must live in. Chains (a -> b -> c) must be followed to the end: resolving
-# one hop and `mv`-ing over it would replace an intermediate link with a
-# regular file, so the real dotfile-manager source stays stale and the next
-# restow recreates the link, reverting the PATH entry. The hop count is
-# capped to bound symlink loops (ELOOP), which we can't detect portably.
+# Resolve a symlink to the final non-symlink path in the chain. The result is
+# not canonicalized (a relative hop leaves `..` segments in place) and is not
+# guaranteed to exist or to be a regular file — nothing here checks that. It is
+# absolute only if the input was.
+# Read-only; used to pick the directory an atomic temp-file rewrite must live
+# in. Chains (a -> b -> c) must be followed to the end: resolving one hop and
+# `mv`-ing over it would replace an intermediate link with a regular file, so
+# the real dotfile-manager source stays stale and the next restow recreates the
+# link, reverting the PATH entry. The hop count is capped to bound symlink
+# loops (ELOOP), which we can't detect portably; 40 matches Linux's
+# MAXSYMLINKS, and macOS stops at 32, so any chain a kernel would follow fits.
 resolve_link_target() {
   local link="$1" target hops=0
   while [ -L "$link" ]; do
@@ -1873,11 +1967,11 @@ rewrite_managed_path_block() {
     # Dotfile managers (chezmoi, stow, nix home-manager) symlink startup files
     # into a repo. Replacing the link with a regular file means the next
     # `apply`/`restow` silently reverts the PATH entry — after we printed a
-    # success message. Write the chain's final target instead, through the same atomic
-    # temp-file + mv used below: `cat > "$profile"` would truncate the target
-    # in place, so an interrupted install (we trap INT/TERM/HUP) would leave
-    # the dotfile-manager source empty or partial. Resolving the target first
-    # puts the temp file in the target's directory, keeping the mv atomic.
+    # success message. Write the chain's final target instead, through the same
+    # atomic temp-file + mv used below. Writing the target in place would
+    # truncate it first, so an interrupted install (we trap INT/TERM/HUP) could
+    # leave the dotfile-manager source empty or partial. Resolving the target
+    # first puts the temp file in the target's directory, keeping the mv atomic.
     local link_target
     if link_target=$(resolve_link_target "$profile"); then
       log_warn "$profile is a symlink — editing its target instead of replacing the link."
@@ -1926,27 +2020,38 @@ rewrite_managed_path_block() {
   # an in-place rewrite doesn't silently tighten (e.g.) a 0644 ~/.zshrc.
   mode=$(stat -f '%OLp' "$profile" 2>/dev/null || stat -c '%a' "$profile" 2>/dev/null || true)
   if [ -n "$mode" ]; then
-    chmod "$mode" "$tmp_profile" 2>/dev/null || true
+    # Not fatal — the rewrite is still correct — but the user's file quietly
+    # becoming 0600 is the kind of change they should hear about.
+    chmod "$mode" "$tmp_profile" 2>/dev/null \
+      || log_warn "Could not restore mode ${mode} on $(tilde_display "$profile"); it may now be more restrictive."
   fi
   mv "$tmp_profile" "$profile" || return 1
   # `profile` is the final target when the caller supplied a symlink. The
   # caller still fixes ownership on the original symlink, so also restore the
   # target's ownership after this root-created atomic replacement.
   fix_file_owner "$profile"
+  # Explicit: without this the function's status is fix_file_owner's, so the
+  # day an ownership helper starts propagating chown failures, a rewrite that
+  # fully succeeded would report failure.
+  return 0
 }
 
 # Ensure dcode is on PATH for new shell sessions. Creates symlinks and/or
 # modifies shell startup files as needed. Only acts when the binary verified
 # but isn't already on the user's original PATH.
-# Returns: 0 = PATH is fixed for the current shell (symlink in an on-PATH dir),
+# Returns: 0 = nothing more to say — PATH is fixed for the current shell (a
+#              symlink in an on-PATH dir), or setup was deliberately skipped
+#              and this function already printed the exact guidance,
 #          1 = failure (a specific warning was already printed),
 #          2 = no changes needed, or changes were written to startup files,
 #              but the current shell still must be reloaded or sourced before
 #              dcode will resolve,
-#          3 = root install to a custom bin; PATH changes are left to MDM policy.
-# Only rc=0 and rc=3 suppress the caller's reload hint, so any path that edits
-# a startup file must return 2 (or 1) — a written file never helps the shell
-# that is running right now.
+#          3 = root install to a custom bin; PATH changes are left to MDM policy,
+#          4 = the user declined the prompt; nothing was written.
+# rc=0, 3 and 4 suppress the caller's reload hint. Any path that edits a
+# startup file must return 2 (or 1) — a written file never helps the shell that
+# is running right now — and any path that writes nothing must not return 2,
+# or the user is told to restart a shell for a change that was never made.
 ensure_path_setup() {
   local binary_name="$1"
   local binary_path="$2"
@@ -1955,10 +2060,11 @@ ensure_path_setup() {
   # MDM fleets: install and verify the binary, but never touch startup files
   # or create symlinks. The user adds the bin dir to PATH themselves.
   #
-  # Accept the same spellings as DEEPAGENTS_CODE_YES, and treat anything
-  # unrecognized as "do not modify": this opt-out exists to protect managed
+  # Accept the same *truthy* spellings as DEEPAGENTS_CODE_YES. The falsy
+  # handling deliberately differs: ASSUME_YES maps anything unrecognized to
+  # off, while this maps it to on. The opt-out exists to protect managed
   # dotfiles, so an unparsed value must fail toward leaving files alone rather
-  # than editing them.
+  # than editing them. Don't unify the two parsers.
   local no_modify_path
   no_modify_path="$(printf '%s' "${DEEPAGENTS_CODE_NO_MODIFY_PATH:-0}" \
     | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
@@ -1971,7 +2077,7 @@ ensure_path_setup() {
       ;;
   esac
   if [ "$no_modify_path" = "1" ]; then
-    log_info "Skipping PATH setup (DEEPAGENTS_CODE_NO_MODIFY_PATH=1)."
+    log_info "Skipping PATH setup (DEEPAGENTS_CODE_NO_MODIFY_PATH is set)."
     log_info "  ${binary_name} is at ${binary_path} — add its directory to PATH yourself, e.g.:"
     log_info "    export PATH=\"${binary_path%/*}:\$PATH\""
     # rc=0 so the caller stays quiet: the generic reload hint would name
@@ -2032,9 +2138,10 @@ ensure_path_setup() {
   # relevant startup file that exists — plus the primary file for the current
   # shell — so dcode resolves no matter which shell the user opens next.
   detect_shell_profile
-  # Reuse detect_shell_profile's result rather than re-deriving it from $SHELL:
-  # the two used different fallbacks, so an empty SHELL made this function drop
-  # the primary profile that detect_shell_profile had just chosen.
+  # Reuse detect_shell_profile's result rather than re-deriving it from $SHELL,
+  # so the two can't disagree about which shell this is: any second derivation
+  # needs its own fallback for an empty $SHELL, and a mismatch silently drops
+  # the primary profile detect_shell_profile just chose.
   local shell_name="$DETECTED_SHELL"
   local zdotdir
   zdotdir="$(resolve_zdotdir)"
@@ -2044,9 +2151,10 @@ ensure_path_setup() {
   #     (zsh and bash only; fish is covered by its conf.d file below)
   #   - the zshrc at the resolved ZDOTDIR, plus ~/.zshrc when both exist
   #     (ZDOTDIR wins for the shell itself; ~/.zshrc covers stale copies)
-  #   - whenever any bash file exists, or the shell is bash: .bashrc, plus the
-  #     login file (.bash_profile preferred, else .bash_login, else ~/.profile,
-  #     which is what a bash login shell falls back to reading)
+  #   - whenever any bash file exists, or the shell is bash: .bashrc (on macOS
+  #     only if it already exists), plus the login file (.bash_profile
+  #     preferred, else .bash_login, else ~/.profile, which is what a bash
+  #     login shell falls back to reading)
   #   - fish: conf.d/deepagents-code.fish, when fish is the shell or a fish
   #     config dir exists
   #   - any other shell: ~/.profile, in addition to whichever of the above
@@ -2061,14 +2169,18 @@ ensure_path_setup() {
         ;;
     esac
   }
+  has_candidate() {
+    case ":$seen:" in
+      *":$1:"*) return 0 ;;
+    esac
+    return 1
+  }
   case "$shell_name" in
     zsh)
-      # When ZDOTDIR is set (from the environment or ~/.zshenv) and names a
-      # directory other than $HOME, the zsh-branch add_candidate below already
-      # covers the zshrc zsh actually reads. detect_shell_profile doesn't know
-      # about ZDOTDIR, so its $HOME/.zshrc would add a second, wrong file.
-      # With no ZDOTDIR, that same line *is* the zshrc candidate, so skipping
-      # it here loses nothing.
+      # detect_shell_profile resolves ZDOTDIR too, so SHELL_PROFILE is already
+      # the same "${zdotdir:-$HOME}/.zshrc" the zsh branch below adds, and
+      # add_candidate dedupes. Adding it here is therefore redundant either
+      # way; the guard just makes the single source of that path obvious.
       if [ -z "$zdotdir" ] || [ "$zdotdir" = "$HOME" ]; then
         [ -n "$SHELL_PROFILE" ] && add_candidate "$SHELL_PROFILE"
       fi
@@ -2081,10 +2193,10 @@ ensure_path_setup() {
   if [ "$shell_name" = "zsh" ] || [ -f "${zdotdir:-$HOME}/.zshrc" ]; then
     add_candidate "${zdotdir:-$HOME}/.zshrc"
     # ~/.zshrc is added alongside a ZDOTDIR zshrc only when it already exists.
-    # ZDOTDIR relocates zsh's dotfiles entirely: zsh sources
-    # ${ZDOTDIR}/.zshenv first and never reads ~/.zshenv, so zsh's own ZDOTDIR
-    # can differ from what resolve_zdotdir found there — and on a machine that
-    # had ZDOTDIR set for a previous install, ~/.zshrc may not exist at all.
+    # When ZDOTDIR is already set in the *environment*, zsh reads
+    # ${ZDOTDIR}/.zshenv rather than ~/.zshenv, so zsh's live ZDOTDIR can
+    # differ from whatever resolve_zdotdir parsed out of ~/.zshenv — and on a
+    # machine set up that way, ~/.zshrc may not exist at all.
     if [ -n "$zdotdir" ] && [ "$zdotdir" != "$HOME" ] && [ -f "$HOME/.zshrc" ]; then
       add_candidate "$HOME/.zshrc"
     fi
@@ -2092,14 +2204,21 @@ ensure_path_setup() {
   if [ "$shell_name" = "bash" ] || [ -f "$HOME/.bashrc" ] || \
     [ -f "$HOME/.bash_profile" ] || [ -f "$HOME/.bash_login" ]; then
     # .bashrc is sourced for interactive non-login shells (the default on
-    # Linux); macOS Terminal runs login shells instead, so a .bashrc that
-    # doesn't already exist would never be read — skip creating one there.
+    # Linux); macOS Terminal runs login shells instead, so a .bashrc created
+    # here wouldn't be read by the default Terminal session — skip creating
+    # one there. (A non-login bash started by hand on macOS does read it,
+    # which is why an existing .bashrc is still updated.)
     if [ -f "$HOME/.bashrc" ] || [ "$OS" != "macos" ]; then
       add_candidate "$HOME/.bashrc"
     fi
-    if [ -f "$HOME/.bash_profile" ]; then
+    # Test existence *or* already-queued: the bash branch above may have queued
+    # a not-yet-created ~/.bash_profile as the shell's primary file. Looking
+    # only at the filesystem would miss that, fall through to ~/.profile, and
+    # create both — after which bash reads the .bash_profile we just made and
+    # never the .profile, leaving a stray file behind.
+    if [ -f "$HOME/.bash_profile" ] || has_candidate "$HOME/.bash_profile"; then
       add_candidate "$HOME/.bash_profile"
-    elif [ -f "$HOME/.bash_login" ]; then
+    elif [ -f "$HOME/.bash_login" ] || has_candidate "$HOME/.bash_login"; then
       add_candidate "$HOME/.bash_login"
     else
       # bash files exist but no login file. A bash login shell reads the first
@@ -2196,8 +2315,10 @@ ensure_path_setup() {
   # ~/.bash_profile would otherwise be asked only about ~/.zshrc.
   local should_add=true prompt_targets
   prompt_targets="$(tilde_display "${pending[0]}")"
-  # Guarded: expanding an empty slice under `set -u` aborts on bash 3.2, which
-  # is the /bin/bash macOS still ships.
+  # `pending` is guaranteed non-empty above, so "${pending[@]:1}" is safe even
+  # on the bash 3.2 macOS still ships (an empty *slice* of a non-empty array is
+  # fine there; only expanding a wholly empty array trips `set -u`). The length
+  # check just skips a pointless loop.
   if [ ${#pending[@]} -gt 1 ]; then
     local extra
     for extra in "${pending[@]:1}"; do
@@ -2214,7 +2335,10 @@ ensure_path_setup() {
     # PATH_EXPORT is empty for unknown shells; fall back to the POSIX line so
     # this never renders as a bare "add to PATH:" with nothing after it.
     log_info "  To use ${binary_name}, add to PATH:  ${PATH_EXPORT:-$POSIX_PATH_EXPORT}"
-    return 2
+    # rc=4, not 2: nothing was written, so the caller's "Restart your shell"
+    # hint would be actively wrong — a restart cannot pick up an edit that was
+    # never made. The exact line to run was just printed above.
+    return 4
   fi
 
   local updated=0 failed=0
@@ -2250,7 +2374,11 @@ ensure_path_setup() {
         updated=$((updated + 1))
       else
         log_warn "Could not update deepagents-code PATH block in $(tilde_display "$profile")."
-        log_warn "  Check for a stray '# >>> deepagents-code installer >>>' line with no matching '<<<' line."
+        # Deliberately hedged: rewrite_managed_path_block also returns 1 for an
+        # unresolvable symlink, a mktemp failure and a failed mv, each of which
+        # already printed its own reason just above. Asserting the marker cause
+        # outright would contradict those.
+        log_warn "  One cause is a stray '# >>> deepagents-code installer >>>' line with no matching '<<<' line."
         failed=$((failed + 1))
       fi
     elif append_managed_path_block "$profile" "$export_line"; then
@@ -2428,11 +2556,14 @@ fi
 if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ] && [ -n "$DCODE_BIN" ]; then
   path_setup_rc=0
   ensure_path_setup "$DCODE_NAME" "$DCODE_BIN" || path_setup_rc=$?
-  if [ "$path_setup_rc" -ne 0 ] && [ "$path_setup_rc" -ne 3 ]; then
+  if [ "$path_setup_rc" -ne 0 ] && [ "$path_setup_rc" -ne 3 ] && \
+    [ "$path_setup_rc" -ne 4 ]; then
     # rc=1: ensure_path_setup printed a specific warning; add the fallback.
     # rc=2: startup files were written, or no change was needed — either way
     #   the *running* shell still lacks ~/.local/bin on PATH, so emit the
     #   reload/source hint.
+    # rc=0/3/4 are silent here: PATH is already fixed, MDM owns it, or the user
+    #   declined and was already given the one line that would help.
     log_warn "  Restart your shell, or run:"
     if [ -f "${HOME}/.local/bin/env" ]; then
       log_warn "  source ~/.local/bin/env"

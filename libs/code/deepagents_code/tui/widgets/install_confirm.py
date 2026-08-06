@@ -14,10 +14,24 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
 from textual.screen import ModalScreen
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+
+
+def _package_link(package: str) -> Content:
+    """Render a package name as a bold PyPI link.
+
+    Args:
+        package: The package name to display and link.
+
+    Returns:
+        Styled content linking to the package's PyPI project page.
+    """
+    url = f"https://pypi.org/project/{package}/"
+    return Content.assemble((package, TStyle(bold=True, underline=True, link=url)))
 
 
 class InstallPackageConfirmScreen(ModalScreen[bool]):
@@ -90,10 +104,10 @@ class InstallPackageConfirmScreen(ModalScreen[bool]):
                 markup=False,
             )
             yield Static(
-                Content.from_markup(
-                    "Installing [bold]$name[/bold] runs third-party code in "
-                    "the dcode environment.",
-                    name=self._package,
+                Content.assemble(
+                    "Installing ",
+                    _package_link(self._package),
+                    " runs third-party code in the dcode environment.",
                 ),
                 classes="install-confirm-body",
                 markup=False,
@@ -196,26 +210,31 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
         # Gemini") so the title reads naturally, falling back to a title-cased
         # provider key. Avoids the event-loop config read in
         # `provider_display_name`, which is overkill for a static title.
+        from deepagents_code.config_manifest import provider_package_name
         from deepagents_code.tui.widgets.auth import PROVIDER_DISPLAY_NAMES
 
         provider = PROVIDER_DISPLAY_NAMES.get(
             self._provider, self._provider.replace("_", " ").title()
         )
+        package = provider_package_name(self._provider) or self._extra
+        package_link = _package_link(package)
         if self._model_spec is not None:
-            body = Content.from_markup(
-                "To use [bold]$model[/bold], dcode needs to "
-                "install the [bold]$extra[/bold] integration. This will add "
-                "the provider package to your dcode environment.",
-                model=self._model_spec,
-                extra=self._extra,
+            body = Content.assemble(
+                "To use ",
+                (self._model_spec, "bold"),
+                ", dcode needs to install the ",
+                package_link,
+                " integration. This will add the provider package to your "
+                "dcode environment.",
             )
         else:
-            body = Content.from_markup(
-                "To add a key for [bold]$provider[/bold], dcode "
-                "needs to install the [bold]$extra[/bold] integration. This "
-                "will add the provider package to your dcode environment.",
-                provider=provider,
-                extra=self._extra,
+            body = Content.assemble(
+                "To add a key for ",
+                (provider, "bold"),
+                ", dcode needs to install the ",
+                package_link,
+                " integration. This will add the provider package to your "
+                "dcode environment.",
             )
         with Vertical():
             yield Static(

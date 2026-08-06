@@ -982,6 +982,20 @@ def provider_install_extra(provider: str) -> str | None:
     return dependency[1] if dependency else None
 
 
+def provider_package_name(provider: str) -> str | None:
+    """Return the PyPI package that provides `provider`, if known.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`, `"google_genai"`).
+
+    Returns:
+        The normalized distribution name, or `None` when the provider has no
+            curated package.
+    """
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    return dependency[0].replace("_", "-") if dependency else None
+
+
 def is_provider_package_installed(provider: str) -> bool:
     """Return whether `provider`'s integration package is importable.
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
+from textual.content import Content
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.install_confirm import (
@@ -14,6 +16,16 @@ from deepagents_code.tui.widgets.install_confirm import (
 class _InstallConfirmTestApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("base")
+
+
+def _assert_pypi_link(content: Content, package: str) -> None:
+    """Assert that only `package` links to its PyPI project page."""
+    links = [
+        (content.plain[span.start : span.end], span.style.link)
+        for span in content.spans
+        if isinstance(span.style, TStyle) and span.style.link
+    ]
+    assert links == [(package, f"https://pypi.org/project/{package}/")]
 
 
 class TestInstallPackageConfirmScreen:
@@ -88,7 +100,10 @@ class TestInstallPackageConfirmScreen:
 
             bodies = app.screen.query(".install-confirm-body")
             assert len(bodies) == 1
-            assert "langchain-custom" in str(bodies.first().render())
+            content = bodies.first().render()
+            assert isinstance(content, Content)
+            assert "langchain-custom" in content.plain
+            _assert_pypi_link(content, "langchain-custom")
 
 
 class TestInstallProviderConfirmScreen:
@@ -143,9 +158,11 @@ class TestInstallProviderConfirmScreen:
 
             bodies = app.screen.query(".install-confirm-body")
             assert len(bodies) == 1
-            rendered = str(bodies.first().render())
-            assert "baseten:moonshotai/Kimi-K2.7-Code" in rendered
-            assert "baseten" in rendered
+            content = bodies.first().render()
+            assert isinstance(content, Content)
+            assert "baseten:moonshotai/Kimi-K2.7-Code" in content.plain
+            assert "langchain-baseten" in content.plain
+            _assert_pypi_link(content, "langchain-baseten")
 
     async def test_renders_add_key_body_without_model_spec(self) -> None:
         """The `/auth` path (no model spec) frames the install around a key.
@@ -156,12 +173,14 @@ class TestInstallProviderConfirmScreen:
         """
         app = _InstallConfirmTestApp()
         async with app.run_test() as pilot:
-            app.push_screen(InstallProviderConfirmScreen("baseten", "baseten"))
+            app.push_screen(InstallProviderConfirmScreen("litellm", "litellm"))
             await pilot.pause()
 
             bodies = app.screen.query(".install-confirm-body")
             assert len(bodies) == 1
-            rendered = str(bodies.first().render())
-            assert "add a key" in rendered
-            assert "baseten" in rendered
-            assert "To use" not in rendered
+            content = bodies.first().render()
+            assert isinstance(content, Content)
+            assert "add a key" in content.plain
+            assert "langchain-litellm" in content.plain
+            assert "To use" not in content.plain
+            _assert_pypi_link(content, "langchain-litellm")

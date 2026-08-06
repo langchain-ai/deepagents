@@ -109,14 +109,40 @@ class TestDefaultCacheDir:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert default_cache_dir() == tmp_path / ".cache"
 
-    def test_macos_uses_library_caches(
+    def test_macos_honors_xdg_cache_home(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """MacOS resolves to `~/Library/Caches`, ignoring `XDG_CACHE_HOME`."""
+        """The macOS resolver uses the same XDG cache location as the installer."""
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        assert default_cache_dir() == tmp_path / "Library" / "Caches"
+        assert default_cache_dir() == tmp_path / "xdg-cache"
+
+    def test_macos_without_xdg_cache_home_falls_back_to_dot_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The macOS resolver uses `~/.cache` when `XDG_CACHE_HOME` is unset."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / ".cache"
+
+    def test_windows_uses_local_app_data(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows uses its native local application-data directory."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+        assert default_cache_dir() == tmp_path / "local-app-data"
+
+    def test_windows_without_local_app_data_uses_home_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows retains a predictable fallback when `LOCALAPPDATA` is unavailable."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / "AppData" / "Local"
 
 
 def _create_git_repository(root: Path) -> Path:

@@ -19181,6 +19181,51 @@ class DeepAgentsApp(App):
             # removes the modal.
             self.call_after_refresh(start_selection_worker)
 
+        tail = (
+            " Recommended models favor lower latency and cost for repeated "
+            "reviews; a faster, cheaper model may review actions less carefully."
+            " Enter applies the pick to this session; Ctrl+S additionally stores"
+            " it as `[models].auto_classifier` for future launches — press "
+            "Ctrl+S again on the stored model to remove it."
+        )
+        clear_hint = ""
+        if self._auto_classifier_display_spec() is not None:
+            # The picker lists only recommended classifiers, so it offers no
+            # entry that reverts to the main agent model. `_auto_usage_text`
+            # carries the hint, but it is mounted only for an unrecognized
+            # `/auto` subcommand, so no path that opens this modal shows it.
+            clear_hint = " Clear it with `/auto model clear`."
+
+        # Every branch hands the screen a `Content`: the description reaches a
+        # `Static`, which parses a plain `str` as markup. The branches naming a
+        # spec use `from_markup` with `$spec` per `AGENTS.md`, because the spec
+        # is user-supplied: `/auto model <spec>` validates, but the startup seed
+        # from `--auto-classifier-model` / `config.toml` does not. Interpolated
+        # into a plain `str` instead,
+        # a spec containing `[dim]` would render a truncated, dimmed name that is
+        # not the model reviewing actions, and one containing `[/]` would raise
+        # `MarkupError` when the modal opens. `tail` cannot join the markup
+        # template — its backticked `[models]` tag would close the paragraph —
+        # so it is appended to the built `Content`, and the first branch (no
+        # spec) uses the plain `Content` constructor, which parses nothing.
+        active = self._auto_classifier_review_model_spec()
+        if active is None:
+            description = Content("Auto currently reviews with the main agent model.")
+        elif not self._auto_classifier_is_distinct():
+            # Not `display_spec() is None`: that asks where the spec came from,
+            # but the sentence claims the spec *is* the main agent model. They
+            # diverge when a configured classifier matches the main model, which
+            # `_notify_auto_classifier_active` also treats as "not distinct".
+            description = Content.from_markup(
+                "Auto currently reviews with $spec, the main agent model.",
+                spec=active,
+            )
+        else:
+            description = Content.from_markup(
+                "Auto currently reviews with $spec.", spec=active
+            )
+        description += tail + clear_hint
+
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
@@ -19188,15 +19233,7 @@ class DeepAgentsApp(App):
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
-            description=(
-                "Recommended models favor lower latency and cost for repeated "
-                "reviews. A faster, cheaper model may review actions less "
-                "carefully. Enter applies the pick to this session; `/auto "
-                "model clear` undoes that and reuses the main agent model. "
-                "Ctrl+S additionally stores the pick as "
-                "`[models].auto_classifier` for future launches; press Ctrl+S "
-                "again on the stored model to remove it."
-            ),
+            description=description,
             default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )
         self.push_screen(screen, handle_result)

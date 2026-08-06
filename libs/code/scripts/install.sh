@@ -1383,11 +1383,17 @@ fi
 # extras' packages - warn before that happens so they can re-run with the
 # extras preserved. Only relevant on the default path (no explicit EXTRAS /
 # editable swap), where the user asked for nothing new.
+#
+# The receipt records every requirement in one array: the tool itself plus any
+# supplemental `--with` packages. Only parse extras from the `deepagents-code`
+# requirement - a `--with rich[jupyter]` entry must not surface as a tool
+# extra, since `DEEPAGENTS_CODE_EXTRAS` installs `deepagents-code[...]` and
+# cannot preserve supplemental packages.
 INSTALLED_EXTRAS=""
 if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ] && [ -n "$UV_TOOL_DIR" ]; then
   receipt="${UV_TOOL_DIR}/deepagents-code/uv-receipt.toml"
   if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
-    INSTALLED_EXTRAS=$(sed -nE 's/.*extras = \[([^]]*)\].*/\1/p' "$receipt" \
+    INSTALLED_EXTRAS=$(sed -nE 's/.*name = "deepagents-code"[^}]*extras = \[([^]]*)\].*/\1/p' "$receipt" \
       | head -1 \
       | tr -d ' "' || true)
   fi

@@ -670,11 +670,11 @@ def test_track_probe_failures_records_unreadable_path(
     folder = tmp_path / "assets"
     folder.mkdir()
 
-    def _deny(self: Path, *args: object, **kwargs: object) -> bool:  # noqa: ARG001  # Replaces a Path probe signature
+    def _deny(self: Path, *args: object, **kwargs: object) -> object:  # noqa: ARG001  # Replaces the stat probe signature
         msg = "permission denied"
         raise PermissionError(msg)
 
-    monkeypatch.setattr(Path, "exists", _deny)
+    monkeypatch.setattr(Path, "stat", _deny)
 
     with track_probe_failures() as failures:
         assert parse_pasted_any_entry_paths(str(folder)) == []
@@ -683,6 +683,23 @@ def test_track_probe_failures_records_unreadable_path(
     # probe can fail; what matters is that the caller learns at least one did.
     assert failures
     assert all("permission denied" in failure for failure in failures)
+
+
+def test_track_probe_failures_records_os_rejected_path() -> None:
+    """A path the OS refuses outright is a failure, not a clean miss.
+
+    Python 3.14 routes `Path.exists()` through `os.path.*`, which swallows
+    every `OSError` — including the `ENAMETOOLONG` from an overlong component —
+    and answers `False`. The probes must stat directly so such rejections
+    still reach the tracker instead of looking like "not a path".
+    """
+    overlong = "/" + "x" * 300
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(overlong) == []
+
+    assert failures
+    assert all("x" * 40 in failure for failure in failures)
 
 
 def test_track_probe_failures_empty_for_merely_missing_path(tmp_path: Path) -> None:
@@ -827,7 +844,7 @@ def test_parse_pasted_path_payload_handles_overlong_component(
 def test_parse_pasted_file_paths_handles_oserror_on_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
 ) -> None:
-    """`OSError` raised by an `is_file` probe must be swallowed, not propagated.
+    """`OSError` raised by a stat probe must be swallowed, not propagated.
 
     Guards against platforms/filesystems that surface the limit at a different
     probe than `resolve`, ensuring the fix does not rely on a specific errno.
@@ -835,7 +852,7 @@ def test_parse_pasted_file_paths_handles_oserror_on_probe(
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "real.txt"
     target.write_text("hi")
-    mocker.patch("pathlib.Path.is_file", side_effect=OSError(63, "File name too long"))
+    mocker.patch("pathlib.Path.stat", side_effect=OSError(63, "File name too long"))
 
     assert parse_pasted_file_paths(str(target)) == []
 
@@ -847,14 +864,14 @@ def test_parse_pasted_file_paths_handles_oserror_in_unicode_variant(
 
     Exercises the `_resolve_with_unicode_space_variants` traversal: the on-disk
     name carries a narrow no-break space while the paste uses an ASCII space,
-    forcing the `iterdir`-match branch where component `is_file`/`is_dir` probes
-    run. The path is quoted so it stays a single token instead of being split.
+    forcing the `iterdir`-match branch where component stat probes run. The
+    path is quoted so it stays a single token instead of being split.
     """
     unicode_name = "Screenshot 2026-02-26 at 2.02.42 AM.png"
     img = tmp_path / unicode_name
     img.write_bytes(b"img")
     ascii_name = unicode_name.replace(chr(0x202F), " ")
     pasted = f"'{str(img).replace(unicode_name, ascii_name)}'"
-    mocker.patch("pathlib.Path.is_file", side_effect=OSError(63, "File name too long"))
+    mocker.patch("pathlib.Path.stat", side_effect=OSError(63, "File name too long"))
 
     assert parse_pasted_file_paths(pasted) == []

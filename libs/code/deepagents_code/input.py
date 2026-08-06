@@ -1,8 +1,11 @@
 """Input handling utilities including image/video tracking and file mention parsing."""
 
+import errno
 import logging
+import os
 import re
 import shlex
+import stat as stat_mod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1088,22 +1091,42 @@ def _record_probe_failure(path: Path, error: Exception) -> None:
         failures.append(f"{path}: {error}")
 
 
+def _stat_path(path: Path) -> os.stat_result[str] | None:
+    """Stat `path`, preserving probe failures instead of folding them to misses.
+
+    The `pathlib` probes (`exists`/`is_file`/`is_dir`) hide stat errors from
+    the caller: Python <=3.13 swallows only a small set of errnos, while 3.14
+    routes these through `os.path.*`, which swallows *every* `OSError` —
+    including `ENAMETOOLONG`, whose failure `track_probe_failures()` exists to
+    surface. `Path.stat()` raises on every interpreter version, so we stat
+    directly and distinguish "the entry is not there" (or a dangling symlink's
+    missing target) from "the OS refused to answer", recording only the latter.
+
+    Args:
+        path: Path candidate to probe.
+
+    Returns:
+        The stat result for an existing entry, or `None` for a missing entry
+        or an unreadable path (recorded for any active tracker).
+    """
+    try:
+        return path.stat(follow_symlinks=True)
+    except OSError as e:
+        if e.errno in {errno.ENOENT, errno.ENOTDIR}:
+            return None
+        logger.debug("stat() check failed for %r: %s", path, e)
+        _record_probe_failure(path, e)
+        return None
+    except ValueError as e:
+        # An embedded NUL raised here (rather than inside pathlib's probes) on
+        # every supported interpreter; callers only want usable paths, so it
+        # folds into a clean miss exactly as `path.exists()` would answer.
+        logger.debug("stat() check failed for %r: %s", path, e)
+        return None
+
+
 def _safe_exists(path: Path) -> bool:
     """Return whether `path` exists, treating OS rejections as non-existent.
-
-    Filesystem probes (`exists`/`is_file`/`is_dir`) issue an `os.stat` that can
-    raise `OSError` for inputs the OS refuses outright — notably `ENAMETOOLONG`
-    when a path component exceeds the filesystem limit. Whether `pathlib`
-    swallows such an error is version-dependent (Python <=3.13 ignores only a
-    small set of errnos and lets `ENAMETOOLONG` propagate; 3.14 routes these
-    through `os.path.*`, which swallows more), so we guard unconditionally for
-    uniform behavior. Callers here only care whether the path is usable, so a
-    failed probe is equivalent to "not there".
-
-    `ValueError` needs no guard here: every supported interpreter already
-    absorbs an embedded NUL inside these three probes (3.11-3.13 catch it in
-    `pathlib`, 3.14 delegates to `os.path.*`, which catches it). Only
-    `resolve()` propagates it — see `_resolve_existing_pasted_path`.
 
     Args:
         path: Path candidate to probe.
@@ -1111,18 +1134,13 @@ def _safe_exists(path: Path) -> bool:
     Returns:
         `True` if the path exists, `False` if it does not or cannot be probed.
     """
-    try:
-        return path.exists()
-    except OSError as e:
-        logger.debug("exists() check failed for %r: %s", path, e)
-        _record_probe_failure(path, e)
-        return False
+    return _stat_path(path) is not None
 
 
 def _safe_is_file(path: Path) -> bool:
     """Return whether `path` is an existing file, ignoring stat failures.
 
-    See `_safe_exists` for why probes are guarded.
+    See `_stat_path` for why probes preserve and record failures.
 
     Args:
         path: Path candidate to probe.
@@ -1130,18 +1148,14 @@ def _safe_is_file(path: Path) -> bool:
     Returns:
         `True` if the path is a regular file, `False` otherwise or on failure.
     """
-    try:
-        return path.is_file()
-    except OSError as e:
-        logger.debug("is_file() check failed for %r: %s", path, e)
-        _record_probe_failure(path, e)
-        return False
+    result = _stat_path(path)
+    return result is not None and stat_mod.S_ISREG(result.st_mode)
 
 
 def _safe_is_dir(path: Path) -> bool:
     """Return whether `path` is an existing directory, ignoring stat failures.
 
-    See `_safe_exists` for why probes are guarded.
+    See `_stat_path` for why probes preserve and record failures.
 
     Args:
         path: Path candidate to probe.
@@ -1149,12 +1163,8 @@ def _safe_is_dir(path: Path) -> bool:
     Returns:
         `True` if the path is a directory, `False` otherwise or on failure.
     """
-    try:
-        return path.is_dir()
-    except OSError as e:
-        logger.debug("is_dir() check failed for %r: %s", path, e)
-        _record_probe_failure(path, e)
-        return False
+    result = _stat_path(path)
+    return result is not None and stat_mod.S_ISDIR(result.st_mode)
 
 
 def _resolve_existing_pasted_path(path: Path) -> Path | None:

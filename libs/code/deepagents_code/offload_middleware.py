@@ -86,6 +86,10 @@ class _OffloadState(CostState, SummarizationState, total=False):
     input: `PrivateStateAttr` / `OmitFromInput` are honored by `create_agent`,
     not by a raw `StateGraph`, so every declared channel would otherwise be
     client-writable. `_OffloadInput` is what actually restricts the surface.
+
+    `total=False` describes the inherited shape only -- this body declares no
+    keys of its own, so the modifier is deliberate documentation rather than a
+    constraint on anything written here.
     """
 
 
@@ -106,10 +110,16 @@ class _OffloadInput(TypedDict):
     against the full state schema, so it is unaffected by this type — which is
     also why `RemoteAgent.arebind_thread` exists.
 
-    `total=True` on purpose: `messages` is mandatory. An empty input starts the
-    run with an empty message list against a real server (see the replay comment
-    in `app._drive_offload_operation_graph`), so omitting it is a bug rather
-    than a default, and this makes it a type error at the one construction site.
+    `total=True` on purpose: `messages` is mandatory, and the one construction
+    site (`app._drive_offload_operation_graph`) annotates its literal with this
+    type so omission is a type error there. That check is worth having but is
+    not the real guarantee: `.get("messages", [])` at the call site satisfies
+    the type with `[]`, and against a real server an empty list is *destructive*
+    rather than merely useless — run input replaces this channel outright (see
+    the replay comment at that call site). The enforcement that matters is the
+    node's own empty-`messages` guard, which raises instead of silently
+    reporting "already compact"; `test_offload_server_side.py` pins the
+    server-side behavior end to end.
 
     The node still reads the full `_OffloadState` from the checkpoint; only the
     run *input* is narrowed.
@@ -155,7 +165,31 @@ def attach_offload_resources(
     Args:
         backend: Composite backend returned alongside the agent graph.
         resources: Middleware instances the `offload` graph must reuse.
+
+    Raises:
+        ValueError: If the compaction middleware is bound to a different
+            backend than the one it is being attached to. The whole point of
+            this carrier is that `/offload` archives into the *agent's* backend;
+            a mis-wired pair would instead write history somewhere the agent
+            cannot read it, and the symptom (missing history) would surface only
+            much later. Checked here so the failure lands at construction.
     """
+    bound = getattr(resources.compaction._summarization, "_backend", None)
+    if bound is not None and bound is not backend:
+        msg = (
+            "Offload compaction middleware is bound to a different backend than "
+            "the one it is being published on; /offload would archive into "
+            "storage the agent cannot read."
+        )
+        raise ValueError(msg)
+    if getattr(backend, _OFFLOAD_RESOURCES_ATTR, None) is not None:
+        # Last-write-wins is the existing behavior and safe for the one
+        # production caller, but a second `create_cli_agent` sharing a backend
+        # would silently re-point `/offload` at whichever ran last.
+        logger.warning(
+            "Replacing offload resources already published on this backend; "
+            "/offload will use the most recently attached middleware"
+        )
     setattr(backend, _OFFLOAD_RESOURCES_ATTR, resources)
 
 
@@ -174,6 +208,23 @@ def offload_resources_from(backend: CompositeBackend) -> OffloadServerResources 
     return resources if isinstance(resources, OffloadServerResources) else None
 
 
+def _event_cutoff(event: object) -> int:
+    """Return the absolute cutoff index carried by a `_summarization_event`.
+
+    Args:
+        event: A `_summarization_event` mapping (as persisted in state), or
+            `None`.
+
+    Returns:
+        The `cutoff_index`, or `0` when the event is missing or malformed.
+    """
+    if isinstance(event, dict):
+        cutoff = event.get("cutoff_index")
+        if isinstance(cutoff, int):
+            return cutoff
+    return 0
+
+
 COMPACTION_FAILURE_PREFIX = "Compaction failed"
 """Stable prefix for forced-compaction failure tool messages.
 
@@ -186,7 +237,7 @@ boundary, but it still only sees message text.) Owning the literal here means
 the producers
 (`_forced_compact_error` and the operation graph's node, which reuses the prefix
 in the `RuntimeError` it raises) and both consumers
-(`app._drive_legacy_seeded_compaction` live-stream detection and
+(`app._drive_local_seeded_compaction` live-stream detection and
 `app._find_compaction_failure` committed-state scan) reference one constant
 instead of re-hardcoding the wording independently.
 
@@ -823,16 +874,21 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                         context_limit,
                         exc_info=True,
                     )
-        # Reuse the original composite backend, not the `_ArchiveReadGuard`
-        # wrapper: the SDK resolves the archive prefix once in its constructor
-        # via `backend.artifacts_root if isinstance(backend, CompositeBackend)`,
-        # and the guard is not a `CompositeBackend`, so that check falls back to
-        # a `/` prefix. The archive write would then miss the
+        # Never pass the `_ArchiveReadGuard` wrapper to the constructor: the SDK
+        # resolves the archive prefix once in `__init__` via
+        # `backend.artifacts_root if isinstance(backend, CompositeBackend)`, and
+        # the guard is not a `CompositeBackend`, so that check would fall back
+        # to a `/` prefix. The archive write would then miss the
         # `conversation_history` route and land in the default backend --
-        # silently writing into the user's project tree. Adding an
-        # `artifacts_root` passthrough to the guard would not help; the
-        # `isinstance` is what fails. The offload call sites apply the guard
-        # separately when writing (see `_guarded_backend` call sites).
+        # silently writing into the user's project tree. An `artifacts_root`
+        # passthrough on the guard would not help; the `isinstance` is what
+        # fails.
+        #
+        # This is a forward-looking constraint on the *constructor argument*,
+        # not a bug being fixed: the previous code also passed the real
+        # composite backend here and only swapped `_backend` for the guard
+        # afterwards, so the prefix was correct then too. The offload call sites
+        # apply the guard separately when writing (see `_guarded_backend`).
         return create_summarization_middleware(model, self._summarization._backend)
 
     def _run_forced_compact(self, runtime: ToolRuntime) -> Command:
@@ -914,23 +970,56 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
         Unlike the tool paths, this raises on failure instead of returning a
         `ToolMessage`: the operation graph has no tool node to carry one, so its
-        node converts the exception into a client-visible error.
+        node converts the exception into a client-visible error. Any summarizer,
+        backend, or archive failure therefore propagates out of this method
+        rather than being folded into the return value.
 
         Args:
             state: Checkpointed conversation and prior summarization event.
             runtime: Run context carrier used to select the summarizer model.
 
         Returns:
-            The state update, or `None` when nothing can be compacted.
+            The state update, or `None` when nothing can be compacted -- either
+                nothing is old enough to summarize, or the absolute cutoff would
+                not advance past the prior event.
+
+        Raises:
+            ValueError: If the run observed no messages at all. On a real server
+                the run input *replaces* the `messages` channel, so this means
+                the caller replayed an empty list and has already truncated the
+                conversation; reporting "nothing to compact" would render that
+                as success.
         """
         summarization = await asyncio.to_thread(
             self._summarization_for_runtime, runtime
         )
         messages = state.get("messages", [])
         event = state.get("_summarization_event")
+        if not messages:
+            msg = (
+                "Offload ran against an empty conversation. The run input "
+                "replaces the thread's messages, so this indicates the client "
+                "replayed an empty list rather than the checkpointed "
+                "conversation."
+            )
+            raise ValueError(msg)
         effective = summarization._apply_event_to_messages(messages, event)
         cutoff = summarization._determine_cutoff_index(effective)
         if cutoff == 0:
+            return None
+        # Resolved once and threaded into the update below: the SDK call is the
+        # relative-to-absolute conversion, and computing it twice would let the
+        # value checked here drift from the value committed.
+        state_cutoff = summarization._compute_state_cutoff(event, cutoff)
+        if state_cutoff <= _event_cutoff(event):
+            # Degenerate chained compaction: everything eligible is already
+            # behind the prior event's cutoff, so only the previous summary
+            # would be re-summarized. Committing would spend a model call to
+            # replace the in-context summary with a lossier summary-of-a-summary
+            # and drop the prior `file_path` from the event -- while the client,
+            # which keys its report on the *absolute* cutoff advancing, still
+            # reported "nothing to offload". Stop before the model call so the
+            # report and the state agree.
             return None
         to_summarize, _ = summarization._partition_messages(effective, cutoff)
         summary = await summarization._acreate_summary(to_summarize)
@@ -955,7 +1044,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 len(to_summarize),
             )
         return self._forced_compaction_update(
-            summarization, summary, file_path, event, cutoff
+            summarization, summary, file_path, state_cutoff
         )
 
     @staticmethod
@@ -963,8 +1052,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summarization: SummarizationMiddleware,
         summary: str,
         file_path: str | None,
-        event: SummarizationEvent | None,
-        cutoff: int,
+        state_cutoff: int,
     ) -> dict[str, SummarizationEvent]:
         """Build the state-only result used by the dedicated `/offload` graph.
 
@@ -973,6 +1061,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         shape the channel actually stores -- in particular that
         `_build_new_messages_with_path(...)[0]` really is the `HumanMessage`
         the event expects.
+
+        Args:
+            summarization: SDK summarization middleware building the message.
+            summary: Generated summary text.
+            file_path: Archive path, or `None` when the write failed.
+            state_cutoff: **Absolute** cutoff index, already converted from the
+                relative one by `_compute_state_cutoff`. Taken pre-resolved
+                rather than converted here so the caller's no-advance check and
+                the committed value cannot disagree.
 
         Returns:
             The summarization-event state update.
@@ -999,9 +1096,9 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             raise TypeError(msg)
         return {
             "_summarization_event": {
-                # Absolute, not the relative `cutoff`: a second `/offload` on
-                # the same thread reads this back as its base.
-                "cutoff_index": summarization._compute_state_cutoff(event, cutoff),
+                # Absolute, not relative: a second `/offload` on the same thread
+                # reads this back as its base.
+                "cutoff_index": state_cutoff,
                 "summary_message": summary_message,
                 "file_path": file_path,
             }
@@ -1068,6 +1165,15 @@ def _create_cli_compaction_middleware(
     )
 
 
+OFFLOAD_GRAPH_NODE = "force_compact"
+"""Name of the `/offload` operation graph's only node.
+
+Shared with the client so `app._drive_offload_operation_graph` can recognize
+this node's `updates` payload as positive evidence that the run reached the
+node. A literal on each side would let a rename turn that check into a silent
+"the stream produced nothing", which is exactly the condition it detects.
+"""
+
 _OFFLOAD_CALL_NAMESPACE = uuid5(NAMESPACE_URL, "https://deepagents/offload/forced-call")
 """Namespace for deriving the `/offload` hook dispatch's forced tool-call id."""
 
@@ -1097,16 +1203,35 @@ def _forced_offload_call_id() -> str:
     the thread (including a re-run after an abandoned or failed one).
 
     Returns:
-        A stable-per-run, unique-per-run forced tool-call id.
+        An id stable across this run's resumes and distinct from every other
+            run's.
     """
     try:
-        namespace = get_config()["configurable"]["checkpoint_ns"]
-    except (RuntimeError, KeyError):
-        namespace = ""
+        config = get_config()
+    except RuntimeError:
+        # No runnable context at all -- a direct call outside a graph run.
+        # Nothing can interrupt or resume such a call, so uniqueness is the only
+        # property left to preserve, and the `uuid4()` fallback is correct.
+        return f"offload-precompact-{uuid4()}"
+    configurable = config.get("configurable")
+    namespace = (
+        configurable.get("checkpoint_ns") if isinstance(configurable, dict) else None
+    )
     if not namespace:
-        # No Pregel task context -- a direct call outside a graph run. Nothing
-        # can interrupt or resume such a call, so uniqueness is the only
-        # property left to preserve.
+        # A runnable context *without* a usable `checkpoint_ns` is a different
+        # situation entirely, and a silent fallback here is the failure mode
+        # this function exists to prevent: the id would differ between the
+        # request and the resume, `parse_hook_resume_value` would reject the
+        # mismatch as fatal, and `/offload` would die with "the client answered
+        # a different request" -- but only for users with hooks configured, and
+        # with nothing in the logs pointing here. Say so loudly.
+        logger.warning(
+            "Deriving the /offload hook call id inside a run but "
+            "`configurable.checkpoint_ns` is %r; falling back to a random id. "
+            "Configured PreCompact/PreToolUse hooks will fail to resume this "
+            "run. This usually means LangGraph moved or renamed the key.",
+            namespace,
+        )
         return f"offload-precompact-{uuid4()}"
     return f"offload-precompact-{uuid5(_OFFLOAD_CALL_NAMESPACE, namespace)}"
 
@@ -1136,6 +1261,16 @@ def create_forced_compaction_graph(
             persisting synthetic conversation messages. Required rather than
             defaulted so skipping the gate cannot happen by omission.
 
+            Only the *pre* events fire here. The node dispatches
+            `aafter_model`; it does not run a `ToolNode`, so
+            `PostToolUse`/`PostToolUseFailure` -- which the agent graph raises
+            for a model-initiated `compact_conversation` via
+            `ServerHooksMiddleware.awrap_tool_call` -- do not fire for
+            `/offload`. A matcher on `compact_conversation` therefore sees
+            automatic compaction but not the explicit command. This is a
+            deliberate consequence of `/offload` no longer executing a tool
+            (see THREAT_MODEL TB2), not an oversight.
+
     Returns:
         A checkpointable graph that performs one forced compaction attempt.
     """
@@ -1147,10 +1282,13 @@ def create_forced_compaction_graph(
         state: _OffloadState, runtime: Runtime[CLIContextSchema]
     ) -> dict[str, object]:
         if hooks_middleware is not None:
-            # Stable across this run's resumes, fresh for the next run. Both
-            # halves matter and neither is obvious -- see the helper.
-            forced_call_id = _forced_offload_call_id()
             try:
+                # Stable across this run's resumes, fresh for the next run. Both
+                # halves matter and neither is obvious -- see the helper. Inside
+                # the `try` so an unexpected failure in the derivation gets the
+                # message-preserving `RuntimeError` re-wrap below rather than
+                # reaching the user as "An internal error occurred".
+                forced_call_id = _forced_offload_call_id()
                 hook_update = await hooks_middleware.aafter_model(
                     cast(
                         "Any",
@@ -1198,6 +1336,18 @@ def create_forced_compaction_graph(
                 # the handler below: this message is already user-facing.
                 reason = outcome.get("reason") or "Blocked by a compaction hook"
                 raise RuntimeError(str(reason))
+            if outcome.get("context"):
+                # The agent's tool path injects an allowing hook's
+                # `additionalContext` into the tool result via
+                # `_append_message_text`. This graph has no tool result and no
+                # model turn to inject into, so the text is dropped. Log it so a
+                # hook author whose output silently vanishes has something to
+                # find.
+                logger.warning(
+                    "Discarding PreToolUse additionalContext for the /offload "
+                    "forced compact_conversation call; the operation graph has "
+                    "no tool result to carry it"
+                )
         try:
             update = await middleware.arun_forced_compaction_update(state, runtime)
         except GraphBubbleUp:
@@ -1254,7 +1404,7 @@ def create_forced_compaction_graph(
         context_schema=CLIContextSchema,
         input_schema=cast("Any", _OffloadInput),
     )
-    graph.add_node("force_compact", force_compact)
-    graph.add_edge(START, "force_compact")
-    graph.add_edge("force_compact", END)
+    graph.add_node(OFFLOAD_GRAPH_NODE, force_compact)
+    graph.add_edge(START, OFFLOAD_GRAPH_NODE)
+    graph.add_edge(OFFLOAD_GRAPH_NODE, END)
     return graph.compile()

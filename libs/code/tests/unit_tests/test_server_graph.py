@@ -22,6 +22,38 @@ def _import_fresh_server_graph() -> ModuleType:
     return importlib.import_module("deepagents_code.server_graph")
 
 
+def _attach_offload_resources(
+    backend: object,
+    *,
+    compaction: object | None = None,
+    hooks: object | None = None,
+) -> tuple[object, object]:
+    """Publish offload resources whose compaction is bound to `backend`.
+
+    `attach_offload_resources` rejects a compaction middleware bound to a
+    different backend, since that would make `/offload` archive into storage the
+    agent cannot read. A bare `MagicMock()` auto-creates a distinct
+    `_summarization._backend`, so wire it explicitly rather than defeating the
+    check with a looser assertion.
+
+    Returns:
+        The compaction and hooks doubles that were published.
+    """
+    from deepagents_code.offload_middleware import (
+        OffloadServerResources,
+        attach_offload_resources,
+    )
+
+    compaction = cast("Any", compaction if compaction is not None else MagicMock())
+    hooks = cast("Any", hooks if hooks is not None else MagicMock())
+    compaction._summarization._backend = backend
+    attach_offload_resources(
+        cast("Any", backend),
+        OffloadServerResources(compaction=compaction, hooks=hooks),
+    )
+    return compaction, hooks
+
+
 def _module_with_attrs(name: str, **attrs: object) -> ModuleType:
     """Create a module stub with dynamically assigned attributes."""
     module = ModuleType(name)
@@ -60,15 +92,7 @@ class TestServerGraph:
         backend = SimpleNamespace()
         offload_graph = object()
 
-        from deepagents_code.offload_middleware import (
-            OffloadServerResources,
-            attach_offload_resources,
-        )
-
-        attach_offload_resources(
-            cast("Any", backend),
-            OffloadServerResources(compaction=MagicMock(), hooks=MagicMock()),
-        )
+        _attach_offload_resources(backend)
 
         with (
             patch.object(
@@ -92,18 +116,7 @@ class TestServerGraph:
         """The operation graph must run the agent's own compaction middleware."""
         module = _import_fresh_server_graph()
         backend = SimpleNamespace()
-        compaction = MagicMock()
-        hooks = MagicMock()
-
-        from deepagents_code.offload_middleware import (
-            OffloadServerResources,
-            attach_offload_resources,
-        )
-
-        attach_offload_resources(
-            cast("Any", backend),
-            OffloadServerResources(compaction=compaction, hooks=hooks),
-        )
+        compaction, hooks = _attach_offload_resources(backend)
 
         with (
             patch.object(
@@ -190,15 +203,7 @@ class TestServerGraph:
         graph_obj = object()
         backend = SimpleNamespace()
 
-        from deepagents_code.offload_middleware import (
-            OffloadServerResources,
-            attach_offload_resources,
-        )
-
-        attach_offload_resources(
-            cast("Any", backend),
-            OffloadServerResources(compaction=MagicMock(), hooks=MagicMock()),
-        )
+        _attach_offload_resources(backend)
 
         calls = 0
 

@@ -168,8 +168,14 @@ class RemoteAgent:
 
         Returns:
             A client that preserves this connection's URL and credentials. The
-                same instance is returned for repeated calls with one name.
+                same instance is returned for repeated calls with one name, and
+                `self` when asked for the graph this client already serves.
         """
+        if graph_name == self._graph_name:
+            # Otherwise this builds a second client for the graph the receiver
+            # already serves -- the exact duplicate-connection-pool leak the
+            # cache exists to prevent.
+            return self
         cached = self._sibling_clients.get(graph_name)
         if cached is None:
             cached = RemoteAgent(

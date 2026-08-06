@@ -444,6 +444,13 @@ def _build_graph_factories(
         them per request would re-discover MCP servers, leak sandbox sessions,
         and stack duplicate `atexit` handlers.
 
+        Any construction failure is converted into a startup-error marker
+        (scraped by the parent app process) before **exiting the process**. That
+        `sys.exit(1)` is the most surprising thing this function does, so it is
+        stated here rather than left to the `except` block: there is no usable
+        server without a graph, and failing loudly at startup beats serving
+        every request with the same error.
+
         Returns:
             The agent graph and the composite backend it was built with.
         """

@@ -298,6 +298,68 @@ class TestCLICompactionMiddleware:
         assert event["file_path"] == "/conversation_history/thread.md"
         assert isinstance(event["summary_message"], HumanMessage)
 
+    async def test_operation_path_refuses_a_chained_no_advance_compaction(
+        self,
+    ) -> None:
+        """A compaction that would not advance the cutoff must not commit.
+
+        The degenerate chained case: everything eligible already sits behind the
+        prior event, so the only thing left to summarize is the previous summary
+        itself. `_compute_state_cutoff` returns the prior absolute cutoff
+        unchanged, and the client — which keys its report on that value moving —
+        reports "nothing to offload". Committing anyway would spend a model
+        call, replace the in-context summary with a summary-of-a-summary, and
+        drop the prior archive's `file_path`, all while telling the user nothing
+        happened. Stop before the model call so the report and the state agree.
+        """
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 1
+        summarization._compute_state_cutoff.return_value = 7
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        prior = {
+            "cutoff_index": 7,
+            "summary_message": None,
+            "file_path": "/conversation_history/thread.md",
+        }
+
+        result = await middleware.arun_forced_compaction_update(
+            cast(
+                "Any",
+                {
+                    "messages": [HumanMessage("summary"), HumanMessage("recent")],
+                    "_summarization_event": prior,
+                },
+            ),
+            runtime,
+        )
+
+        assert result is None
+        # Neither the billable step nor the archive write may happen.
+        summarization._acreate_summary.assert_not_awaited()
+        summarization._aoffload_to_backend.assert_not_awaited()
+
+    async def test_operation_path_rejects_an_empty_conversation(self) -> None:
+        """An empty `messages` must raise rather than report a clean no-op.
+
+        On a real server the run input *replaces* this channel, so the node
+        seeing no messages means the client already truncated the thread.
+        Returning `None` would render that wipe to the user as "your
+        conversation is already compact".
+        """
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        with pytest.raises(ValueError, match="empty conversation"):
+            await middleware.arun_forced_compaction_update(
+                cast("Any", {"messages": [], "_summarization_event": None}), runtime
+            )
+
+        summarization._acreate_summary.assert_not_awaited()
+
     async def test_operation_path_logs_a_failed_archive_write(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

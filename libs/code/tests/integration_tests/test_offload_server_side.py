@@ -212,6 +212,19 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
             config = {"configurable": {"thread_id": thread_id}}
 
+            # Captured before the run so the replay can be checked against it.
+            # The `/offload` run input is *authoritative* for the `messages`
+            # channel against a real server -- it replaces the conversation
+            # rather than merging into it (streaming `{"messages": []}` here
+            # empties the thread outright). No unit test can observe that: an
+            # in-process checkpointer honors the `add_messages` reducer and
+            # leaves the checkpointed list intact either way.
+            before_state = await agent.aget_state(config)
+            messages_before = list(
+                (getattr(before_state, "values", None) or {}).get("messages", [])
+            )
+            assert messages_before
+
             # Production construction: no client-owned backend.
             app = DeepAgentsApp(
                 agent=agent,  # ty: ignore
@@ -291,6 +304,18 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             # The summarization event must be visible through server state.
             state = await agent.aget_state(config)
             values = getattr(state, "values", None) or {}
+
+            # `/offload` frees context by advancing the summarization cutoff, not
+            # by deleting messages: the raw conversation stays in the checkpoint
+            # so `/context` and resume still see it. Because the replay replaces
+            # this channel, a stale or empty input would silently truncate it
+            # here and still report success -- so assert identity, not count.
+            messages_after = values.get("messages", [])
+            assert len(messages_after) == len(messages_before)
+            assert [getattr(m, "id", None) for m in messages_after] == [
+                getattr(m, "id", None) for m in messages_before
+            ]
+
             summarization_event = values.get("_summarization_event")
             assert summarization_event is not None
             cutoff = _event_field(summarization_event, "cutoff_index")

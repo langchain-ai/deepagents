@@ -454,26 +454,31 @@ user why an unrelated next turn might fail and how to recover.
 """
 
 _OFFLOAD_REBIND_WARNING = (
-    "Offload finished, but the thread could not be re-associated with the main "
-    "agent. Commands that write thread state (/goal, /rubric) may error until "
-    "you send a new message."
+    "The thread could not be re-associated with the main agent. Commands that "
+    "write thread state (/goal, /rubric) may error until you send a new message."
 )
 """Shown when the post-`/offload` graph rebind fails.
 
-Distinct from `_OFFLOAD_WEDGE_WARNING`: nothing is wedged and the offload itself
-succeeded, but the thread is still bound to the `offload` graph, so an out-of-run
+Distinct from `_OFFLOAD_WEDGE_WARNING`: nothing is wedged, but the thread is
+still bound to the `offload` graph, so an out-of-run
 `aupdate_state(as_node="model")` resolves against a graph with no `model` node
 until the next agent turn rebinds it. Naming the affected commands beats letting
 an unrelated `/goal` fail with no explanation.
+
+Deliberately says nothing about whether the offload itself succeeded: it is
+mounted after a success, after a genuine no-op, and after an unconfirmed or
+hook-stopped attempt, and each of those mounts its own outcome line first.
 """
 
 _OFFLOAD_MAX_RESUME_ROUNDS = 10
 """Bound on interrupt fulfill/resume rounds during an `/offload`.
 
 A hook that keeps raising fresh interrupt payloads would otherwise loop the
-fulfill/resume cycle forever. (Not an `ask` permission — that exits immediately
-through the `unresolvable` branch, since this client has no HITL middleware to
-route it.)
+fulfill/resume cycle forever. On the operation-graph path an `ask` permission is
+*not* what this bounds — that exits immediately through the `unresolvable`
+branch, since that graph has no HITL middleware to route it. On the seeded path
+the agent graph does have HITL middleware, so its approval retries are exactly
+what the bound is for.
 
 Shared by both drivers so the bound is one number rather than two literals that
 can drift apart, but the two treat exhaustion differently and deliberately so:
@@ -494,11 +499,11 @@ def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
     Returns:
         The `cutoff_index`, or `0` when the event is missing or malformed.
     """
-    if isinstance(event, dict):
-        cutoff = event.get("cutoff_index")
-        if isinstance(cutoff, int):
-            return cutoff
-    return 0
+    from deepagents_code.offload_middleware import _event_cutoff
+
+    # Shared with the operation graph's own no-advance check so the client's
+    # "did the cutoff move?" test and the node's cannot drift apart.
+    return _event_cutoff(event)
 
 
 def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401
@@ -14788,7 +14793,7 @@ class DeepAgentsApp(App):
 
             try:
                 if seed_tool_call_id is not None:
-                    tool_error = await self._drive_legacy_seeded_compaction(
+                    tool_error = await self._drive_local_seeded_compaction(
                         config, seed_tool_call_id
                     )
                 else:
@@ -14804,6 +14809,7 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         ErrorMessage("Offload stopped by a hook.")
                     )
+                    await self._warn_if_offload_rebind_failed()
                 return
             except Exception as stream_error:
                 # A server graph can checkpoint the tool-node update before a
@@ -14876,6 +14882,7 @@ class DeepAgentsApp(App):
                             "conversation was compacted."
                         )
                     )
+                    await self._warn_if_offload_rebind_failed()
                     return
             # The compaction run's summary model spend is priced and committed by
             # the graph, so the state just read is the complete total.
@@ -14907,12 +14914,14 @@ class DeepAgentsApp(App):
                     )
                 # `force=True` bypasses the eligibility gate, so this branch is
                 # reached when there is nothing older than the retention window
-                # to summarize (effective cutoff 0). It also absorbs the
-                # degenerate chained case where only the prior summary would be
-                # re-summarized (effective cutoff 1 -> new_cutoff == prior_cutoff
-                # via `_compute_state_cutoff`): a fresh event may commit but the
-                # absolute cutoff does not advance, so "nothing to offload" is
-                # the correct, if conservative, report.
+                # to summarize (effective cutoff 0), or in the degenerate
+                # chained case where only the prior summary would be
+                # re-summarized (effective cutoff 1 -> the absolute cutoff would
+                # not advance). The operation graph detects that second case
+                # itself and returns before spending a model call, so on that
+                # path the report and the committed state now agree: nothing was
+                # written. The seeded path still commits a replacement event
+                # there, which is what `_remove_offload_artifacts` above undoes.
                 await self._mount_message(
                     AppMessage(
                         "Nothing to offload \u2014 the conversation is already "
@@ -15039,10 +15048,12 @@ class DeepAgentsApp(App):
     async def _warn_if_offload_rebind_failed(self) -> None:
         """Mount `_OFFLOAD_REBIND_WARNING` if the post-`/offload` rebind failed.
 
-        Called only from paths that report the offload as finished (a success or
-        a genuine no-op). Failure paths already tell the user the thread may
-        need to reset, and the warning's "Offload finished, but..." wording
-        would contradict them.
+        Called from every path that returns after the operation graph has run
+        and does *not* already tell the user the thread may need to reset: a
+        success, a genuine no-op, an unconfirmed result, and a hook stop. The
+        drain-error paths are excluded because they say so themselves — and
+        because the rebind is deliberately skipped while the run is still
+        suspended, so the flag cannot be set on them.
         """
         if not self._offload_rebind_failed:
             return
@@ -15063,38 +15074,67 @@ class DeepAgentsApp(App):
 
         Args:
             config: Config with `configurable.thread_id`.
-            state_values: Current thread state. Only `messages` is replayed as
-                run input; against a real server a bare `{}` leaves the node
-                with an empty message list and nothing to compact (and
-                `astream(None)` never starts a run on `RemoteAgent`). See the
-                comment at the `stream_input` construction — the replay is
-                pinned by an integration test rather than by a mechanism this
-                client can point to. Every other channel is deliberately
-                withheld, because replaying the cost channels corrupts them.
+            state_values: Pre-run thread state, used only as a fallback if the
+                fresh re-read below fails. Only `messages` is replayed as run
+                input, and that replay *replaces* the channel on a real server
+                (see the comment at the `stream_input` construction), so it must
+                be current. Every other channel is deliberately withheld,
+                because replaying the cost channels corrupts them.
 
         Returns:
             An error string when the run could not be driven to completion
-                (an interrupt this client cannot answer, or a hook that
-                outlasted `_OFFLOAD_MAX_RESUME_ROUNDS`), otherwise `None`.
-                Compaction failures inside the node are *not* reported this way:
-                the graph has no tool node to carry a message, so it raises and
-                the caller reconciles against the checkpointed
-                `_summarization_event`. The `str | None` shape matches the
-                seeded driver so `_handle_offload` handles both paths uniformly.
+                (an interrupt this client cannot answer, a hook that outlasted
+                `_OFFLOAD_MAX_RESUME_ROUNDS`, or a stream that ended without the
+                node ever reporting an update), otherwise `None`. Compaction
+                failures inside the node are *not* reported this way: the graph
+                has no tool node to carry a message, so it raises and the caller
+                reconciles against the checkpointed `_summarization_event`. The
+                `str | None` shape matches the seeded driver so
+                `_handle_offload` handles both paths uniformly.
 
         Raises:
-            RuntimeError: If the app is not connected to its server graph.
+            RuntimeError: If the app is not connected to its server graph, or if
+                the thread's messages could not be read back before the run
+                (replaying an empty list would truncate the conversation).
         """
         from langgraph.types import Command
 
         from deepagents_code.config import settings
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+        from deepagents_code.offload_middleware import (
+            OFFLOAD_GRAPH_NODE,
+            _OffloadInput,
+        )
 
         remote = self._remote_agent()
         if remote is None:
             msg = "The explicit /offload operation requires the server graph."
             raise RuntimeError(msg)
-        await remote.aensure_thread(dict(config))
+        # Re-read rather than trusting the caller's snapshot. That snapshot is
+        # taken before `_set_agent_running(True)`, so a turn committed in
+        # between would be missing from it -- and because the replay below
+        # *replaces* the `messages` channel, a stale list is not a stale read
+        # but a destructive write. Fall back to the caller's copy if the re-read
+        # fails, since it is still better than an empty replay.
+        #
+        # This also registers the thread server-side: `_get_thread_state_values`
+        # calls `aensure_thread` before reading, so a separate call here would
+        # be redundant.
+        thread_id = self._lc_thread_id
+        if thread_id is None:
+            await remote.aensure_thread(dict(config))
+        else:
+            try:
+                state_values = (
+                    await self._get_thread_state_values(thread_id) or state_values
+                )
+            except Exception:
+                logger.warning(
+                    "Could not refresh thread state before /offload; replaying "
+                    "the pre-run snapshot instead",
+                    exc_info=True,
+                )
+                await remote.aensure_thread(dict(config))
 
         stream_context = CLIContext(
             model=self._effective_model_spec(),
@@ -15105,15 +15145,33 @@ class DeepAgentsApp(App):
         )
         self._hooks.apply_graph_context(stream_context)
         # Replay the thread's messages -- and *only* the messages -- as the run
-        # input. Replaying is load-bearing against a real server: with an empty
-        # input the node observes an empty message list and finds nothing to
-        # compact. This is an observed behavior, not a mechanism this comment
-        # can name -- `messages` carries the `add_messages` reducer, so a plain
-        # reducer reading would predict the checkpointed list survives, and an
-        # in-process checkpointer does resolve it that way, which is why unit
-        # tests alone will not catch this. `test_offload_server_side.py` fails
-        # if this is `{}` and is what pins it. `astream(None)` is not an option
-        # either -- it never starts a run on `RemoteAgent`.
+        # input. Against a real server the run input is *authoritative* for this
+        # channel: it replaces the checkpointed conversation rather than merging
+        # into it. Measured, not assumed -- streaming `{"messages": []}` against
+        # a live server takes an 8-message thread to 0 and still reports
+        # "already compact", while replaying the list leaves all 8 intact.
+        # (`messages` carries the `add_messages` reducer, so a plain reducer
+        # reading predicts the opposite, and an in-process checkpointer does
+        # resolve it that way -- which is why unit tests alone cannot catch
+        # this. `test_offload_server_side.py` pins the real behavior.)
+        # `astream(None)` is not an option either -- it never starts a run on
+        # `RemoteAgent`.
+        #
+        # Two consequences follow, and both are defended rather than assumed:
+        # the snapshot must be *fresh* (a stale or partial read would be written
+        # back over the live conversation), so it is re-read here rather than
+        # reusing `_handle_offload`'s pre-run read; and an empty replay is
+        # destructive, so the node raises on an empty `messages` instead of
+        # reporting a no-op.
+        #
+        # Known cost of the replay, accepted rather than fixed: the round-trip
+        # is not byte-identical. Re-serializing each `AIMessage` adds
+        # `invalid_tool_calls` and `usage_metadata` keys inside
+        # `additional_kwargs`, which is also where provider-specific fields
+        # (Anthropic `cache_control`, thinking blocks, citations) live, and the
+        # rewrite compounds across repeated offloads. Removing it needs the node
+        # to read `messages` from the checkpoint the way it already reads
+        # `_summarization_event`, which this client cannot arrange alone.
         #
         # Nothing else may be replayed. Every other channel either reaches the
         # node through the checkpoint anyway or is actively corrupted by a
@@ -15123,7 +15181,19 @@ class DeepAgentsApp(App):
         # resurrects already-settled subagent transfers. `_summarization_event`
         # is private to the schema (see `offload_middleware._OffloadState`) and
         # its embedded summary message is a shape the server cannot deserialize.
-        stream_input: dict[str, Any] = {"messages": state_values.get("messages", [])}
+        # Annotated with the graph's own input type so dropping `messages` is a
+        # type error here rather than a silent conversation wipe there.
+        replay_messages = state_values.get("messages", [])
+        if not replay_messages:
+            # `_handle_offload` already rejected an empty thread, so an empty
+            # list here means the state re-read above came back partial. Writing
+            # it would truncate the conversation and report success.
+            msg = (
+                "Offload aborted: the thread's messages could not be read back "
+                "before the run. Nothing was changed; try again."
+            )
+            raise RuntimeError(msg)
+        stream_input: _OffloadInput = {"messages": replay_messages}
 
         # `stream_mode=["updates"]` only: unlike the seeded driver, this path
         # cannot itemize the offload under the `offload` kind in `/cost`. The
@@ -15143,6 +15213,13 @@ class DeepAgentsApp(App):
         # seeded driver's drain loop.
         resume_input: Any = cast("Any", stream_input)
         drain_error: str | None = None
+        # Interrupt detection is all this loop does, so a chunk shape it does
+        # not recognize is indistinguishable from a clean run: `pending` stays
+        # empty, the loop exits with no error, and the caller reads an
+        # unadvanced event as "already compact" while the run is still paused
+        # server-side. Track whether the node ever reported an update so that
+        # case becomes a reported failure instead.
+        saw_node_update = False
         try:
             rounds = 0
             while True:
@@ -15151,6 +15228,19 @@ class DeepAgentsApp(App):
                 async for chunk in offload_agent.astream(
                     resume_input,
                     stream_mode=["updates"],
+                    # Load-bearing, despite this graph having no subgraphs.
+                    # `RemoteAgent.astream` only yields the documented
+                    # `(namespace, mode, data)` 3-tuple when it is set; without
+                    # it the chunk arrives as `("updates", {...}, None)`, so the
+                    # unpacking below binds `mode` to the payload dict and every
+                    # chunk falls through the `mode != "updates"` filter. That
+                    # discards interrupts silently: hook fulfillment never runs,
+                    # the run stays paused server-side, and the caller reads an
+                    # unadvanced event as "already compact". Unit tests cannot
+                    # see it -- they feed the loop chunks directly. The
+                    # `saw_node_update` check below is what makes a regression
+                    # here loud instead of silent.
+                    subgraphs=True,
                     config=config,
                     context=stream_context,
                     # Accepted for signature parity and documented as ignored by
@@ -15161,10 +15251,23 @@ class DeepAgentsApp(App):
                     durability="exit",
                 ):
                     if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
+                        logger.debug(
+                            "Ignoring unrecognized /offload stream chunk: "
+                            "type=%s len=%s",
+                            type(chunk).__name__,
+                            len(chunk) if isinstance(chunk, tuple) else "n/a",
+                        )
                         continue
                     _namespace, mode, data = chunk
                     if mode != "updates" or not isinstance(data, dict):
+                        logger.debug(
+                            "Ignoring /offload stream chunk: mode=%r data=%s",
+                            mode,
+                            type(data).__name__,
+                        )
                         continue
+                    if OFFLOAD_GRAPH_NODE in data:
+                        saw_node_update = True
                     for interrupt_obj in data.get("__interrupt__") or []:
                         iid = getattr(interrupt_obj, "id", None)
                         value = getattr(interrupt_obj, "value", None)
@@ -15234,6 +15337,22 @@ class DeepAgentsApp(App):
                     )
                     break
                 resume_input = Command(resume=pending)
+            if drain_error is None and not saw_node_update:
+                # The stream ended cleanly, raised nothing, and never carried an
+                # update from the graph's only node. Either the node did not run
+                # or the SDK's chunk shape drifted out from under the filters
+                # above; both leave the run paused server-side, and reporting
+                # success would surface as the actively-wrong "already compact".
+                logger.warning(
+                    "Offload stream completed without any %r node update; "
+                    "treating the run as incomplete",
+                    OFFLOAD_GRAPH_NODE,
+                )
+                drain_error = (
+                    "Offload could not complete: the server finished the run "
+                    "without reporting a result. Your conversation is "
+                    "unchanged. Run /context to confirm, then try again."
+                )
         finally:
             # A run on the named `offload` graph rebinds the server thread's
             # `graph_id`, so a later out-of-run `aupdate_state(as_node="model")`
@@ -15250,29 +15369,45 @@ class DeepAgentsApp(App):
             # confusingly, so `_OFFLOAD_REBIND_WARNING` is mounted alongside the
             # offload's own result rather than replacing it.
             #
+            # Skipped entirely when `drain_error` is set: the run is still
+            # suspended server-side in that case, and rebinding would re-point
+            # the thread away from the graph the paused run belongs to. The
+            # drain-error text already tells the user the thread may need to
+            # reset, and the next agent turn rebinds anyway.
+            #
             # Recorded here and mounted by `_handle_offload`, not mounted here:
             # this message says the offload finished, and only the caller knows
             # whether it is about to report that. A stream error that still
             # committed the compaction is reconciled into a success, and a
             # `drain_error` is reported as a failure -- neither is visible from
             # inside this `finally`.
-            try:
-                await remote.arebind_thread(config)
-            except Exception:
-                logger.warning(
-                    "Failed to restore the thread's main graph association "
-                    "after /offload; the next agent turn will rebind it",
-                    exc_info=True,
+            if drain_error is not None:
+                logger.info(
+                    "Leaving the thread bound to the offload graph: the run is "
+                    "still suspended server-side"
                 )
-                self._offload_rebind_failed = True
             else:
-                self._offload_rebind_failed = False
+                try:
+                    await remote.arebind_thread(config)
+                except Exception:
+                    logger.warning(
+                        "Failed to restore the thread's main graph association "
+                        "after /offload; the next agent turn will rebind it",
+                        exc_info=True,
+                    )
+                    self._offload_rebind_failed = True
+                else:
+                    self._offload_rebind_failed = False
         return drain_error
 
-    async def _drive_legacy_seeded_compaction(
+    async def _drive_local_seeded_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None
     ) -> str | None:
-        """Drive the agent's `compact_conversation` tool with `force=True`.
+        """Drive a local agent's `compact_conversation` tool with `force=True`.
+
+        This is `/offload`'s sole implementation for local in-process `Pregel`
+        agents, including ACP mode — not a deprecated path. Server-backed agents
+        take `_drive_offload_operation_graph` instead.
 
         Seeds an assistant `compact_conversation` tool call attributed to the
         model node, then advances the graph so the agent's own `ToolNode`
@@ -15568,7 +15703,13 @@ class DeepAgentsApp(App):
         messages: list[Any],
         prior_event: object,
     ) -> None:
-        """Restore state changed by a no-op `/offload` graph run.
+        """Restore state changed by a no-op seeded `/offload` run.
+
+        Applies only to the seeded (local-agent) path. The operation graph
+        commits no synthetic messages and, since it stops before the model call
+        when the cutoff would not advance, no replacement event either — so it
+        has nothing for this to undo.
+
 
         Best-effort: a failed restoration is logged and swallowed rather than
         raised. The no-op path answers the seed with a valid tool result, so the

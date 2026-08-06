@@ -1111,6 +1111,18 @@ class TestForGraph:
 
         assert agent.for_graph("offload") is agent.for_graph("offload")
 
+    def test_own_graph_name_returns_self(self) -> None:
+        """Asking for the graph this client already serves must not build a second.
+
+        `test_offload_server_side.py` takes exactly this path
+        (`agent.for_graph("agent")`), and without the short-circuit it creates
+        the duplicate httpx sync+async pair the cache exists to prevent.
+        """
+        agent = self._agent()
+
+        assert agent.for_graph("agent") is agent
+        assert agent._sibling_clients == {}
+
     def test_distinct_names_get_distinct_clients(self) -> None:
         agent = self._agent()
 

@@ -201,9 +201,10 @@ for _arg in "$@"; do
   esac
 done
 
-# Registry of temp files to clean up on exit or interrupt. Functions that
-# create tempfiles append their paths here; cleanup_on_signal removes them all.
+# Registry of temporary paths to clean up on exit or interrupt. Functions that
+# create them append their paths here; the signal handlers remove them all.
 TEMP_FILES=()
+TEMP_DIRS=()
 INSTALL_LOCK_KIND=""
 INSTALL_LOCK_DIR=""
 INSTALL_LOCK_TOKEN=""
@@ -216,9 +217,17 @@ INSTALL_LOCK_STALE_AFTER_SECS=600
 register_temp() {
   TEMP_FILES+=("$1")
 }
+register_temp_dir() {
+  TEMP_DIRS+=("$1")
+}
 cleanup_temp_files() {
   for f in "${TEMP_FILES[@]:-}"; do
     rm -f "$f" 2>/dev/null || true
+  done
+}
+cleanup_temp_dirs() {
+  for dir in "${TEMP_DIRS[@]:-}"; do
+    rm -rf "$dir" 2>/dev/null || true
   done
 }
 
@@ -279,6 +288,7 @@ log_signal_failure_hint() {
 cleanup_on_signal() {
   local exit_code=$?
   cleanup_temp_files
+  cleanup_temp_dirs
   if declare -F release_install_lock >/dev/null 2>&1; then
     release_install_lock
   fi
@@ -310,6 +320,7 @@ cleanup_on_interrupt() {
   echo "" >&2
   log_warn "Installation interrupted."
   cleanup_temp_files
+  cleanup_temp_dirs
   if declare -F release_install_lock >/dev/null 2>&1; then
     release_install_lock
   fi
@@ -470,21 +481,46 @@ prompt_yn() {
   if [ "$IS_INTERACTIVE" = false ]; then
     return 2
   fi
-  local reply
+  local reply=""
   if [ -t 0 ]; then
     printf "%s [y/N] " "$question"
-    if ! read -r reply; then
-      return 2
+    # `read` reports failure on a final line with no trailing newline but still
+    # assigns what it did read, so an answer typed before Ctrl-D must not be
+    # thrown away. Only an empty read is a true "no answer": EOF on a terminal
+    # is an interactive response, so preserve the [y/N] default and decline.
+    if ! read -r reply && [ -z "$reply" ]; then
+      log_warn "No answer — declining prompt."
+      return 1
     fi
   else
-    if ! { : < /dev/tty; } 2>/dev/null; then
+    # Open the terminal before prompting, and keep that failure separate from a
+    # failed *read*. Conflating them is what makes a piped-stdin run (the
+    # documented `curl … | bash` path, where this branch always runs) treat a
+    # user's Ctrl-D as "nobody could answer" and proceed — the opposite of the
+    # printed [y/N] default, and the opposite of what the -t 0 branch does with
+    # the identical keystroke.
+    # Braces, not `exec 3<>/dev/tty 2>/dev/null`: a bare `exec` applies *every*
+    # redirection on it permanently, so that form would silence the script's
+    # own stderr for the rest of the run. A group is not a subshell, so fd 3
+    # still survives it.
+    if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+      log_warn "Could not open /dev/tty — skipping prompt."
+      # 2, not 1: "nobody could answer" is not "the user said no". can_prompt
+      # only proves /dev/tty *could* be opened earlier, so a session that has
+      # since detached reaches here. Callers for whom the distinction matters
+      # branch on 2; those that don't still see a non-zero status and decline.
       return 2
     fi
-    printf "%s [y/N] " "$question" > /dev/tty
-    if ! read -r reply < /dev/tty 2>/dev/null; then
-      log_warn "Could not read from /dev/tty — skipping prompt."
-      return 2
+    printf "%s [y/N] " "$question" >&3
+    if ! read -r reply <&3 && [ -z "$reply" ]; then
+      exec 3>&-
+      # The terminal opened, so there was somebody to ask; an empty read means
+      # they answered with EOF. That is a human declining, not an unanswerable
+      # prompt — return 1 so callers honour it instead of proceeding.
+      log_warn "No answer — declining prompt."
+      return 1
     fi
+    exec 3>&-
   fi
   if [[ "$reply" =~ ^[Yy]$ ]]; then
     return 0
@@ -547,15 +583,22 @@ fix_install_log_owner() {
   [ "$(id -u)" -eq 0 ] || return 0
   [ -n "${TARGET_USER:-}" ] && [ "$TARGET_USER" != "root" ] || return 0
   [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 0
-  path_is_under_home "$install_log_dir" || return 0
-  if ! chown -h "$TARGET_USER" "$install_log_dir" 2>&1; then
-    log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
-  fi
-  if [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ]; then
-    if ! chown -h "$TARGET_USER" "$INSTALL_LOG" 2>&1; then
-      log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+  # Enter the directory before validating it, then use only relative paths.
+  # The target user owns its parent and can rename or replace this directory;
+  # keeping it as the subshell's cwd pins the validated inode throughout both
+  # chown calls instead of resolving an attacker-swappable parent as root.
+  (
+    cd "$install_log_dir" 2>/dev/null || exit 0
+    path_is_under_home "." || exit 0
+    if ! chown -h "$TARGET_USER" "." 2>&1; then
+      log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
     fi
-  fi
+    if [ -f "install.log" ] && [ ! -L "install.log" ]; then
+      if ! chown -h "$TARGET_USER" "install.log" 2>&1; then
+        log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+      fi
+    fi
+  )
 }
 
 copy_install_log() {
@@ -565,11 +608,109 @@ copy_install_log() {
   if [ "$(id -u)" -eq 0 ]; then
     path_is_under_home "$install_log_dir" || return 1
   fi
+  # Belt-and-braces: the publication below never follows a symlink at
+  # INSTALL_LOG, so this guard is not what makes publishing safe. Keep it
+  # anyway — it fails early and explicitly on an obviously tampered path.
   [ ! -L "$INSTALL_LOG" ] || return 1
-  rm -f "$INSTALL_LOG" 2>/dev/null || return 1
-  # Publish the already-captured stderr without opening the destination for
-  # writing. `ln` fails if an attacker wins the race by creating install.log.
-  ln "$uv_stderr" "$INSTALL_LOG" 2>/dev/null
+  # Do not stage beneath install_log_dir: when this runs as root, its parent can
+  # still be user-writable and the user could replace a freshly-created staging
+  # directory before `cp` enters it. `/tmp` is sticky, so a root-owned 0700
+  # directory created there cannot be renamed or replaced by another user.
+  # Privileged publication pins the destination directory and uses a
+  # noclobber create below, which never follows a planted INSTALL_LOG symlink.
+  #
+  # `/tmp` is hardcoded rather than honouring TMPDIR on purpose: an
+  # attacker-controlled TMPDIR would point staging at a directory with no
+  # sticky bit and void the guarantee above. Do not "fix" this for
+  # portability.
+  #
+  # Accepted cost: /tmp is usually a separate mount, so the unprivileged
+  # publication below is a cross-device `mv` - copy-then-unlink, not an atomic
+  # rename. A concurrent reader can therefore observe a half-written
+  # install.log, and a `mv` that fails partway can leave a truncated one in
+  # place of the previous run's. Both callers treat a failed copy_install_log
+  # as "no log this run", and the `-s`/`-f`/`-L` rechecks around publication
+  # cover the resulting window; the sticky-directory property is worth more
+  # than the atomicity, since only root can be attacked through the staging
+  # path and only the log's own contents are at stake through the other.
+  local stage_dir staged
+  stage_dir=$(mktemp -d "/tmp/deepagents-code-install-log.XXXXXX" 2>/dev/null) || return 2
+  register_temp_dir "$stage_dir"
+  staged="${stage_dir}/install.log"
+  if ! (cd "$stage_dir" && cp "$uv_stderr" install.log) 2>/dev/null; then
+    rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
+    return 2
+  fi
+  [ -f "$staged" ] && [ ! -L "$staged" ] || {
+    rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
+    return 1
+  }
+  # Re-validate the parent immediately before publication so a directory swap
+  # is rejected explicitly rather than being mistaken for a write failure.
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || {
+    rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
+    return 1
+  }
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$install_log_dir" || {
+      rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return 1
+    }
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    # Pin the validated directory as cwd before publishing. The target user can
+    # replace its path after any pathname check, so no privileged mutation may
+    # resolve that parent again. Noclobber makes the final create atomic: if the
+    # user races in a symlink, file, or directory after rm, the redirection
+    # fails instead of following it or treating it as a destination directory.
+    local publish_rc=0
+    (
+      cd "$install_log_dir" 2>/dev/null || exit 1
+      path_is_under_home "." || exit 1
+      [ ! -d "install.log" ] || exit 1
+      rm -f "install.log" 2>/dev/null || exit 2
+      set -o noclobber
+      if ! cat "$staged" > "install.log" 2>/dev/null; then
+        rm -f "install.log" 2>/dev/null || true
+        exit 2
+      fi
+    ) || publish_rc=$?
+    if [ "$publish_rc" -ne 0 ]; then
+      rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return "$publish_rc"
+    fi
+    rm -f "$staged" 2>/dev/null || true
+  else
+    # `mv file directory` moves the file *into* the directory and reports
+    # success. Reject that state rather than publishing an undiscoverable log.
+    [ ! -d "$INSTALL_LOG" ] || {
+      rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return 1
+    }
+    if ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
+      rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return 2
+    fi
+    # `mv` accepts a directory destination by moving the staged file into it.
+    # Check the result after publication so a directory created between the
+    # preflight check and `mv` is reported as a failed log write. Take the
+    # staged copy back out of it: `mv` has already put uv's full stderr inside
+    # a directory this run did not create, and leaving it there is the same
+    # disclosure the failure paths above clean up.
+    [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ] || {
+      [ ! -d "$INSTALL_LOG" ] || rm -f "${INSTALL_LOG}/install.log" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
+      return 1
+    }
+  fi
+  rmdir "$stage_dir" 2>/dev/null || true
 }
 
 # Epoch mtime of the lock directory, used as a fallback reference time when the
@@ -883,7 +1024,7 @@ if [[ -n "$EXTRAS" ]]; then
   # Strip brackets if the user passed them anyway
   EXTRAS="${EXTRAS#[}"
   EXTRAS="${EXTRAS%]}"
-  if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
+  if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,._]+$ ]]; then
     log_error "DEEPAGENTS_CODE_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
     exit 1
   fi
@@ -1463,6 +1604,134 @@ if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
   shopt -u nullglob
 fi
 
+# Read the extras the existing tool was installed with from uv's receipt. When
+# the user re-runs this installer without DEEPAGENTS_CODE_EXTRAS, uv rebuilds
+# the environment against bare `deepagents-code` and silently drops those
+# extras' packages - warn before that happens so they can re-run with the
+# extras preserved. Checked whenever the caller passed no EXTRAS and the
+# existing install isn't editable, which covers plain upgrades as well as the
+# same-version repair paths below (both re-run `uv tool install`).
+#
+# The receipt records every requirement in one array: the tool itself plus any
+# supplemental `--with` packages. Only parse extras from the `deepagents-code`
+# requirement - a `--with rich[jupyter]` entry must not surface as a tool
+# extra, since `DEEPAGENTS_CODE_EXTRAS` installs `deepagents-code[...]` and
+# cannot preserve supplemental packages.
+#
+# EXTRAS_UNREADABLE separates "this install has no extras" from "we could not
+# tell". Both would otherwise reach the rebuild silently, and a false negative
+# here costs the user the exact packages this check exists to protect - so an
+# unreadable or unparseable receipt warns rather than degrading to quiet.
+INSTALLED_EXTRAS=""
+EXTRAS_UNREADABLE=false
+receipt=""
+receipt_install_dir=""
+if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ]; then
+  receipt_install_dir="${UV_TOOL_DIR:+${UV_TOOL_DIR}/deepagents-code}"
+  if [ -z "$UV_TOOL_DIR" ] || { [ -e "$UV_TOOL_DIR" ] && [ ! -x "$UV_TOOL_DIR" ]; }; then
+    # `uv tool dir` failed (a uv too old for the subcommand, a broken config),
+    # or its directory can't be searched. Either way we can't reach a receipt.
+    # Only a machine that already has an install can lose extras, so stay quiet
+    # when nothing is installed rather than warning every fresh run.
+    [ -z "$PRE_VERSION" ] || EXTRAS_UNREADABLE=true
+  elif [ -d "$receipt_install_dir" ]; then
+    receipt="${receipt_install_dir}/uv-receipt.toml"
+    if [ ! -x "$receipt_install_dir" ]; then
+      # A prior `sudo` run left the tool dir root-owned and mode 0700 (what a
+      # root umask of 077 produces). The receipt tests below would all report
+      # "absent" through an unsearchable parent, so check the directory first.
+      # Only search permission matters: opening a known filename inside needs
+      # `x`, not `r`, so a `--x` directory is still perfectly readable here.
+      EXTRAS_UNREADABLE=true
+    elif [ -L "$receipt" ]; then
+      # Refusing to read through a symlink matches the install-log hardening
+      # above, but the refusal must still be announced - staying silent here is
+      # indistinguishable from "no extras" to the user losing them.
+      EXTRAS_UNREADABLE=true
+    elif [ ! -f "$receipt" ]; then
+      # An install exists but has no receipt: a uv predating uv-receipt.toml, a
+      # future relocation of the file, or a partially-deleted tool dir. We
+      # cannot tell what extras it was built with, so say so.
+      EXTRAS_UNREADABLE=true
+    elif [ ! -r "$receipt" ]; then
+      # A receipt written by a previous `sudo` run and re-read as a normal user.
+      EXTRAS_UNREADABLE=true
+    else
+      # Narrow to the `requirements` assignment before looking for the entry. uv
+      # also writes an `entrypoints` array, and this package declares a console
+      # script literally named `deepagents-code` (see [project.scripts] in
+      # pyproject.toml), so an unscoped match would happily pick
+      #   { name = "deepagents-code", install-path = "...", from = "deepagents-code" }
+      # - an inline table that never carries extras. Matching it would report
+      # "no extras" for an install that has them, defeating the whole check. The
+      # range runs from the requirements line to the next top-level key
+      # *assignment*, which covers both the single-line array uv writes today
+      # and a wrapped one. Note the terminator matches neither a table header
+      # (`[tool.options]`) nor a key containing digits, so a receipt that put
+      # either of those directly after `requirements` would run the range to
+      # EOF and let `entrypoints` back into the candidate region; that is safe
+      # against uv's current layout but is the thing to revisit if uv
+      # restructures the receipt.
+      if receipt_requirements=$(sed -nE \
+        '/^requirements = /,$ { /^requirements = /!{ /^[A-Za-z_-]+ = /q; }; p; }' \
+        "$receipt" 2>/dev/null); then
+        # Then isolate the deepagents-code inline table ([^{}] cannot cross into a
+        # neighbouring requirement) and read extras out of that entry alone. uv
+        # keeps each inline table on one line (observed through uv 0.9); if a
+        # future formatter wraps it, the entry match fails - handled below.
+        # `|| receipt_entry=""`: under `set -o pipefail` a large enough matching
+        # region lets `head` close the pipe while `sed` is still writing, and
+        # the resulting SIGPIPE (141) would abort the whole installer before uv
+        # ever runs - surfaced only as the EXIT trap's generic exit-code line.
+        # An empty value falls through to the "cannot tell" branch below, which
+        # is the right answer for a receipt that large or that malformed.
+        receipt_entry=$(printf '%s\n' "$receipt_requirements" \
+          | sed -nE 's/.*(\{[^{}]*name = "deepagents-code"[^{}]*\}).*/\1/p' \
+          | head -1) || receipt_entry=""
+        if [ -n "$receipt_entry" ]; then
+          INSTALLED_EXTRAS=$(printf '%s\n' "$receipt_entry" \
+            | sed -nE 's/.*extras = \[([^]]*)\].*/\1/p' \
+            | tr -d ' "')
+          # INSTALLED_EXTRAS is echoed back inside a double-quoted, ready-to-paste
+          # shell command below; on a shared host a less-privileged writer of the
+          # receipt could plant `$(...)` and have it evaluated by whoever pastes
+          # the suggestion. Restrict to PEP 508 extra-name characters plus commas —
+          # anything else means the receipt was tampered with or written by a
+          # foreign tool, which is the unparseable case. An empty value is the
+          # normal no-extras receipt (uv omits the key entirely), not tampering.
+          case "$INSTALLED_EXTRAS" in
+            *[!A-Za-z0-9_,.-]*)
+              EXTRAS_UNREADABLE=true
+              INSTALLED_EXTRAS=""
+              ;;
+          esac
+        else
+          # No entry matched: either the receipt has no `requirements` section we
+          # recognise, or the requirement is wrapped across lines. Both are "we
+          # cannot tell" and never "no extras" - uv always records the tool's own
+          # requirement, so a miss here is a parse failure, not an empty install.
+          EXTRAS_UNREADABLE=true
+        fi
+      else
+        # The read failed after the checks above, so the receipt may have changed
+        # or disappeared while we were reading it. Treat that race as unreadable.
+        EXTRAS_UNREADABLE=true
+      fi
+    fi
+  else
+    # `uv tool dir` resolved and is searchable, but this package has no
+    # directory under it. When the installed dcode came from uv's tool bin dir
+    # there must be a receipt somewhere, so not finding it here means the tool
+    # dir moved between installs (UV_TOOL_DIR, a changed `tool-dir` in uv.toml,
+    # a relocated XDG_DATA_HOME). The old install is still on PATH and the
+    # rebuild will still drop its extras, so this is "couldn't tell" exactly
+    # like the missing-receipt branch above - not "no extras". An install that
+    # did not come from uv (pipx, a manual venv) has no receipt to expect, so
+    # stay quiet there rather than warning about a file that was never written.
+    [ "$PRE_INSTALL_IS_TOOL" = false ] || EXTRAS_UNREADABLE=true
+  fi
+fi
+
 if [ "$IS_EDITABLE" = true ]; then
   pre_label="${PRE_VERSION:-(version unknown)}"
   if [ -n "$EDITABLE_SRC" ]; then
@@ -1502,35 +1771,32 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
     log_info "deepagents-code ${PRE_VERSION} is current but is outside uv's configured tool bin — installing it there."
   elif [ "$ASSUME_YES" = "1" ]; then
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
+    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
-  else
-    # Print the release link only when a terminal is present to answer the
-    # prompt. prompt_yn's exit code then distinguishes the three outcomes:
-    # yes (0), a human's "no" (1), and "no terminal to ask on" (2, from cron /
-    # CI / a Dockerfile RUN / systemd) — which falls through to the upgrade.
-    if can_prompt; then
-      log_info "What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
-    fi
-    # `|| prompt_rc=$?` keeps a "no" answer from tripping `set -e`: a bare
-    # failing command would abort the script before the case below runs.
-    prompt_rc=0
-    prompt_yn "Update deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}?" || prompt_rc=$?
-    case "$prompt_rc" in
-      0)
-        log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
-        ;;
-      1)
+  elif can_prompt; then
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
+    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
+    if prompt_yn "Install update?"; then
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+    else
+      update_prompt_rc=$?
+      if [ "$update_prompt_rc" -eq 2 ]; then
+        # `can_prompt` proved the terminal could be opened, but it may still
+        # detach before `prompt_yn` can read from it. As with no TTY at all,
+        # nobody declined the update, so warn and complete the install.
+        log_warn "Could not ask — continuing with the update."
+      else
         log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
         exit 0
-        ;;
-      *)
-        # No human to ask, and an installer's job is to make the current
-        # version present, so complete the upgrade rather than silently no-op.
-        # Callers that want a fixed version pin DEEPAGENTS_CODE_VERSION, which
-        # skips this path entirely.
-        log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
-        ;;
-    esac
+      fi
+    fi
+  else
+    # No TTY to prompt (cron, CI, Dockerfile RUN, systemd): there is no human to
+    # ask, and an installer's job is to make the current version present, so
+    # complete the upgrade rather than silently no-op. Callers that want a fixed
+    # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} — updating (no TTY to prompt)."
   fi
 elif [ -n "$PRE_VERSION" ]; then
   log_info "dcode ${PRE_VERSION} found — checking for updates..."
@@ -1588,6 +1854,63 @@ if [ -n "$cache_root" ]; then
       case "$INSTALL_LOG" in
         "$HOME"/*) INSTALL_LOG_DISPLAY="~${INSTALL_LOG#"$HOME"}" ;;
       esac
+    fi
+  fi
+fi
+# Warn (and offer to back out) before *this* block would take the lock: it only
+# prints a warning and asks a question - the receipt itself was read far above,
+# also outside the lock - so holding the install lock across an unbounded human
+# wait would block a concurrent installer (which spins silently, since it can't
+# reclaim a lock whose owner is alive) for no reason. A run that had to
+# bootstrap uv first already holds the lock by now (see the acquire on the
+# uv-install path, which is why the acquire below is guarded), but such a run
+# has no prior install and so reaches neither branch here in practice.
+#
+# `prompt_yn` returns 2 only when it could not ask at all - /dev/tty opened for
+# can_prompt but no longer opens, e.g. a session that detached in between. That
+# is not a "no": treating it as one turns a broken terminal into a silent no-op
+# exit, and it would contradict the no-TTY branch above, which reasons that
+# with no human to ask the installer should complete the upgrade rather than
+# stall. An EOF on a terminal that *did* open is a human declining and arrives
+# as 1, so it aborts through the branches below like any other "n".
+#
+# Both branches end an abort with "Aborted. deepagents-code was left
+# unchanged." rather than a bare "Aborted.": this point is also reachable on a
+# same-version PATH repair (the branches above that reinstall a current
+# version), so the message names what was left undone instead of implying the
+# run had nothing else to do.
+extras_prompt_rc=0
+if [ "$EXTRAS_UNREADABLE" = true ]; then
+  log_warn "Could not read ${receipt:-the uv tool receipt} to check which extras this install was built with."
+  log_warn "  If it was built with DEEPAGENTS_CODE_EXTRAS, re-run with the same value or those packages will be removed."
+  # An unreadable receipt can still hide extras (e.g. one written by a prior
+  # sudo run), so offer the same abort prompt as the known-extras case below:
+  # the user is told their extras may be removed and must get the chance to
+  # stop before the rebuild drops them.
+  if [ "$ASSUME_YES" != "1" ] && can_prompt; then
+    prompt_yn "Continue anyway?" || extras_prompt_rc=$?
+    if [ "$extras_prompt_rc" -eq 2 ]; then
+      log_warn "Could not ask — continuing; any extras this install has will be removed."
+    elif [ "$extras_prompt_rc" -ne 0 ]; then
+      log_info "Aborted. deepagents-code was left unchanged."
+      exit 0
+    fi
+  fi
+elif [ -n "$INSTALLED_EXTRAS" ]; then
+  log_warn "This install has extras that a bare re-run will remove: ${INSTALLED_EXTRAS}"
+  log_warn "  To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS=\"${INSTALLED_EXTRAS}\""
+  # Give an interactive user the chance to back out before uv rebuilds the
+  # environment and drops those packages. No TTY means nobody can answer; an
+  # explicit DEEPAGENTS_CODE_YES means they already did. Both keep the warning
+  # and proceed - a pre-answered yes is an instruction to continue, not to
+  # abort.
+  if [ "$ASSUME_YES" != "1" ] && can_prompt; then
+    prompt_yn "Continue anyway and remove them?" || extras_prompt_rc=$?
+    if [ "$extras_prompt_rc" -eq 2 ]; then
+      log_warn "Could not ask — continuing; the extras above will be removed."
+    elif [ "$extras_prompt_rc" -ne 0 ]; then
+      log_info "Aborted. deepagents-code was left unchanged."
+      exit 0
     fi
   fi
 fi
@@ -1680,7 +2003,22 @@ if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
   UV_REPORTED_PACKAGE_CHANGES=true
 fi
 if [ -n "$INSTALL_LOG" ]; then
-  copy_install_log || { INSTALL_LOG=""; INSTALL_LOG_DISPLAY=""; }
+  # Return code 2 means the publish failed for an ordinary operational reason
+  # (no space, a cache dir left root-owned by an earlier sudo run) rather than
+  # because the path looked hostile. Say so: on a `curl | bash` run with no
+  # scrollback the log is the only way back to uv's output, and silently not
+  # having one is indistinguishable from a clean run. Rejected-path failures
+  # (return 1) stay quiet — the user cannot act on them and the noise would be
+  # alarming.
+  log_copy_rc=0
+  copy_install_log || log_copy_rc=$?
+  if [ "$log_copy_rc" -ne 0 ]; then
+    if [ "$log_copy_rc" -eq 2 ]; then
+      log_warn "Could not write the install log to ${INSTALL_LOG_DISPLAY} — continuing without it."
+    fi
+    INSTALL_LOG=""
+    INSTALL_LOG_DISPLAY=""
+  fi
 fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
@@ -1689,9 +2027,12 @@ if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
   # The log captured uv's full stderr (copied just above, before this exit), so
   # point the user at it — non-verbose mode trims uv's lines from the terminal
-  # and piped `curl | bash` runs lose scrollback.
-  if [ -n "$INSTALL_LOG" ]; then
-    log_error "Full install log: ${INSTALL_LOG_DISPLAY}"
+  # and piped `curl | bash` runs lose scrollback. Require a non-empty file for
+  # the same reason the success path does: uv killed by a signal before writing
+  # anything leaves a zero-byte log, and sending a user whose install just
+  # failed to an empty file is a dead end.
+  if [ -n "$INSTALL_LOG" ] && [ -s "$INSTALL_LOG" ]; then
+    log_error "Full log: ${INSTALL_LOG_DISPLAY}"
   fi
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit "$uv_rc"
@@ -2615,9 +2956,14 @@ elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
   # signal that the reinstall actually moved packages.
   if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
-    # INSTALL_LOG_DISPLAY is empty exactly when no log was written, so the
-    # `:+` suffix appends the pointer only when there's a log to point at.
-    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated.${INSTALL_LOG_DISPLAY:+ Details: ${INSTALL_LOG_DISPLAY}}"
+    # No log pointer here: the "Full log:" line below prints it whenever a log
+    # was successfully published *and* uv wrote something. This branch
+    # guarantees the second half (UV_REPORTED_PACKAGE_CHANGES is only true
+    # because a grep matched `- pkg==` / `+ pkg==` lines in the captured
+    # stderr), but publication can still have failed - copy_install_log clears
+    # INSTALL_LOG on failure - and then there is no log to point at from either
+    # site. Repeating it here would only print the same path on two lines.
+    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
   else
     log_success "deepagents-code ${NEW_VERSION} already up to date."
   fi
@@ -2625,6 +2971,16 @@ elif [ -n "$NEW_VERSION" ]; then
   log_success "deepagents-code updated: ${PRE_VERSION} → ${NEW_VERSION}."
 else
   log_success "deepagents-code installed."
+fi
+# The log captured uv's full stderr (dependency diff, warnings, rebuild
+# notice). Point at it after any successful install so users can inspect what
+# changed - non-verbose mode trims those lines from the terminal, and a
+# non-TTY run (CI, `curl | bash` under a pipe) has no scrollback to go back
+# to. The failure path prints its own pointer and exits before reaching here.
+# Test on the file rather than the display name: uv writes nothing to stderr
+# on a clean no-op reinstall, and pointing at an empty log is a dead end.
+if [ -n "$INSTALL_LOG_DISPLAY" ] && [ -s "$INSTALL_LOG" ]; then
+  log_info "Full log: ${INSTALL_LOG_DISPLAY}"
 fi
 
 if [ "$VERBOSE" = "1" ] && [ -n "$DCODE_BIN_DISPLAY" ]; then
@@ -2904,10 +3260,27 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done — footer wording depends on what changed:
-#   - same app version + dependency changes → "Dependencies updated"
-#   - already up to date                    → "Already installed"
-#   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
+# Done — footer wording depends on what changed. All three named branches also
+# require a non-editable install (an editable one always falls through to the
+# catch-all, even when its reinstall moved dependencies):
+#   - same app version + dependency changes → "Dependencies updated."
+#   - already up to date                    → "Already installed."
+#   - unpinned, default-prerelease run that moved version → "Version changed."
+#   - everything else                       → "Setup complete."
+#
+# The last branch is a catch-all, not an enumerated set. It covers a fresh
+# install and an editable→PyPI swap. The version-move branch stays neutral
+# because uv honors custom indexes and configuration whose newest available
+# package can be older than the installed version. Two other known downgrade
+# paths remain in the catch-all branch:
+#   - a *pinned* version (VERSION set): `bash -s -- 0.1.0` over an installed
+#     0.2.0 is a downgrade.
+#   - an explicit DEEPAGENTS_CODE_PRERELEASE (PRERELEASE_REQUESTED set): with
+#     `disallow` over an installed 0.3.0rc1, uv resolves to the latest *stable*,
+#     which can be older than what's there.
+# It also covers an empty NEW_VERSION — the post-install `dcode -v` probe
+# failed, was never run because DCODE_BIN didn't resolve, or exited 0 while
+# printing nothing.
 # ---------------------------------------------------------------------------
 if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ] && [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
@@ -2915,6 +3288,9 @@ if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] 
 elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
+elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
+  && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then
+  footer_msg="Version changed."
 else
   footer_msg="Setup complete."
 fi

@@ -2950,37 +2950,51 @@ async def _run_acp_cli_async(
         return 1
 
     async_subagents = load_async_subagents() or None
-
+    exit_code = 0
     try:
-        from langgraph.checkpoint.memory import InMemorySaver
+        from deepagents_code.sessions import get_checkpointer
 
-        agent_graph, _backend = create_cli_agent(
-            model=model_result.model,
-            assistant_id=assistant_id,
-            tools=tools,
-            mcp_server_info=mcp_server_info,
-            checkpointer=InMemorySaver(),
-            async_subagents=async_subagents,
-            fs_tools=allow_fs_tools,
-            recursion_limit=recursion_limit,
-            memory_auto_save=is_memory_auto_save_enabled(),
-        )
+        async with get_checkpointer() as checkpointer:
+            await checkpointer.setup()
+
+            def build_agent(context: Any) -> Any:  # noqa: ANN401  # ACP factory protocol
+                session_project_context = ProjectContext.from_user_cwd(
+                    Path(context.cwd)
+                )
+                agent_graph, _backend = create_cli_agent(
+                    model=model_result.model,
+                    assistant_id=assistant_id,
+                    tools=tools,
+                    mcp_tools=mcp_tools,
+                    mcp_server_info=mcp_server_info,
+                    checkpointer=checkpointer,
+                    async_subagents=async_subagents,
+                    fs_tools=allow_fs_tools,
+                    recursion_limit=recursion_limit,
+                    memory_auto_save=is_memory_auto_save_enabled(),
+                    cwd=context.cwd,
+                    project_context=session_project_context,
+                )
+                return agent_graph
+
+            server = agent_server_cls(
+                build_agent,
+                load_sessions=True,
+                checkpoint_metadata={"agent_name": assistant_id},
+            )
+            try:
+                await run_acp_agent(server)
+            except KeyboardInterrupt:
+                pass
+            except Exception as exc:
+                sys.stderr.write(f"Error: ACP server failed: {exc}\n")
+                sys.stderr.flush()
+                logger.exception("ACP server crashed")
+                exit_code = 1
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")
         sys.stderr.flush()
         logger.debug("ACP agent creation failed", exc_info=True)
-        return 1
-
-    server = agent_server_cls(agent_graph)  # Pregel is a CompiledStateGraph at runtime
-    exit_code = 0
-    try:
-        await run_acp_agent(server)
-    except KeyboardInterrupt:
-        pass
-    except Exception as exc:
-        sys.stderr.write(f"Error: ACP server failed: {exc}\n")
-        sys.stderr.flush()
-        logger.exception("ACP server crashed")
         exit_code = 1
     finally:
         if mcp_session_manager is not None:

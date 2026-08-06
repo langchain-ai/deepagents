@@ -10340,10 +10340,16 @@ class DeepAgentsApp(App):
         await self._submit_input(value, mode)
 
     async def _restore_startup_tip_after_resume_fallback(self) -> None:
-        """Mount a startup tip when resume resolution starts a fresh session."""
+        """Mount a startup tip when resume resolution starts a fresh session.
+
+        An initial submission owns the fresh session's startup flow and
+        dismisses the tip before it is sent, so do not remount the tip while
+        that submission is pending.
+        """
         if (
             self._initial_resume_requested
             or self._startup_tip_dismissed
+            or self._has_initial_submission()
             or not show_startup_tip()
             or self.query(StartupTip)
         ):

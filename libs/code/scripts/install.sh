@@ -546,35 +546,40 @@ copy_install_log() {
     path_is_under_home "$install_log_dir" || return 1
   fi
   [ ! -L "$INSTALL_LOG" ] || return 1
-  # Publish the already-captured stderr without opening the canonical path for
-  # writing. `ln` fails if an attacker wins the race by creating install.log,
-  # but it also fails with EXDEV whenever mktemp's TMPDIR and the cache dir sit
-  # on different filesystems — /tmp on tmpfs is the default on most Linux
-  # distros, so the hardlink alone would silently disable the log there. Fall
-  # back to a copy. The copy must not be staged next to INSTALL_LOG: a root
-  # installer may have handed that directory to TARGET_USER, who could replace
-  # a predictable sibling path with a symlink before `cp` opens it. Keep the
-  # staging file in a freshly-created root-owned 0700 directory instead.
-  local staging_dir
+  # Publish the already-captured stderr with a same-directory rename, which
+  # never opens INSTALL_LOG: rename(2) swaps the directory entry atomically,
+  # so a symlink planted at that path is replaced, not followed. Stage inside
+  # install_log_dir (not the default TMPDIR) so the final `mv` is a true rename
+  # — a cross-filesystem `mv` degrades to copy+unlink, which does open the
+  # destination and follow links. mktemp gives the staged file an unpredictable
+  # name, so the target user — who may own install_log_dir after a prior root
+  # install handed it over — cannot pre-place a link at the source path to make
+  # the copy overwrite it.
   local staged
-  staging_dir=$(mktemp -d /tmp/deepagents-code-install-log.XXXXXX 2>/dev/null) || return 1
-  [ -d "$staging_dir" ] && [ ! -L "$staging_dir" ] && [ -O "$staging_dir" ] || {
-    rmdir "$staging_dir" 2>/dev/null || true
+  staged=$(mktemp "${install_log_dir}/.install.log.XXXXXX" 2>/dev/null) || return 1
+  if ! cp "$uv_stderr" "$staged" 2>/dev/null; then
+    rm -f "$staged" 2>/dev/null || true
+    return 1
+  fi
+  # Between the guard above and this rename, a target user who owns
+  # install_log_dir can rmdir the empty directory and symlink its path
+  # elsewhere; rename would then create install.log wherever the link points —
+  # with root's privileges during a sudo install. Re-validate the directory
+  # immediately before publishing.
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || {
+    rm -f "$staged" 2>/dev/null || true
     return 1
   }
-  staged="${staging_dir}/install.log"
-  if ! ln "$uv_stderr" "$staged" 2>/dev/null \
-    && ! cp "$uv_stderr" "$staged" 2>/dev/null; then
-    rm -f "$staged" 2>/dev/null || true
-    rmdir "$staging_dir" 2>/dev/null || true
-    return 1
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$install_log_dir" || {
+      rm -f "$staged" 2>/dev/null || true
+      return 1
+    }
   fi
   if ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
-    rmdir "$staging_dir" 2>/dev/null || true
     return 1
   fi
-  rmdir "$staging_dir" 2>/dev/null || true
 }
 
 # Epoch mtime of the lock directory, used as a fallback reference time when the

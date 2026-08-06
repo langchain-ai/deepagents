@@ -1696,13 +1696,19 @@ def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:
     assert target.read_text() == "keep me\n"
 
 
-def test_install_script_stages_log_copy_outside_user_cache() -> None:
-    """The cross-filesystem fallback stages logs in a root-owned temp directory."""
+def test_install_script_stages_log_copy_inside_log_dir() -> None:
+    """The log copy is staged inside the log dir so the publish is a rename.
+
+    A cross-filesystem `mv` degrades to copy+unlink, which opens the
+    destination path and follows symlinks planted there; staging under a
+    mktemp name inside `install_log_dir` keeps the publish an atomic rename
+    that replaces a planted symlink instead of following it.
+    """
     script = SCRIPT.read_text()
 
-    assert "mktemp -d /tmp/deepagents-code-install-log.XXXXXX" in script
-    assert 'staged="${staging_dir}/install.log"' in script
-    assert 'local staged="${INSTALL_LOG}.$$"' not in script
+    assert 'staged=$(mktemp "${install_log_dir}/.install.log.XXXXXX"' in script
+    assert "mktemp -d /tmp/deepagents-code-install-log.XXXXXX" not in script
+    assert 'staged="${INSTALL_LOG}.$$"' not in script
 
 
 def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(

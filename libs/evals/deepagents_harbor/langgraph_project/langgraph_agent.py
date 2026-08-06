@@ -20,6 +20,10 @@ from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from deepagents_harbor.langgraph_project.switchyard_library import (
+    build_switchyard_components,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -377,7 +381,16 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = _build_model(configurable)
+    switchyard_config = os.environ.get("HARBOR_SWITCHYARD_CONFIG")
+    if switchyard_config:
+        components = build_switchyard_components(
+            switchyard_config,
+            os.environ.get("HARBOR_SESSION_ID", ""),
+        )
+        model = components.model
+    else:
+        components = None
+        model = _build_model(configurable)
     # Harbor runs each task in its own isolated container rooted at the workdir,
     # and tasks operate on the real sandbox paths, so path virtualization is
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
@@ -388,10 +401,13 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
     # prompt-free default. The sandbox workdir is already enforced by the shell
     # backend's `root_dir`.
-    return create_deep_agent(
-        model=model,
-        backend=backend,
-    )
+    if components is not None:
+        return create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[components.middleware],
+        )
+    return create_deep_agent(model=model, backend=backend)
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

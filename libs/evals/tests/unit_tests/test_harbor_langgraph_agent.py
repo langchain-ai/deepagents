@@ -12,6 +12,7 @@ import pytest
 from deepagents_code.config import settings
 
 from deepagents_harbor.langgraph_project import langgraph_agent
+from deepagents_harbor.langgraph_project.switchyard_library import SwitchyardComponents
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -661,6 +662,7 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
     monkeypatch.setattr(langgraph_agent, "LocalShellBackend", fake_local_shell_backend)
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
+    monkeypatch.delenv("HARBOR_SWITCHYARD_CONFIG", raising=False)
 
     result = langgraph_agent.make_bare_graph(
         {
@@ -686,6 +688,47 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     # The bare path must not inject a harness system prompt, preserving the
     # prompt-free SDK default.
     assert "system_prompt" not in captured_create[0]
+
+
+def test_make_bare_graph_uses_in_process_switchyard_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model = object()
+    middleware = object()
+    backend = object()
+    graph = object()
+    built: list[tuple[str, str]] = []
+    created: list[dict[str, object]] = []
+
+    def fake_components(config: str, session_id: str) -> SwitchyardComponents:
+        built.append((config, session_id))
+        return SwitchyardComponents(model=model, middleware=middleware)  # type: ignore[arg-type]
+
+    monkeypatch.setenv("HARBOR_SWITCHYARD_CONFIG", "opus-nano")
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session__env")
+    monkeypatch.setattr(langgraph_agent, "build_switchyard_components", fake_components)
+    monkeypatch.setattr(
+        langgraph_agent,
+        "_build_model",
+        lambda _config: pytest.fail("direct model builder must not run"),
+    )
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", lambda **_kwargs: backend)
+    monkeypatch.setattr(
+        langgraph_agent,
+        "create_deep_agent",
+        lambda **kwargs: (created.append(kwargs), graph)[1],
+    )
+
+    result = langgraph_agent.make_bare_graph(
+        {"configurable": {"cwd": str(tmp_path), "model": "openai:switchyard"}}
+    )
+
+    assert result is graph
+    assert built == [("opus-nano", "trial-session__env")]
+    assert created == [
+        {"model": model, "backend": backend, "middleware": [middleware]}
+    ]
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

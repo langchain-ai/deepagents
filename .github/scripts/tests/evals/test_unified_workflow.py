@@ -176,12 +176,13 @@ def test_eval_job_passes_branch() -> None:
     assert "branches: ${{ steps.p.outputs.branches }}" in reusable
 
 
-def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
+def test_unified_dispatch_wires_switchyard_library_and_sidecar_modes() -> None:
     unified = UNIFIED_WORKFLOW.read_text()
     dispatch = _indented_block(unified, "  workflow_dispatch:")
     eval_job = _indented_block(unified, "  eval:")
     reusable = HARBOR_WORKFLOW.read_text()
     call_inputs = _indented_block(reusable, "    inputs:")
+    runtime = _indented_block(reusable, "  switchyard_runtime:")
     harbor = _indented_block(reusable, "  harbor:")
     credentials = _indented_block(
         harbor, '      - name: "🔑 Verify sandbox credentials"'
@@ -203,6 +204,33 @@ def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
     assert 'if [ "$HARBOR_MODEL" != "openai:switchyard" ]; then' in credentials
     assert "switchyard_image must be a public digest-pinned image reference" in credentials
     assert "switchyard_keys=(ANTHROPIC_API_KEY BASETEN_API_KEY GOOGLE_API_KEY)" in credentials
+    assert 'elif [ "$HARBOR_AGENT_IMPL" != "bare" ]; then' in credentials
+    assert "Switchyard library runs currently require agent_impl=bare" in credentials
+
+    # Primary in-process mode: build the patched native wheel once, assemble the
+    # public LangChain adapter beside it, and share one artifact across shards.
+    assert "inputs.switchyard_config != '' && inputs.switchyard_image == ''" in runtime
+    assert "759658ee7d281b603d923a5f333c6c9a91a6ffe7" in runtime
+    assert "7d91bd6f706ec5745c69fcea00a39fd7c758e44c" in runtime
+    assert "git -C .switchyard-source apply --unidiff-zero" in runtime
+    assert "SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f" in runtime
+    assert "sfw cargo fetch --locked" in runtime
+    assert "PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b" in runtime
+    assert "maturin-version: v1.11.5" in runtime
+    assert "assemble_switchyard_runtime.py" in runtime
+    assert "callable(libsy.llm_escalation)" in runtime
+    assert "switchyard-runtime-${{ github.run_id }}-${{ github.run_attempt }}" in runtime
+    assert '"$runtime_dir/routes/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"' in run_harbor
+    assert '--agent-env "HARBOR_SWITCHYARD_CONFIG=$HARBOR_SWITCHYARD_CONFIG"' in run_harbor
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "BASETEN_API_KEY",
+        "GOOGLE_API_KEY",
+        "NVIDIA_API_KEY",
+    ):
+        assert f"--agent-env '{key}=${{{key}}}'" in run_harbor
+
+    # Preserved fallback: supplying an immutable image keeps the Compose path.
     assert "deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment" in run_harbor
     assert "deepagents_harbor.switchyard_agent:SwitchyardLangGraph" in run_harbor
     assert '--extra-docker-compose "$switchyard_compose"' in run_harbor
@@ -211,6 +239,7 @@ def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
     assert '"base_url":"http://switchyard:4000/v1"' in run_harbor
     assert '"api_key":"switchyard"' in run_harbor
     assert '"use_responses_api":false' in run_harbor
+    assert "inputs.switchyard_image != ''" in aggregate_stats
     assert "continue-on-error" not in aggregate_stats
     assert 'collect_stats.py validate "$HARBOR_JOB_DIR"' in aggregate_stats
     assert 'total <= 0' in aggregate_stats

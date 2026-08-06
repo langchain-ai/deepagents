@@ -80,6 +80,29 @@ index 92e9e74..41d779f 100644
 +    "random",
 +    "stage_router",
 +]
+diff --git a/switchyard_rust/libsy.py b/switchyard_rust/libsy.py
+index dd01ed5..7c3d707 100644
+--- a/switchyard_rust/libsy.py
++++ b/switchyard_rust/libsy.py
+@@ -19,0 +20 @@ _EXPORTS = frozenset(
++        "llm_escalation",
+@@ -21,0 +23 @@ _EXPORTS = frozenset(
++        "passthrough",
+@@ -86,0 +89,2 @@ if TYPE_CHECKING:
++    def passthrough(target: LlmTarget) -> Algorithm: ...
++
+@@ -96,0 +101,11 @@ if TYPE_CHECKING:
++    def llm_escalation(
++        judge_target: LlmTarget,
++        efficient_target: LlmTarget,
++        capable_target: LlmTarget,
++        *,
++        confirmations: int = 2,
++        recent_turn_window: int = 28,
++        window_message_chars: int = 500,
++        max_output_tokens: int = 4096,
++    ) -> Algorithm: ...
++
 diff --git a/tests/test_libsy_minimal_bindings.py b/tests/test_libsy_minimal_bindings.py
 index b3182cd..406fb08 100644
 --- a/tests/test_libsy_minimal_bindings.py

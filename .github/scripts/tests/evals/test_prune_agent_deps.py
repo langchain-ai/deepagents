@@ -39,6 +39,12 @@ def _load_prune_script() -> ModuleType:
 prune = _load_prune_script()
 
 
+@pytest.fixture(autouse=True)
+def _clear_switchyard_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HARBOR_SWITCHYARD_CONFIG", raising=False)
+    monkeypatch.delenv("SWITCHYARD_IMAGE", raising=False)
+
+
 # The real config the CI step rewrites (see harbor.yml). Unit tests that need a
 # full multi-provider dependency list read it directly so pin bumps only touch
 # the committed file.
@@ -128,6 +134,22 @@ def test_openai_openrouter_do_not_collide() -> None:
     assert openai_dep not in openrouter_kept
 
 
+def test_library_router_keeps_openai_and_anthropic_providers() -> None:
+    deps = _real_dependencies()
+    kept = prune.prune_dependencies(
+        deps,
+        "openai",
+        additional_providers=("openai", "anthropic"),
+    )
+    provider_packages = {
+        prune.dependency_package(dep)
+        for dep in kept
+        if prune.dependency_package(dep) in prune.PRUNABLE_PACKAGES
+    }
+
+    assert provider_packages == {"langchain-openai", "langchain-anthropic"}
+
+
 def test_nvidia_package_name_differs_from_prefix() -> None:
     """`nvidia` maps to `langchain-nvidia-ai-endpoints`, not `langchain-nvidia`."""
     deps = _real_dependencies()
@@ -204,6 +226,38 @@ def test_main_rewrites_file_in_place(
     # json.loads round-trips would hide a reformat that reads back identically.
     assert raw.endswith("\n")
     assert '\n  "graphs"' in raw
+
+
+def test_main_keeps_mixed_router_providers_only_in_library_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "langgraph.json"
+    _write_config(config_path, _real_dependencies())
+    monkeypatch.setenv("HARBOR_MODEL", "openai:switchyard")
+    monkeypatch.setenv("HARBOR_SWITCHYARD_CONFIG", "opus-nano")
+    monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
+
+    prune.main()
+
+    written = json.loads(config_path.read_text())
+    kept = {
+        prune.dependency_package(dep)
+        for dep in written["dependencies"]
+        if prune.dependency_package(dep) in prune.PRUNABLE_PACKAGES
+    }
+    assert kept == {"langchain-openai", "langchain-anthropic"}
+
+    _write_config(config_path, _real_dependencies())
+    monkeypatch.setenv("SWITCHYARD_IMAGE", "registry.example/router@sha256:digest")
+    prune.main()
+    written = json.loads(config_path.read_text())
+    kept = {
+        prune.dependency_package(dep)
+        for dep in written["dependencies"]
+        if prune.dependency_package(dep) in prune.PRUNABLE_PACKAGES
+    }
+    assert kept == {"langchain-openai"}
 
 
 def test_main_unknown_provider_fails_without_writing(

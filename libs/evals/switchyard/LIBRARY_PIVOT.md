@@ -52,7 +52,9 @@ algorithms.llm_escalation(
 ```
 
 The patch also adds upstream-style tests for passthrough and escalation session
-latching. It was validated against the pinned Switchyard commit with:
+latching. The first draft compiled but was missing the lazy exports in
+`switchyard_rust.libsy`; the saved patch now includes those exports and their
+type-checking stubs. It was validated against the pinned Switchyard commit with:
 
 - `cargo fmt --all --check`
 - `cargo test -p switchyard-py` in `rust:1.96.1`
@@ -131,15 +133,27 @@ until the behavior is matched or documented.
 
 ## Resume checklist
 
-1. Implement `switchyard_library.py` and hermetic unit tests.
-2. Wire `make_bare_graph` to opt into it only when
-   `HARBOR_SWITCHYARD_CONFIG` is set for library mode.
-3. Add the one-time patched runtime build and artifact download jobs.
-4. Update `_harbor_run.yml` to select library versus sidecar based on whether
-   a Switchyard image was supplied.
-5. Run targeted pytest and Ruff checks.
-6. Run a no-provider noop/static-client smoke.
-7. Dispatch one real Harbor task before autonomous-lite.
+Completed locally:
+
+1. `switchyard_library.py` loads the selected TOML, builds provider-native
+   targets, constructs passthrough/escalation, and injects the stable Harbor
+   session header.
+2. `make_bare_graph` opts into the middleware only when the config is forwarded
+   into the agent environment.
+3. `_harbor_run.yml` builds the patched manylinux wheel once, combines it with
+   the pinned public LangChain adapter, shares it as an artifact, and retains
+   the old sidecar when an image is supplied.
+4. Library mode retains only the OpenAI and Anthropic provider integrations and
+   forwards the fixed provider-key allowlist into the agent process.
+5. Hermetic routing, artifact-assembly, dependency-pruning, agent-construction,
+   and workflow tests pass locally (142 targeted tests), along with Ruff and
+   YAML parsing. These checks make no provider calls.
+
+Still to do:
+
+1. Push the implementation checkpoint.
+2. Let GitHub build and import-smoke the real Linux native artifact.
+3. Dispatch one real Harbor task before autonomous-lite.
 
 The sidecar fallback, its diagnostic artifacts, and the possible prewarmed
 LangSmith snapshot are documented separately in `SIDECAR_FALLBACK.md`.

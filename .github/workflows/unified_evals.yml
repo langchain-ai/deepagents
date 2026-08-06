@@ -60,11 +60,11 @@ on:
         type: string
         default: ""
       switchyard_config:
-        description: "Optional Switchyard route arm: glm, opus, nano, escalation, glm-nano, or opus-nano. Requires models=openai:switchyard, sandbox_env=langsmith, and switchyard_image."
+        description: "Optional Switchyard route arm: glm, opus, nano, escalation, glm-nano, or opus-nano. Requires models=openai:switchyard and sandbox_env=langsmith. With no image, runs the in-process library and currently requires agent_impls=bare."
         type: string
         default: ""
       switchyard_image:
-        description: "Public digest-pinned Switchyard image used by the LangSmith compose sidecar, for example registry.example/org/switchyard@sha256:<64 hex chars>."
+        description: "Optional public digest-pinned image for the preserved Compose sidecar. Leave empty to use the in-process Switchyard library."
         type: string
         default: ""
 

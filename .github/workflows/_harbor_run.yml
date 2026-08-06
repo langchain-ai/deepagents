@@ -257,9 +257,96 @@ jobs:
               print(line)
           PY
 
+  switchyard_runtime:
+    name: "🧭 Build Switchyard library runtime"
+    if: ${{ inputs.switchyard_config != '' && inputs.switchyard_image == '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "📥 Checkout pinned Switchyard"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NVIDIA-NeMo/Switchyard
+          ref: 759658ee7d281b603d923a5f333c6c9a91a6ffe7
+          path: .switchyard-source
+
+      - name: "📥 Checkout pinned LangChain adapter"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: langchain-ai/langchain-nvidia
+          ref: 7d91bd6f706ec5745c69fcea00a39fd7c758e44c
+          path: .langchain-nvidia-source
+
+      - name: "🩹 Apply escalation bindings"
+        run: |
+          git -C .switchyard-source apply --unidiff-zero \
+            "$GITHUB_WORKSPACE/libs/evals/switchyard/patches/libsy-python-escalation.patch"
+          git -C .switchyard-source diff --check
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: switchyard-runtime
+          working-directory: .switchyard-source
+
+      - name: "🛡️ Enable Socket Firewall"
+        uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f
+        with:
+          mode: firewall-free
+
+      - name: "🛡️ Fetch pinned Rust dependencies"
+        run: sfw cargo fetch --locked --manifest-path .switchyard-source/Cargo.toml
+
+      - name: "🦀 Build patched manylinux wheel"
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: build
+          args: --release --locked --compatibility pypi --out dist --interpreter python3.12
+          maturin-version: v1.11.5
+          manylinux: "2_28"
+          working-directory: .switchyard-source
+
+      - name: "📦 Assemble importable runtime"
+        run: |
+          mapfile -t wheels < <(find .switchyard-source/dist -maxdepth 1 -type f -name '*.whl')
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "::error::Expected one Switchyard wheel, found ${#wheels[@]}"
+            exit 1
+          fi
+          python3 .github/scripts/evals/assemble_switchyard_runtime.py \
+            --wheel "${wheels[0]}" \
+            --adapter .langchain-nvidia-source/libs/switchyard/langchain_nvidia_switchyard \
+            --output switchyard-runtime
+
+      - name: "🧪 Smoke native escalation exports"
+        env:
+          PYTHONPATH: ${{ github.workspace }}/switchyard-runtime
+        run: |
+          python3 - <<'PY'
+          from switchyard_rust import libsy
+
+          assert callable(libsy.passthrough)
+          assert callable(libsy.llm_escalation)
+          print("Patched Switchyard native exports loaded")
+          PY
+
+      - name: "📤 Upload Switchyard runtime"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: switchyard-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: switchyard-runtime/
+          if-no-files-found: error
+          retention-days: 1
+
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
-    needs: prep
+    needs: [prep, switchyard_runtime]
+    if: ${{ always() && needs.prep.result == 'success' && (needs.switchyard_runtime.result == 'success' || needs.switchyard_runtime.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: ${{ inputs.timeout_minutes }}
@@ -364,11 +451,11 @@ jobs:
 
           if [ -n "$HARBOR_SWITCHYARD_CONFIG" ]; then
             if [ "$HARBOR_SANDBOX_ENV" != "langsmith" ]; then
-              echo "::error::Switchyard sidecar runs require sandbox_env=langsmith"
+              echo "::error::Switchyard runs require sandbox_env=langsmith"
               exit 1
             fi
             if [ "$HARBOR_MODEL" != "openai:switchyard" ]; then
-              echo "::error::Switchyard sidecar runs require model=openai:switchyard"
+              echo "::error::Switchyard runs require model=openai:switchyard"
               exit 1
             fi
             case "$HARBOR_SWITCHYARD_CONFIG" in
@@ -383,8 +470,13 @@ jobs:
                 exit 1
                 ;;
             esac
-            if ! [[ "$SWITCHYARD_IMAGE" =~ ^[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::switchyard_image must be a public digest-pinned image reference"
+            if [ -n "$SWITCHYARD_IMAGE" ]; then
+              if ! [[ "$SWITCHYARD_IMAGE" =~ ^[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$ ]]; then
+                echo "::error::switchyard_image must be a public digest-pinned image reference"
+                exit 1
+              fi
+            elif [ "$HARBOR_AGENT_IMPL" != "bare" ]; then
+              echo "::error::Switchyard library runs currently require agent_impl=bare"
               exit 1
             fi
             for key in "${switchyard_keys[@]}"; do
@@ -407,6 +499,13 @@ jobs:
 
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "⬇️ Download Switchyard library runtime"
+        if: ${{ inputs.switchyard_config != '' && inputs.switchyard_image == '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: switchyard-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: libs/evals/deepagents_harbor/langgraph_project/.local_deps/switchyard-runtime
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -828,20 +927,36 @@ jobs:
                 ;;
             esac
             switchyard_config="$switchyard_dir/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"
-            switchyard_compose="$switchyard_dir/compose/switchyard.yaml"
-            if [ ! -f "$switchyard_config" ] || [ ! -f "$switchyard_compose" ]; then
-              echo "::error::Switchyard config or compose overlay is missing"
+            if [ ! -f "$switchyard_config" ]; then
+              echo "::error::Switchyard config is missing: $switchyard_config"
               exit 1
             fi
-            environment_args=(
-              --env deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment
-              --extra-docker-compose "$switchyard_compose"
-              --environment-kwarg "switchyard_config=$switchyard_config"
-            )
-            agent_name=deepagents_harbor.switchyard_agent:SwitchyardLangGraph
-            router_agent_args=(
-              --agent-kwarg 'model_kwargs={"base_url":"http://switchyard:4000/v1","api_key":"switchyard","use_responses_api":false}'
-            )
+            if [ -n "$SWITCHYARD_IMAGE" ]; then
+              switchyard_compose="$switchyard_dir/compose/switchyard.yaml"
+              if [ ! -f "$switchyard_compose" ]; then
+                echo "::error::Switchyard compose overlay is missing"
+                exit 1
+              fi
+              environment_args=(
+                --env deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment
+                --extra-docker-compose "$switchyard_compose"
+                --environment-kwarg "switchyard_config=$switchyard_config"
+              )
+              agent_name=deepagents_harbor.switchyard_agent:SwitchyardLangGraph
+              router_agent_args=(
+                --agent-kwarg 'model_kwargs={"base_url":"http://switchyard:4000/v1","api_key":"switchyard","use_responses_api":false}'
+              )
+            else
+              runtime_dir="$local_deps_dir/switchyard-runtime"
+              if [ ! -f "$runtime_dir/switchyard/libsy/algorithms.py" ] || \
+                 [ ! -f "$runtime_dir/langchain_nvidia_switchyard/__init__.py" ]; then
+                echo "::error::Downloaded Switchyard library runtime is incomplete"
+                exit 1
+              fi
+              mkdir -p "$runtime_dir/routes"
+              cp "$switchyard_config" \
+                "$runtime_dir/routes/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"
+            fi
           fi
           # agent_impl IS the graph key in langgraph.json (the single registry).
           # Validate membership before it reaches `harbor run --agent-kwarg
@@ -907,6 +1022,15 @@ jobs:
             xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
             nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
           esac
+          if [ -n "$HARBOR_SWITCHYARD_CONFIG" ] && [ -z "$SWITCHYARD_IMAGE" ]; then
+            agent_env_args+=(
+              --agent-env "HARBOR_SWITCHYARD_CONFIG=$HARBOR_SWITCHYARD_CONFIG"
+              --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'
+              --agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}'
+              --agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}'
+              --agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}'
+            )
+          fi
 
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"
@@ -971,7 +1095,7 @@ jobs:
           echo "actual_retries=$actual_retries" >> "$GITHUB_OUTPUT"
 
       - name: "📈 Aggregate Switchyard stats"
-        if: ${{ inputs.switchyard_config != '' && env.SHARD_EMPTY != 'true' && steps.latest-job.outputs.job_dir != '' }}
+        if: ${{ inputs.switchyard_config != '' && inputs.switchyard_image != '' && env.SHARD_EMPTY != 'true' && steps.latest-job.outputs.job_dir != '' }}
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
         run: |
@@ -1007,8 +1131,14 @@ jobs:
             echo "- Model: $HARBOR_MODEL"
             if [ -n "$HARBOR_SWITCHYARD_CONFIG" ]; then
               echo "- Switchyard route: $HARBOR_SWITCHYARD_CONFIG"
-              echo "- Switchyard image: $SWITCHYARD_IMAGE"
-              echo "- Switchyard stats: included as per-trial artifacts"
+              if [ -n "$SWITCHYARD_IMAGE" ]; then
+                echo "- Switchyard mode: Compose sidecar"
+                echo "- Switchyard image: $SWITCHYARD_IMAGE"
+                echo "- Switchyard stats: included as per-trial artifacts"
+              else
+                echo "- Switchyard mode: in-process library"
+                echo "- Switchyard routing metadata: included in model traces"
+              fi
             fi
             if [ "$SHARD_EMPTY" = "true" ]; then
               echo "- Shard: $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS — empty (no tasks assigned), skipped"

@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Iterable
 
 PROVIDER_TO_PACKAGE: dict[str, str] = {
     "anthropic": "langchain-anthropic",
@@ -79,37 +80,47 @@ def dependency_package(dep: str) -> str:
     return head.strip()
 
 
-def prune_dependencies(deps: list[str], provider: str) -> list[str]:
-    """Return `deps` with every provider package removed except `provider`'s.
+def prune_dependencies(
+    deps: list[str],
+    provider: str,
+    *,
+    additional_providers: Iterable[str] = (),
+) -> list[str]:
+    """Return `deps` with only the requested provider packages retained.
 
     Args:
         deps: The `dependencies` array from a `langgraph.json`.
         provider: Model-spec provider prefix (e.g. `fireworks`). Must be a key
             of `PROVIDER_TO_PACKAGE`.
+        additional_providers: Extra provider prefixes needed by an in-process
+            router whose targets span more than the outer model spec.
 
     Returns:
         The filtered dependency list, in the original order.
 
     Raises:
-        KeyError: If `provider` is not a known provider.
-        ValueError: If the provider's package is absent from `deps` — a drift
-            between `PROVIDER_TO_PACKAGE` and `langgraph.json` that would
+        KeyError: If any requested provider is not known.
+        ValueError: If a requested provider package is absent from `deps` — a
+            drift between `PROVIDER_TO_PACKAGE` and `langgraph.json` that would
             otherwise ship an agent env with no usable provider.
     """
-    keep = PROVIDER_TO_PACKAGE[provider]
+    providers = tuple(dict.fromkeys((provider, *additional_providers)))
+    keep = {PROVIDER_TO_PACKAGE[name] for name in providers}
     kept = [
         dep
         for dep in deps
         if dependency_package(dep) not in PRUNABLE_PACKAGES
-        or dependency_package(dep) == keep
+        or dependency_package(dep) in keep
     ]
-    if not any(dependency_package(dep) == keep for dep in kept):
-        msg = (
-            f"Expected provider package {keep!r} for provider {provider!r} not "
-            "found in langgraph.json dependencies; PROVIDER_TO_PACKAGE is out of "
-            "sync with the agent config."
-        )
-        raise ValueError(msg)
+    for name in providers:
+        package = PROVIDER_TO_PACKAGE[name]
+        if not any(dependency_package(dep) == package for dep in kept):
+            msg = (
+                f"Expected provider package {package!r} for provider {name!r} not "
+                "found in langgraph.json dependencies; PROVIDER_TO_PACKAGE is out of "
+                "sync with the agent config."
+            )
+            raise ValueError(msg)
     return kept
 
 
@@ -154,8 +165,22 @@ def main() -> None:
             "the credential and agent-env steps in harbor.yml."
         )
 
+    additional_providers: tuple[str, ...] = ()
+    switchyard_config = os.environ.get("HARBOR_SWITCHYARD_CONFIG", "").strip()
+    switchyard_image = os.environ.get("SWITCHYARD_IMAGE", "").strip()
+    if switchyard_config and not switchyard_image:
+        # Library-mode configs use ChatOpenAI for OpenAI-compatible NVIDIA,
+        # Baseten, and Google targets, plus ChatAnthropic for Opus routes. Keep
+        # both packages for every arm so the artifact and route can be changed
+        # without another dependency-pruning branch.
+        additional_providers = ("openai", "anthropic")
+
     try:
-        pruned = prune_dependencies(deps, provider)
+        pruned = prune_dependencies(
+            deps,
+            provider,
+            additional_providers=additional_providers,
+        )
     except ValueError as exc:
         # Drift between PROVIDER_TO_PACKAGE and the config: surface it as a
         # GitHub annotation (like the paths above) rather than a raw traceback.
@@ -171,9 +196,15 @@ def main() -> None:
     os.replace(tmp_path, path)  # noqa: PTH105
 
     removed = [dependency_package(d) for d in deps if d not in pruned]
+    kept_packages = sorted(
+        {
+            PROVIDER_TO_PACKAGE[provider],
+            *(PROVIDER_TO_PACKAGE[name] for name in additional_providers),
+        }
+    )
     print(  # noqa: T201
         f"Pruned agent provider deps for {provider!r}: kept "
-        f"{PROVIDER_TO_PACKAGE[provider]}"
+        f"{', '.join(kept_packages)}"
         + (f", removed {len(removed)}: {', '.join(removed)}" if removed else "")
     )
 

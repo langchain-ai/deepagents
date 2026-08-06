@@ -930,6 +930,46 @@ class TestDefaultModelScope:
         assert severity == "warning"
         assert _env_vars.AUTO_CLASSIFIER_MODEL in message
 
+    async def test_success_warns_when_env_override_is_blank(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exported-but-empty override also outranks the stored key.
+
+        The resolver rejects a blank `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`
+        and falls back to the main model, so the stored classifier still will
+        not run — the warning must fire on presence, not on a non-empty value.
+        """
+        from deepagents_code import _env_vars
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "")
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            notified: list[tuple[str, object]] = []
+            monkeypatch.setattr(
+                screen,
+                "notify",
+                lambda msg, **kw: notified.append((msg, kw.get("severity"))),
+            )
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+
+        assert notified
+        message, severity = notified[0]
+        assert severity == "warning"
+        assert _env_vars.AUTO_CLASSIFIER_MODEL in message
+
     async def test_main_scope_success_raises_no_override_warning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -2155,7 +2155,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # keypress changed which model runs.
             if (
                 scope.override_env_var is not None
-                and os.environ.get(scope.override_env_var)
+                and scope.override_env_var in os.environ
                 and self.is_running
             ):
                 self.notify(

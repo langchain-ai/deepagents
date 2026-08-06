@@ -120,6 +120,16 @@ class _PreToolPassed(TypedDict):
 
 
 _PreToolState: TypeAlias = _PreToolDenied | _PreToolPassed
+
+# Maps a tool-call id to the measured execution duration while the call awaits
+# its post-execution hook. The value is overloaded as a tombstone: a `None`
+# value means "delete this key", not "no duration". This mirrors LangGraph's
+# `RemoveMessage` sentinel -- a LangGraph reducer merges an update into the
+# channel and returns the whole new value, so removal is expressed by writing
+# a `None` sentinel that `_merge_pending_post_tools` pops, rather than by
+# omitting the key (a plain merge can only add/overwrite, never remove).
+# `_pending_post_tools` filters these tombstones out, so consumers only ever
+# see real `int` durations.
 _PendingPostToolState: TypeAlias = dict[str, int | None]
 
 
@@ -127,6 +137,20 @@ def _merge_pending_post_tools(
     current: _PendingPostToolState,
     update: _PendingPostToolState,
 ) -> _PendingPostToolState:
+    """Merge pending entries, treating a `None` value as a deletion sentinel.
+
+    LangGraph reducers return the entire new channel value, so writing
+    `{call_id: None}` removes `call_id` from the merged result instead of
+    storing the `None`. A merge can only add/overwrite keys, so this sentinel
+    is the mechanism for removing a consumed entry.
+
+    Args:
+        current: Current channel value.
+        update: Incoming update; `None` values delete their keys.
+
+    Returns:
+        The merged channel value with tombstoned keys removed.
+    """
     merged = dict(current)
     for call_id, duration_ms in update.items():
         if duration_ms is None:
@@ -425,9 +449,14 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         pending = _pending_post_tools(state)
         if not pending:
             return None
+        # Construct a new _PendingPostToolState where `duration_ms` is None
+        # for each entry. This causes the pending state to be evicted during
+        # graph state reconciliation in _merge_pending_post_tools
         completed: _PendingPostToolState = dict.fromkeys(pending)
         messages = state.get("messages", ())
         latest_call_message = _latest_tool_call_message(messages)
+        # If there is an extant _PendingPostToolState but no corresponding
+        # tool message, mark the _PendingPostToolState as resolved.
         if latest_call_message is None:
             return {_PENDING_POST_TOOL_STATE_KEY: completed}
         message_index, ai_message = latest_call_message
@@ -448,6 +477,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             duration_ms = pending.get(call.id)
             result = results.get(call.id)
             if duration_ms is None or result is None:
+                # This pending entry has already been consumed, continue
                 continue
             updated = self._maybe_post_tool_use(
                 call,
@@ -723,9 +753,7 @@ def _post_tool_boundary_enabled(
     )
 
 
-def _pending_post_tools(state: object) -> dict[str, int]:
-    if not isinstance(state, Mapping):
-        return {}
+def _pending_post_tools(state: ServerHooksState) -> dict[str, int]:
     raw = state.get(_PENDING_POST_TOOL_STATE_KEY)
     if not isinstance(raw, Mapping):
         return {}

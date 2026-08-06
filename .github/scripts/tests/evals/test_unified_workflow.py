@@ -239,7 +239,8 @@ def test_switchyard_smoke_publishes_pinned_image_and_dispatches_unified_eval() -
     assert "70aeb1f8e7c17bb9938dc203b5968c4ea9c6c87c" in workflow
     assert "--platform linux/amd64" in workflow
     assert "docker history" in workflow
-    assert "visibility=public" in workflow
+    assert "packages/container/switchyard/visibility" not in workflow
+    assert "docker logout ghcr.io" in workflow
     assert 'docker pull "$image_ref"' in workflow
     assert "gh workflow run unified_evals.yml" in workflow
     assert "--ref \"$GITHUB_REF_NAME\"" in workflow

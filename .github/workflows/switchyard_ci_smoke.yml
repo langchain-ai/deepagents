@@ -72,7 +72,7 @@ jobs:
               "$IMAGE:$tag" --config /c.toml --dry-run
           done
 
-      - name: "📤 Push public image"
+      - name: "📤 Push and verify public image"
         id: image
         run: |
           tag="${UPSTREAM_SHA:0:8}"
@@ -84,11 +84,8 @@ jobs:
           fi
           echo "ref=$image_ref" >> "$GITHUB_OUTPUT"
 
-          gh api \
-            --method PATCH \
-            /orgs/langchain-ai/packages/container/switchyard/visibility \
-            -f visibility=public
-
+          # Harbor's remote sandbox cannot use this job's GHCR credentials.
+          # Log out before pulling the digest to prove it is publicly readable.
           docker logout ghcr.io
           docker image rm "$IMAGE:$tag"
           docker pull "$image_ref"

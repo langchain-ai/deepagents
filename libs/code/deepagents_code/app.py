@@ -489,6 +489,10 @@ messy tail.
 """
 
 
+class _MissingOffloadGraphError(Exception):
+    """The server does not expose the optional `offload` operation graph."""
+
+
 def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
     """Return the absolute cutoff index of a `_summarization_event`.
 
@@ -14782,7 +14786,9 @@ class DeepAgentsApp(App):
 
             # Local `Pregel` agents have no server operation graph, so they
             # drive the seeded `compact_conversation` tool call in-process
-            # instead.
+            # instead. Custom server graphs likewise omit the optional
+            # operation graph and fall back to this established path when the
+            # server reports that `offload` is absent.
             local_seeded = self._remote_agent() is None
             # Own the seeded tool-call id here so a failed run can clean up the
             # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
@@ -14797,9 +14803,22 @@ class DeepAgentsApp(App):
                         config, seed_tool_call_id
                     )
                 else:
-                    tool_error = await self._drive_offload_operation_graph(
-                        config, state_values
-                    )
+                    try:
+                        tool_error = await self._drive_offload_operation_graph(
+                            config, state_values
+                        )
+                    except _MissingOffloadGraphError:
+                        # `generate_langgraph_json()` preserves custom graph
+                        # references without requiring an undocumented paired
+                        # operation graph. They used seeded compaction before
+                        # the operation graph existed, so retain that behavior
+                        # rather than making `/offload` depend on a graph the
+                        # custom server never registered.
+                        local_seeded = True
+                        seed_tool_call_id = str(uuid.uuid4())
+                        tool_error = await self._drive_local_seeded_compaction(
+                            config, seed_tool_call_id
+                        )
             except ClientHookStopError:
                 # The seeded driver mounts the stop reason itself before
                 # raising; the operation graph's hook fulfillment has no such
@@ -15093,11 +15112,14 @@ class DeepAgentsApp(App):
                 `_handle_offload` handles both paths uniformly.
 
         Raises:
+            _MissingOffloadGraphError: If a custom server graph does not
+                register the optional `offload` operation graph.
             RuntimeError: If the app is not connected to its server graph, or if
                 the thread's messages could not be read back before the run
                 (replaying an empty list would truncate the conversation).
         """
         from langgraph.types import Command
+        from langgraph_sdk.errors import NotFoundError
 
         from deepagents_code.config import settings
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
@@ -15353,6 +15375,12 @@ class DeepAgentsApp(App):
                     "without reporting a result. Your conversation is "
                     "unchanged. Run /context to confirm, then try again."
                 )
+        except NotFoundError as exc:
+            # The named graph is optional: custom `graph_ref` configurations
+            # intentionally register only `agent`. Keep the HTTP detail out of
+            # the driver-selection policy in `_handle_offload` and fall back to
+            # the seeded path there.
+            raise _MissingOffloadGraphError from exc
         finally:
             # A run on the named `offload` graph rebinds the server thread's
             # `graph_id`, so a later out-of-run `aupdate_state(as_node="model")`

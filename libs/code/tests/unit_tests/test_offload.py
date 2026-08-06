@@ -4171,6 +4171,36 @@ class TestOffloadDriverSelection:
         operation.assert_awaited_once()
         seeded.assert_not_awaited()
 
+    async def test_custom_server_graph_falls_back_to_seeded_compaction(self) -> None:
+        """A custom graph without `offload` retains the pre-operation behavior."""
+        from deepagents_code.app import _MissingOffloadGraphError
+
+        app = DeepAgentsApp()
+        before = _state_values(_make_dict_messages(2))
+        after = _state_values(_make_dict_messages(2), _summary_event(1))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    AsyncMock(side_effect=[before, after]),
+                ),
+                patch.object(
+                    app,
+                    "_drive_offload_operation_graph",
+                    AsyncMock(side_effect=_MissingOffloadGraphError()),
+                ) as operation,
+                patch.object(
+                    app, "_drive_local_seeded_compaction", AsyncMock(return_value=None)
+                ) as seeded,
+            ):
+                await app._handle_offload()
+
+        operation.assert_awaited_once()
+        seeded.assert_awaited_once()
+
     async def test_local_agent_uses_only_the_seeded_driver(self) -> None:
         """A local in-process `Pregel` agent must never stream the named graph."""
         app = DeepAgentsApp()

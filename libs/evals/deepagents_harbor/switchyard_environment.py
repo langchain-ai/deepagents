@@ -67,6 +67,25 @@ def _python_http_command(path: str, *, parse_json: bool) -> str:
     return shlex.join(["python", "-c", script])
 
 
+def _bash_health_command() -> str:
+    """Build a dependency-free HTTP health probe for the main container.
+
+    Harbor task images do not necessarily include Python, curl, wget, or netcat
+    before the agent is installed. Bash is part of the task image contract, so
+    its `/dev/tcp` support can verify both Compose DNS and the HTTP endpoint.
+
+    Returns:
+        Shell-safe command that succeeds only for an HTTP 200 response.
+    """
+    script = (
+        "exec 3<>/dev/tcp/switchyard/4000; "
+        "printf 'GET /health HTTP/1.0\\r\\nHost: switchyard\\r\\n\\r\\n' >&3; "
+        "IFS= read -r status <&3; "
+        "[[ $status == HTTP/*' 200 '* ]]"
+    )
+    return shlex.join(["bash", "-lc", script])
+
+
 class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
     """Run Switchyard beside Harbor's main service in a LangSmith sandbox.
 
@@ -175,11 +194,13 @@ class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
         await self._wait_for_switchyard()
 
     async def _wait_for_switchyard(self) -> None:
-        command = _python_http_command("/health", parse_json=False)
+        command = _bash_health_command()
+        last_failure = ""
         for _ in range(_HEALTH_TIMEOUT_SECONDS // 2):
             result = await self.exec(command, cwd="/", timeout_sec=15)
             if result.return_code == 0:
                 return
+            last_failure = (result.stderr or result.stdout or "").strip()[-500:]
             await asyncio.sleep(2)
 
         logs = await self._compose_exec(
@@ -187,7 +208,8 @@ class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
             timeout_sec=15,
         )
         detail = (logs.stderr or logs.stdout or "")[-1000:]
-        msg = f"Switchyard sidecar did not become healthy: {detail}"
+        probe = f" Probe failure: {last_failure}." if last_failure else ""
+        msg = f"Switchyard sidecar did not become healthy.{probe} Logs: {detail}"
         raise RuntimeError(msg)
 
     async def _snapshot_switchyard_stats(self) -> None:

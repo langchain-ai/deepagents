@@ -40,6 +40,17 @@ def test_python_http_command_uses_only_internal_switchyard_origin() -> None:
     assert "json.load(response)" in stats
 
 
+def test_bash_health_command_does_not_require_http_client() -> None:
+    command = switchyard_environment._bash_health_command()
+
+    assert command.startswith("bash -lc ")
+    assert "/dev/tcp/switchyard/4000" in command
+    assert "GET /health HTTP/1.0" in command
+    assert " 200 " in command
+    assert "python" not in command
+    assert "curl" not in command
+
+
 async def test_docker_daemon_start_detaches_from_langsmith_command() -> None:
     environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
     environment.logger = SimpleNamespace(debug=lambda *_args: None)

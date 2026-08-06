@@ -16,6 +16,7 @@ from deepagents_code.hooks.models.domain import (
     NotificationEvent,
     PermissionRequestEvent,
     PostToolUseEvent,
+    PostToolUseFailureEvent,
     PreCompactEvent,
     PreToolUseEvent,
     SessionEndEvent,
@@ -256,7 +257,11 @@ def _match_target(
 ) -> str | None:
     event = invocation.event
     if matcher_field == "tool_name" and isinstance(
-        event, PermissionRequestEvent | PreToolUseEvent | PostToolUseEvent
+        event,
+        PermissionRequestEvent
+        | PreToolUseEvent
+        | PostToolUseEvent
+        | PostToolUseFailureEvent,
     ):
         return to_wire_tool_name(event.call.name, mcp_server=event.call.mcp_server)
     if matcher_field == "notification_type" and isinstance(event, NotificationEvent):

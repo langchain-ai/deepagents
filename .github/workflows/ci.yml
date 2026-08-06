@@ -435,6 +435,58 @@ jobs:
           echo "$STATUS"
           echo "$STATUS" | grep 'nothing to commit, working tree clean'
 
+  drbench-dataset:
+    name: "🗂️ Build DRBench dataset"
+    needs: changes
+    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    # `datasets/drbench-evals` commits no task directories: all 100 are generated from
+    # upstream's configs at the pinned commit. Since the generated tree is no longer in
+    # the PR diff, this job is what proves generation still works and is reproducible.
+    # `make dataset-check` builds the dataset twice and diffs -- catching a
+    # nondeterministic generator, which would otherwise silently give this runner and a
+    # developer's laptop different datasets and make their scores incomparable.
+    env:
+      UV_FROZEN: "true"
+    defaults:
+      run:
+        working-directory: "libs/evals"
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "🐍 Set up Python 3.12 + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: drbench-dataset
+          working-directory: "libs/evals"
+
+      - name: "📦 Install Dependencies"
+        shell: bash
+        run: uv sync
+
+      - name: "🔁 Verify generation is deterministic"
+        shell: bash
+        run: make dataset-check
+
+      - name: "🗂️ Build the dataset in place"
+        shell: bash
+        run: make dataset
+
+      # The generated task directories are git-ignored, so building them must leave the
+      # tree clean. A failure here means a generated path escaped .gitignore.
+      - name: "🧹 Verify Clean Working Directory"
+        shell: bash
+        run: |
+          set -eu
+          STATUS="$(git status)"
+          echo "$STATUS"
+          echo "$STATUS" | grep 'nothing to commit, working tree clean'
+
   # Validates every helper script under .github/scripts/tests/. Job id/name
   # are kept for branch-protection compatibility; rename only with a coordinated PR.
   check-release-options:
@@ -485,6 +537,7 @@ jobs:
       - test-vercel
       - test-quickjs
       - test-quickjs-sdk-smoke
+      - drbench-dataset
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

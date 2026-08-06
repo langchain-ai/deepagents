@@ -101,7 +101,7 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--dataset "$HARBOR_DATASET"' in run_step
     assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in run_step
     # Results are written under a jobs dir the aggregate job later collects.
-    assert "--jobs-dir harbor-jobs/" in run_step
+    assert '--jobs-dir "$HARBOR_JOBS_DIR"' in run_step
     # LangSmith is driven by harbor's stock plugin (harbor-langsmith >=0.3.0 honors
     # experiment_name, so all shards of a leaf converge on one queryable experiment).
     assert "--plugin langsmith" in run_step

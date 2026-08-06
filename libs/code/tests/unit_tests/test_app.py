@@ -3495,8 +3495,7 @@ class TestCtrlCCopySelection:
             assert chat is not None
             chat.value = ""
 
-            with patch.object(app, "notify") as mock_notify:
-                app.action_quit_or_interrupt()
+            app.action_quit_or_interrupt()
             await pilot.pause()
 
             assert user_message.has_class("-cancelled")
@@ -3505,10 +3504,6 @@ class TestCtrlCCopySelection:
             # Ctrl+C is the quit/copy flow: the prompt must NOT be restored to
             # the input (that behavior is exclusive to the Esc path).
             assert chat.value == ""
-            assert not any(
-                call.args and call.args[0] == "Message restored to input"
-                for call in mock_notify.call_args_list
-            )
 
     async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
         """Ctrl+C with a non-Input/TextArea widget focused never copies."""
@@ -5112,7 +5107,8 @@ class TestMessageQueue:
             assert chat.value == "do the thing"
             worker.cancel.assert_called_once()
             assert active.has_class("-cancelled")
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            # The restored text is its own confirmation: no toast.
+            mock_notify.assert_not_called()
 
     async def test_escape_restores_interrupted_message_media(self) -> None:
         """Restored multimodal prompts keep their backing media attachments."""
@@ -5152,7 +5148,7 @@ class TestMessageQueue:
             assert images[0].placeholder == "[image 1]"
             worker.cancel.assert_called_once()
             assert active.has_class("-cancelled")
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            mock_notify.assert_not_called()
 
     async def test_escape_interrupt_keeps_existing_input_draft(self) -> None:
         """A non-empty draft is preserved when the agent is interrupted."""
@@ -5192,7 +5188,7 @@ class TestMessageQueue:
 
             assert chat.value == "do the thing"
             worker.cancel.assert_called_once()
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            mock_notify.assert_not_called()
 
     async def test_escape_interrupt_without_active_message_cancels_only(self) -> None:
         """Interrupting with no tracked prompt cancels without restoring."""

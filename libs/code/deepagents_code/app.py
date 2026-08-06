@@ -17628,8 +17628,11 @@ class DeepAgentsApp(App):
         submission) only when the input holds no draft, so typed text is never
         clobbered. Unlike the queued-message pop, this path does not consume
         the message — the interrupted `UserMessage` stays visible in the
-        transcript, dimmed via `set_cancelled()` — so when it does not restore
-        it stays silent rather than reporting a "discarded" outcome.
+        transcript, dimmed via `set_cancelled()`.
+
+        The restore is deliberately silent: the text reappearing in the chat
+        input is its own confirmation, so a toast would only cover the transcript
+        (worse in a tiled terminal) to report something already on screen.
 
         Restore is also skipped once model text or a tool call is visible for
         the turn (`_active_turn_visible_output_started`). Returning the prompt
@@ -17658,7 +17661,6 @@ class DeepAgentsApp(App):
         snapshot = message.media_snapshot
         if snapshot is not None:
             self._image_tracker.restore(snapshot)
-        self.notify("Message restored to input", timeout=2)
 
     def _cleanup_external_event_source_sync(self) -> None:
         """Synchronously close the external event listener and unlink its socket.

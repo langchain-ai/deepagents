@@ -1,0 +1,143 @@
+diff --git a/crates/switchyard-py/src/libsy_bindings.rs b/crates/switchyard-py/src/libsy_bindings.rs
+index 7f13746..9ecc6f4 100644
+--- a/crates/switchyard-py/src/libsy_bindings.rs
++++ b/crates/switchyard-py/src/libsy_bindings.rs
+@@ -13,3 +13,4 @@ use switchyard_libsy::{
+-    Algorithm, ClassifierContractConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
+-    LlmClassifierConfig, LlmFallback, LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, PickerMode,
+-    Random, StageRouter, StageRouterConfig, TaskClassifierConfig,
++    Algorithm, ClassifierContractConfig, EscalationJudgeConfig, HandoffNoteConfig,
++    LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTarget, LlmTargetSet,
++    LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter, StageRouterConfig,
++    TaskClassifierConfig,
+@@ -261,0 +263,7 @@ fn noop_algorithm() -> PyAlgorithm {
++/// Construct single-target passthrough routing.
++#[pyfunction(name = "passthrough")]
++fn passthrough_algorithm(py: Python<'_>, target: Py<PyLlmTarget>) -> PyResult<PyAlgorithm> {
++    let target = target.bind(py).try_borrow()?.clone_core(py);
++    Ok(PyAlgorithm::new(Arc::new(Passthrough::new(target))))
++}
++
+@@ -310,0 +319,39 @@ fn llm_task_classifier_algorithm(
++/// Construct trajectory-judged escalation routing.
++#[pyfunction(name = "llm_escalation")]
++#[pyo3(signature = (
++    judge_target,
++    efficient_target,
++    capable_target,
++    *,
++    confirmations=2,
++    recent_turn_window=28,
++    window_message_chars=500,
++    max_output_tokens=4096
++))]
++#[allow(clippy::too_many_arguments)]
++fn llm_escalation_algorithm(
++    py: Python<'_>,
++    judge_target: Py<PyLlmTarget>,
++    efficient_target: Py<PyLlmTarget>,
++    capable_target: Py<PyLlmTarget>,
++    confirmations: u32,
++    recent_turn_window: usize,
++    window_message_chars: usize,
++    max_output_tokens: u64,
++) -> PyResult<PyAlgorithm> {
++    let algorithm = LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
++        judge_target: judge_target.bind(py).try_borrow()?.clone_core(py),
++        efficient_target: efficient_target.bind(py).try_borrow()?.clone_core(py),
++        capable_target: capable_target.bind(py).try_borrow()?.clone_core(py),
++        contract: ClassifierContractConfig::default(),
++        config: EscalationJudgeConfig {
++            confirmations,
++            recent_turn_window,
++            window_message_chars,
++        },
++        max_output_tokens,
++    })
++    .map_err(|error| PyValueError::new_err(error.to_string()))?;
++    Ok(PyAlgorithm::new(Arc::new(algorithm)))
++}
++
+@@ -405,0 +453 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
++    libsy_module.add_function(wrap_pyfunction!(passthrough_algorithm, &libsy_module)?)?;
+@@ -410,0 +459 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
++    libsy_module.add_function(wrap_pyfunction!(llm_escalation_algorithm, &libsy_module)?)?;
+diff --git a/switchyard/libsy/algorithms.py b/switchyard/libsy/algorithms.py
+index 92e9e74..41d779f 100644
+--- a/switchyard/libsy/algorithms.py
++++ b/switchyard/libsy/algorithms.py
+@@ -6,0 +7 @@ from switchyard_rust.libsy import llm_task_classifier as llm_task_classifier
++from switchyard_rust.libsy import llm_escalation as llm_escalation
+@@ -7,0 +9 @@ from switchyard_rust.libsy import noop as noop
++from switchyard_rust.libsy import passthrough as passthrough
+@@ -11 +13,8 @@ from switchyard_rust.libsy import stage_router as stage_router
+-__all__ = ["llm_task_classifier", "noop", "random", "stage_router"]
++__all__ = [
++    "llm_escalation",
++    "llm_task_classifier",
++    "noop",
++    "passthrough",
++    "random",
++    "stage_router",
++]
+diff --git a/tests/test_libsy_minimal_bindings.py b/tests/test_libsy_minimal_bindings.py
+index b3182cd..406fb08 100644
+--- a/tests/test_libsy_minimal_bindings.py
++++ b/tests/test_libsy_minimal_bindings.py
+@@ -62,0 +63,10 @@ async def test_random_runs_with_a_python_client() -> None:
++async def test_passthrough_runs_its_target() -> None:
++    client = EchoClient("baseline")
++    algorithm = algorithms.passthrough(LlmTarget("baseline", client))
++
++    decisions, response = await algorithm.run(request_body())
++
++    assert decisions == [{"selected_model": "baseline", "reasoning": None}]
++    assert response["model"] == "baseline"
++
++
+@@ -110,0 +121,45 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
++async def test_escalation_latches_by_session_after_confirmations() -> None:
++    class JudgeClient(EchoClient):
++        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
++            self.calls.append(request)
++            return {
++                "model": self.model,
++                "outputs": [
++                    {
++                        "role": "assistant",
++                        "content": [
++                            {
++                                "type": "text",
++                                "text": '{"escalate":true,"reason":"stuck"}',
++                            }
++                        ],
++                        "stop_reason": "end_turn",
++                    }
++                ],
++            }
++
++    judge = JudgeClient("judge")
++    weak = EchoClient("weak")
++    strong = EchoClient("strong")
++    algorithm = algorithms.llm_escalation(
++        LlmTarget("judge", judge),
++        LlmTarget("weak", weak),
++        LlmTarget("strong", strong),
++        confirmations=2,
++    )
++    headers = {"x-switchyard-session-id": "trial-1"}
++
++    first = await algorithm.run(request_body(), headers=headers)
++    second = await algorithm.run(request_body(), headers=headers)
++    third = await algorithm.run(request_body(), headers=headers)
++
++    assert [first[1]["model"], second[1]["model"], third[1]["model"]] == [
++        "weak",
++        "strong",
++        "strong",
++    ]
++    assert len(judge.calls) == 2
++    assert len(weak.calls) == 2
++    assert len(strong.calls) == 2
++
++

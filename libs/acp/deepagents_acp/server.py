@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard
 from uuid import uuid4
 
@@ -90,9 +89,6 @@ SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
 McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
 """Type alias for ACP MCP server configuration variants."""
 
-ReplayContentBlock: TypeAlias = TextContentBlock | ImageContentBlock | AudioContentBlock
-"""ACP content blocks that can be reconstructed from LangChain messages."""
-
 _MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
 """Runtime MCP server classes used to detect legacy positional `new_session` calls."""
 
@@ -136,9 +132,11 @@ def _is_mcp_servers(
     return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
-def _replay_content_blocks(message: Any) -> list[ReplayContentBlock]:
+def _replay_content_blocks(
+    message: Any,
+) -> list[TextContentBlock | ImageContentBlock | AudioContentBlock]:
     """Convert persisted LangChain content into replayable ACP blocks."""
-    replay_blocks: list[ReplayContentBlock] = []
+    replay_blocks: list[TextContentBlock | ImageContentBlock | AudioContentBlock] = []
     for block in message.content_blocks:
         block_type = block.get("type")
         data = block.get("base64")
@@ -175,7 +173,6 @@ class AgentServerACP(ACPAgent):
         modes: SessionModeState | None = None,
         models: list[dict[str, str]] | None = None,
         load_sessions: bool = False,
-        checkpoint_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         """Initialize the ACP agent server with the given agent factory or compiled graph.
 
@@ -186,7 +183,6 @@ class AgentServerACP(ACPAgent):
               'description'
             load_sessions: Advertise and implement durable `session/load`. The agent graph
               must use a checkpointer that survives server restarts.
-            checkpoint_metadata: Metadata to add to every ACP session checkpoint.
         """
         super().__init__()
         self._cwd = ""
@@ -194,7 +190,6 @@ class AgentServerACP(ACPAgent):
         self._agent: CompiledStateGraph | None = None
         self._agent_session_id: str | None = None
         self._load_sessions = load_sessions
-        self._checkpoint_metadata = dict(checkpoint_metadata or {})
 
         if isinstance(agent, CompiledStateGraph):
             if modes is not None:
@@ -737,10 +732,8 @@ class AgentServerACP(ACPAgent):
     def _session_config(self, session_id: str) -> RunnableConfig:
         """Build the LangGraph config and durable metadata for an ACP session."""
         metadata = {
-            **self._checkpoint_metadata,
             _ACP_SESSION_METADATA_KEY: True,
             "cwd": self._session_cwds[session_id],
-            "updated_at": datetime.now(UTC).isoformat(),
         }
         if session_id in self._session_modes:
             metadata[_ACP_MODE_METADATA_KEY] = self._session_modes[session_id]
@@ -768,31 +761,23 @@ class AgentServerACP(ACPAgent):
         agent: CompiledStateGraph,
     ) -> None:
         """Replay persisted conversation entries before `session/load` returns."""
+        snapshots = [
+            snapshot
+            async for snapshot in agent.aget_state_history(self._session_config(session_id))
+        ]
+        messages: dict[str, Any] = {}
+        for snapshot in reversed(snapshots):
+            for message in snapshot.values.get("messages", []):
+                messages[message.id] = message
+
         active_tool_calls: dict[str, dict[str, Any]] = {}
-        for message in await self._persisted_messages(session_id, agent):
+        for message in messages.values():
             if message.type == "human":
                 await self._replay_human_message(session_id, message.id, message)
             elif message.type == "ai":
                 await self._replay_ai_message(session_id, message.id, message, active_tool_calls)
             elif message.type == "tool":
                 await self._replay_tool_message(session_id, message, active_tool_calls)
-
-    async def _persisted_messages(
-        self,
-        session_id: str,
-        agent: CompiledStateGraph,
-    ) -> list[Any]:
-        """Reconstruct messages removed from the latest state by compaction."""
-        snapshots = [
-            snapshot
-            async for snapshot in agent.aget_state_history(self._session_config(session_id))
-        ]
-        # Reassignment keeps a message's original position while taking its newest revision.
-        messages: dict[str, Any] = {}
-        for snapshot in reversed(snapshots):
-            for message in snapshot.values.get("messages", []):
-                messages[message.id] = message
-        return list(messages.values())
 
     async def _replay_human_message(
         self,

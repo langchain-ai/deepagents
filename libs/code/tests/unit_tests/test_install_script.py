@@ -665,25 +665,42 @@ def test_install_script_latest_version_with_python_rebuilds_tool_env(
 
 def test_install_script_out_of_date_auto_updates_without_tty(tmp_path: Path) -> None:
     """Out of date with no TTY to prompt: upgrade automatically (legacy path)."""
-    args = _run_install_script(
+    proc, args_path = _invoke(
         tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0"
     )
 
+    args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code"
+    # This path can't prompt, so the headline is the only notice the user gets
+    # that a version move is about to happen — it must still lead with the
+    # verdict rather than only explaining why no prompt appeared.
+    assert (
+        "Update available: deepagents-code 0.1.0 → 0.2.0 — updating (no TTY to prompt)."
+        in proc.stdout
+    )
 
 
 def test_install_script_assume_yes_updates_without_prompt(tmp_path: Path) -> None:
     """`DEEPAGENTS_CODE_YES=1` upgrades an out-of-date install without asking."""
-    args = _run_install_script(
+    proc, args_path = _invoke(
         tmp_path,
         {"DEEPAGENTS_CODE_YES": "1"},
         installed_version="0.1.0",
         latest_version="0.2.0",
     )
 
+    args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code"
+    # Unattended runs get the same verdict-first headline and changelog link as
+    # the interactive path; only the prompt is skipped.
+    output = proc.stdout + proc.stderr
+    assert "Update available: deepagents-code 0.1.0 → 0.2.0" in output
+    assert (
+        "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
+        "deepagents-code%3D%3D0.2.0" in output
+    )
 
 
 @pytest.mark.parametrize("assume_yes", ["true", "TRUE", "yes", " YES "])
@@ -756,7 +773,11 @@ def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> Non
 
     assert code == 0
     assert not args_path.exists()
-    # The headline must lead with the verdict, not the changelog link.
+    # The headline must lead with the verdict, not the changelog link. Assert
+    # presence before ordering: `.index` raises ValueError rather than failing
+    # as an assertion when a string is missing entirely.
+    assert "Update available: deepagents-code 0.1.0 → 0.2.0" in output
+    assert "What's new:" in output
     assert output.index(
         "Update available: deepagents-code 0.1.0 → 0.2.0"
     ) < output.index("What's new:")
@@ -960,8 +981,8 @@ def test_install_script_same_version_with_dependency_updates_says_dependencies_u
     The fake `dcode -v` reports the same version before and after install, so
     `PRE_VERSION == NEW_VERSION` and the same-version branch fires; the `± pkg==`
     diff in stderr must steer it away from the flat "already up to date" message.
-    Also verifies the raw uv diff is persisted to the cache install log and that
-    the success line points the user at it via the `Details:` suffix.
+    Also verifies the raw uv diff is persisted to the cache install log, which
+    the shared `Full log:` line points the user at.
     """
     proc, _ = _invoke(
         tmp_path,
@@ -972,9 +993,9 @@ def test_install_script_same_version_with_dependency_updates_says_dependencies_u
 
     assert proc.returncode == 0
     assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated. "
-        "Details: ~/.cache/deepagents-code/install.log"
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
     ) in proc.stdout
+    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
     assert "deepagents-code 0.1.8 already up to date" not in proc.stdout
     assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
         f"{_DEPENDENCY_UPDATE_DIFF}\n"
@@ -992,8 +1013,8 @@ def test_install_script_same_version_no_dependency_changes_says_up_to_date(
     nothing (only timing/summary noise), the flag must stay false so the plain
     "already up to date" message is emitted. Guards against the flag defaulting
     on, the conditional inverting, or the grep matching uv's noise lines. The
-    log is still written (the no-op stderr) but the `Details:` suffix is
-    suppressed, since there's no dependency change worth pointing at.
+    log is still written (the no-op stderr), so the shared `Full log:` pointer
+    still fires — only the dependency-change wording is suppressed.
     """
     proc, _ = _invoke(
         tmp_path,
@@ -1005,7 +1026,7 @@ def test_install_script_same_version_no_dependency_changes_says_up_to_date(
     assert proc.returncode == 0
     assert "deepagents-code 0.1.8 already up to date." in proc.stdout
     assert "dependencies were updated" not in proc.stdout
-    assert "Details: ~/.cache/deepagents-code/install.log" not in proc.stdout
+    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
     assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
         f"{_NO_PACKAGE_CHANGE_STDERR}\n"
     )
@@ -1031,23 +1052,23 @@ def test_install_script_same_version_with_new_dependency_says_dependencies_updat
 
     assert proc.returncode == 0
     assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated. "
-        "Details: ~/.cache/deepagents-code/install.log"
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
     ) in proc.stdout
+    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
     assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
         f"{_DEPENDENCY_ADDITION_DIFF}\n"
     )
 
 
-def test_install_script_dependency_update_without_writable_log_omits_details(
+def test_install_script_dependency_update_without_writable_log_omits_log_pointer(
     tmp_path: Path,
 ) -> None:
-    """When the log dir can't be created, the message drops the `Details:` suffix.
+    """When the log dir can't be created, no `Full log:` pointer is printed.
 
     Points `XDG_CACHE_HOME` under a regular file so `mkdir -p` fails, leaving
     `INSTALL_LOG` empty. The dependency-update message must still fire, just
     without a pointer to a log that was never written — guards against the
-    suffix being appended unconditionally.
+    pointer being printed unconditionally.
     """
     blocker = tmp_path / "blocker"
     blocker.write_text("")  # regular file; mkdir -p underneath must fail
@@ -1067,14 +1088,14 @@ def test_install_script_dependency_update_without_writable_log_omits_details(
         "deepagents-code 0.1.8 was already up to date; dependencies were updated."
         in proc.stdout
     )
-    assert "Details:" not in proc.stdout
+    assert "Full log:" not in proc.stdout
     assert not (blocker / "cache").exists()
 
 
-def test_install_script_dependency_update_with_failed_log_copy_omits_details(
+def test_install_script_dependency_update_with_failed_log_copy_omits_log_pointer(
     tmp_path: Path,
 ) -> None:
-    """When log creation succeeds but copying fails, the message omits `Details:`."""
+    """When log creation succeeds but copying fails, no `Full log:` pointer."""
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("root can write through directory permissions")
 
@@ -1101,7 +1122,7 @@ def test_install_script_dependency_update_with_failed_log_copy_omits_details(
         "deepagents-code 0.1.8 was already up to date; dependencies were updated."
         in proc.stdout
     )
-    assert "Details:" not in proc.stdout
+    assert "Full log:" not in proc.stdout
     assert not (install_log_dir / "install.log").exists()
 
 
@@ -1129,27 +1150,40 @@ def test_install_script_refuses_symlinked_log_dir(tmp_path: Path) -> None:
         "deepagents-code 0.1.8 was already up to date; dependencies were updated."
         in proc.stdout
     )
-    assert "Details:" not in proc.stdout
+    assert "Full log:" not in proc.stdout
     assert not (target / "install.log").exists()
 
 
-def _write_uv_receipt(tools: Path, extras: list[str]) -> None:
+def _write_uv_receipt(
+    tools: Path, extras: list[str], *, with_packages: dict[str, list[str]] | None = None
+) -> Path:
     """Stage a uv tool receipt recording the extras the install was built with.
 
     The install script reads `uv-receipt.toml` to detect extras that a bare
     re-run would drop; the fake `uv tool dir` points at `tmp_path / "tools"`,
-    so the receipt belongs under `tools/deepagents-code/`. Only the
-    `deepagents-code` subdir is created here — `_write_fake_tools` creates
-    `tools` itself and would fail if it already existed.
+    so the receipt belongs under `tools/deepagents-code/`. `parents=True`
+    creates `tools` as a side effect, which is why `_write_fake_tools` tolerates
+    a pre-existing `tools` — the two helpers may run in either order.
+
+    `with_packages` maps supplemental `uv tool install --with` package names to
+    their own extras. uv records these in the *same* `requirements` array as the
+    tool itself, so a receipt with them is what distinguishes a parser scoped to
+    the `deepagents-code` entry from one that grabs any `extras = [...]`.
+
+    Returns the receipt path so tests can mangle its permissions or contents.
     """
     receipt_dir = tools / "deepagents-code"
     receipt_dir.mkdir(parents=True, exist_ok=True)
     quoted = ", ".join(f'"{extra}"' for extra in extras)
-    (receipt_dir / "uv-receipt.toml").write_text(
-        "[tool]\n"
-        f'requirements = [{{ name = "deepagents-code", extras = [{quoted}], '
-        'specifier = "==0.1.0" }]\n'
-    )
+    entries = [
+        f'{{ name = "deepagents-code", extras = [{quoted}], specifier = "==0.1.0" }}'
+    ]
+    for name, pkg_extras in (with_packages or {}).items():
+        pkg_quoted = ", ".join(f'"{extra}"' for extra in pkg_extras)
+        entries.append(f'{{ name = "{name}", extras = [{pkg_quoted}] }}')
+    receipt = receipt_dir / "uv-receipt.toml"
+    receipt.write_text("[tool]\nrequirements = [" + ", ".join(entries) + "]\n")
+    return receipt
 
 
 def test_install_script_upgrade_footer_says_upgrade_complete(tmp_path: Path) -> None:
@@ -1170,6 +1204,29 @@ def test_install_script_upgrade_footer_says_upgrade_complete(tmp_path: Path) -> 
     assert proc.returncode == 0
     assert "✔ Upgrade complete. Run: dcode" in proc.stdout
     assert "Setup complete" not in proc.stdout
+
+
+def test_install_script_pinned_downgrade_footer_is_not_upgrade(tmp_path: Path) -> None:
+    """Pinning an older version must not claim an upgrade.
+
+    `bash -s -- 0.1.0` over an installed 0.1.19 moves the version but downwards.
+    The script has no semantic version comparison available in shell, so only an
+    unpinned run — which always resolves to latest — may say "Upgrade complete."
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "DEEPAGENTS_CODE_VERSION": "0.1.0",
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.0",
+        },
+        installed_version="0.1.19",
+        latest_version="0.1.19",
+    )
+
+    assert proc.returncode == 0
+    assert "Upgrade complete" not in proc.stdout
+    assert "✔ Setup complete. Run: dcode" in proc.stdout
 
 
 def test_install_script_fresh_install_footer_says_setup_complete(
@@ -1202,7 +1259,47 @@ def test_install_script_fresh_install_footer_says_setup_complete(
 
 
 def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
-    """Every run surfaces the persistent uv log, not just failures/dep bumps."""
+    """A successful upgrade surfaces the persistent uv log, not just failures."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF},
+        installed_version="0.1.18",
+        latest_version="0.1.19",
+    )
+
+    assert proc.returncode == 0
+    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
+
+
+def test_install_script_dependency_bump_prints_log_pointer_once(
+    tmp_path: Path,
+) -> None:
+    """The dep-bump success line defers to `Full log:` instead of repeating it."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF},
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert "dependencies were updated." in proc.stdout
+    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
+    # The success line used to carry its own `Details:` copy of the same path,
+    # printing it twice on consecutive lines.
+    assert "Details:" not in proc.stdout
+    assert proc.stdout.count("~/.cache/deepagents-code/install.log") == 1
+
+
+def test_install_script_omits_log_pointer_when_uv_wrote_nothing(
+    tmp_path: Path,
+) -> None:
+    """An empty log is a dead end — don't send the user to a zero-byte file.
+
+    uv writes nothing to stderr on a clean reinstall, so the log file exists but
+    holds nothing. The pointer is guarded on the file's size rather than on the
+    display name being set.
+    """
     proc, _ = _invoke(
         tmp_path,
         {},
@@ -1211,7 +1308,7 @@ def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
     )
 
     assert proc.returncode == 0
-    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
+    assert "Full log:" not in proc.stdout
 
 
 def test_install_script_warns_when_upgrade_drops_receipt_extras(tmp_path: Path) -> None:
@@ -1233,7 +1330,7 @@ def test_install_script_warns_when_upgrade_drops_receipt_extras(tmp_path: Path) 
 
     assert proc.returncode == 0
     assert (
-        "This install has extras that a bare upgrade will remove: anthropic,openai"
+        "This install has extras that a bare re-run will remove: anthropic,openai"
         in proc.stderr
     )
     assert (
@@ -1254,7 +1351,124 @@ def test_install_script_no_extras_warning_when_receipt_has_none(tmp_path: Path) 
     )
 
     assert proc.returncode == 0
-    assert "extras that a bare upgrade will remove" not in proc.stderr
+    assert "extras that a bare re-run will remove" not in proc.stderr
+
+
+def test_install_script_extras_ignores_supplemental_with_packages(
+    tmp_path: Path,
+) -> None:
+    """A `--with rich[jupyter]` entry is not reported as a deepagents-code extra.
+
+    uv records `--with` requirements in the same `requirements` array as the
+    tool. Suggesting `DEEPAGENTS_CODE_EXTRAS="jupyter"` would resolve to
+    `deepagents-code[jupyter]` — an extra that does not exist — while still
+    dropping the supplemental package, so the parse must be scoped to the
+    `deepagents-code` entry.
+    """
+    _write_uv_receipt(
+        tmp_path / "tools", ["anthropic"], with_packages={"rich": ["jupyter"]}
+    )
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert (
+        "This install has extras that a bare re-run will remove: anthropic"
+        in proc.stderr
+    )
+    assert "jupyter" not in proc.stderr
+
+
+def test_install_script_no_extras_warning_when_only_with_package_has_extras(
+    tmp_path: Path,
+) -> None:
+    """A supplemental package's extras alone must not trigger the warning."""
+    _write_uv_receipt(tmp_path / "tools", [], with_packages={"rich": ["jupyter"]})
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "extras that a bare re-run will remove" not in proc.stderr
+    assert "Could not read" not in proc.stderr
+
+
+def test_install_script_warns_when_receipt_is_unparseable(tmp_path: Path) -> None:
+    """A receipt uv wrapped across lines warns instead of degrading to silence.
+
+    uv currently keeps each requirement's inline table on one line. If a future
+    formatter wraps it, the extras are unreadable — but the rebuild still drops
+    them, so "couldn't tell" must not be reported the same way as "none".
+    """
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    receipt.write_text(
+        '[tool]\nrequirements = [\n    { name = "deepagents-code", extras = [\n'
+        '        "anthropic",\n    ] },\n]\n'
+    )
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert "re-run with the same value" in proc.stderr
+
+
+def test_install_script_warns_when_receipt_is_symlinked(tmp_path: Path) -> None:
+    """A symlinked receipt is refused, but the refusal is announced.
+
+    Reading through the symlink is the security problem; staying quiet about it
+    is the usability one — the run still rebuilds and still drops the extras.
+    """
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    target = tmp_path / "elsewhere-receipt.toml"
+    target.write_text(receipt.read_text())
+    receipt.unlink()
+    receipt.symlink_to(target)
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert "extras that a bare re-run will remove" not in proc.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permissions")
+def test_install_script_warns_when_receipt_is_unreadable(tmp_path: Path) -> None:
+    """An unreadable receipt (e.g. written by a prior `sudo` run) warns."""
+    receipt = _write_uv_receipt(tmp_path / "tools", ["anthropic"])
+    receipt.chmod(0o000)
+
+    try:
+        proc, _ = _invoke(
+            tmp_path,
+            {},
+            installed_version="0.1.0",
+            latest_version="0.2.0",
+        )
+    finally:
+        receipt.chmod(0o644)
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
 
 
 def test_install_script_no_extras_warning_when_receipt_missing(tmp_path: Path) -> None:
@@ -1267,7 +1481,7 @@ def test_install_script_no_extras_warning_when_receipt_missing(tmp_path: Path) -
     )
 
     assert proc.returncode == 0
-    assert "extras that a bare upgrade will remove" not in proc.stderr
+    assert "extras that a bare re-run will remove" not in proc.stderr
 
 
 def test_install_script_no_extras_warning_when_extras_explicit(tmp_path: Path) -> None:
@@ -1282,7 +1496,7 @@ def test_install_script_no_extras_warning_when_extras_explicit(tmp_path: Path) -
     )
 
     assert proc.returncode == 0
-    assert "extras that a bare upgrade will remove" not in proc.stderr
+    assert "extras that a bare re-run will remove" not in proc.stderr
 
 
 def test_install_script_extras_interrupt_decline_aborts_before_uv(
@@ -1306,7 +1520,7 @@ def test_install_script_extras_interrupt_decline_aborts_before_uv(
 
     assert code == 0
     assert "Continue anyway and remove them?" in output
-    assert "Aborted. No changes made." in output
+    assert "Aborted. deepagents-code was left unchanged." in output
     assert not args_path.exists()
 
 
@@ -1324,9 +1538,37 @@ def test_install_script_extras_interrupt_accept_proceeds(tmp_path: Path) -> None
 
     assert code == 0
     assert "Continue anyway and remove them?" in output
-    assert "Aborted. No changes made." not in output
+    assert "Aborted. deepagents-code was left unchanged." not in output
     args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_extras_assume_yes_skips_interrupt_with_tty(
+    tmp_path: Path,
+) -> None:
+    """`DEEPAGENTS_CODE_YES=1` skips the extras prompt even on an attached TTY.
+
+    The non-pty sibling below can't prove this: without a TTY `can_prompt` is
+    already false, so it passes whether or not the `ASSUME_YES` half of the
+    guard exists. A terminal *and* a pre-answered yes (tmux, `docker run -t`, a
+    CI runner that allocates a pty) is the combination where dropping that half
+    would hang the run forever. No answers are fed, so a prompt would block
+    until `_invoke_interactive`'s timeout.
+    """
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
+
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {"DEEPAGENTS_CODE_YES": "1"},
+        answer=[],
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert code == 0
+    assert "extras that a bare re-run will remove" in output
+    assert "Continue anyway and remove them?" not in output
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
 def test_install_script_extras_assume_yes_skips_interrupt(tmp_path: Path) -> None:
@@ -1341,8 +1583,8 @@ def test_install_script_extras_assume_yes_skips_interrupt(tmp_path: Path) -> Non
     )
 
     assert proc.returncode == 0
-    assert "extras that a bare upgrade will remove" in proc.stderr
-    assert "Aborted. No changes made." not in proc.stderr
+    assert "extras that a bare re-run will remove" in proc.stderr
+    assert "Aborted. deepagents-code was left unchanged." not in proc.stderr
     assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
@@ -1370,7 +1612,7 @@ def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:
         "deepagents-code 0.1.8 was already up to date; dependencies were updated."
         in proc.stdout
     )
-    assert "Details:" not in proc.stdout
+    assert "Full log:" not in proc.stdout
     assert target.read_text() == "keep me\n"
 
 
@@ -1395,9 +1637,9 @@ def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(
 
     assert proc.returncode == 0
     assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated. "
-        "Details: ~/.cache/deepagents-code/install.log"
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
     ) in proc.stdout
+    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
     assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
         f"{_DEPENDENCY_UPDATE_DIFF}\n"
     )
@@ -1407,7 +1649,7 @@ def test_install_script_log_path_outside_home_stays_absolute(tmp_path: Path) -> 
     """A log path outside `$HOME` is shown verbatim, not tilde-collapsed.
 
     The `~` collapse only fires for paths under `$HOME`; an `XDG_CACHE_HOME`
-    elsewhere must surface the absolute path in the `Details:` suffix.
+    elsewhere must surface the absolute path in the `Full log:` pointer.
     """
     external = tmp_path / "external-cache"
 
@@ -1423,8 +1665,8 @@ def test_install_script_log_path_outside_home_stays_absolute(tmp_path: Path) -> 
 
     assert proc.returncode == 0
     expected_log = external / "deepagents-code" / "install.log"
-    assert f"Details: {expected_log}" in proc.stdout
-    assert "Details: ~/" not in proc.stdout
+    assert f"Full log: {expected_log}" in proc.stdout
+    assert "Full log: ~/" not in proc.stdout
     assert expected_log.read_text() == f"{_DEPENDENCY_UPDATE_DIFF}\n"
 
 

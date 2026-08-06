@@ -546,10 +546,26 @@ copy_install_log() {
     path_is_under_home "$install_log_dir" || return 1
   fi
   [ ! -L "$INSTALL_LOG" ] || return 1
-  rm -f "$INSTALL_LOG" 2>/dev/null || return 1
-  # Publish the already-captured stderr without opening the destination for
-  # writing. `ln` fails if an attacker wins the race by creating install.log.
-  ln "$uv_stderr" "$INSTALL_LOG" 2>/dev/null
+  # Publish the already-captured stderr without opening the canonical path for
+  # writing. `ln` fails if an attacker wins the race by creating install.log,
+  # but it also fails with EXDEV whenever mktemp's TMPDIR and the cache dir sit
+  # on different filesystems — /tmp on tmpfs is the default on most Linux
+  # distros, so the hardlink alone would silently disable the log there. Fall
+  # back to a copy, staged under a sibling name: the destination is still never
+  # opened at the canonical path (and install_log_dir is a validated,
+  # non-symlink 0700 dir), and a failure leaves the previous run's log intact
+  # instead of deleting it before finding out.
+  local staged="${INSTALL_LOG}.$$"
+  rm -f "$staged" 2>/dev/null || return 1
+  if ! ln "$uv_stderr" "$staged" 2>/dev/null \
+    && ! cp "$uv_stderr" "$staged" 2>/dev/null; then
+    rm -f "$staged" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
+    rm -f "$staged" 2>/dev/null || true
+    return 1
+  fi
 }
 
 # Epoch mtime of the lock directory, used as a fallback reference time when the
@@ -1381,21 +1397,49 @@ fi
 # the user re-runs this installer without DEEPAGENTS_CODE_EXTRAS, uv rebuilds
 # the environment against bare `deepagents-code` and silently drops those
 # extras' packages - warn before that happens so they can re-run with the
-# extras preserved. Only relevant on the default path (no explicit EXTRAS /
-# editable swap), where the user asked for nothing new.
+# extras preserved. Checked whenever the caller passed no EXTRAS and the
+# existing install isn't editable, which covers plain upgrades as well as the
+# same-version repair paths below (both re-run `uv tool install`).
 #
 # The receipt records every requirement in one array: the tool itself plus any
 # supplemental `--with` packages. Only parse extras from the `deepagents-code`
 # requirement - a `--with rich[jupyter]` entry must not surface as a tool
 # extra, since `DEEPAGENTS_CODE_EXTRAS` installs `deepagents-code[...]` and
 # cannot preserve supplemental packages.
+#
+# EXTRAS_UNREADABLE separates "this install has no extras" from "we could not
+# tell". Both would otherwise reach the rebuild silently, and a false negative
+# here costs the user the exact packages this check exists to protect - so an
+# unreadable or unparseable receipt warns rather than degrading to quiet.
 INSTALLED_EXTRAS=""
+EXTRAS_UNREADABLE=false
+receipt=""
 if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ] && [ -n "$UV_TOOL_DIR" ]; then
   receipt="${UV_TOOL_DIR}/deepagents-code/uv-receipt.toml"
-  if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
-    INSTALLED_EXTRAS=$(sed -nE 's/.*name = "deepagents-code"[^}]*extras = \[([^]]*)\].*/\1/p' "$receipt" \
-      | head -1 \
-      | tr -d ' "' || true)
+  if [ -L "$receipt" ]; then
+    # Refusing to read through a symlink matches the install-log hardening
+    # above, but the refusal must still be announced - staying silent here is
+    # indistinguishable from "no extras" to the user losing them.
+    EXTRAS_UNREADABLE=true
+  elif [ -f "$receipt" ] && [ ! -r "$receipt" ]; then
+    # A receipt written by a previous `sudo` run and re-read as a normal user.
+    EXTRAS_UNREADABLE=true
+  elif [ -f "$receipt" ]; then
+    # Isolate the deepagents-code inline table first ([^{}] cannot cross into a
+    # neighbouring requirement), then read extras out of that entry alone. uv
+    # keeps each inline table on one line; if a future formatter wraps it, the
+    # entry match fails while the package name is still present - that is the
+    # unparseable case, not an extras-free one.
+    receipt_entry=$(sed -nE \
+      's/.*(\{[^{}]*name = "deepagents-code"[^{}]*\}).*/\1/p' "$receipt" \
+      | head -1) || receipt_entry=""
+    if [ -n "$receipt_entry" ]; then
+      INSTALLED_EXTRAS=$(printf '%s\n' "$receipt_entry" \
+        | sed -nE 's/.*extras = \[([^]]*)\].*/\1/p' \
+        | tr -d ' "')
+    elif grep -q 'deepagents-code' "$receipt" 2>/dev/null; then
+      EXTRAS_UNREADABLE=true
+    fi
   fi
 fi
 
@@ -1516,22 +1560,33 @@ if [ -n "$cache_root" ]; then
     fi
   fi
 fi
-if [ -z "$INSTALL_LOCK_KIND" ]; then
-  acquire_install_lock
-fi
-if [ -n "$INSTALLED_EXTRAS" ]; then
-  log_warn "This install has extras that a bare upgrade will remove: ${INSTALLED_EXTRAS}"
+# Warn (and offer to back out) before the lock is taken: this block only reads
+# a file and asks a question, so holding the install lock across an unbounded
+# human wait would block a concurrent installer - which spins silently, since
+# it can't reclaim a lock whose owner is alive - for no reason.
+if [ "$EXTRAS_UNREADABLE" = true ]; then
+  log_warn "Could not read ${receipt} to check which extras this install was built with."
+  log_warn "  If it was built with DEEPAGENTS_CODE_EXTRAS, re-run with the same value or those packages will be removed."
+elif [ -n "$INSTALLED_EXTRAS" ]; then
+  log_warn "This install has extras that a bare re-run will remove: ${INSTALLED_EXTRAS}"
   log_warn "  To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS=\"${INSTALLED_EXTRAS}\""
   # Give an interactive user the chance to back out before uv rebuilds the
-  # environment and drops those packages. Non-interactive runs (no TTY, or an
-  # unattended DEEPAGENTS_CODE_YES) can't answer, so they keep the warning
-  # only; an explicit YES is an instruction to proceed, not to abort.
+  # environment and drops those packages. No TTY means nobody can answer; an
+  # explicit DEEPAGENTS_CODE_YES means they already did. Both keep the warning
+  # and proceed - a pre-answered yes is an instruction to continue, not to
+  # abort.
   if [ "$ASSUME_YES" != "1" ] && can_prompt; then
     if ! prompt_yn "Continue anyway and remove them?"; then
-      log_info "Aborted. No changes made."
+      # This path can also skip a same-version PATH repair (the branches above
+      # that reinstall a current version), so name what was left undone rather
+      # than implying the run had nothing else to do.
+      log_info "Aborted. deepagents-code was left unchanged."
       exit 0
     fi
   fi
+fi
+if [ -z "$INSTALL_LOCK_KIND" ]; then
+  acquire_install_lock
 fi
 if [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
@@ -2549,9 +2604,10 @@ elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
   # signal that the reinstall actually moved packages.
   if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
-    # INSTALL_LOG_DISPLAY is empty exactly when no log was written, so the
-    # `:+` suffix appends the pointer only when there's a log to point at.
-    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated.${INSTALL_LOG_DISPLAY:+ Details: ${INSTALL_LOG_DISPLAY}}"
+    # No log pointer here: the "Full log:" line below prints it on every run
+    # that wrote one, and this branch would otherwise repeat the same path on
+    # consecutive lines.
+    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
   else
     log_success "deepagents-code ${NEW_VERSION} already up to date."
   fi
@@ -2561,10 +2617,13 @@ else
   log_success "deepagents-code installed."
 fi
 # The log captured uv's full stderr (dependency diff, warnings, rebuild
-# notice). Point at it on every run so users can inspect what changed -
-# non-verbose mode trims those lines from the terminal and piped
-# `curl | bash` runs lose scrollback.
-if [ -n "$INSTALL_LOG_DISPLAY" ]; then
+# notice). Point at it after any successful install so users can inspect what
+# changed - non-verbose mode trims those lines from the terminal, and a
+# non-TTY run (CI, `curl | bash` under a pipe) has no scrollback to go back
+# to. The failure path prints its own pointer and exits before reaching here.
+# Test on the file rather than the display name: uv writes nothing to stderr
+# on a clean no-op reinstall, and pointing at an empty log is a dead end.
+if [ -n "$INSTALL_LOG_DISPLAY" ] && [ -s "$INSTALL_LOG" ]; then
   log_info "Full log: ${INSTALL_LOG_DISPLAY}"
 fi
 
@@ -2789,8 +2848,15 @@ fi
 # Done — footer wording depends on what changed:
 #   - same app version + dependency changes → "Dependencies updated."
 #   - already up to date                    → "Already installed."
-#   - version actually moved                → "Upgrade complete."
-#   - fresh install / editable→PyPI swap    → "Setup complete."
+#   - unpinned run that moved version       → "Upgrade complete."
+#   - everything else                       → "Setup complete."
+#
+# The last branch is a catch-all, not an enumerated set. It covers a fresh
+# install and an editable→PyPI swap, but also a *pinned* version move (VERSION
+# set) — `bash -s -- 0.1.0` over an installed 0.2.0 is a downgrade, and the
+# script has no version comparison to tell the two apart, so only the unpinned
+# case (which always resolves to latest) may claim an upgrade. It also covers
+# an empty NEW_VERSION, i.e. the post-install `dcode -v` probe failed.
 # ---------------------------------------------------------------------------
 if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ] && [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
@@ -2798,8 +2864,8 @@ if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] 
 elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
-elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
-  && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then
+elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -n "$PRE_VERSION" ] \
+  && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then
   footer_msg="Upgrade complete."
 else
   footer_msg="Setup complete."

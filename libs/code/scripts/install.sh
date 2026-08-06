@@ -470,8 +470,10 @@ prompt_yn() {
   if [ -t 0 ]; then
     printf "%s [y/N] " "$question"
     if ! read -r reply; then
-      log_warn "Could not read from terminal — skipping prompt."
-      return 2
+      # An attached terminal can report EOF when the user presses Ctrl-D. This
+      # is an interactive response, so preserve the [y/N] default and decline.
+      log_warn "Could not read from terminal — declining prompt."
+      return 1
     fi
   else
     printf "%s [y/N] " "$question" > /dev/tty

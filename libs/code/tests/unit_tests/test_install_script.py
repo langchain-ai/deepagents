@@ -815,10 +815,10 @@ def test_install_script_prompt_read_failure_continues_update(
     assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
-def test_install_script_attached_tty_read_failure_continues_update(
+def test_install_script_attached_tty_read_failure_declines_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An EOF on an attached terminal must not be treated as declining."""
+    """An EOF on an attached terminal must decline the update prompt."""
     script = tmp_path / "install.sh"
     source = SCRIPT.read_text(encoding="utf-8").replace(
         "    if ! read -r reply; then\n", "    if ! false; then\n", 1
@@ -832,9 +832,45 @@ def test_install_script_attached_tty_read_failure_continues_update(
     )
 
     assert code == 0
-    assert "Could not read from terminal — skipping prompt." in output
-    assert "Keeping deepagents-code 0.1.0" not in output
-    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+    assert "Could not read from terminal — declining prompt." in output
+    assert "Keeping deepagents-code 0.1.0" in output
+    assert not args_path.exists()
+
+
+def test_install_script_attached_tty_read_failure_declines_extras_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An EOF on an attached terminal must preserve installed extras."""
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
+    script = tmp_path / "install.sh"
+    source = SCRIPT.read_text(encoding="utf-8").replace(
+        _extract_shell_function("prompt_yn"),
+        """prompt_yn() {
+  PROMPT_CALLS=${PROMPT_CALLS:-0}
+  PROMPT_CALLS=$((PROMPT_CALLS + 1))
+  if [ "$PROMPT_CALLS" -eq 1 ]; then
+    return 0
+  fi
+  log_warn "Could not read from terminal — declining prompt."
+  return 1
+}""",
+    )
+    script.write_text(source, encoding="utf-8")
+    _make_executable(script)
+    monkeypatch.setitem(globals(), "SCRIPT", script)
+
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {},
+        answer=[],
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert code == 0
+    assert "Could not read from terminal — declining prompt." in output
+    assert "Aborted. deepagents-code was left unchanged." in output
+    assert not args_path.exists()
 
 
 def test_install_script_interactive_accept_updates(tmp_path: Path) -> None:

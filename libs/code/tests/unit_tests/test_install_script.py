@@ -1616,6 +1616,15 @@ def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:
     assert target.read_text() == "keep me\n"
 
 
+def test_install_script_stages_log_copy_outside_user_cache() -> None:
+    """The cross-filesystem fallback stages logs in a root-owned temp directory."""
+    script = SCRIPT.read_text()
+
+    assert "mktemp -d /tmp/deepagents-code-install-log.XXXXXX" in script
+    assert 'staged="${staging_dir}/install.log"' in script
+    assert 'local staged="${INSTALL_LOG}.$$"' not in script
+
+
 def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(
     tmp_path: Path,
 ) -> None:

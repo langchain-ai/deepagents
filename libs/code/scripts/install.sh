@@ -551,21 +551,30 @@ copy_install_log() {
   # but it also fails with EXDEV whenever mktemp's TMPDIR and the cache dir sit
   # on different filesystems — /tmp on tmpfs is the default on most Linux
   # distros, so the hardlink alone would silently disable the log there. Fall
-  # back to a copy, staged under a sibling name: the destination is still never
-  # opened at the canonical path (and install_log_dir is a validated,
-  # non-symlink 0700 dir), and a failure leaves the previous run's log intact
-  # instead of deleting it before finding out.
-  local staged="${INSTALL_LOG}.$$"
-  rm -f "$staged" 2>/dev/null || return 1
+  # back to a copy. The copy must not be staged next to INSTALL_LOG: a root
+  # installer may have handed that directory to TARGET_USER, who could replace
+  # a predictable sibling path with a symlink before `cp` opens it. Keep the
+  # staging file in a freshly-created root-owned 0700 directory instead.
+  local staging_dir
+  local staged
+  staging_dir=$(mktemp -d /tmp/deepagents-code-install-log.XXXXXX 2>/dev/null) || return 1
+  [ -d "$staging_dir" ] && [ ! -L "$staging_dir" ] && [ -O "$staging_dir" ] || {
+    rmdir "$staging_dir" 2>/dev/null || true
+    return 1
+  }
+  staged="${staging_dir}/install.log"
   if ! ln "$uv_stderr" "$staged" 2>/dev/null \
     && ! cp "$uv_stderr" "$staged" 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
+    rmdir "$staging_dir" 2>/dev/null || true
     return 1
   fi
   if ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
+    rmdir "$staging_dir" 2>/dev/null || true
     return 1
   fi
+  rmdir "$staging_dir" 2>/dev/null || true
 }
 
 # Epoch mtime of the lock directory, used as a fallback reference time when the

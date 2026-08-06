@@ -34,6 +34,7 @@ from deepagents_code.config_manifest import (
     option_keys,
     options_with_key_prefix,
     provider_install_extra,
+    provider_package_name,
     resolve_interpreter_kwargs,
     resolve_scalar,
 )
@@ -470,6 +471,36 @@ def test_provider_install_extra_extra_only_provider() -> None:
 def test_provider_install_extra_unknown_provider() -> None:
     """Providers without a curated extra resolve to `None`."""
     assert provider_install_extra("not-a-real-provider") is None
+
+
+def test_provider_package_name_known_provider() -> None:
+    """Known providers resolve to their PyPI distribution name."""
+    assert provider_package_name("baseten") == "langchain-baseten"
+    # Every underscore in the import module becomes a hyphen, not just the
+    # first -- `nvidia` is the entry with the most.
+    assert provider_package_name("nvidia") == "langchain-nvidia-ai-endpoints"
+    assert provider_package_name("google_genai") == "langchain-google-genai"
+
+
+def test_provider_package_name_differs_from_extra() -> None:
+    """The distribution name is not the extra name.
+
+    `provider_package_name` feeds a `pypi.org/project/...` link, so confusing
+    it with `provider_install_extra` would link an unrelated real project.
+    """
+    assert provider_install_extra("google_vertexai") == "vertex"
+    assert provider_package_name("google_vertexai") == "langchain-google-vertexai"
+
+
+def test_provider_package_name_aliased_providers() -> None:
+    """Providers sharing an integration resolve to the same distribution."""
+    assert provider_package_name("azure_openai") == "langchain-openai"
+    assert provider_package_name("openai") == "langchain-openai"
+
+
+def test_provider_package_name_unknown_provider() -> None:
+    """Providers without a curated extra resolve to `None`."""
+    assert provider_package_name("not-a-real-provider") is None
 
 
 def test_is_provider_package_installed_unknown_provider() -> None:

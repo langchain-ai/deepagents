@@ -2915,7 +2915,10 @@ def _invoke_with_local_dcode_not_on_path(
 
     `uname_os` pins the detected OS, which the candidate builder branches on
     (macOS skips creating a ~/.bashrc). Without it the result would depend on
-    the host running the suite.
+    the host running the suite. A Darwin pin also bypasses the Xcode CLT
+    preflight: these runs exercise profile selection, not that gate, and on
+    the Linux CI runner `xcode-select` is absent so the script would exit
+    there first.
     """
     bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
     if uname_os is not None:
@@ -2945,6 +2948,7 @@ def _invoke_with_local_dcode_not_on_path(
         "UV_BIN": str(uv),
         "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
         "SHELL": shell,
+        **({"DEEPAGENTS_CODE_SKIP_XCODE_CHECK": "1"} if uname_os == "Darwin" else {}),
         **(extra_env or {}),
     }
     if answer is not None:

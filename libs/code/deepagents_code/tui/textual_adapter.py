@@ -118,7 +118,6 @@ from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
-    _TOOL_SUPERSEDED_BY_DIFF,
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -415,9 +414,14 @@ def _set_running_unless_deferred(tool_msg: ToolCallMessage) -> None:
 def _display_caveat(record: FileOperationRecord | None) -> str:
     """Return what a successful file operation could not show, if anything.
 
-    Both cases leave the tool row as the user's only account of a change the
-    transcript cannot render, so both have to name what is missing. Silence would
-    read as a complete report.
+    Every case here leaves the tool row as the user's only account of a change
+    the transcript cannot render, so each has to name what is missing. Silence
+    would read as a complete report.
+
+    Covers all of `DiffOutcome` rather than the subset that mounts a
+    `DiffMessage`: a `delete` whose pre-image was lost produces no diff widget
+    at all, so a caveat routed only through the widget would leave destroying a
+    5,000-line file rendering exactly like destroying an empty one.
 
     Args:
         record: Completed file-operation record, or `None` for a non-file tool.
@@ -428,27 +432,35 @@ def _display_caveat(record: FileOperationRecord | None) -> str:
     """
     if record is None:
         return ""
-    if record.after_unreadable:
-        # Gate on the dedicated flag, not on `record.status == "error"`: that is
-        # also set when the tool's own output reports a failure, where claiming
-        # the operation succeeded would be a false statement. Reachable for
-        # `write_file` and `edit_file` only; `delete` synthesizes an empty
-        # post-image instead of reading one back, so it has no read to fail.
-        #
-        # `record.error` is deliberately not a fallback here: on this path it is
-        # the fixed string "Could not read updated file content.", so using it
-        # would restate the sentence it is meant to explain.
-        detail = record.after_read_error or "the reason was not reported"
-        return (
-            f"The {record.tool_name} succeeded, but its changes "
-            f"could not be displayed: {detail}"
-        )
-    if record.change_invisible_to_line_diff:
-        return (
-            f"The {record.tool_name} succeeded. The change is confined to line "
-            "terminators, so there is no line-level diff to show."
-        )
-    return ""
+    match record.diff_outcome:
+        case "unreadable_after":
+            # Gate on the outcome, not on `record.status == "error"`: that is
+            # also set when the tool's own output reports a failure, where
+            # claiming the operation succeeded would be a false statement.
+            # Reachable for `write_file` and `edit_file` only; `delete`
+            # synthesizes an empty post-image instead of reading one back, so it
+            # has no read to fail.
+            #
+            # `record.error` is deliberately not a fallback here: on this path it
+            # is the fixed string "Could not read updated file content.", so
+            # using it would restate the sentence it is meant to explain.
+            detail = record.after_read_error or "the reason was not reported"
+            return (
+                f"The {record.tool_name} succeeded, but its changes "
+                f"could not be displayed: {detail}"
+            )
+        case "untrusted_before":
+            return (
+                f"The {record.tool_name} succeeded, but the file's prior "
+                "contents could not be read, so what changed cannot be shown."
+            )
+        case "terminators_only":
+            return (
+                f"The {record.tool_name} succeeded. The change is confined to "
+                "line terminators, so there is no line-level diff to show."
+            )
+        case "shown":
+            return ""
 
 
 def _reject_tracked_rows(
@@ -2009,9 +2021,11 @@ async def execute_task_textual(
                                     # survives the collapsed output preview.
                                     caveat = _display_caveat(record)
                                     tool_msg.set_success(
-                                        f"{caveat}\n\n{output_str}"
-                                        if caveat and output_str
-                                        else caveat or output_str
+                                        "\n\n".join(
+                                            part
+                                            for part in (caveat, output_str)
+                                            if part
+                                        )
                                     )
                                 else:
                                     tool_msg.set_error(output_str or "Error")
@@ -2100,41 +2114,50 @@ async def execute_task_textual(
                                     assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
-                            # The diff replaces this row, so it mounts even with
-                            # an empty body — something has to stand in for what
-                            # gets hidden. Not when the change is real but has
-                            # no line diff to show, though: an empty body there
-                            # would render "no changes" over an edit that did
-                            # change the file, so leave the row to speak for it.
+                            # Hiding the tool row makes the diff the sole record
+                            # of the edit, so only a diff that can actually
+                            # stand in for it earns that. `shown` is the only
+                            # outcome that qualifies: a lost pre-image makes the
+                            # body fiction, and a terminator-only change has no
+                            # body at all. An empty diff never qualifies either
+                            # — if there is nothing to show, nothing needs to be
+                            # hidden, and replacing the row with a widget
+                            # asserting "no changes" would make any inaccuracy
+                            # in the read-back the only surviving account.
                             replaces_row = (
-                                record.tool_name == _TOOL_SUPERSEDED_BY_DIFF
+                                ToolCallMessage.can_be_superseded(record.tool_name)
                                 and record.status == "success"
-                                and not record.change_invisible_to_line_diff
+                                and record.diff_outcome == "shown"
+                                and bool(record.diff)
                             )
-                            if record.diff or replaces_row:
-                                await adapter._mount_message(
-                                    DiffMessage(
-                                        record.diff or "",
-                                        record.display_path,
-                                        tool_name=record.tool_name,
-                                        before=record.before_content or "",
-                                        after=record.after_content or "",
-                                        stats=record.diff_stats,
-                                        changes_unknown=record.before_unreadable,
+                            if record.diff:
+                                # Guarded for the same reason as the row update
+                                # above: mounting and highlighting a diff is
+                                # cosmetic, and a failure here must not abort the
+                                # turn and drop the remaining tools' hooks.
+                                try:
+                                    await adapter._mount_message(
+                                        DiffMessage(
+                                            record.diff,
+                                            record.display_path,
+                                            tool_name=record.tool_name,
+                                            before=record.before_content or "",
+                                            after=record.after_content or "",
+                                            stats=record.diff_stats,
+                                            changes_unknown=(
+                                                record.diff_outcome
+                                                == "untrusted_before"
+                                            ),
+                                        )
                                     )
-                                )
-                                # Hiding the tool row makes the diff the sole
-                                # record of the edit, so only do it when the
-                                # diff can actually stand in for it. With an
-                                # unreadable pre-image the diff is untrustworthy
-                                # and the row's own output is all the user has.
-                                if (
-                                    tool_msg is not None
-                                    and replaces_row
-                                    and not record.before_unreadable
-                                ):
-                                    tool_msg.mark_superseded_by_diff()
-                                    adapter._sync_tool_widget(tool_msg)
+                                    if tool_msg is not None and replaces_row:
+                                        tool_msg.mark_superseded_by_diff()
+                                        adapter._sync_tool_widget(tool_msg)
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to mount diff for %s",
+                                        record.display_path,
+                                    )
 
                         # Reshow spinner only when all in-flight tools have
                         # completed (avoids premature "Thinking..." when

@@ -2946,8 +2946,106 @@ class TestExecuteTaskTextualAutoModeClassifier:
         assert statuses[-1] == "Thinking"
 
 
+_READS_PER_EDIT = 2
+"""How many times a tracked edit reads the file: pre-image, then read-back."""
+
+
+class _PhasedRead:
+    """Patch `_read_with_reason` so the two reads of an edit can differ.
+
+    Failing one phase and not the other is the only way to exercise a lost
+    pre-image separately from an unreadable result, and call order is what
+    distinguishes them. That makes the call count load-bearing: a third read
+    added anywhere in `file_ops` would shift every later call into the wrong
+    branch, and the test would keep passing while silently exercising a
+    different scenario. `assert_both_phases_ran` is what stops that.
+    """
+
+    def __init__(
+        self,
+        *,
+        pre_image: Callable[[Path], tuple[str | None, str | None]] | None = None,
+        read_back: Callable[[Path], tuple[str | None, str | None]] | None = None,
+    ) -> None:
+        """Override either phase; `None` leaves that phase reading for real."""
+        self._real = file_ops_module._read_with_reason
+        self._phases = (pre_image, read_back)
+        self.count = 0
+
+    def __call__(self, path: Path) -> tuple[str | None, str | None]:
+        """Dispatch to the override for this phase, or the real read.
+
+        Returns:
+            The content and `None`, or `None` and a reason.
+        """
+        self.count += 1
+        override = (
+            self._phases[self.count - 1] if self.count <= len(self._phases) else None
+        )
+        return self._real(path) if override is None else override(path)
+
+    def assert_both_phases_ran(self) -> None:
+        """Fail if the read count no longer matches what the phases assume."""
+        assert self.count == _READS_PER_EDIT, (
+            f"expected {_READS_PER_EDIT} reads, saw {self.count} — the phase "
+            "overrides no longer line up with the reads they target"
+        )
+
+
+def _strip_trailing_newline(
+    read: Callable[[Path], tuple[str | None, str | None]],
+) -> Callable[[Path], tuple[str | None, str | None]]:
+    """Wrap a read so its content loses the trailing newline.
+
+    Returns:
+        A read whose only difference from the real one is what `splitlines()`
+        discards.
+    """
+
+    def stripped(path: Path) -> tuple[str | None, str | None]:
+        content, reason = read(path)
+        return (content.rstrip("\n") if content is not None else None), reason
+
+    return stripped
+
+
 class TestExecuteTaskTextualFileOpDiffs:
     """An `edit_file` row hides only after its diff takes over."""
+
+    @staticmethod
+    async def _run_delete(target: Path) -> list[object]:
+        """Run a tracked `delete` and return the widgets it mounted.
+
+        Returns:
+            Every widget mounted during the turn, in order.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        args = {"file_path": str(target)}
+        chunks = [
+            ((), "messages", (_tool_call_message("delete", args, "del-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Deleted file", tool_call_id="del-1"), {}),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="delete the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+        return mounted
 
     @staticmethod
     async def _run_edit(target: Path, new_string: str) -> list[object]:
@@ -2983,19 +3081,78 @@ class TestExecuteTaskTextualFileOpDiffs:
         )
         return mounted
 
-    async def test_noop_edit_still_mounts_a_diff_message(self, tmp_path: Path) -> None:
-        """An edit whose replacement matches the original leaves a trace."""
+    async def test_delete_with_a_lost_pre_image_says_so(self, tmp_path: Path) -> None:
+        """Destroying a large file must not render like destroying an empty one.
+
+        A `delete` mounts no `DiffMessage` — its post-image is a synthesized
+        empty string, so there is no diff — which means a caveat routed only
+        through that widget never reaches the user. With the pre-image also
+        lost, nothing at all would distinguish this from deleting an empty file,
+        on the one operation where losing the record matters most.
+        """
+        target = tmp_path / "big.py"
+        target.write_text("value = 1\n" * 5000, encoding="utf-8")
+
+        with patch(
+            "deepagents_code.file_ops._read_with_reason",
+            return_value=(None, "Permission denied"),
+        ):
+            mounted = await self._run_delete(target)
+
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert "prior contents could not be read" in tool._output
+        assert "Deleted file" in tool._output, "the tool's own output was discarded"
+
+    async def test_a_failed_diff_mount_does_not_abort_the_turn(
+        self, tmp_path: Path
+    ) -> None:
+        """Rendering a diff is cosmetic; the turn's remaining hooks are not.
+
+        The tool row's own update is already guarded for this reason. Letting
+        the mount below it raise would drop the terminal hooks of every tool
+        still in flight for a purely visual failure.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # The pre-image has to differ from what is on disk, or there is no diff
+        # to mount and the guard is never reached.
+        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
+        boom = RuntimeError("mount exploded")
+        with (
+            patch("deepagents_code.file_ops._read_with_reason", side_effect=read),
+            patch(
+                "deepagents_code.tui.textual_adapter.DiffMessage", side_effect=boom
+            ) as diff_message,
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        assert diff_message.call_count == 1, "the guarded path was never reached"
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True, "row hidden with no diff mounted in its place"
+
+    async def test_noop_edit_keeps_the_tool_row_instead_of_claiming_no_changes(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty diff must never be what replaces the tool's own output.
+
+        Hiding the row makes the diff the sole account of the edit, so a widget
+        with nothing in it would render a confident "no changes" over whatever
+        actually happened — and any inaccuracy in the read-back would have
+        nothing left to contradict it.
+        """
         target = tmp_path / "a.py"
         target.write_text("value = 1\n", encoding="utf-8")
 
         mounted = await self._run_edit(target, "value = 1")
 
-        diffs = [m for m in mounted if isinstance(m, DiffMessage)]
-        assert len(diffs) == 1
-        assert diffs[0]._diff_content == ""
-        assert diffs[0]._tool_name == "edit_file"
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool.display is False
+        assert tool.display is True
 
     async def test_edit_without_tracker_record_keeps_tool_row_visible(
         self, tmp_path: Path
@@ -3027,23 +3184,12 @@ class TestExecuteTaskTextualFileOpDiffs:
         target = tmp_path / "a.py"
         target.write_text("value = 1\n", encoding="utf-8")
 
-        # Return the pre-image without its trailing newline so the only
-        # difference from the read-back is one `splitlines()` discards.
-        real_read = file_ops_module._read_with_reason
-        calls = {"n": 0}
-
-        def newline_stripping_read(path: Path) -> tuple[str | None, str | None]:
-            calls["n"] += 1
-            content, reason = real_read(path)
-            if calls["n"] == 1 and content is not None:
-                return content.rstrip("\n"), reason
-            return content, reason
-
-        with patch(
-            "deepagents_code.file_ops._read_with_reason",
-            side_effect=newline_stripping_read,
-        ):
+        read = _PhasedRead(
+            pre_image=_strip_trailing_newline(file_ops_module._read_with_reason)
+        )
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
             mounted = await self._run_edit(target, "value = 1")
+        read.assert_both_phases_ran()
 
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
         assert tool._status == "success"
@@ -3063,19 +3209,10 @@ class TestExecuteTaskTextualFileOpDiffs:
         target = tmp_path / "a.py"
         target.write_text("value = 1\n", encoding="utf-8")
 
-        real_read = file_ops_module._read_with_reason
-        calls = {"n": 0}
-
-        def failing_read_back(path: Path) -> tuple[str | None, str | None]:
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return real_read(path)
-            return None, "Permission denied"
-
-        with patch(
-            "deepagents_code.file_ops._read_with_reason", side_effect=failing_read_back
-        ):
+        read = _PhasedRead(read_back=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
             mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
 
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
         assert tool._status == "success"
@@ -3098,21 +3235,12 @@ class TestExecuteTaskTextualFileOpDiffs:
         target = tmp_path / "a.py"
         target.write_text("value = 1\n", encoding="utf-8")
 
-        real_read = file_ops_module._read_with_reason
-        calls = {"n": 0}
-
-        def newline_stripping_read(path: Path) -> tuple[str | None, str | None]:
-            calls["n"] += 1
-            content, reason = real_read(path)
-            if calls["n"] == 1 and content is not None:
-                return content.rstrip("\n"), reason
-            return content, reason
-
-        with patch(
-            "deepagents_code.file_ops._read_with_reason",
-            side_effect=newline_stripping_read,
-        ):
+        read = _PhasedRead(
+            pre_image=_strip_trailing_newline(file_ops_module._read_with_reason)
+        )
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
             mounted = await self._run_edit(target, "value = 1")
+        read.assert_both_phases_ran()
 
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
         assert tool._status == "success"
@@ -3131,19 +3259,10 @@ class TestExecuteTaskTextualFileOpDiffs:
 
         # Fail only the pre-image read; the read-back must still succeed so
         # this exercises the before-side failure in isolation.
-        real_read = file_ops_module._read_with_reason
-        calls = {"n": 0}
-
-        def flaky_read(path: Path) -> tuple[str | None, str | None]:
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return None, "Permission denied"
-            return real_read(path)
-
-        with patch(
-            "deepagents_code.file_ops._read_with_reason", side_effect=flaky_read
-        ):
+        read = _PhasedRead(pre_image=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
             mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
 
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
         assert tool._status == "success"

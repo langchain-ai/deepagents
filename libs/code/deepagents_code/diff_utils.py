@@ -31,12 +31,16 @@ class DiffStats(NamedTuple):
 def split_diff_lines(diff: str) -> list[str]:
     r"""Split a unified diff back into the lines it was assembled from.
 
-    Deliberately not `splitlines()`. Producers join their lines with `"\n"`
-    (`compute_unified_diff`, `EditFileRenderer._generate_diff`), so `"\n"` is
-    the exact inverse; `splitlines()` also breaks on `\r`, `\v`, `\f`, U+2028,
+    Deliberately not `splitlines()`. Every diff reaching this function is
+    `"\n"`-joined from lines that themselves came from `splitlines()` or
+    `split("\n")`, so no element can contain a line boundary and `"\n"` is the
+    exact inverse. `splitlines()` also breaks on `\r`, `\v`, `\f`, U+2028,
     U+2029 and U+0085, which splits a single diff line into fragments. The tail
     fragment carries no `+`/`-` marker, so it would render as an unmarked note —
     on the approval prompt that means changed content shown as neutral metadata.
+
+    Check any new producer against that invariant rather than against a list of
+    the current ones.
 
     Args:
         diff: Unified diff string.
@@ -73,7 +77,7 @@ def file_header_indexes(lines: list[str]) -> set[int]:
         if match := HUNK_RE.match(line):
             old_remaining = int(match.group(2) or 1)
             new_remaining = int(match.group(4) or 1)
-            inside_hunk = bool(old_remaining or new_remaining)
+            inside_hunk = old_remaining > 0 or new_remaining > 0
             continue
         if inside_hunk:
             if line.startswith("-"):

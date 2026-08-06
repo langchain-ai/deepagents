@@ -56,11 +56,10 @@ def _file_header(file_path: str, stats: DiffStats = _NO_STATS) -> ComposeResult:
     Yields:
         Static widgets for the file path header and a spacer line.
     """
-    stats_content = format_diff_stats(stats)
     yield Static(
         Content.assemble(
             Content.from_markup("[bold cyan]File:[/bold cyan] $path  ", path=file_path),
-            stats_content,
+            format_diff_stats(stats),
         )
     )
     yield Static("")
@@ -188,13 +187,14 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
-            # Neither caller has file line numbers worth showing, for different
-            # reasons. An edit's diff is built from the replacement fragments
+            # Neither renderer that feeds this widget supplies file line numbers
+            # worth showing, for different reasons (both in `tool_renderers.py`).
+            # `EditFileRenderer` builds its diff from the replacement fragments
             # rather than the file, so its hunks start at 1 and a gutter would
-            # assert numbers that are simply wrong. A delete's covers the whole
-            # file from line 1, so its numbers are correct but say nothing —
-            # every line is going. Wrong numbers on an approval prompt are the
-            # worse of the two, and neither earns the column.
+            # assert numbers that are simply wrong. `DeleteFileRenderer`'s covers
+            # the whole file from line 1, so its numbers are correct but say
+            # nothing — every line is going. Wrong numbers on an approval prompt
+            # are the worse of the two, and neither earns the column.
             yield from compose_diff_lines(
                 "\n".join(diff_lines),
                 max_lines=_MAX_DIFF_LINES,

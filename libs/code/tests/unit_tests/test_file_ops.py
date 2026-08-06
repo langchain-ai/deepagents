@@ -214,7 +214,28 @@ def test_unreadable_before_content_is_flagged(tmp_path: Path) -> None:
         tracker.start_operation("edit_file", {"file_path": str(path)}, "locked-1")
 
     record = tracker.active["locked-1"]
-    assert record.before_unreadable is True
+    assert record.diff_outcome == "untrusted_before"
+    assert record.before_content == ""
+
+
+def test_a_real_binary_pre_image_is_flagged_without_mocking_the_read(
+    tmp_path: Path,
+) -> None:
+    """The other flag tests all stub the read, so none pins what raises.
+
+    `read_text(encoding="utf-8")` is the call that makes a binary file a lost
+    pre-image. Switching it to `errors="replace"` would silently disable the
+    whole flow — every mocked test would still pass, because they never exercise
+    the decode.
+    """
+    path = tmp_path / "image.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe\x00\x01")
+    tracker = FileOpTracker(assistant_id=None)
+
+    tracker.start_operation("edit_file", {"file_path": str(path)}, "binary-1")
+
+    record = tracker.active["binary-1"]
+    assert record.diff_outcome == "untrusted_before"
     assert record.before_content == ""
 
 
@@ -225,7 +246,7 @@ def test_missing_before_content_is_not_flagged_as_unreadable(tmp_path: Path) -> 
     tracker.start_operation("write_file", {"file_path": str(path)}, "new-1")
 
     record = tracker.active["new-1"]
-    assert record.before_unreadable is False
+    assert record.diff_outcome != "untrusted_before"
 
 
 def test_absent_local_pre_image_is_flagged_for_an_edit(tmp_path: Path) -> None:
@@ -242,7 +263,7 @@ def test_absent_local_pre_image_is_flagged_for_an_edit(tmp_path: Path) -> None:
     tracker.start_operation("edit_file", {"file_path": str(path)}, "gone-1")
 
     record = tracker.active["gone-1"]
-    assert record.before_unreadable is True
+    assert record.diff_outcome == "untrusted_before"
     assert record.before_content == ""
 
 
@@ -253,7 +274,7 @@ def test_absent_local_pre_image_is_flagged_for_a_delete(tmp_path: Path) -> None:
 
     tracker.start_operation("delete", {"file_path": str(path)}, "gone-2")
 
-    assert tracker.active["gone-2"].before_unreadable is True
+    assert tracker.active["gone-2"].diff_outcome == "untrusted_before"
 
 
 def test_record_diff_stats_survive_truncation(tmp_path: Path) -> None:
@@ -309,7 +330,7 @@ def test_failed_read_back_still_reports_what_the_request_knew(
         )
 
     assert record is not None
-    assert record.after_unreadable is True
+    assert record.diff_outcome == "unreadable_after"
     assert record.after_read_error == "Permission denied"
     assert record.metrics.lines_written == 3
     assert record.metrics.bytes_written == len(content.encode("utf-8"))
@@ -333,7 +354,7 @@ def test_unreadable_existing_file_is_flagged_even_for_write_file(
     ):
         tracker.start_operation("write_file", {"file_path": str(path)}, "locked-2")
 
-    assert tracker.active["locked-2"].before_unreadable is True
+    assert tracker.active["locked-2"].diff_outcome == "untrusted_before"
 
 
 def test_backend_file_not_found_is_not_flagged_as_unreadable() -> None:
@@ -357,7 +378,7 @@ def test_backend_file_not_found_is_not_flagged_as_unreadable() -> None:
     )
 
     record = tracker.active["new-2"]
-    assert record.before_unreadable is False
+    assert record.diff_outcome != "untrusted_before"
     assert record.before_content == ""
 
 
@@ -380,7 +401,7 @@ def test_backend_read_failure_is_flagged_as_unreadable() -> None:
     tracker.start_operation("edit_file", {"file_path": "/locked.txt"}, "locked-2")
 
     record = tracker.active["locked-2"]
-    assert record.before_unreadable is True
+    assert record.diff_outcome == "untrusted_before"
     assert record.before_content == ""
 
 
@@ -401,7 +422,7 @@ def test_backend_response_without_content_or_error_is_flagged_as_unreadable() ->
     tracker.start_operation("edit_file", {"file_path": "/x.txt"}, "contract-1")
 
     record = tracker.active["contract-1"]
-    assert record.before_unreadable is True
+    assert record.diff_outcome == "untrusted_before"
     assert record.before_content == ""
 
 
@@ -414,7 +435,7 @@ def test_empty_backend_response_list_is_flagged_as_unreadable() -> None:
     tracker.start_operation("edit_file", {"file_path": "/y.txt"}, "contract-2")
 
     record = tracker.active["contract-2"]
-    assert record.before_unreadable is True
+    assert record.diff_outcome == "untrusted_before"
     assert record.before_content == ""
 
 
@@ -440,7 +461,7 @@ def test_trailing_newline_only_edit_is_not_reported_as_unchanged(
 
     assert record is not None
     assert record.diff is None
-    assert record.change_invisible_to_line_diff is True
+    assert record.diff_outcome == "terminators_only"
 
 
 def test_genuine_noop_edit_is_not_flagged_as_an_invisible_change(
@@ -458,7 +479,7 @@ def test_genuine_noop_edit_is_not_flagged_as_an_invisible_change(
 
     assert record is not None
     assert record.diff is None
-    assert record.change_invisible_to_line_diff is False
+    assert record.diff_outcome != "terminators_only"
 
 
 def test_unreadable_after_content_sets_its_own_flag(tmp_path: Path) -> None:
@@ -479,10 +500,10 @@ def test_unreadable_after_content_sets_its_own_flag(tmp_path: Path) -> None:
 
     assert record is not None
     assert record.status == "error"
-    assert record.after_unreadable is True
+    assert record.diff_outcome == "unreadable_after"
 
 
-def test_tool_reported_error_does_not_set_after_unreadable(tmp_path: Path) -> None:
+def test_tool_reported_error_does_not_set_unreadable_after(tmp_path: Path) -> None:
     """A genuine tool failure must not be reported as "succeeded, but…"."""
     path = tmp_path / "f.txt"
     path.write_text("alpha\n")
@@ -497,7 +518,7 @@ def test_tool_reported_error_does_not_set_after_unreadable(tmp_path: Path) -> No
 
     assert record is not None
     assert record.status == "error"
-    assert record.after_unreadable is False
+    assert record.diff_outcome != "unreadable_after"
 
 
 def test_tracker_records_delete_diff(tmp_path: Path) -> None:

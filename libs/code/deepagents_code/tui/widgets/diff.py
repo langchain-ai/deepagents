@@ -64,11 +64,12 @@ whether the changed lines sit inside a string or comment — so its size is set 
 how far into the file the edit is, not by how much of it is rendered. That makes
 this constant the bound on two separate costs.
 
-Lexing runs synchronously in `compose`, measured at roughly 0.72 ms per 1,000
-characters (~70 ms at this limit, per side, plus a one-off ~150 ms to build the
-lexer on the session's first diff). Both sides of a first-time diff are lexed
-back to back, so the limit buys a worst case of about 150 ms of blocked message
-pump rather than 70.
+Lexing runs synchronously in `compose`. Measured 2026-07 on an M-series Mac,
+CPython 3.12: roughly 0.72 ms per 1,000 characters, so ~70 ms per side at this
+limit, plus a one-off ~150 ms to build the lexer on the session's first diff.
+Both sides are lexed back to back, so the steady-state worst case is ~140 ms of
+blocked message pump and the session's first diff is ~290 ms. Re-measure before
+trusting these; they set the limit but nothing enforces them.
 
 The prefix is also retained per message by `MessageData` so a rehydrated diff can
 re-highlight, at up to this many characters per side. Raising it slows the diff
@@ -79,30 +80,41 @@ _Range = tuple[int, int]
 _DiffRowKind = Literal["context", "added", "removed"]
 _RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
 
+
+class _RowStyle(NamedTuple):
+    """How one kind of source row renders.
+
+    Attributes:
+        gutter: Style for the line-number column.
+        marker: The `+`/`-`/space shown between gutter and text.
+        marker_style: Style for `marker`.
+        emphasis: Style laid over the spans that changed, empty when the kind
+            takes no emphasis.
+    """
+
+    gutter: str
+    marker: str
+    marker_style: str
+    emphasis: str
+
+
 # A changed row's color builds up in three tiers of the same hue, each darker
 # than the last: the row background from `.diff-line-added`/`.diff-line-removed`
-# in `app.tcss` (10%), the gutter below (20%), and the words that actually
-# changed (30%, applied per-span in `_compose_diff_content`). Keep them ordered
-# that way — equal tiers flatten the row and lose the distinction.
+# in `app.tcss` (10%), the gutter (20%), and the words that actually changed
+# (30%, applied per-span in `_compose_diff_content`). Keep them ordered that way
+# — equal tiers flatten the row and lose the distinction.
 #
-# All three maps are keyed over a total row kind so a new one fails type-checking
-# here rather than silently rendering with no marker or emphasis.
-_GUTTERS: dict[_DiffRowKind, str] = {
-    "added": "$text-success 80% on $success 20%",
-    "removed": "$text-error 80% on $error 20%",
-    "context": "$foreground 30% on $foreground 3%",
-}
-
-_MARKERS: dict[_DiffRowKind, tuple[str, str]] = {
-    "added": ("+", "$text-success"),
-    "removed": ("-", "$text-error"),
-    "context": (" ", ""),
-}
-
-_EMPHASIS: dict[_DiffRowKind, str] = {
-    "added": "on $success 30%",
-    "removed": "on $error 30%",
-    "context": "",
+# Keyed over a total row kind so a new one fails type-checking here rather than
+# silently rendering with no marker or emphasis. One map rather than three so a
+# kind cannot be added to some of them and missed in the rest.
+_ROW_STYLES: dict[_DiffRowKind, _RowStyle] = {
+    "added": _RowStyle(
+        "$text-success 80% on $success 20%", "+", "$text-success", "on $success 30%"
+    ),
+    "removed": _RowStyle(
+        "$text-error 80% on $error 20%", "-", "$text-error", "on $error 30%"
+    ),
+    "context": _RowStyle("$foreground 30% on $foreground 3%", " ", "", ""),
 }
 
 
@@ -140,8 +152,9 @@ def compose_diff_lines(
         max_lines: Maximum number of *rendered rows* to show (None for
             unlimited). Rows are not diff lines: file and hunk headers are
             dropped and hunk separators added, so this does not correspond to a
-            line count in `diff`. Rows are dropped from the end, which can split
-            a removed/added run and drop word emphasis on the surviving half.
+            line count in `diff`. Rows are dropped from the end; emphasis is
+            computed after the drop, so splitting a removed/added run costs the
+            whole run its word emphasis, not just the clipped half.
         path: Path of the diffed file, used to pick a syntax highlighter.
         before: Source aligned to the diff's *old* line numbers. May be a
             truncated prefix or empty; rows whose text does not match the
@@ -196,7 +209,10 @@ def highlight_source_prefixes(diff: str, before: str, after: str) -> tuple[str, 
     on whatever it is handed, which is the full file from the live path but an
     already-trimmed prefix from `MessageData`. Re-trimming a prefix must return it
     unchanged, so any future trimming rule has to stay keyed on the diff's line
-    numbers rather than on a count relative to the input.
+    numbers rather than on a count relative to the input, and has to survive the
+    split/join round trip — see the trailing-newline case in
+    `_highlight_source_prefix`. `test_trimming_a_prefix_again_returns_it_unchanged`
+    pins this.
 
     Args:
         diff: Unified diff string.
@@ -238,7 +254,17 @@ def _highlight_source_prefix(source: str, line: int) -> str:
     # the real prefix runs past the limit.
     if oversized and len(lines) <= line:
         return ""
-    prefix = "\n".join(lines[:line])
+    kept = lines[:line]
+    prefix = "\n".join(kept)
+    if kept and not kept[-1]:
+        # Re-splitting drops a trailing empty line, because a terminating
+        # newline yields no final entry — so without this the next trim would
+        # see one line fewer and return a shorter prefix. Joining with `"\n"`
+        # rather than keeping the original terminators is deliberate: it
+        # normalizes `\r`, U+2028 and the rest that `splitlines()` breaks on but
+        # `Content.split("\n")` does not, keeping row numbers aligned to the
+        # lexed output.
+        prefix += "\n"
     return prefix if len(prefix) <= _MAX_HIGHLIGHT_CHARS else ""
 
 
@@ -254,8 +280,10 @@ def _compose_diff_content(
     """Yield styled widgets for a non-empty diff."""
     glyphs = get_glyphs()
     rows = _parse_rows(split_diff_lines(diff))
-    hidden = 0 if max_lines is None else max(0, len(rows) - max_lines)
-    rows = rows[: len(rows) - hidden]
+    total = len(rows)
+    if max_lines is not None:
+        rows = rows[:max_lines]
+    hidden = total - len(rows)
     emphasis = _emphasis_by_row(rows)
     highlighted = _highlighted_rows(rows, path, before, after)
     width = max(2, len(str(max((row.number for row in rows), default=0))))
@@ -274,14 +302,14 @@ def _compose_diff_content(
             yield Static(Content.from_markup("[dim]$text[/dim]", text=row.text))
             continue
         body = highlighted.get(index) or Content(row.text)
-        marker, marker_style = _MARKERS[row.kind]
-        if emphasis_style := _EMPHASIS[row.kind]:
+        style = _ROW_STYLES[row.kind]
+        if style.emphasis:
             for start, end in emphasis.get(index, []):
-                body = body.stylize(emphasis_style, start, end)
+                body = body.stylize(style.emphasis, start, end)
         parts: list[Content | str | tuple[str, str]] = []
         if show_numbers:
-            parts += [(f"{row.number:>{width}}", _GUTTERS[row.kind]), " "]
-        parts += [(marker, marker_style), " ", body]
+            parts += [(f"{row.number:>{width}}", style.gutter), " "]
+        parts += [(style.marker, style.marker_style), " ", body]
         yield Static(
             Content.assemble(*parts),
             classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
@@ -297,11 +325,17 @@ def _highlighted_rows(
 
     Each side is lexed from the start of the supplied source through the last
     referenced line so multi-line constructs (docstrings, block comments) resolve
-    correctly rather than reopening at the hunk boundary. That holds only as far
-    as the caller's source really is file-aligned: the approval path passes edit
-    fragments, where the lexer does start mid-file and the drift check below
-    mostly rejects the result. Rows outside the prefix, or whose text has drifted
-    from the source, are omitted and render as plain text.
+    correctly rather than reopening at the hunk boundary. Rows outside the
+    prefix, or whose text has drifted from the source, are omitted and render as
+    plain text.
+
+    That holds only as far as the caller's source really is file-aligned, and the
+    approval path's is not: it passes edit fragments, so the lexer starts
+    mid-file and treats the fragment as if it began at line 1. The drift check
+    below does not catch this — the fragment's diff is generated *from* those
+    same strings, so the row text matches and every row is highlighted. A
+    fragment cut from inside a docstring or block comment is therefore colored as
+    code, and nothing detects it. Cosmetic, and confined to the approval prompt.
 
     Assumes a single-file diff, as `before`/`after` are one file's contents: rows
     are matched to source by line number, which restarts per file in a multi-file
@@ -412,21 +446,28 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
 
 
 def _emphasis_by_row(rows: list[_Row]) -> dict[int, list[_Range]]:
-    """Return changed ranges for equal-length removed/added runs."""
-    runs: list[tuple[str, int, int]] = []
-    start = 0
-    for kind, group in groupby(row.kind for row in rows):
-        size = len(list(group))
-        runs.append((kind, start, size))
-        start += size
+    """Return changed ranges for equal-length removed/added runs.
 
+    A removed run is paired with the added run that immediately follows it, row
+    by row in order, and only when the two are the same length — with no
+    one-to-one correspondence there is nothing to diff a row against. Any other
+    row kind between them (including a `note`, which is what a "no newline at
+    end of file" marker parses to) breaks the adjacency and leaves the pair
+    unemphasised.
+    """
+    runs = [
+        (kind, [index for index, _ in group])
+        for kind, group in groupby(enumerate(rows), key=lambda pair: pair[1].kind)
+    ]
     ranges: dict[int, list[_Range]] = {}
-    for (kind, old_start, size), (next_kind, new_start, next_size) in pairwise(runs):
-        if kind != "removed" or next_kind != "added" or size != next_size:
+    for (kind, old_indexes), (next_kind, new_indexes) in pairwise(runs):
+        if (
+            kind != "removed"
+            or next_kind != "added"
+            or len(old_indexes) != len(new_indexes)
+        ):
             continue
-        for offset in range(size):
-            old_index = old_start + offset
-            new_index = new_start + offset
+        for old_index, new_index in zip(old_indexes, new_indexes, strict=True):
             old, new = _emphasis_ranges(rows[old_index].text, rows[new_index].text)
             if old:
                 ranges[old_index] = old

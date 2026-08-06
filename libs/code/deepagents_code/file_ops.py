@@ -22,6 +22,29 @@ if TYPE_CHECKING:
 
 FileOpStatus = Literal["pending", "success", "error"]
 
+DiffOutcome = Literal[
+    "shown", "untrusted_before", "unreadable_after", "terminators_only"
+]
+"""What a completed file operation can honestly say about what it changed.
+
+One closed set rather than a set of independent booleans: the four states are
+mutually exclusive, and every consumer needs to agree on which one holds. Split
+across flags, a consumer that forgets one silently reports a change as fully
+displayed — which is how a delete whose pre-image was lost came to render
+identically to deleting an empty file.
+
+- `shown`: `diff` and `diff_stats` describe the change. Also the state for a
+  genuinely unchanged file and for operations that never compute a diff.
+- `untrusted_before`: the pre-operation content could not be read, so
+  `before_content` is a stand-in empty string. Any diff against it is fiction —
+  an unchanged file looks like a no-op, a changed one like a whole-file
+  insertion — so `diff_stats` is `None` and the body must not be rendered.
+- `unreadable_after`: the operation succeeded but its result could not be read
+  back, so there is nothing to diff. `after_read_error` carries the reason.
+- `terminators_only`: the bytes changed but `diff` is empty, because the change
+  lives entirely in line terminators, which `splitlines()` discards.
+"""
+
 
 @dataclass
 class ApprovalPreview:
@@ -32,6 +55,22 @@ class ApprovalPreview:
     diff: str | None = None
     diff_title: str | None = None
     error: str | None = None
+
+
+def _response_failure_reason(responses: list[Any]) -> str:
+    """Return why a backend download response carries no usable content.
+
+    Shared by the pre- and post-operation reads so the two stay byte-identical:
+    `start_operation` compares the result against `FILE_NOT_FOUND` to tell an
+    absent file from a lost one, which only works while both produce the same
+    string for the same failure.
+
+    Returns:
+        A human-readable reason.
+    """
+    if not responses:
+        return "no response"
+    return responses[0].error or "no content and no error reported"
 
 
 def _read_with_reason(path: Path) -> tuple[str | None, str | None]:
@@ -139,48 +178,36 @@ class FileOperationRecord:
     error: str | None = None
     metrics: FileOpMetrics = field(default_factory=FileOpMetrics)
     diff: str | None = None
-    diff_stats: DiffStats = field(default_factory=lambda: DiffStats(0, 0))
+    diff_stats: DiffStats | None = None
     """Change counts for `diff`, taken before it was truncated for display.
 
-    The single provenance for what a `DiffMessage` shows. Deliberately not
-    `metrics.lines_added`/`lines_removed`, which are session accounting and do
-    not always mean diff lines: a new-file `write_file` sets `lines_added` from
-    the whole file rather than from a diff.
+    The single provenance for what a `DiffMessage` shows. `None` is the only
+    way this says "unknown" — never `DiffStats(0, 0)`, which means a verified
+    zero. Unset until a diff is computed, and left unset when `diff_outcome` is
+    `untrusted_before`, where any count would be fiction.
+
+    Deliberately not `metrics.lines_added`/`lines_removed`, which are session
+    accounting and do not always mean diff lines: a new-file `write_file` sets
+    `lines_added` from the whole file rather than from a diff.
     """
     before_content: str | None = None
     after_content: str | None = None
     read_output: str | None = None
     hitl_approved: bool = False
-    before_unreadable: bool = False
-    """The pre-operation content could not be read, so `before_content` is a
-    stand-in empty string rather than the file's real prior state.
+    diff_outcome: DiffOutcome = "shown"
+    """What this operation can honestly say about what it changed.
 
-    Any diff computed against it is unreliable: an unchanged file looks like a
-    no-op, and a changed one looks like a whole-file insertion.
-    """
-    after_unreadable: bool = False
-    """The post-operation content could not be read back.
-
-    Distinct from a tool-reported failure: the operation itself succeeded, only
-    its result could not be displayed.
+    See `DiffOutcome`. Consumers should branch on this rather than infer the
+    state from `status`, `diff`, or `diff_stats`.
     """
     after_read_error: str | None = None
     """Why the post-operation read failed, as reported by the backend or OS.
 
-    Carried separately from `error`, which on this path holds a fixed
+    The payload for `diff_outcome == "unreadable_after"`, and set only with it.
+    Carried separately from `error`, which on that path holds a fixed
     caller-facing summary (elsewhere it holds the tool's own output). Without
     this the user is told only that the content could not be read, which
-    restates the problem instead of explaining it. Always set alongside
-    `after_unreadable`.
-    """
-    change_invisible_to_line_diff: bool = False
-    """The file's bytes changed, but `diff` is empty because the change lives
-    entirely in line terminators — a trailing newline added or removed, a CRLF
-    conversion, or any of the other boundaries `splitlines()` recognizes — which
-    `splitlines()` discards.
-
-    A real change with nothing to render, so "no changes" would be a lie and the
-    tool's own output must stay visible in its place.
+    restates the problem instead of explaining it.
     """
 
 
@@ -438,6 +465,12 @@ class FileOpTracker:
             tool_call_id=tool_call_id,
             args=args,
         )
+
+        def lost_pre_image(target: object, reason: str) -> None:
+            """Record that the file's prior state could not be captured."""
+            logger.warning("Could not read pre-edit content for %s: %s", target, reason)
+            record.diff_outcome = "untrusted_before"
+
         if tool_name in {"write_file", "edit_file", "delete"}:
             if self.backend and path_str:
                 try:
@@ -456,29 +489,16 @@ class FileOpTracker:
                         # content nor an error violates the backend contract,
                         # so it never counts as an absent file either. Every
                         # such case leaves a diff that cannot be trusted.
-                        if not responses:
-                            error = "no response"
-                        else:
-                            error = (
-                                responses[0].error or "no content and no error reported"
-                            )
+                        error = _response_failure_reason(responses)
                         if error != FILE_NOT_FOUND or tool_name != "write_file":
-                            logger.warning(
-                                "Could not read pre-edit content for %s: %s",
-                                path_str,
-                                error,
-                            )
-                            record.before_unreadable = True
+                            lost_pre_image(path_str, error)
                         record.before_content = ""
                 except (OSError, UnicodeDecodeError, AttributeError) as e:
                     # `AttributeError` covers a backend returning a malformed
                     # response. That is a contract bug, but this runs unguarded
                     # on the turn loop, so log it loudly rather than let it
                     # abort the turn.
-                    logger.warning(
-                        "Could not read pre-edit content for %s: %s", path_str, e
-                    )
-                    record.before_unreadable = True
+                    lost_pre_image(path_str, str(e))
                     record.before_content = ""
             elif record.physical_path:
                 content, reason = _read_with_reason(record.physical_path)
@@ -490,16 +510,13 @@ class FileOpTracker:
                     # delete it means we lost the pre-image, whether the read
                     # raised or the path is simply not there (a broken symlink, a
                     # physical path that diverged from the backend's, a file
-                    # replaced since `start_operation`). Gating this on
-                    # `exists()` alone let those render as a confident whole-file
-                    # insertion — and, because the row then qualifies to be
-                    # superseded, as the *only* account of the edit.
-                    logger.warning(
-                        "Could not read pre-edit content for %s: %s",
-                        record.physical_path,
-                        reason or "file not found",
-                    )
-                    record.before_unreadable = True
+                    # replaced between the model emitting the call and this
+                    # read). `exists()` alone is not sufficient: a read that
+                    # raised must count as a lost pre-image too, or the diff
+                    # renders as a confident whole-file insertion and, being
+                    # eligible to supersede the row, becomes the only account of
+                    # the edit.
+                    lost_pre_image(record.physical_path, reason or "file not found")
                 record.before_content = content or ""
         self.active[tool_call_id] = record
 
@@ -568,7 +585,7 @@ class FileOpTracker:
                 self._populate_after_content(record)
                 if record.after_content is None:
                     record.status = "error"
-                    record.after_unreadable = True
+                    record.diff_outcome = "unreadable_after"
                     record.error = "Could not read updated file content."
                     # Record what the *request* knows before bailing. The write
                     # itself succeeded, so reporting zero lines and zero bytes to
@@ -591,15 +608,25 @@ class FileOpTracker:
                 max_lines=100,
             )
             record.diff = diff
-            record.diff_stats = stats
-            if diff:
-                record.metrics.lines_added = stats.additions
-                record.metrics.lines_removed = stats.deletions
-            elif record.tool_name == "write_file" and not (record.before_content or ""):
-                record.metrics.lines_added = record.metrics.lines_written
+            # Skipped entirely for a lost pre-image: `before_content` is a
+            # stand-in empty string, so these counts describe a whole-file
+            # insertion that never happened. Leaving `diff_stats` unset is what
+            # makes "unknown" reach the header, and writing them into `metrics`
+            # would feed the same fiction to session accounting, where nothing
+            # marks it as unreliable.
+            if record.diff_outcome != "untrusted_before":
+                record.diff_stats = stats
+                if diff:
+                    record.metrics.lines_added = stats.additions
+                    record.metrics.lines_removed = stats.deletions
+                elif record.tool_name == "write_file" and not (
+                    record.before_content or ""
+                ):
+                    record.metrics.lines_added = record.metrics.lines_written
             record.metrics.bytes_written = len(record.after_content.encode("utf-8"))
             if (
-                record.diff is None
+                record.diff_outcome == "shown"
+                and record.diff is None
                 and (record.before_content or "") != record.after_content
             ):
                 # `compute_unified_diff` works on `splitlines()`, which erases
@@ -609,7 +636,11 @@ class FileOpTracker:
                 # `splitlines()` recognizes. Recomputing cannot help; the inputs
                 # are identical. Flag it so no caller claims the file is
                 # unchanged.
-                record.change_invisible_to_line_diff = True
+                #
+                # Gated on `shown` so a lost pre-image keeps the stronger
+                # `untrusted_before`, which says the change cannot be shown at
+                # all rather than merely that it has no line diff.
+                record.diff_outcome = "terminators_only"
             if record.diff is None and before_lines != record.metrics.lines_written:
                 record.metrics.lines_added = max(
                     record.metrics.lines_written - before_lines, 0
@@ -632,53 +663,40 @@ class FileOpTracker:
                     record.hitl_approved = True
 
     def _populate_after_content(self, record: FileOperationRecord) -> None:
+        def unreadable(target: object, reason: str) -> None:
+            """Record that the operation's result could not be read back.
+
+            One helper so the reason is never logged without also reaching the
+            record: `after_read_error` is the only thing that can tell the user
+            *why* a successful write cannot be shown, and the caller's own
+            message is a tautology without it.
+            """
+            logger.warning(
+                "Could not read post-edit content for %s: %s", target, reason
+            )
+            record.after_read_error = reason
+            record.after_content = None
+
         # Use backend if available (works for any BackendProtocol implementation)
         if self.backend:
+            file_path = record.args.get("file_path") or record.args.get("path")
             try:
-                file_path = record.args.get("file_path") or record.args.get("path")
-                if file_path:
-                    responses = self.backend.download_files([file_path])
-                    if (
-                        responses
-                        and responses[0].content is not None
-                        and responses[0].error is None
-                    ):
-                        record.after_content = responses[0].content.decode("utf-8")
-                    else:
-                        # Keep the backend's reason: it is the only thing that
-                        # can tell the user *why* a successful write cannot be
-                        # shown, and the caller's own message is a tautology
-                        # without it.
-                        if not responses:
-                            reason = "no response"
-                        else:
-                            reason = (
-                                responses[0].error or "no content and no error reported"
-                            )
-                        logger.warning(
-                            "Could not read post-edit content for %s: %s",
-                            file_path,
-                            reason,
-                        )
-                        record.after_read_error = reason
-                        record.after_content = None
-                else:
-                    reason = "the tool call carried no file path"
-                    logger.warning(
-                        "Could not read post-edit content for %s: %s",
-                        record.display_path,
-                        reason,
+                if not file_path:
+                    unreadable(
+                        record.display_path, "the tool call carried no file path"
                     )
-                    record.after_read_error = reason
-                    record.after_content = None
+                    return
+                responses = self.backend.download_files([file_path])
+                if (
+                    responses
+                    and responses[0].content is not None
+                    and responses[0].error is None
+                ):
+                    record.after_content = responses[0].content.decode("utf-8")
+                else:
+                    unreadable(file_path, _response_failure_reason(responses))
             except (OSError, UnicodeDecodeError, AttributeError) as e:
-                logger.warning(
-                    "Could not read post-edit content for %s: %s",
-                    record.args.get("file_path") or record.args.get("path"),
-                    e,
-                )
-                record.after_read_error = str(e)
-                record.after_content = None
+                unreadable(file_path, str(e))
         else:
             # Fallback: direct filesystem read when no backend provided. Reports
             # its reason at warning like the backend branch above — the same
@@ -686,24 +704,13 @@ class FileOpTracker:
             # another process) are just as opaque to the user here, and the
             # earlier debug-only read left nothing in the logs to work from.
             if record.physical_path is None:
-                reason = "no physical path could be resolved"
-                logger.warning(
-                    "Could not read post-edit content for %s: %s",
-                    record.display_path,
-                    reason,
-                )
-                record.after_read_error = reason
-                record.after_content = None
+                unreadable(record.display_path, "no physical path could be resolved")
                 return
             content, reason = _read_with_reason(record.physical_path)
             if content is None:
-                logger.warning(
-                    "Could not read post-edit content for %s: %s",
-                    record.physical_path,
-                    reason,
-                )
-                record.after_read_error = reason
-            record.after_content = content
+                unreadable(record.physical_path, reason or "file not found")
+            else:
+                record.after_content = content
 
     def _finalize(self, record: FileOperationRecord) -> None:
         self.completed.append(record)

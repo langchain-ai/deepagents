@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from textual.widgets import Static
 
 from deepagents_code.config import get_glyphs
-from deepagents_code.diff_utils import count_diff_changes
+from deepagents_code.diff_utils import DiffStats, count_diff_changes
 from deepagents_code.tui.widgets import diff as diff_module
-from deepagents_code.tui.widgets.diff import compose_diff_lines
+from deepagents_code.tui.widgets.diff import (
+    compose_diff_lines,
+    format_diff_stats,
+    highlight_source_prefixes,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -263,6 +268,48 @@ class TestComposeDiffLines:
         added = next(w for w in _rendered(diff) if "alpha = 3" in _plain(w))
         assert _emphasized(added, "on $success 30%") == []
 
+    def test_equal_multi_line_runs_pair_row_by_row_in_order(self) -> None:
+        """Row *i* of the removed run pairs with row *i* of the added run.
+
+        A regression that paired only the first row, or paired from the end,
+        still emphasizes *something* — so a single-row case cannot catch it.
+        """
+        diff = (
+            "@@ -1,2 +1,2 @@\n"
+            "-alpha = old_one\n"
+            "-beta = old_two\n"
+            "+alpha = new_one\n"
+            "+beta = new_two"
+        )
+        rendered = _rendered(diff)
+        pairs = {
+            "old_one": "on $error 30%",
+            "old_two": "on $error 30%",
+            "new_one": "on $success 30%",
+            "new_two": "on $success 30%",
+        }
+        for token, style in pairs.items():
+            row = next(w for w in rendered if token in _plain(w))
+            assert _emphasized(row, style) == [token], (
+                f"{token} paired with the wrong row"
+            )
+
+    def test_a_note_row_between_a_pair_breaks_emphasis(self) -> None:
+        """A "no newline at end of file" marker parses to a `note` row.
+
+        That splits the removed and added runs, so the pair is no longer
+        adjacent and emphasis is dropped. Pinned because the shape is a real
+        git-diff output, not a hypothetical.
+        """
+        diff = (
+            "@@ -1 +1 @@\n"
+            "-value = old_arg\n"
+            "\\ No newline at end of file\n"
+            "+value = new_arg"
+        )
+        added = next(w for w in _rendered(diff) if "new_arg" in _plain(w))
+        assert _emphasized(added, "on $success 30%") == []
+
     def test_long_lines_are_not_emphasized(self) -> None:
         """The length guard keeps a quadratic match off the compose path.
 
@@ -345,6 +392,44 @@ class TestComposeDiffLines:
         row = next(r for r in rows if "if x:" in r.plain)
         assert not _keyword_spans(row), f"drifted row was highlighted: {row.spans}"
 
+    def test_a_drifted_side_warns_once_not_once_per_row(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A whole drifted side would otherwise report thousands of rows.
+
+        The warning is deliberately per side rather than per row: at warning
+        level it reaches the in-app console's ring buffer, and one row per line
+        would flush everything else out of it.
+        """
+        added = "\n".join(f"+line_{i} = {i}" for i in range(40))
+        with caplog.at_level(logging.WARNING, logger=diff_module.__name__):
+            _contents(
+                compose_diff_lines(
+                    f"@@ -0,0 +1,40 @@\n{added}",
+                    path="m.py",
+                    after="\n".join(f"unrelated_{i} = {i}" for i in range(40)) + "\n",
+                )
+            )
+        drift_warnings = [
+            r for r in caplog.records if "Highlight source drifted" in r.message
+        ]
+        assert len(drift_warnings) == 1
+        assert "40 of 40 rows" in drift_warnings[0].getMessage()
+
+    def test_trimming_a_prefix_again_returns_it_unchanged(self) -> None:
+        """Rehydration re-trims an already-trimmed prefix on every mount.
+
+        A rule that shortens the prefix each pass would quietly walk the
+        highlightable region back a line at a time. The trailing-empty-line case
+        is the one that broke: a terminating newline yields no final entry when
+        the prefix is split again.
+        """
+        diff = "@@ -1,3 +1,3 @@\n a\n-b\n+B\n \n"
+        for before, after in [("a\nb\n\n", "a\nB\n\n"), ("a\nb\n", "a\nB\n")]:
+            once = highlight_source_prefixes(diff, before, after)
+            twice = highlight_source_prefixes(diff, *once)
+            assert once == twice, f"not idempotent for {before!r}"
+
     def test_oversized_source_is_rejected_and_renders_plain(self) -> None:
         """The size guard is the only thing bounding compose-time lexing.
 
@@ -370,7 +455,9 @@ class TestComposeDiffLines:
             )
         )
         row = next(r for r in rows if "y = 2" in r.plain)
-        assert not row.spans[2:], f"an oversized source was lexed anyway: {row.spans}"
+        assert not _keyword_spans(row), (
+            f"an oversized source was lexed anyway: {row.spans}"
+        )
 
 
 class TestRowKinds:
@@ -411,3 +498,27 @@ class TestRowKinds:
         )
         assert _plain(widget) == note
         assert not widget.classes
+
+
+class TestFormatDiffStats:
+    """Tests for the `+N -M` header fragment."""
+
+    def test_both_sides_are_separated(self) -> None:
+        """The common case: an edit that adds and removes."""
+        assert format_diff_stats(DiffStats(3, 2)).plain == "+3 -2"
+
+    def test_additions_only_carry_no_separator(self) -> None:
+        """What every `write_file` approval renders.
+
+        An unconditional separator would leave a stray trailing space that no
+        both-sided test can see.
+        """
+        assert format_diff_stats(DiffStats(3, 0)).plain == "+3"
+
+    def test_deletions_only_carry_no_leading_space(self) -> None:
+        """What every `delete` approval renders."""
+        assert format_diff_stats(DiffStats(0, 2)).plain == "-2"
+
+    def test_zero_renders_nothing(self) -> None:
+        """An unchanged file gets no counts rather than `+0 -0`."""
+        assert format_diff_stats(DiffStats(0, 0)).plain == ""

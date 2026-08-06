@@ -40,7 +40,7 @@ from deepagents_code.config import (
 from deepagents_code.diff_utils import (
     DIFF_TRUNCATION_MARKER,
     DiffStats,
-    count_diff_changes,
+    count_diff_change_lines,
     split_diff_lines,
 )
 from deepagents_code.file_ops import is_sensitive_file_path
@@ -178,10 +178,14 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 _TOOL_SUPERSEDED_BY_DIFF = "edit_file"
 """The one tool whose successful row is replaced by the `DiffMessage` after it.
 
-The row self-hides via `mark_superseded_by_diff`, a `DiffMessage` mounts even
-when the diff body is empty (so something stands in for the hidden row), and
-the row stays visible when the pre-edit content was unreadable and the diff
-cannot be trusted.
+The row self-hides via `mark_superseded_by_diff`, and only ever behind a diff
+that can actually stand in for it: the adapter requires a non-empty body and a
+`shown` outcome, so a lost pre-image, a terminator-only change, and an empty
+diff all leave the row visible to speak for itself.
+
+Ask `ToolCallMessage.can_be_superseded` rather than comparing against this
+constant — the adapter checks a tool name from a different source, and the two
+must not drift.
 """
 
 
@@ -1694,11 +1698,14 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
-        # `_diff_superseded` is restored by `to_widget` before mount, and the
-        # status paths that would honour it don't all run (a row with no
-        # deferred status returns early above; `_TIMED_SUCCESS_TOOLS` takes a
-        # branch that never applies visibility). Apply it here so hiding does
-        # not depend on which restore path a tool happens to take.
+        # `_diff_superseded` is restored by `to_widget` before mount, but not
+        # every restore path applies visibility: a row with no deferred status
+        # returns early above, and `_TIMED_SUCCESS_TOOLS` takes a branch that
+        # never applies it. Defense in depth rather than a fix for a live bug —
+        # neither path can currently carry a superseded row (`_TIMED_SUCCESS_TOOLS`
+        # is disjoint from the one supersedable tool, and hiding requires a
+        # success status anyway). Applied here so hiding does not depend on which
+        # branch a tool happens to take.
         self._apply_own_visibility()
 
     def _restore_deferred_state(self) -> None:
@@ -2020,13 +2027,32 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(Content.styled(f"{glyph} Success!", colors.success))
         self._status_widget.display = True
 
+    @staticmethod
+    def can_be_superseded(tool_name: str | None) -> bool:
+        """Return whether a diff may stand in for this tool's row.
+
+        The public form of the `_TOOL_SUPERSEDED_BY_DIFF` check, so the adapter
+        does not reach for a private constant to ask the same question from a
+        different name source. `mark_superseded_by_diff` still enforces it — this
+        only lets a caller avoid tripping the warning.
+
+        Args:
+            tool_name: Raw name of the tool that produced the row.
+
+        Returns:
+            Whether a mounted `DiffMessage` may hide the row.
+        """
+        return tool_name == _TOOL_SUPERSEDED_BY_DIFF
+
     def mark_superseded_by_diff(self) -> None:
         """Hide a successful file-tool row after its diff has mounted.
 
-        A no-op for any tool other than `_TOOL_SUPERSEDED_BY_DIFF`. That guard is
-        load-bearing rather than defensive: `MessageStore.to_widget` routes a
-        stored flag through this method precisely to inherit it, so rehydration
-        cannot hide a row the live path would have left visible.
+        Rejects any tool other than `_TOOL_SUPERSEDED_BY_DIFF`, leaving the row
+        visible and logging at warning — so this is not safe to call
+        speculatively. That guard is load-bearing rather than defensive:
+        `MessageStore.to_widget` routes a stored flag through this method
+        precisely to inherit it, so rehydration cannot hide a row the live path
+        would have left visible.
         """
         if self._tool_name != _TOOL_SUPERSEDED_BY_DIFF:
             # A broken invariant, not a routine skip: the caller decided this row
@@ -4409,14 +4435,18 @@ class DiffMessage(Static):
             diff_content: The unified diff content
             file_path: Path to the file being modified
             tool_name: Name of the file tool that produced the diff
-            before: Source aligned to the diff's old line numbers. Held as a
-                bounded prefix, not the whole file.
+            before: Source aligned to the diff's old line numbers. Pass the
+                whole file or a prefix this widget previously returned; stored
+                trimmed, and dropped entirely for a credential path.
             after: Source aligned to the diff's new line numbers, same contract.
             stats: Authoritative `(additions, deletions)`, counted before
-                truncation. Always preferred over recounting the diff body.
-            changes_unknown: The pre-operation content could not be read, so
-                the diff (or its absence) does not reflect what changed. Shown
-                as an explicit caveat instead of a confident "no changes".
+                truncation. Always preferred over recounting the diff body;
+                `None` recounts.
+            changes_unknown: The pre-operation content could not be read, so the
+                diff describes a file state that never existed. The body is
+                suppressed and replaced by a caveat — a dim header note over a
+                hundred green rows removes the quiet false claim and keeps the
+                loud one.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4453,12 +4483,23 @@ class DiffMessage(Static):
             yield Static(
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
+        elif self._changes_unknown:
+            # The pre-edit content was lost, so the diff was computed against a
+            # stand-in empty file: a one-line edit renders as a whole-file
+            # insertion. Suppressing only the counts would leave the body making
+            # the same false claim more loudly, so the caveat replaces it.
+            yield Static(Content.assemble(*parts), classes="diff-header")
+            yield Static(
+                Content.styled(
+                    "The file's prior contents could not be read, so what "
+                    "changed cannot be shown. See the tool output above.",
+                    "dim",
+                )
+            )
         else:
             stats = self._stats if self._stats is not None else self._recount()
-            if self._changes_unknown:
-                # The pre-edit content was lost, so both the counts and an empty
-                # diff would be fiction. Say so rather than assert either.
-                parts.append(("  changes could not be determined", "dim"))
+            if stats is None:
+                parts.append(("  change counts unavailable", "dim"))
             elif stats.additions or stats.deletions:
                 parts += ["  ", format_diff_stats(stats)]
             elif not self._diff_content:
@@ -4475,19 +4516,20 @@ class DiffMessage(Static):
                     after=self._after,
                 )
 
-    def _recount(self) -> DiffStats:
+    def _recount(self) -> DiffStats | None:
         """Recount the diff body when no authoritative counts were supplied.
 
         Returns:
-            Counts from the body, or zeros when the body was clipped. A truncated
-            diff is missing lines by construction, so counting it would assert a
-            number that is known to be short and indistinguishable from a correct
-            one. Zeros render no counts at all, which is the honest answer.
+            Counts from the body, or `None` when the body was clipped. A
+            truncated diff is missing lines by construction, so counting it would
+            assert a number that is known to be short and indistinguishable from
+            a correct one. `None` says the counts are unavailable, which is
+            different from — and more honest than — silently showing none.
         """
         lines = split_diff_lines(self._diff_content)
         if lines and lines[-1] == DIFF_TRUNCATION_MARKER:
-            return DiffStats(0, 0)
-        return count_diff_changes(self._diff_content)
+            return None
+        return count_diff_change_lines(lines)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

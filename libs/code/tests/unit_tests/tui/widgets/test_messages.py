@@ -754,6 +754,29 @@ class TestDiffMessageCredentialRedaction:
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
 
+    def test_redaction_outranks_an_unknown_change(self) -> None:
+        """Both suppress the body, but only one must not name the file's state.
+
+        The unknown-change caveat is the safe thing to say about a normal file
+        and the wrong thing to say about a credential one, where the point is to
+        reveal nothing. Redaction has to win, and the contents must be dropped
+        rather than merely unrendered.
+        """
+        diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
+        message = DiffMessage(
+            diff,
+            file_path=".env",
+            tool_name="edit_file",
+            before="API_KEY=old",
+            after="API_KEY=supersecret",
+            changes_unknown=True,
+        )
+        texts = self._texts(message)
+        assert any("may contain credentials" in text for text in texts)
+        assert all("prior contents could not be read" not in text for text in texts)
+        assert all("supersecret" not in text for text in texts)
+        assert (message._before, message._after) == ("", "")
+
 
 class TestDiffMessageNoChanges:
     @staticmethod
@@ -786,22 +809,44 @@ class TestDiffMessageNoChanges:
         )
         assert texts[0] == "Edited m.py  +1000 -1000"
 
+    @pytest.mark.parametrize(
+        ("tool_name", "expected"),
+        [
+            ("edit_file", "Edited m.py  +1 -1"),
+            ("write_file", "Wrote m.py  +1 -1"),
+            ("delete", "Deleted m.py  +1 -1"),
+            ("read_file", "m.py  +1 -1"),
+        ],
+    )
+    def test_header_verb_matches_the_tool(self, tool_name: str, expected: str) -> None:
+        """Every file tool that mounts a diff needs its own verb.
+
+        Dropping `write` from `_DIFF_HEADER_CATEGORIES`, or shifting the phrase
+        index, breaks two of the three mutating tools — which an `edit_file`-only
+        test cannot see. `read_file` pins the negative case: a non-mutating tool
+        must contribute no verb.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name=tool_name))
+        assert texts[0] == expected
+
     def test_header_counts_fall_back_to_the_body_without_stats(self) -> None:
         """An untruncated diff carries its own counts."""
         diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
         texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
         assert texts[0] == "Edited m.py  +1 -1"
 
-    def test_truncated_body_without_stats_reports_no_counts(self) -> None:
+    def test_truncated_body_without_stats_says_counts_are_unavailable(self) -> None:
         """A number known to be short is worse than no number.
 
         Recounting a clipped body silently undercounts — an 800-row clip of a
         900-line change would render `+799`, indistinguishable from correct. With
-        no authoritative counts to fall back on, the honest answer is none.
+        no authoritative counts to fall back on, say they are unavailable:
+        rendering nothing is indistinguishable from a widget that forgot them.
         """
         diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new\n..."
         texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
-        assert texts[0] == "Edited m.py"
+        assert texts[0] == "Edited m.py  change counts unavailable"
 
     def test_context_line_matching_marker_does_not_suppress_counts(self) -> None:
         """A unified-diff context line retains its leading space."""
@@ -826,20 +871,25 @@ class TestDiffMessageNoChanges:
         texts = self._texts(
             DiffMessage("", "main.py", tool_name="edit_file", changes_unknown=True)
         )
-        assert texts == ["Edited main.py  changes could not be determined"]
+        assert texts[0] == "Edited main.py"
+        assert "prior contents could not be read" in texts[1]
 
-    def test_unreadable_before_content_suppresses_misleading_counts(self) -> None:
+    def test_unreadable_before_content_suppresses_the_whole_diff(self) -> None:
         """A diff against a lost pre-image reads as a whole-file insertion.
 
-        Reporting `+2` there would present a two-line edit as a rewrite, so the
-        caveat replaces the counts rather than sitting beside them.
+        Reporting `+2` would present a two-line edit as a rewrite — but so does
+        rendering `+one` and `+two` as added rows, and far more loudly. The
+        caveat has to replace the body, not just the counts, or the widget keeps
+        making the same false claim in the element that dominates it.
         """
         diff = "--- a/main.py\n+++ b/main.py\n@@ -0,0 +1,2 @@\n+one\n+two"
         texts = self._texts(
             DiffMessage(diff, "main.py", tool_name="edit_file", changes_unknown=True)
         )
-        assert texts[0] == "Edited main.py  changes could not be determined"
-        assert "+2" not in texts[0]
+        assert texts[0] == "Edited main.py"
+        assert "prior contents could not be read" in texts[1]
+        assert not any("one" in text or "two" in text for text in texts[1:])
+        assert not any("+2" in text for text in texts)
 
 
 class TestToolCallMessageDuration:

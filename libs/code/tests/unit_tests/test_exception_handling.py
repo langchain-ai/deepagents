@@ -103,7 +103,7 @@ class TestFileOpsExceptionHandling:
         assert record.before_content == ""
         # The empty string is a stand-in, not the file's real prior state; the
         # flag is what stops downstream renderers presenting it as fact.
-        assert record.before_unreadable is True
+        assert record.diff_outcome == "untrusted_before"
 
         # Verify the error was logged loudly enough to notice in the field.
         assert "Could not read pre-edit content" in caplog.text
@@ -129,7 +129,7 @@ class TestFileOpsExceptionHandling:
         assert "tool_call_456" in tracker.active
         record = tracker.active["tool_call_456"]
         assert record.before_content == ""
-        assert record.before_unreadable is True
+        assert record.diff_outcome == "untrusted_before"
 
         # A malformed backend response is a contract bug, but `start_operation`
         # runs unguarded on the turn loop — so it is logged, not raised.
@@ -160,7 +160,7 @@ class TestFileOpsExceptionHandling:
         assert record.before_content == ""
         # A binary pre-image is unreadable, not empty — the diff must not
         # present the write as if it created the file from nothing.
-        assert record.before_unreadable is True
+        assert record.diff_outcome == "untrusted_before"
 
         # Verify the error was logged
         assert "Could not read pre-edit content" in caplog.text

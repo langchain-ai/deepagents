@@ -1451,6 +1451,19 @@ if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ] && [ -n "$UV_TOOL_DIR" ]; then
       INSTALLED_EXTRAS=$(printf '%s\n' "$receipt_entry" \
         | sed -nE 's/.*extras = \[([^]]*)\].*/\1/p' \
         | tr -d ' "')
+      # INSTALLED_EXTRAS is echoed back inside a double-quoted, ready-to-paste
+      # shell command below; on a shared host a less-privileged writer of the
+      # receipt could plant `$(...)` and have it evaluated by whoever pastes
+      # the suggestion. Restrict to PEP 508 extra-name characters plus commas —
+      # anything else means the receipt was tampered with or written by a
+      # foreign tool, which is the unparseable case. An empty value is the
+      # normal no-extras receipt, not tampering.
+      case "$INSTALLED_EXTRAS" in
+        *[!A-Za-z0-9_,.-]*)
+          EXTRAS_UNREADABLE=true
+          INSTALLED_EXTRAS=""
+          ;;
+      esac
     elif grep -q 'deepagents-code' "$receipt" 2>/dev/null; then
       EXTRAS_UNREADABLE=true
     fi

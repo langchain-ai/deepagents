@@ -1427,6 +1427,37 @@ def test_install_script_warns_when_receipt_is_unparseable(tmp_path: Path) -> Non
     assert "re-run with the same value" in proc.stderr
 
 
+def test_install_script_receipt_extras_with_metacharacters_warns(
+    tmp_path: Path,
+) -> None:
+    """Shell metacharacters in receipt extras must not reach the printed hint.
+
+    The extras value is echoed inside a double-quoted `DEEPAGENTS_CODE_EXTRAS`
+    suggestion the user may paste; a tampered receipt could otherwise smuggle
+    `$(...)` into that paste. Anything outside `[A-Za-z0-9_,.-]` is treated as
+    an unparseable receipt — the run warns and omits the paste-ready hint.
+    """
+    receipt = _write_uv_receipt(tmp_path / "tools", ["$(touch /tmp/pwned)"])
+    # Keep the file plausible TOML but with the payload as the extra name.
+    receipt.write_text(
+        '[tool]\nrequirements = [{ name = "deepagents-code",'
+        ' extras = ["$(touch /tmp/pwned)"], specifier = "==0.1.0" }]\n'
+    )
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "Could not read" in proc.stderr
+    assert "DEEPAGENTS_CODE_EXTRAS=" not in proc.stderr
+    assert "$(touch" not in proc.stderr
+    assert not Path("/tmp/pwned").exists()
+
+
 def test_install_script_warns_when_receipt_is_symlinked(tmp_path: Path) -> None:
     """A symlinked receipt is refused, but the refusal is announced.
 

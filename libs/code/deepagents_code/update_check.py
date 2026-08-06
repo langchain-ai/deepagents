@@ -191,9 +191,7 @@ UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
 
 Lives under the OS cache directory (`default_cache_dir()`) alongside the
 install script's `<cache>/deepagents-code/install.log`, since these are
-ephemeral `uv`/`pip` diagnostics rather than app state. Logs previously
-written under `~/.deepagents/.state/update_logs/` are left in place — they
-age out on their own under the retention policy below.
+ephemeral `uv`/`pip` diagnostics rather than app state.
 """
 
 UPDATE_LOG_RETENTION_DAYS = 14

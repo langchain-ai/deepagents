@@ -7,7 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from filelock import FileLock, Timeout
+from filelock import Timeout
 
 from deepagents_code.plugins.discovery import (
     _plugin_from_install_path,
@@ -32,7 +32,7 @@ from deepagents_code.plugins.store import (
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
-    plugin_storage_root,
+    plugin_mutation_lock,
     save_marketplace_record,
     versioned_cache_path,
 )
@@ -215,14 +215,11 @@ def auto_update_plugins() -> tuple[str, ...]:
     if not is_plugin_auto_update_enabled():
         return ()
 
-    root = plugin_storage_root()
-    root.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(root / ".auto-update.lock"), timeout=0, thread_local=False)
     try:
-        with lock:
+        with plugin_mutation_lock(timeout=0):
             return _update_plugins()
     except Timeout:
         logger.debug(
-            "Skipping plugin auto-update because another updater holds the lock"
+            "Skipping plugin auto-update because another mutation holds the lock"
         )
         return ()

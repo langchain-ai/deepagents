@@ -41,6 +41,7 @@ from deepagents_code.plugins.store import (
     plugin_data_dir,
     remove_marketplace_record,
     save_marketplace_record,
+    serialized_plugin_mutation,
     set_plugin_enabled,
     uninstall_plugin as uninstall_plugin_record,
 )
@@ -48,6 +49,7 @@ from deepagents_code.plugins.store import (
 logger = logging.getLogger(__name__)
 
 
+@serialized_plugin_mutation
 def add_local_marketplace(path: str | Path) -> PluginMarketplace:
     """Add a local marketplace to dcode state.
 
@@ -69,6 +71,7 @@ def add_local_marketplace(path: str | Path) -> PluginMarketplace:
     return marketplace
 
 
+@serialized_plugin_mutation
 def add_marketplace_source(raw: str) -> PluginMarketplace:
     """Add a marketplace from a pasted source string.
 
@@ -92,6 +95,7 @@ def add_marketplace_source(raw: str) -> PluginMarketplace:
     return marketplace
 
 
+@serialized_plugin_mutation
 def remove_marketplace(name: str) -> bool:
     """Remove a marketplace and every plugin installed from it.
 
@@ -147,6 +151,7 @@ def _require_installed_plugin(plugin_id: str) -> None:
         raise MarketplaceError(msg)
 
 
+@serialized_plugin_mutation
 def set_installed_plugin_enabled(plugin_id: str, *, enabled: bool) -> None:
     """Set the enabled state of an installed plugin.
 
@@ -160,6 +165,7 @@ def set_installed_plugin_enabled(plugin_id: str, *, enabled: bool) -> None:
         ensure_plugin_data_dir(plugin_id)
 
 
+@serialized_plugin_mutation
 def uninstall_plugin(plugin_id: str) -> None:
     """Uninstall a plugin (disable, clear records, delete orphaned cache).
 
@@ -192,6 +198,7 @@ def _resolve_marketplace_and_entry(
     return marketplace, entry
 
 
+@serialized_plugin_mutation
 def install_plugin(plugin_id: str) -> PluginInstance:
     """Install a marketplace plugin into the versioned cache and enable it.
 

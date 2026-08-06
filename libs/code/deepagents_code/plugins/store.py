@@ -7,10 +7,12 @@ import logging
 import os
 import shutil
 import tempfile
-from contextlib import suppress
+import threading
+from contextlib import contextmanager, suppress
+from functools import wraps
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Never
+from typing import TYPE_CHECKING, Any, Never, ParamSpec, TypeVar
 
 from deepagents_code.plugins.models import (
     InstalledPluginEntry,
@@ -20,7 +22,7 @@ from deepagents_code.plugins.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 logger = logging.getLogger(__name__)
 _STORAGE_VERSION = 1
@@ -28,6 +30,10 @@ _INSTALLED_STORAGE_VERSION = 2
 _UNVERSIONED_CACHE_KEY = "unversioned"
 _CACHE_SLUG_LENGTH = 48
 _CACHE_DIGEST_LENGTH = 32
+_PLUGIN_MUTATION_THREAD_LOCK = threading.RLock()
+_PLUGIN_MUTATION_STATE = threading.local()
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 SUPPORTED_MARKETPLACE_SOURCE_TYPES: frozenset[MarketplaceSourceType] = frozenset(
     {"directory", "file", "github", "git", "url"}
 )
@@ -53,6 +59,61 @@ def plugin_storage_root() -> Path:
     if raw:
         return Path(raw).expanduser()
     return DEFAULT_CONFIG_DIR / DEFAULT_PLUGIN_DIRNAME
+
+
+@contextmanager
+def plugin_mutation_lock(*, timeout: float = -1) -> Iterator[None]:
+    """Serialize plugin mutations across threads and dcode processes.
+
+    The lock is reentrant within one thread so compound operations such as
+    marketplace removal can call the normal uninstall path while holding it.
+
+    Args:
+        timeout: Seconds to wait for another process, or `-1` to wait indefinitely.
+
+    Yields:
+        Control while plugin state and managed caches may be mutated.
+    """
+    with _PLUGIN_MUTATION_THREAD_LOCK:
+        depth = getattr(_PLUGIN_MUTATION_STATE, "depth", 0)
+        if depth:
+            _PLUGIN_MUTATION_STATE.depth = depth + 1
+            try:
+                yield
+            finally:
+                _PLUGIN_MUTATION_STATE.depth = depth
+            return
+
+        from filelock import FileLock
+
+        root = plugin_storage_root()
+        root.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(
+            str(root / ".mutation.lock"), timeout=timeout, thread_local=False
+        )
+        with lock:
+            _PLUGIN_MUTATION_STATE.depth = 1
+            try:
+                yield
+            finally:
+                del _PLUGIN_MUTATION_STATE.depth
+
+
+def serialized_plugin_mutation(
+    function: Callable[_P, _R],
+) -> Callable[_P, _R]:
+    """Wrap a synchronous plugin mutation with the shared mutation lock.
+
+    Returns:
+        The serialized mutation function.
+    """
+
+    @wraps(function)
+    def locked(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with plugin_mutation_lock():
+            return function(*args, **kwargs)
+
+    return locked
 
 
 def plugin_data_dir(plugin_id: str) -> Path:

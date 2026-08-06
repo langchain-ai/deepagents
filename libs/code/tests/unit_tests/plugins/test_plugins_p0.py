@@ -365,6 +365,87 @@ def test_plugin_auto_update_stages_new_version_for_reload(
     )
 
 
+def test_plugin_auto_update_serializes_with_uninstall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    plugin_root = marketplace_root / "plugins" / "quality-review-plugin"
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "quality-review-plugin", "version": "2.0.0"},
+    )
+    save_marketplace_record(
+        MarketplaceRecord(
+            name="company-tools",
+            source_type="git",
+            source="https://example.com/company-tools.git",
+            install_location=str(marketplace_root),
+        )
+    )
+    monkeypatch.setattr(
+        "deepagents_code.plugins.update.is_plugin_auto_update_enabled", lambda: True
+    )
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+
+    def wait_during_refresh(_record: MarketplaceRecord) -> None:
+        refresh_started.set()
+        assert release_refresh.wait(5)
+
+    monkeypatch.setattr(
+        "deepagents_code.plugins.update._refresh_marketplace", wait_during_refresh
+    )
+    update_result: list[tuple[str, ...]] = []
+    thread_errors: list[Exception] = []
+
+    def run_update() -> None:
+        try:
+            update_result.append(auto_update_plugins())
+        except (OSError, ValueError) as exc:
+            thread_errors.append(exc)
+
+    uninstall_started = threading.Event()
+    uninstall_finished = threading.Event()
+
+    def run_uninstall() -> None:
+        uninstall_started.set()
+        try:
+            uninstall_plugin(plugin_id)
+        except (OSError, ValueError) as exc:
+            thread_errors.append(exc)
+        finally:
+            uninstall_finished.set()
+
+    updater = threading.Thread(target=run_update)
+    updater.start()
+    assert refresh_started.wait(5)
+    remover = threading.Thread(target=run_uninstall)
+    remover.start()
+    assert uninstall_started.wait(5)
+    assert not uninstall_finished.wait(0.05)
+
+    release_refresh.set()
+    updater.join(5)
+    remover.join(5)
+
+    assert not updater.is_alive()
+    assert not remover.is_alive()
+    assert thread_errors == []
+    assert update_result == [(plugin_id,)]
+    assert plugin_id not in load_installed_plugins()
+    assert plugin_id not in load_enabled_plugin_ids()
+
+
 def test_failed_cached_plugin_load_rolls_back_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

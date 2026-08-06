@@ -860,17 +860,21 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             return
         try:
             if row.enabled:
-                set_installed_plugin_enabled(row.plugin_id, enabled=False)
+                await asyncio.to_thread(
+                    set_installed_plugin_enabled, row.plugin_id, enabled=False
+                )
                 self._status = f"Disabled {row.label}. Run /reload to unload."
                 self._mode = "list"
                 self._selected_plugin = None
             else:
-                set_installed_plugin_enabled(row.plugin_id, enabled=True)
+                await asyncio.to_thread(
+                    set_installed_plugin_enabled, row.plugin_id, enabled=True
+                )
                 self._status = f"Enabled {row.label}. Run /reload to activate."
                 self._mode = "list"
                 self._tab = "installed"
                 self._selected_plugin = None
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self._error = f"Could not update plugin state: {exc}"
             self._status = None
             self._refresh_view()

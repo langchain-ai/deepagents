@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from deepagents_code._version import __version__ as _cli_version
 from deepagents_code.config import Settings
-from deepagents_code.skills.load import list_skills
+from deepagents_code.skills.load import list_skills, list_skills_with_failures
 
 
 def _create_skill(skill_dir: Path, name: str, description: str) -> None:
@@ -129,6 +129,84 @@ Content
         skills_dir = tmp_path / "nonexistent"
         skills = list_skills(user_skills_dir=skills_dir, project_skills_dir=None)
         assert skills == []
+
+
+class TestListSkillsWithFailures:
+    """Test that `list_skills_with_failures` reports per-skill load failures."""
+
+    def test_invalid_yaml_reported_as_failure(self, tmp_path: Path) -> None:
+        """A SKILL.md with broken YAML is skipped and reported with a reason."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        _create_skill(skills_dir / "good-skill", "good-skill", "A good skill")
+
+        broken_dir = skills_dir / "broken-skill"
+        broken_dir.mkdir()
+        broken_md = broken_dir / "SKILL.md"
+        broken_md.write_text("---\nname: [unclosed\ndescription: x\n---\nbody\n")
+
+        skills, failures = list_skills_with_failures(
+            user_skills_dir=skills_dir, project_skills_dir=None
+        )
+
+        assert [skill["name"] for skill in skills] == ["good-skill"]
+        assert len(failures) == 1
+        failure = failures[0]
+        assert failure["path"] == str(broken_md)
+        assert "Invalid YAML" in failure["error"]
+        assert failure["source"] == "user"
+
+    def test_missing_description_reported_as_failure(self, tmp_path: Path) -> None:
+        """A SKILL.md missing a required field reports which field is missing."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        skill_dir = skills_dir / "incomplete"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("---\nname: incomplete\n---\nbody\n")
+
+        skills, failures = list_skills_with_failures(
+            user_skills_dir=skills_dir, project_skills_dir=None
+        )
+
+        assert skills == []
+        assert failures == [
+            {
+                "path": str(skill_md),
+                "error": "missing required 'description'",
+                "source": "user",
+            }
+        ]
+
+    def test_project_failures_carry_project_source(self, tmp_path: Path) -> None:
+        """Failures are attributed to the source directory they came from."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        skill_dir = skills_dir / "broken"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# No frontmatter\n")
+
+        _skills, failures = list_skills_with_failures(
+            user_skills_dir=None, project_skills_dir=skills_dir
+        )
+
+        assert len(failures) == 1
+        assert failures[0]["source"] == "project"
+
+    def test_valid_sources_produce_no_failures(self, tmp_path: Path) -> None:
+        """Fully valid skills yield an empty failures list."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        _create_skill(skills_dir / "my-skill", "my-skill", "A valid skill")
+
+        skills, failures = list_skills_with_failures(
+            user_skills_dir=skills_dir, project_skills_dir=None
+        )
+
+        assert len(skills) == 1
+        assert failures == []
 
 
 class TestListSkillsMultipleDirectories:
@@ -711,18 +789,19 @@ class TestListSkillsBuiltIn:
         _create_skill(user_dir / "user-skill", "user-skill", "A user skill")
 
         # Use a built-in dir that exists but will fail when FilesystemBackend
-        # tries to read it — we simulate this by patching list_skills_from_backend
-        # to raise OSError only for the built-in source
+        # tries to read it — we simulate this by patching
+        # list_skills_with_failures_from_backend to raise OSError only for the
+        # built-in source
         built_in_dir = tmp_path / "built_in_skills"
         built_in_dir.mkdir()
 
         original_list = __import__(
-            "deepagents.middleware.skills", fromlist=["_list_skills"]
-        )._list_skills
+            "deepagents.middleware.skills", fromlist=["_list_skills_with_failures"]
+        )._list_skills_with_failures
 
         call_count = 0
 
-        def patched_list(backend: object, source_path: str) -> list[object]:
+        def patched_list(backend: object, source_path: str) -> object:
             nonlocal call_count
             call_count += 1
             # First call is the built-in source — make it fail
@@ -732,7 +811,8 @@ class TestListSkillsBuiltIn:
             return original_list(backend=backend, source_path=source_path)
 
         with patch(
-            "deepagents_code.skills.load.list_skills_from_backend", patched_list
+            "deepagents_code.skills.load.list_skills_with_failures_from_backend",
+            patched_list,
         ):
             skills = list_skills(
                 built_in_skills_dir=built_in_dir,
@@ -755,12 +835,12 @@ class TestListSkillsBuiltIn:
         built_in_dir.mkdir()
 
         original_list = __import__(
-            "deepagents.middleware.skills", fromlist=["_list_skills"]
-        )._list_skills
+            "deepagents.middleware.skills", fromlist=["_list_skills_with_failures"]
+        )._list_skills_with_failures
 
         call_count = 0
 
-        def patched_list(backend: object, source_path: str) -> list[object]:
+        def patched_list(backend: object, source_path: str) -> object:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -769,7 +849,8 @@ class TestListSkillsBuiltIn:
             return original_list(backend=backend, source_path=source_path)
 
         with patch(
-            "deepagents_code.skills.load.list_skills_from_backend", patched_list
+            "deepagents_code.skills.load.list_skills_with_failures_from_backend",
+            patched_list,
         ):
             skills = list_skills(
                 built_in_skills_dir=built_in_dir,

@@ -373,6 +373,7 @@ def show_skills_help() -> None:
     console.print("  create <name>     Create a new skill")
     console.print("  info <name>       Show detailed information about a skill")
     console.print("  delete <name>     Delete a skill")
+    console.print("  validate          Validate skills against the Agent Skills spec")
     console.print("  trust             Manage trusted skill directories")
     console.print()
     _print_option_section(
@@ -390,6 +391,7 @@ def show_skills_help() -> None:
     console.print("  dcode skills delete my-skill")
     console.print("  dcode skills delete my-skill --force --project")
     console.print("  dcode skills delete -h")
+    console.print("  dcode skills validate")
     console.print()
     console.print(
         "[bold]Skill directories (highest precedence first):[/bold]",
@@ -500,6 +502,24 @@ def show_skills_delete_help() -> None:
     console.print("  dcode skills delete old-skill --force")
     console.print("  dcode skills delete old-skill --project")
     console.print("  dcode skills delete old-skill --dry-run")
+    console.print()
+
+
+def show_skills_validate_help() -> None:
+    """Show help information for the `skills validate` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills validate [options]")
+    console.print()
+    _print_option_section(
+        "  --agent NAME            Agent identifier (default: agent)",
+        "  --project               Validate only project-level skills",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills validate")
+    console.print("  dcode skills validate --project")
+    console.print("  dcode skills validate --json")
     console.print()
 
 

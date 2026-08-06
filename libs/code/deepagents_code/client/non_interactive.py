@@ -1948,35 +1948,47 @@ async def run_non_interactive(
     if startup_cmd and startup_cmd.strip():
         await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
 
+    from deepagents_code._invocation import invoked_name
+    from deepagents_code.plugins.adapters.skills import (
+        discover_plugin_skill_sources_and_roots,
+    )
+    from deepagents_code.skills.invocation import (
+        discover_skills_and_roots,
+        get_skill_load_failures,
+    )
+    from deepagents_code.skills.load import ExtendedSkillMetadata
+
+    # Discovery does blocking filesystem I/O (a JSON trust-store read plus
+    # `Path.resolve()` calls), so it always runs off the event loop.
+    def _discover_all() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
+        plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
+        return discover_skills_and_roots(
+            assistant_id,
+            plugin_skill_sources=plugin_sources,
+            plugin_skill_roots=plugin_roots,
+        )
+
+    def _report_skill_load_failures() -> None:
+        skill_failures = get_skill_load_failures()
+        if skill_failures:
+            count = len(skill_failures)
+            suffix = "" if count == 1 else "s"
+            console.print(
+                f"[yellow]Warning: {count} skill{suffix} failed to load. "
+                f"Run '{invoked_name()} skills list' for details.[/yellow]"
+            )
+
     message_kwargs: dict[str, Any] | None = None
     if initial_skill and initial_skill.strip():
         from deepagents_code.skills.invocation import (
             build_skill_invocation_envelope,
-            discover_skills_and_roots,
         )
-        from deepagents_code.skills.load import (
-            ExtendedSkillMetadata,
-            load_skill_content,
-        )
+        from deepagents_code.skills.load import load_skill_content
 
         normalized_skill = initial_skill.strip().lower()
         try:
-            # Offloaded to a thread: discovery does blocking filesystem I/O
-            # (a JSON trust-store read plus `Path.resolve()` calls) that must
-            # not block the event loop.
-            from deepagents_code.plugins.adapters.skills import (
-                discover_plugin_skill_sources_and_roots,
-            )
-
-            def discover_all_skills() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
-                plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
-                return discover_skills_and_roots(
-                    assistant_id,
-                    plugin_skill_sources=plugin_sources,
-                    plugin_skill_roots=plugin_roots,
-                )
-
-            skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
+            skills, allowed_roots = await asyncio.to_thread(_discover_all)
+            _report_skill_load_failures()
             skill = next((s for s in skills if s["name"] == normalized_skill), None)
         except OSError as e:
             console.print(
@@ -2043,6 +2055,15 @@ async def run_non_interactive(
         envelope = build_skill_invocation_envelope(skill, content, message)
         message = envelope.prompt
         message_kwargs = envelope.message_kwargs
+    else:
+        # No initial skill: run discovery solely to surface malformed-skill
+        # warnings, which would otherwise stay silent in headless mode.
+        try:
+            await asyncio.to_thread(_discover_all)
+            _report_skill_load_failures()
+        except Exception:
+            # Discovery must never break a headless run that needs no skills.
+            logger.warning("Headless skill discovery failed", exc_info=True)
 
     try:
         result = create_model(

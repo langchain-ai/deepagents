@@ -438,7 +438,10 @@ class TestHandleSkillCommand:
     async def test_skill_not_found(self) -> None:
         app = _make_app()
         with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([], []),
+            ),
             patch("deepagents_code.config.settings"),
         ):
             await app._handle_skill_command("/skill:nonexistent")
@@ -451,7 +454,10 @@ class TestHandleSkillCommand:
         app = _make_app()
         skill = _fake_skill()
         with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([skill], []),
+            ),
             patch("deepagents_code.skills.load.load_skill_content", return_value=None),
             patch("deepagents_code.config.settings"),
         ):
@@ -465,7 +471,10 @@ class TestHandleSkillCommand:
         app = _make_app()
         skill = _fake_skill()
         with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([skill], []),
+            ),
             patch(
                 "deepagents_code.skills.load.load_skill_content",
                 side_effect=PermissionError(
@@ -485,7 +494,10 @@ class TestHandleSkillCommand:
         app = _make_app()
         skill = _fake_skill()
         with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([skill], []),
+            ),
             patch("deepagents_code.skills.load.load_skill_content", return_value=""),
             patch("deepagents_code.config.settings"),
         ):
@@ -501,7 +513,10 @@ class TestHandleSkillCommand:
         app = _make_app()
         skill = _fake_skill()
         with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([skill], []),
+            ),
             patch(
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
@@ -525,7 +540,10 @@ class TestHandleSkillCommand:
         app = _make_app()
         skill = _fake_skill()
         with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([skill], []),
+            ),
             patch(
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
@@ -546,7 +564,10 @@ class TestHandleSkillCommand:
         app = _make_app()
         skill = _fake_skill()
         with (
-            patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([skill], []),
+            ),
             patch(
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
@@ -567,7 +588,7 @@ class TestHandleSkillCommand:
         app = _make_app()
         with (
             patch(
-                "deepagents_code.skills.load.list_skills",
+                "deepagents_code.skills.load.list_skills_with_failures",
                 side_effect=PermissionError("access denied"),
             ),
             patch("deepagents_code.config.settings"),
@@ -582,7 +603,7 @@ class TestHandleSkillCommand:
         app = _make_app()
         with (
             patch(
-                "deepagents_code.skills.load.list_skills",
+                "deepagents_code.skills.load.list_skills_with_failures",
                 side_effect=TypeError("bad argument"),
             ),
             patch("deepagents_code.config.settings"),
@@ -631,8 +652,8 @@ class TestHandleSkillCommand:
 
         with (
             patch(
-                "deepagents_code.skills.load.list_skills",
-                return_value=[skill],
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([skill], []),
             ) as mock_list,
             patch(
                 "deepagents_code.skills.load.load_skill_content",
@@ -928,7 +949,10 @@ class TestDiscoverSkillsAndRoots:
                 "deepagents_code.config.settings",
                 self._settings_with_no_builtin_roots([link_extra]),
             ),
-            patch("deepagents_code.skills.load.list_skills", return_value=[]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([], []),
+            ),
             patch(
                 "deepagents_code.skills.trust.load_trusted_skill_dirs",
                 return_value=[link_trusted],
@@ -941,6 +965,56 @@ class TestDiscoverSkillsAndRoots:
         assert real_trusted.resolve() not in roots
         # `extra_allowed_dirs` is the declarative allowlist and is resolved.
         assert real_extra.resolve() in roots
+
+    def test_failures_snapshot_updated_on_discovery(self) -> None:
+        """Discovery records per-skill failures for the startup warning."""
+        from deepagents_code.skills.invocation import (
+            discover_skills_and_roots,
+            get_skill_load_failures,
+        )
+
+        recorded = [
+            {
+                "path": "/skills/broken/SKILL.md",
+                "error": "Invalid YAML in frontmatter: ...",
+                "source": "user",
+            }
+        ]
+
+        with (
+            patch(
+                "deepagents_code.config.settings",
+                self._settings_with_no_builtin_roots([]),
+            ),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([], recorded),
+            ),
+            patch(
+                "deepagents_code.skills.trust.load_trusted_skill_dirs",
+                return_value=[],
+            ),
+        ):
+            discover_skills_and_roots("agent")
+            assert get_skill_load_failures() == recorded
+
+        # A subsequent clean discovery clears the snapshot.
+        with (
+            patch(
+                "deepagents_code.config.settings",
+                self._settings_with_no_builtin_roots([]),
+            ),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.skills.trust.load_trusted_skill_dirs",
+                return_value=[],
+            ),
+        ):
+            discover_skills_and_roots("agent")
+            assert get_skill_load_failures() == []
 
 
 class TestResolveParentDir:

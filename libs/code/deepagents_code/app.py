@@ -5099,6 +5099,19 @@ class DeepAgentsApp(App):
 
         self._discovered_skills = skills
         self._skill_allowed_roots = roots
+        from deepagents_code.skills.invocation import get_skill_load_failures
+
+        skill_failures = get_skill_load_failures()
+        if skill_failures:
+            count = len(skill_failures)
+            suffix = "" if count == 1 else "s"
+            self.notify(
+                f"{count} skill{suffix} failed to load. "
+                f"Run '{invoked_name()} skills list' for details.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
         if skills:
             skill_commands = build_skill_commands(skills)
             if self._chat_input:

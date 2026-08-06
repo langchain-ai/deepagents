@@ -1,0 +1,21 @@
+# Arm 2 — Opus 4.8 alone. Baseline, measured through Switchyard.
+#
+# The client speaks OpenAI Chat; this target is anthropic_messages, so
+# Switchyard translates. That is the same translation path the escalation arm
+# uses for its strong tier, which keeps arm 2 an honest baseline for arm 3.
+
+schema_version = 1
+
+[llm_clients.strong_upstream]
+format = "anthropic_messages"
+base_url = "${SY_STRONG_BASE_URL}"
+api_key_env = "${SY_STRONG_KEY_ENV}"
+
+[targets.strong]
+id = "${SY_STRONG_ID}"
+llm_client = "strong_upstream"
+
+[routes.switchyard]
+id = "switchyard"
+type = "passthrough"
+target = "strong"

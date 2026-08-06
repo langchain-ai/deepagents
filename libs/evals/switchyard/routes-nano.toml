@@ -1,0 +1,25 @@
+# Nemotron 3.5 Nano alone — establishes the weak tier's standalone accuracy on
+# our suite, rather than borrowing Sean's 64.1% from a different setup.
+#
+# Run this BEFORE the routed arm. If Nano lands near 64% the gap to GLM (84.1%)
+# is real and routing has something to work with; if it lands near 78% the gap
+# collapses and the pairing is another Opus-vs-GLM null.
+
+schema_version = 1
+
+[llm_clients.nvidia]
+format = "openai_chat"
+base_url = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"
+
+[targets.nano]
+id = "private/nvidia/nemotron-3.5-nano-30b-a3b"
+llm_client = "nvidia"
+# vLLM-style hint the NIM endpoint expects; Switchyard forwards target
+# extra_body verbatim.
+extra_body = { chat_template_kwargs = { enable_thinking = true } }
+
+[routes.switchyard]
+id = "switchyard"
+type = "passthrough"
+target = "nano"

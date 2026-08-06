@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -123,6 +124,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         choices=("minimal", "low", "medium", "high", "xhigh"),
         default=None,
         help="Apply reasoning effort to OpenAI models. E.g. --openai-reasoning-effort high",
+    )
+    parser.addoption(
+        "--base-url",
+        action="store",
+        default=None,
+        help=(
+            "Route model calls through an OpenAI-compatible endpoint instead of the "
+            "provider default, e.g. a local Switchyard server: "
+            "--model openai:<route-id> --base-url http://localhost:4000/v1. "
+            "Omit to leave every model on its provider default (the control)."
+        ),
     )
     parser.addoption(
         "--repl",
@@ -276,4 +288,20 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
             msg = "--openai-reasoning-effort requires an openai: model prefix"
             raise ValueError(msg)
         kwargs["reasoning_effort"] = reasoning_effort
+    base_url = request.config.getoption("--base-url")
+    if base_url:
+        kwargs["base_url"] = base_url
+        # A router in front of the model serves /v1/chat/completions; the
+        # `openai:` branch above would otherwise send /v1/responses, changing
+        # the wire format under test. An explicit --openai-reasoning-effort
+        # still wins, since it is only accepted for openai: specs anyway.
+        kwargs["use_responses_api"] = False
+        # Session identity for stateful routers. Switchyard's escalation router
+        # retains its consecutive-escalate streak per session and needs one
+        # whenever `confirmations` > 1 (escalation mode exposes no
+        # message-hash fallback), or the streak resets every turn and the route
+        # never latches — a silent null result. This fixture is function-scoped,
+        # so each test is its own session, which is the correct granularity: one
+        # eval task is one conversation.
+        kwargs["default_headers"] = {"x-switchyard-session-id": str(uuid.uuid4())}
     return init_chat_model(model_name, **kwargs)

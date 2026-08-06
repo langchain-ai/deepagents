@@ -1,0 +1,21 @@
+# Nemotron 3 Ultra alone — the baseline NVIDIA's hypothesis is measured against
+# ("maybe Ultra + Nano will hit same as pure Ultra for you then").
+#
+# Sean measured Ultra at 80.0% on his setup; we have not measured it on ours, so
+# this arm is required before the routed one means anything.
+
+schema_version = 1
+
+[llm_clients.baseten]
+format = "openai_chat"
+base_url = "${SY_ULTRA_BASE_URL}"
+api_key_env = "${SY_ULTRA_KEY_ENV}"
+
+[targets.ultra]
+id = "${SY_ULTRA_ID}"
+llm_client = "baseten"
+
+[routes.switchyard]
+id = "switchyard"
+type = "passthrough"
+target = "ultra"

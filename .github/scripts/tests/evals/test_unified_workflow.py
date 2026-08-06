@@ -175,6 +175,60 @@ def test_eval_job_passes_branch() -> None:
     assert "branches: ${{ steps.p.outputs.branches }}" in reusable
 
 
+def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
+    unified = UNIFIED_WORKFLOW.read_text()
+    dispatch = _indented_block(unified, "  workflow_dispatch:")
+    eval_job = _indented_block(unified, "  eval:")
+    reusable = HARBOR_WORKFLOW.read_text()
+    call_inputs = _indented_block(reusable, "    inputs:")
+    harbor = _indented_block(reusable, "  harbor:")
+    credentials = _indented_block(
+        harbor, '      - name: "🔑 Verify sandbox credentials"'
+    )
+    run_harbor = _indented_block(harbor, '      - name: "⚓ Run Harbor"')
+
+    for name in ("switchyard_config", "switchyard_image"):
+        dispatch_input = _indented_block(dispatch, f"      {name}:")
+        call_input = _indented_block(call_inputs, f"      {name}:")
+        assert 'default: ""' in dispatch_input
+        assert 'default: ""' in call_input
+        assert f"{name}: ${{{{ inputs.{name} }}}}" in eval_job
+
+    assert "sandbox_env=langsmith" in dispatch
+    assert "models=openai:switchyard" in dispatch
+    assert 'if [ "$HARBOR_MODEL" != "openai:switchyard" ]; then' in credentials
+    assert "switchyard_image must be a public digest-pinned image reference" in credentials
+    assert "switchyard_keys=(ANTHROPIC_API_KEY BASETEN_API_KEY GOOGLE_API_KEY)" in credentials
+    assert "deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment" in run_harbor
+    assert '--extra-docker-compose "$switchyard_compose"' in run_harbor
+    assert '--environment-kwarg "switchyard_config=$switchyard_config"' in run_harbor
+    assert '"base_url":"http://switchyard:4000/v1"' in run_harbor
+    assert '"api_key":"switchyard"' in run_harbor
+    assert '"use_responses_api":false' in run_harbor
+
+
+def test_switchyard_secrets_are_granted_only_when_router_is_enabled() -> None:
+    workflow = HARBOR_WORKFLOW.read_text()
+    harbor = _indented_block(workflow, "  harbor:")
+    credentials = _indented_block(
+        harbor, '      - name: "🔑 Verify sandbox credentials"'
+    )
+    run_harbor = _indented_block(harbor, '      - name: "⚓ Run Harbor"')
+
+    for step in (credentials, run_harbor):
+        for provider, key in (
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("baseten", "BASETEN_API_KEY"),
+            ("google_genai", "GOOGLE_API_KEY"),
+            ("nvidia", "NVIDIA_API_KEY"),
+        ):
+            expected = (
+                "${{ (inputs.switchyard_config != '' || "
+                f"startsWith(matrix.model, '{provider}:')) && secrets.{key} || '' }}}}"
+            )
+            assert expected in step
+
+
 def test_enumerate_step_gated_on_full_profile() -> None:
     """The task-enumeration step only runs for the full profile; lite skips it."""
     workflow = UNIFIED_WORKFLOW.read_text()

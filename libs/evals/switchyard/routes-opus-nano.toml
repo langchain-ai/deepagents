@@ -1,0 +1,52 @@
+# Opus 4.8 (strong) escalating from Nemotron 3.5 Nano (weak).
+#
+# The widest capability gap available. On the pytest suite this pairing would be
+# pointless — Opus and GLM tie there, so the expensive tier buys nothing. On
+# harbor-index the tasks are hard enough that Opus may genuinely separate, which
+# is the condition escalation needs and the one the pytest suite never met.
+#
+# Nano speaks OpenAI Chat, Opus speaks Anthropic Messages, the client speaks
+# OpenAI Chat — Switchyard translates across all three.
+
+schema_version = 1
+
+[llm_clients.nvidia]
+format = "openai_chat"
+base_url = "https://integrate.api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"
+
+[llm_clients.strong_upstream]
+format = "anthropic_messages"
+base_url = "https://gateway.smith.langchain.com/anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[llm_clients.judge_upstream]
+format = "openai_chat"
+base_url = "https://gateway.smith.langchain.com/gemini/v1"
+api_key_env = "GOOGLE_API_KEY"
+
+[targets.weak]
+id = "private/nvidia/nemotron-3.5-nano-30b-a3b"
+llm_client = "nvidia"
+extra_body = { chat_template_kwargs = { enable_thinking = true } }
+
+[targets.strong]
+id = "claude-opus-4-8"
+llm_client = "strong_upstream"
+
+[targets.judge]
+id = "gemini-3.1-flash-lite"
+llm_client = "judge_upstream"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.switchyard.escalation]
+confirmations = 2
+recent_turn_window = 28
+window_message_chars = 500

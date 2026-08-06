@@ -1,0 +1,55 @@
+# GLM 5.2 (strong) escalating from Nemotron 3.5 Nano (weak).
+#
+# Why this pairing rather than Opus-on-top: GLM and Opus tie at 84.1% on this
+# suite while Opus costs 9.5x more, so escalating to Opus buys nothing. The
+# strong tier should be the best model per dollar, not the most expensive one.
+#
+# Viability condition — routing beats GLM-alone only when the weak-tier offload
+# fraction clears  f_min = judge_cost / (strong_cost - weak_cost).  Measured on
+# this suite: judge 0.49 USD, GLM 1.21 USD per run, so
+# f_min = 0.49 / (1.21 - nano_cost). Nano's price is unpublished; that number
+# decides whether this arm can win.
+
+schema_version = 1
+
+[llm_clients.nvidia]
+format = "openai_chat"
+base_url = "${SY_NANO_BASE_URL}"
+api_key_env = "${SY_NANO_KEY_ENV}"
+
+[llm_clients.baseten]
+format = "openai_chat"
+base_url = "${SY_WEAK_BASE_URL}"
+api_key_env = "${SY_WEAK_KEY_ENV}"
+
+# Judge on its own quota bucket — it fires roughly once per un-latched turn.
+[llm_clients.judge_upstream]
+format = "openai_chat"
+base_url = "${SY_JUDGE_BASE_URL}"
+api_key_env = "${SY_JUDGE_KEY_ENV}"
+
+[targets.weak]
+id = "${SY_NANO_ID}"
+llm_client = "nvidia"
+extra_body = { chat_template_kwargs = { enable_thinking = ${SY_NANO_THINKING} } }
+
+[targets.strong]
+id = "${SY_WEAK_ID}"
+llm_client = "baseten"
+
+[targets.judge]
+id = "${SY_JUDGE_ID}"
+llm_client = "judge_upstream"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.switchyard.escalation]
+confirmations = ${SY_CONFIRMATIONS}
+recent_turn_window = ${SY_RECENT_TURN_WINDOW}
+window_message_chars = ${SY_WINDOW_MESSAGE_CHARS}

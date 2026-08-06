@@ -1,0 +1,55 @@
+# Nemotron 3 Ultra (strong) escalating from Nemotron 3.5 Nano (weak).
+# All-NVIDIA pairing. Tests NVIDIA's hypothesis that this lands at pure-Ultra
+# accuracy while offloading most turns to the cheaper tier.
+#
+# Cost caveat, measured rather than assumed: Nano costs MORE per task than Ultra
+# on this suite (1.10 USD vs a projected 0.74 USD cache-aware) because Baseten
+# caches Ultra at ~90% while NIM caches Nano not at all, and Nano's thinking
+# output inflates its own downstream context. Cache-aware, this pairing routes
+# from an expensive weak tier to a cheaper strong one — backwards. Under the
+# uncached pricing NVIDIA uses, Ultra is 2.26 USD and f_min is 43%, which is
+# achievable. Which framing is used decides whether this arm reads as a win.
+
+schema_version = 1
+
+[llm_clients.nvidia]
+format = "openai_chat"
+base_url = "${SY_NANO_BASE_URL}"
+api_key_env = "${SY_NANO_KEY_ENV}"
+
+[llm_clients.baseten]
+format = "openai_chat"
+base_url = "${SY_ULTRA_BASE_URL}"
+api_key_env = "${SY_ULTRA_KEY_ENV}"
+
+# Judge on its own quota bucket — it fires once per un-latched turn.
+[llm_clients.judge_upstream]
+format = "openai_chat"
+base_url = "${SY_JUDGE_BASE_URL}"
+api_key_env = "${SY_JUDGE_KEY_ENV}"
+
+[targets.weak]
+id = "${SY_NANO_ID}"
+llm_client = "nvidia"
+extra_body = { chat_template_kwargs = { enable_thinking = ${SY_NANO_THINKING} } }
+
+[targets.strong]
+id = "${SY_ULTRA_ID}"
+llm_client = "baseten"
+
+[targets.judge]
+id = "${SY_JUDGE_ID}"
+llm_client = "judge_upstream"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.switchyard.escalation]
+confirmations = ${SY_CONFIRMATIONS}
+recent_turn_window = ${SY_RECENT_TURN_WINDOW}
+window_message_chars = ${SY_WINDOW_MESSAGE_CHARS}

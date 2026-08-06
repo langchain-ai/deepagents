@@ -145,6 +145,35 @@ def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, An
     nested["reasoning_effort"] = "high"
 
 
+def _apply_router_session_header(model_kwargs: dict[str, Any]) -> None:
+    """Tag requests with the trial's session id when the model is behind a router.
+
+    Only applies when the caller supplied a `base_url`, i.e. the model is being
+    reached through a proxy rather than its provider. Without that gate this
+    would attach a meaningless header to every ordinary eval run.
+
+    Stateful routers key their per-conversation state on a session id. Switchyard's
+    escalation router, for instance, retains a consecutive-escalate streak per
+    session and needs `confirmations` of them before it moves a task to the strong
+    tier; escalation mode exposes no message-hash fallback, so with no session id
+    the streak resets every turn and the router silently never escalates — a null
+    result indistinguishable from a real one.
+
+    `HARBOR_SESSION_ID` is `<trial_name>__env` (harbor >= 0.20 suffixes it), which
+    is unique per trial and stable across that trial's turns — exactly the
+    granularity a router wants, since one Harbor trial is one conversation. A
+    caller-supplied `default_headers` still wins.
+    """
+    if not model_kwargs.get("base_url"):
+        return
+    session_id = os.environ.get("HARBOR_SESSION_ID")
+    if not session_id:
+        return
+    headers = model_kwargs.setdefault("default_headers", {})
+    if isinstance(headers, dict):
+        headers.setdefault("x-switchyard-session-id", session_id)
+
+
 def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     """Build the chat model, applying provider-specific eval defaults.
 
@@ -157,12 +186,17 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     The GLM-5.2 eval profiles additionally default `reasoning_effort` to
     `"high"` via `_apply_glm_5_2_reasoning_default`. A caller-supplied
     `model_kwargs` value still wins in both cases.
+
+    When a `base_url` points the model at a router,
+    `_apply_router_session_header` additionally tags each request with the
+    trial's session id. Both are no-ops for an ordinary provider-direct run.
     """
     name = _model_name(configurable)
     kwargs = _model_kwargs(configurable)
     if name.startswith("openai:") and "use_responses_api" not in kwargs:
         kwargs["use_responses_api"] = True
     _apply_glm_5_2_reasoning_default(name, kwargs)
+    _apply_router_session_header(kwargs)
     return init_chat_model(name, **kwargs)
 
 

@@ -1,0 +1,21 @@
+# Arm 1 — GLM 5.2 alone. Baseline, measured through Switchyard so its
+# /v1/stats numbers are directly comparable to the routed arm.
+#
+# Route id is "switchyard": every arm exposes the same client-facing model id,
+# so only this file changes between runs — the pytest command stays identical.
+
+schema_version = 1
+
+[llm_clients.weak_upstream]
+format = "openai_chat"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+
+[targets.weak]
+id = "zai-org/GLM-5.2"
+llm_client = "weak_upstream"
+
+[routes.switchyard]
+id = "switchyard"
+type = "passthrough"
+target = "weak"

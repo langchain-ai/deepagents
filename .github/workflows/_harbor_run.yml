@@ -98,6 +98,16 @@ on:
         # not the model under test, to avoid self-grading bias.
         type: string
         default: "gpt-5.6-luna"
+      switchyard_config:
+        # Route arm name under libs/evals/switchyard/routes-<name>.toml. Empty
+        # keeps the ordinary provider-direct Harbor path.
+        type: string
+        default: ""
+      switchyard_image:
+        # Public, immutable image reference. Switchyard does not publish an
+        # official image yet, so callers must supply a digest-pinned build.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -293,20 +303,22 @@ jobs:
       HARBOR_CATEGORY: ${{ matrix.category || inputs.category }}
       HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
       HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
+      HARBOR_SWITCHYARD_CONFIG: ${{ inputs.switchyard_config }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
+      SWITCHYARD_IMAGE: ${{ inputs.switchyard_image }}
     steps:
       - name: "🔑 Verify sandbox credentials"
         working-directory: .
         env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'anthropic:')) && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'baseten:')) && secrets.BASETEN_API_KEY || '' }}
           FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'google_genai:')) && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'nvidia:')) && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
           # so this key is required regardless of the model under test.
@@ -349,6 +361,39 @@ jobs:
               exit 1
               ;;
           esac
+
+          if [ -n "$HARBOR_SWITCHYARD_CONFIG" ]; then
+            if [ "$HARBOR_SANDBOX_ENV" != "langsmith" ]; then
+              echo "::error::Switchyard sidecar runs require sandbox_env=langsmith"
+              exit 1
+            fi
+            if [ "$HARBOR_MODEL" != "openai:switchyard" ]; then
+              echo "::error::Switchyard sidecar runs require model=openai:switchyard"
+              exit 1
+            fi
+            case "$HARBOR_SWITCHYARD_CONFIG" in
+              glm)        switchyard_keys=(BASETEN_API_KEY) ;;
+              opus)       switchyard_keys=(ANTHROPIC_API_KEY) ;;
+              nano)       switchyard_keys=(NVIDIA_API_KEY) ;;
+              escalation) switchyard_keys=(ANTHROPIC_API_KEY BASETEN_API_KEY GOOGLE_API_KEY) ;;
+              glm-nano)   switchyard_keys=(BASETEN_API_KEY GOOGLE_API_KEY NVIDIA_API_KEY) ;;
+              opus-nano)  switchyard_keys=(ANTHROPIC_API_KEY GOOGLE_API_KEY NVIDIA_API_KEY) ;;
+              *)
+                echo "::error::Unknown Switchyard config: $HARBOR_SWITCHYARD_CONFIG"
+                exit 1
+                ;;
+            esac
+            if ! [[ "$SWITCHYARD_IMAGE" =~ ^[A-Za-z0-9.-]+(/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::switchyard_image must be a public digest-pinned image reference"
+              exit 1
+            fi
+            for key in "${switchyard_keys[@]}"; do
+              [ -z "${!key}" ] && missing+=("$key")
+            done
+          elif [ -n "$SWITCHYARD_IMAGE" ]; then
+            echo "::error::switchyard_image requires switchyard_config"
+            exit 1
+          fi
 
           if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
             missing+=("OPENAI_API_KEY")
@@ -529,13 +574,13 @@ jobs:
 
       - name: "⚓ Run Harbor"
         env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'anthropic:')) && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'baseten:')) && secrets.BASETEN_API_KEY || '' }}
           FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'google_genai:')) && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ (inputs.switchyard_config != '' || startsWith(matrix.model, 'nvidia:')) && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
           # so this key is required regardless of the model under test.
@@ -769,7 +814,24 @@ jobs:
             done
           fi
 
-          env_flag="--env $HARBOR_SANDBOX_ENV"
+          environment_args=(--env "$HARBOR_SANDBOX_ENV")
+          router_agent_args=()
+          if [ -n "$HARBOR_SWITCHYARD_CONFIG" ]; then
+            switchyard_config="$GITHUB_WORKSPACE/libs/evals/switchyard/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"
+            switchyard_compose="$GITHUB_WORKSPACE/libs/evals/switchyard/compose/switchyard.yaml"
+            if [ ! -f "$switchyard_config" ] || [ ! -f "$switchyard_compose" ]; then
+              echo "::error::Switchyard config or compose overlay is missing"
+              exit 1
+            fi
+            environment_args=(
+              --env deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment
+              --extra-docker-compose "$switchyard_compose"
+              --environment-kwarg "switchyard_config=$switchyard_config"
+            )
+            router_agent_args=(
+              --agent-kwarg 'model_kwargs={"base_url":"http://switchyard:4000/v1","api_key":"switchyard","use_responses_api":false}'
+            )
+          fi
           # agent_impl IS the graph key in langgraph.json (the single registry).
           # Validate membership before it reaches `harbor run --agent-kwarg
           # graph=...`. Callers already validate, so this is defense-in-depth;
@@ -845,6 +907,7 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${router_agent_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
@@ -859,7 +922,7 @@ jobs:
             "${agent_env_args[@]}" \
             "${verifier_env_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
-            $env_flag \
+            "${environment_args[@]}" \
             --model "$HARBOR_MODEL" \
             --plugin langsmith \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
@@ -896,6 +959,15 @@ jobs:
           )
           echo "actual_retries=$actual_retries" >> "$GITHUB_OUTPUT"
 
+      - name: "📈 Aggregate Switchyard stats"
+        if: ${{ inputs.switchyard_config != '' && env.SHARD_EMPTY != 'true' && steps.latest-job.outputs.job_dir != '' }}
+        continue-on-error: true
+        env:
+          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
+        run: |
+          python3 switchyard/collect_stats.py aggregate "$HARBOR_JOB_DIR" \
+            --out "$HARBOR_JOB_DIR/switchyard-stats-summary.json"
+
       - name: "📝 Write workflow summary"
         if: always()
         env:
@@ -911,6 +983,11 @@ jobs:
             echo "## Harbor run"
             echo
             echo "- Model: $HARBOR_MODEL"
+            if [ -n "$HARBOR_SWITCHYARD_CONFIG" ]; then
+              echo "- Switchyard route: $HARBOR_SWITCHYARD_CONFIG"
+              echo "- Switchyard image: $SWITCHYARD_IMAGE"
+              echo "- Switchyard stats: included as per-trial artifacts"
+            fi
             if [ "$SHARD_EMPTY" = "true" ]; then
               echo "- Shard: $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS — empty (no tasks assigned), skipped"
             fi

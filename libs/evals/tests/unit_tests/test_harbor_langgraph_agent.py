@@ -580,6 +580,63 @@ def test_build_model_respects_explicit_use_responses_api(
     assert captured_init == [{"model": "openai:gpt-5", "kwargs": {"use_responses_api": False}}]
 
 
+def test_build_model_adds_router_session_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_init: list[dict[str, object]] = []
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session__env")
+    monkeypatch.setattr(
+        langgraph_agent,
+        "init_chat_model",
+        lambda model, **kwargs: captured_init.append({"model": model, "kwargs": kwargs}),
+    )
+
+    langgraph_agent._build_model(
+        {
+            "model": "openai:switchyard",
+            "model_kwargs": {
+                "base_url": "http://switchyard:4000/v1",
+                "use_responses_api": False,
+            },
+        }
+    )
+
+    assert captured_init == [
+        {
+            "model": "openai:switchyard",
+            "kwargs": {
+                "base_url": "http://switchyard:4000/v1",
+                "use_responses_api": False,
+                "default_headers": {"x-switchyard-session-id": "trial-session__env"},
+            },
+        }
+    ]
+
+
+def test_build_model_preserves_explicit_router_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+    monkeypatch.setenv("HARBOR_SESSION_ID", "generated-session")
+    monkeypatch.setattr(
+        langgraph_agent,
+        "init_chat_model",
+        lambda _model, **kwargs: captured.append(kwargs),
+    )
+
+    langgraph_agent._build_model(
+        {
+            "model": "openai:switchyard",
+            "model_kwargs": {
+                "base_url": "http://switchyard:4000/v1",
+                "default_headers": {"x-switchyard-session-id": "explicit-session"},
+            },
+        }
+    )
+
+    assert captured[0]["default_headers"] == {"x-switchyard-session-id": "explicit-session"}
+
+
 def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

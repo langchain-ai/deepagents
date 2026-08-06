@@ -59,6 +59,14 @@ on:
         description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna."
         type: string
         default: ""
+      switchyard_config:
+        description: "Optional Switchyard route arm: glm, opus, nano, escalation, glm-nano, or opus-nano. Requires models=openai:switchyard, sandbox_env=langsmith, and switchyard_image."
+        type: string
+        default: ""
+      switchyard_image:
+        description: "Public digest-pinned Switchyard image used by the LangSmith compose sidecar, for example registry.example/org/switchyard@sha256:<64 hex chars>."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -230,6 +238,8 @@ jobs:
           IN_SANDBOX_ENV: ${{ inputs.sandbox_env }}
           IN_FORCE_BUILD: ${{ inputs.force_build }}
           HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}
+          IN_SWITCHYARD_CONFIG: ${{ inputs.switchyard_config }}
+          IN_SWITCHYARD_IMAGE: ${{ inputs.switchyard_image }}
         run: |
           # Never echo the override spec: uv accepts authenticated specs
           # (e.g. git+https://user:token@host/repo.git) and this summary is
@@ -273,6 +283,8 @@ jobs:
             echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
             echo "| force_build | \`${IN_FORCE_BUILD}\` |"
             echo "| harbor_package_override | \`${override_status}\` |"
+            echo "| switchyard_config | \`${IN_SWITCHYARD_CONFIG:-(disabled)}\` |"
+            echo "| switchyard_image | \`${IN_SWITCHYARD_IMAGE:-(disabled)}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   eval:
@@ -310,6 +322,8 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}
+      switchyard_config: ${{ inputs.switchyard_config }}
+      switchyard_image: ${{ inputs.switchyard_image }}
 
   usage:
     name: "💰 Collect LangSmith usage"

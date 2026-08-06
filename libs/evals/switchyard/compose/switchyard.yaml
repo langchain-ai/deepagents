@@ -1,0 +1,27 @@
+services:
+  main:
+    depends_on:
+      switchyard:
+        condition: service_started
+
+  switchyard:
+    image: "${SWITCHYARD_IMAGE:?set SWITCHYARD_IMAGE to a digest-pinned public image}"
+    command:
+      - --config
+      - /etc/switchyard/routes.toml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+    environment:
+      - ANTHROPIC_API_KEY
+      - BASETEN_API_KEY
+      - GOOGLE_API_KEY
+      - NVIDIA_API_KEY
+    expose:
+      - "4000"
+    volumes:
+      - type: bind
+        source: /harbor/compose/switchyard-routes.toml
+        target: /etc/switchyard/routes.toml
+        read_only: true

@@ -1,0 +1,56 @@
+# Arm 3 — escalation routing. Every task starts on GLM 5.2. After each
+# completed turn a small judge rules on how the run is going; `confirmations`
+# consecutive escalate verdicts latch the session to Opus 4.8 for the rest of
+# the task.
+#
+# Schema note: this is `type = "llm_classifier"` with `mode = "escalation"`
+# (crates/switchyard-server/src/config.rs). There is no `type = "escalation"`.
+# The loader uses deny_unknown_fields, so any stray key is a hard load error —
+# validate with --dry-run before running.
+
+schema_version = 1
+
+[llm_clients.weak_upstream]
+format = "openai_chat"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+
+[llm_clients.strong_upstream]
+format = "anthropic_messages"
+base_url = "https://gateway.smith.langchain.com/anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+# Separate client => separate quota bucket. The judge fires roughly once per
+# turn, so sharing a bucket with either tier invites sustained 429s at scale.
+[llm_clients.judge_upstream]
+format = "openai_chat"
+base_url = "https://gateway.smith.langchain.com/gemini/v1"
+api_key_env = "GOOGLE_API_KEY"
+
+[targets.weak]
+id = "zai-org/GLM-5.2"
+llm_client = "weak_upstream"
+
+[targets.strong]
+id = "claude-opus-4-8"
+llm_client = "strong_upstream"
+
+[targets.judge]
+id = "gemini-3.1-flash-lite"
+llm_client = "judge_upstream"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+
+# confirmations >= 2 needs a session id; conftest.py sends one per test via
+# x-switchyard-session-id. Without it the streak resets every turn and this
+# route degrades to plain GLM — a null result that looks like a real one.
+[routes.switchyard.escalation]
+confirmations = 2
+recent_turn_window = 28
+window_message_chars = 500

@@ -611,17 +611,33 @@ def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -
 
     criteria = data.get("criteria")
     failing: list[tuple[str, str]] = []
+    passing: list[str] = []
     if isinstance(criteria, list):
         for criterion in criteria:
-            if isinstance(criterion, dict) and criterion.get("passed") is False:
+            if not isinstance(criterion, dict):
+                continue
+            verdict = criterion.get("passed")
+            # Strict identity keeps a missing or non-boolean verdict out of both
+            # lists rather than guessing which way it should count.
+            if verdict is False:
                 name = str(criterion.get("name") or "Unnamed criterion").strip()
                 gap = str(criterion.get("gap") or "").strip()
                 failing.append((name, gap))
+            elif verdict is True:
+                passing.append(
+                    str(criterion.get("name") or "Unnamed criterion").strip()
+                )
     if failing:
         lines = ["Unmet criteria"]
         for name, gap in failing:
             lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
         sections.append("\n".join(lines))
+    if passing:
+        # Shown so the panel reports the grader's full accounting; without it a
+        # partial evaluation is indistinguishable from a complete one.
+        sections.append(
+            "\n".join(["Satisfied criteria", *(f"- {name}" for name in passing)])
+        )
 
     unverified = data.get("unverified") is True
 

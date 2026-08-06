@@ -31,7 +31,6 @@ _UNVERSIONED_CACHE_KEY = "unversioned"
 _CACHE_SLUG_LENGTH = 48
 _CACHE_DIGEST_LENGTH = 32
 _PLUGIN_MUTATION_THREAD_LOCK = threading.RLock()
-_PLUGIN_MUTATION_STATE = threading.local()
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 SUPPORTED_MARKETPLACE_SOURCE_TYPES: frozenset[MarketplaceSourceType] = frozenset(
@@ -75,28 +74,13 @@ def plugin_mutation_lock(*, timeout: float = -1) -> Iterator[None]:
         Control while plugin state and managed caches may be mutated.
     """
     with _PLUGIN_MUTATION_THREAD_LOCK:
-        depth = getattr(_PLUGIN_MUTATION_STATE, "depth", 0)
-        if depth:
-            _PLUGIN_MUTATION_STATE.depth = depth + 1
-            try:
-                yield
-            finally:
-                _PLUGIN_MUTATION_STATE.depth = depth
-            return
-
         from filelock import FileLock
 
         root = plugin_storage_root()
         root.mkdir(parents=True, exist_ok=True)
-        lock = FileLock(
-            str(root / ".mutation.lock"), timeout=timeout, thread_local=False
-        )
-        with lock:
-            _PLUGIN_MUTATION_STATE.depth = 1
-            try:
-                yield
-            finally:
-                del _PLUGIN_MUTATION_STATE.depth
+        lock = FileLock(str(root / ".mutation.lock"), is_singleton=True)
+        with lock.acquire(timeout=timeout):
+            yield
 
 
 def serialized_plugin_mutation(

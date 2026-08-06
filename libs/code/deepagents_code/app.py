@@ -15379,20 +15379,9 @@ class DeepAgentsApp(App):
             return False
         return True
 
-    def _start_plugin_auto_update(self) -> None:
-        """Start the background plugin update after the first agent prompt."""
-        if self._plugin_auto_update_started:
-            return
-        self._plugin_auto_update_started = True
-        self.run_worker(
-            self._auto_update_plugins(),
-            exclusive=True,
-            group="plugin-auto-update",
-        )
-
     async def _auto_update_plugins(self) -> None:
         """Update plugins on disk and notify when `/reload` can apply them."""
-        from deepagents_code.plugins.update import auto_update_plugins
+        from deepagents_code.plugins.discovery import auto_update_plugins
 
         try:
             updated = await asyncio.to_thread(auto_update_plugins)
@@ -15412,7 +15401,6 @@ class DeepAgentsApp(App):
                 noun, display = "Plugins", f"{len(names)} plugins"
         self.notify(
             f"{noun} updated: {display}. Run /reload to apply.",
-            severity="information",
             timeout=10,
             markup=False,
         )
@@ -15477,7 +15465,13 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
-            self._start_plugin_auto_update()
+            if not self._plugin_auto_update_started:
+                self._plugin_auto_update_started = True
+                self.run_worker(
+                    self._auto_update_plugins(),
+                    exclusive=True,
+                    group="plugin-auto-update",
+                )
             self._set_agent_running(True)
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.

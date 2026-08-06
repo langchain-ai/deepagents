@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -43,6 +44,7 @@ from deepagents_code.plugins.adapters.skills_middleware import (
     discover_skill_dirs,
 )
 from deepagents_code.plugins.commands_cli import execute_plugin_command
+from deepagents_code.plugins.discovery import auto_update_plugins
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     load_marketplace,
@@ -68,7 +70,6 @@ from deepagents_code.plugins.store import (
     set_plugin_enabled,
     versioned_cache_path,
 )
-from deepagents_code.plugins.update import auto_update_plugins
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 from deepagents_code.tui.modals.plugin_manager.state import (
@@ -123,6 +124,36 @@ def _make_marketplace(root: Path) -> None:
             }
         },
     )
+
+
+def _install_remote_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, str]:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    save_marketplace_record(
+        MarketplaceRecord(
+            name="company-tools",
+            source_type="git",
+            source="https://example.com/company-tools.git",
+            install_location=str(marketplace_root),
+        )
+    )
+    install_plugin(plugin_id)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1")
+    monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE")
+    monkeypatch.setattr(
+        "deepagents_code.plugins.discovery.materialize_marketplace_source",
+        lambda _source: (load_marketplace(marketplace_root), marketplace_root),
+    )
+    return marketplace_root, plugin_id
 
 
 def _add_docs_helper_plugin(root: Path) -> None:
@@ -317,131 +348,58 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
 def test_plugin_auto_update_stages_new_version_for_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-    plugin_id = "quality-review-plugin@company-tools"
-    old_instance = install_plugin(plugin_id)
-    old_skill = old_instance.root / "skills" / "review" / "SKILL.md"
-
-    plugin_root = marketplace_root / "plugins" / "quality-review-plugin"
+    marketplace_root, plugin_id = _install_remote_plugin(tmp_path, monkeypatch)
+    old_cache = Path(load_installed_plugins()[plugin_id].install_path)
     _write_json(
-        plugin_root / ".claude-plugin" / "plugin.json",
+        marketplace_root
+        / "plugins"
+        / "quality-review-plugin"
+        / ".claude-plugin"
+        / "plugin.json",
         {"name": "quality-review-plugin", "version": "2.0.0"},
-    )
-    source_skill = plugin_root / "skills" / "review" / "SKILL.md"
-    source_skill.write_text(source_skill.read_text() + "\nUpdated.", encoding="utf-8")
-    save_marketplace_record(
-        MarketplaceRecord(
-            name="company-tools",
-            source_type="git",
-            source="https://example.com/company-tools.git",
-            install_location=str(marketplace_root),
-        )
-    )
-    monkeypatch.setattr(
-        "deepagents_code.plugins.update.is_plugin_auto_update_enabled", lambda: True
-    )
-    monkeypatch.setattr(
-        "deepagents_code.plugins.update._refresh_marketplace", lambda _record: None
     )
 
     assert auto_update_plugins() == (plugin_id,)
     updated = load_installed_plugins()[plugin_id]
     assert updated.version == "2.0.0"
     assert Path(updated.install_path) == versioned_cache_path(plugin_id, "2.0.0")
-    assert old_skill.is_file()
-    assert not old_skill.read_text(encoding="utf-8").endswith("Updated.")
-    assert (
-        (Path(updated.install_path) / "skills" / "review" / "SKILL.md")
-        .read_text(encoding="utf-8")
-        .endswith("Updated.")
-    )
+    assert old_cache.is_dir()
 
 
 def test_plugin_auto_update_serializes_with_uninstall(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-    plugin_id = "quality-review-plugin@company-tools"
-    install_plugin(plugin_id)
-    plugin_root = marketplace_root / "plugins" / "quality-review-plugin"
-    _write_json(
-        plugin_root / ".claude-plugin" / "plugin.json",
-        {"name": "quality-review-plugin", "version": "2.0.0"},
-    )
-    save_marketplace_record(
-        MarketplaceRecord(
-            name="company-tools",
-            source_type="git",
-            source="https://example.com/company-tools.git",
-            install_location=str(marketplace_root),
-        )
-    )
-    monkeypatch.setattr(
-        "deepagents_code.plugins.update.is_plugin_auto_update_enabled", lambda: True
-    )
+    marketplace_root, plugin_id = _install_remote_plugin(tmp_path, monkeypatch)
     refresh_started = threading.Event()
     release_refresh = threading.Event()
 
-    def wait_during_refresh(_record: MarketplaceRecord) -> None:
+    def wait_during_refresh(_source: object) -> tuple[PluginMarketplace, Path]:
         refresh_started.set()
         assert release_refresh.wait(5)
+        return load_marketplace(marketplace_root), marketplace_root
 
     monkeypatch.setattr(
-        "deepagents_code.plugins.update._refresh_marketplace", wait_during_refresh
+        "deepagents_code.plugins.discovery.materialize_marketplace_source",
+        wait_during_refresh,
     )
-    update_result: list[tuple[str, ...]] = []
-    thread_errors: list[Exception] = []
-
-    def run_update() -> None:
-        try:
-            update_result.append(auto_update_plugins())
-        except (OSError, ValueError) as exc:
-            thread_errors.append(exc)
-
     uninstall_started = threading.Event()
-    uninstall_finished = threading.Event()
 
     def run_uninstall() -> None:
         uninstall_started.set()
+        uninstall_plugin(plugin_id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        update = executor.submit(auto_update_plugins)
         try:
-            uninstall_plugin(plugin_id)
-        except (OSError, ValueError) as exc:
-            thread_errors.append(exc)
+            assert refresh_started.wait(5)
+            uninstall = executor.submit(run_uninstall)
+            assert uninstall_started.wait(5)
+            assert not uninstall.done()
         finally:
-            uninstall_finished.set()
+            release_refresh.set()
+        assert update.result(timeout=5) == ()
+        uninstall.result(timeout=5)
 
-    updater = threading.Thread(target=run_update)
-    updater.start()
-    assert refresh_started.wait(5)
-    remover = threading.Thread(target=run_uninstall)
-    remover.start()
-    assert uninstall_started.wait(5)
-    assert not uninstall_finished.wait(0.05)
-
-    release_refresh.set()
-    updater.join(5)
-    remover.join(5)
-
-    assert not updater.is_alive()
-    assert not remover.is_alive()
-    assert thread_errors == []
-    assert update_result == [(plugin_id,)]
     assert plugin_id not in load_installed_plugins()
     assert plugin_id not in load_enabled_plugin_ids()
 

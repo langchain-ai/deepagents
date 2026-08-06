@@ -859,17 +859,14 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if row is None:
             return
         try:
+            await asyncio.to_thread(
+                set_installed_plugin_enabled, row.plugin_id, enabled=not row.enabled
+            )
             if row.enabled:
-                await asyncio.to_thread(
-                    set_installed_plugin_enabled, row.plugin_id, enabled=False
-                )
                 self._status = f"Disabled {row.label}. Run /reload to unload."
                 self._mode = "list"
                 self._selected_plugin = None
             else:
-                await asyncio.to_thread(
-                    set_installed_plugin_enabled, row.plugin_id, enabled=True
-                )
                 self._status = f"Enabled {row.label}. Run /reload to activate."
                 self._mode = "list"
                 self._tab = "installed"

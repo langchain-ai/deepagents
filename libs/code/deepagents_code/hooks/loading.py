@@ -10,6 +10,17 @@ Sources are concatenated per event. Precedence is reduction order, not execution
 order: every matching handler runs, and the first one that stops processing
 decides the event.
 
+A minimal v2 config with one event and one command handler:
+
+```json
+{"hooks": {"Notification": [{"matcher": "agent_completed",
+  "hooks": [{"type": "command", "command": "bash notify.sh"}]}]}}
+```
+
+Hook stdin payloads are the Claude-compatible envelope (`hook_event_name` +
+`session_id` + event-specific fields), defined in
+`deepagents_code.hooks.models.wire`.
+
 Legacy list-shaped documents are migrated only for events whose lifecycle
 semantics genuinely match Hooks v2.
 """

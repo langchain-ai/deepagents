@@ -5,6 +5,7 @@ Orientation doc. Read this first; it links to everything else.
 - **`RESULTS.md`** — measured numbers, findings, methodology caveats
 - **`BRANCH_PLAN.md`** — the plan for running Harbor / unified evals in CI
 - **`README.md`** — how to run the pytest arms
+- **`SIDECAR_FALLBACK.md`** — preserved Compose approach, blockers, and resume steps
 
 ---
 

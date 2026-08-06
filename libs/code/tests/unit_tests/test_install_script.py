@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import pty
 import re
-import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -3751,10 +3749,6 @@ def _run_install_uv(
     use_wget: bool = False,
     busybox_wget: bool = False,
     truncated: bool = False,
-    sum_fails: bool = False,
-    sum_missing_entry: bool = False,
-    sum_mismatch: bool = False,
-    no_sha_tool: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real `install_uv` from `install.sh` against a fake uv installer.
 
@@ -3785,58 +3779,25 @@ def _run_install_uv(
     if fails:
         installer += "exit 3\n"
 
-    # The fake installer is served as a real file (not shell-quoted inline) so
-    # its digest can be computed and served alongside it. install_uv fetches
-    # two URLs through the same downloader: the installer
-    # (astral.sh/uv/install.sh) and the checksum manifest
-    # (github.com/astral-sh/uv/releases/latest/download/sha256.sum). The URL
-    # stays visible in argv, so the fake routes each to its payload. The
-    # manifest's `uv-installer.sh` entry carries the real digest of the
-    # fixture, computed here with Python's hashlib, so the fixture is
-    # self-consistent on any platform and verification passes.
+    # The fake installer is served as a real file (not shell-quoted inline)
+    # so the downloader can copy it to the output path install_uv passes.
     installer_fixture = tmp_path / "fake-uv-installer.sh"
     installer_fixture.write_text(installer, encoding="utf-8")
-    good_digest = hashlib.sha256(installer.encode()).hexdigest()
-    sum_fixture = tmp_path / "fake-sha256.sum"
-    if sum_missing_entry:
-        sum_fixture.write_text(
-            "0" * 64 + " *uv-aarch64-apple-darwin.tar.gz\n", encoding="utf-8"
-        )
-    elif sum_mismatch:
-        sum_fixture.write_text("0" * 64 + " *uv-installer.sh\n", encoding="utf-8")
-    else:
-        sum_fixture.write_text(f"{good_digest} *uv-installer.sh\n", encoding="utf-8")
 
     # The fake downloader must handle its output flag (curl ``-o`` / wget
-    # ``-O``) and copy the right fixture there based on the URL in argv. With
-    # ``download_fails`` it instead emits an error to stderr and exits non-zero
-    # without creating the file, so install_uv sees a failed download. With
-    # ``sum_fails`` the installer serves fine but the manifest fetch fails.
+    # ``-O``) and copy the fixture there. With ``download_fails`` it instead
+    # emits an error to stderr and exits non-zero without creating the file,
+    # so install_uv sees a failed download.
     downloader_name = "wget" if use_wget else "curl"
     out_flag = "-O" if use_wget else "-o"
-    sum_fail_guard = ""
-    if sum_fails:
-        sum_fail_guard = (
-            "  printf 'DOWNLOADER_ERROR: could not resolve host\\n' >&2\n  exit 7\n"
-        )
 
     if download_fails:
         write_body = (
             "printf 'DOWNLOADER_ERROR: could not resolve host\\n' >&2\nexit 7\n"
         )
     elif download_failures_before_success:
-        # The retry counter must key on the installer fetch only — the checksum
-        # manifest is a separate request that must keep routing to its fixture
-        # (and succeed) so verification can run once the installer download
-        # recovers.
         attempts = tmp_path / "uv-download-attempts.txt"
         write_body = (
-            'case "$all_args" in\n'
-            "  *sha256.sum*)\n"
-            f'    cat {str(sum_fixture)!r} >"${{out:-/dev/stdout}}"\n'
-            "    exit 0\n"
-            "    ;;\n"
-            "esac\n"
             "count=0\n"
             f"if [ -f {str(attempts)!r} ]; then read -r count < {str(attempts)!r}; fi\n"
             "count=$((count + 1))\n"
@@ -3848,17 +3809,7 @@ def _run_install_uv(
             f'cat {str(installer_fixture)!r} >"${{out:-/dev/stdout}}"\n'
         )
     else:
-        write_body = (
-            'case "$all_args" in\n'
-            "  *sha256.sum*)\n"
-            f"{sum_fail_guard}"
-            f'    cat {str(sum_fixture)!r} >"${{out:-/dev/stdout}}"\n'
-            "    ;;\n"
-            "  *)\n"
-            f'    cat {str(installer_fixture)!r} >"${{out:-/dev/stdout}}"\n'
-            "    ;;\n"
-            "esac\n"
-        )
+        write_body = f'cat {str(installer_fixture)!r} >"${{out:-/dev/stdout}}"\n'
     downloader = bin_dir / downloader_name
     # `wget_download` probes `wget --help` to decide which hardening flags this
     # wget implements. Answer those probes *before* any counting or output, so
@@ -3942,36 +3893,6 @@ def _run_install_uv(
         encoding="utf-8",
     )
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
-    if no_sha_tool:
-        # `command -v` only checks PATH presence (it never runs the tool), so
-        # hiding the host's sha256sum/shasum requires a PATH that genuinely
-        # lacks them. Rebuild PATH from scratch: bin_dir (fakes) plus symlinks
-        # to just the core utilities install_uv and the fakes invoke.
-        tools_dir = tmp_path / "bare-tools"
-        tools_dir.mkdir()
-        needed = (
-            "awk",
-            "bash",
-            "cat",
-            "chmod",
-            "env",
-            "grep",
-            "head",
-            "ls",
-            "mkdir",
-            "mktemp",
-            "mv",
-            "rm",
-            "sh",
-            "sleep",
-            "tr",
-            "uname",
-        )
-        for tool_name in needed:
-            resolved = shutil.which(tool_name)
-            if resolved:
-                (tools_dir / tool_name).symlink_to(resolved)
-        env["PATH"] = f"{bin_dir}{os.pathsep}{tools_dir}"
     return subprocess.run(
         ["bash", str(script)],
         env=env,
@@ -4052,67 +3973,16 @@ def test_install_uv_rejects_truncated_download(tmp_path: Path) -> None:
     assert "UV_INSTALLER_NOISE" not in proc.stdout
 
 
-def test_install_uv_verifies_checksum_and_runs(tmp_path: Path) -> None:
-    """A download whose digest matches the manifest is verified, then run.
+def test_install_uv_verifies_and_runs(tmp_path: Path) -> None:
+    """A well-formed installer passes the shebang and parse checks, then runs.
 
-    The fake manifest carries the real SHA-256 of the fixture installer, so a
-    passing run proves the verification step is wired end-to-end: manifest
-    fetched, entry selected, digest compared, payload executed.
+    Upstream does not publish a checksum for ``uv-installer.sh``, so there is
+    no digest comparison to wire up here — this test simply proves the payload
+    executes once the structural checks pass.
     """
     proc = _run_install_uv(tmp_path, verbose=False)
 
     assert proc.returncode == 0
-    # The installer body only runs when verification succeeded.
-    argv = (tmp_path / "downloader-argv.txt").read_text()
-    assert "sha256.sum" in argv
-
-
-def test_install_uv_checksum_mismatch_aborts_before_exec(tmp_path: Path) -> None:
-    """A digest that disagrees with the manifest fails closed, never executing.
-
-    A mismatch is a supply-chain anomaly (tampered mirror, CDN poisoning), so
-    the payload must not run even though it is a valid shell script.
-    """
-    proc = _run_install_uv(tmp_path, verbose=False, sum_mismatch=True)
-
-    assert proc.returncode != 0
-    assert "checksum mismatch" in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stdout
-
-
-def test_install_uv_unfetchable_checksum_aborts(tmp_path: Path) -> None:
-    """A manifest that cannot be downloaded fails closed rather than skipping.
-
-    Verification that silently becomes optional when the network hiccups is
-    not verification; the installer must stop and say why.
-    """
-    proc = _run_install_uv(tmp_path, verbose=False, sum_fails=True)
-
-    assert proc.returncode != 0
-    assert "Could not download the uv release checksum manifest" in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stdout
-
-
-def test_install_uv_manifest_missing_installer_entry_aborts(tmp_path: Path) -> None:
-    """A manifest without a uv-installer.sh line fails closed."""
-    proc = _run_install_uv(tmp_path, verbose=False, sum_missing_entry=True)
-
-    assert proc.returncode != 0
-    assert "no entry for uv-installer.sh" in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stdout
-
-
-def test_install_uv_requires_a_sha256_tool(tmp_path: Path) -> None:
-    """A host with neither sha256sum nor shasum cannot verify, so it aborts."""
-    proc = _run_install_uv(tmp_path, verbose=False, no_sha_tool=True)
-
-    assert proc.returncode != 0
-    assert "sha256sum or shasum is required" in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stderr
-    assert "UV_INSTALLER_NOISE" not in proc.stdout
 
 
 def test_install_uv_curl_pins_https_for_request_and_redirects(

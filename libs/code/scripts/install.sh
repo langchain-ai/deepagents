@@ -1311,72 +1311,14 @@ install_uv() {
     exit "$uv_install_rc"
   fi
 
-  # Verify the download against the SHA-256 manifest Astral publishes with each
-  # uv release. The shebang and parse checks below only prove the response is
-  # *shaped* like a shell script; a body that is tampered-with or truncated at
-  # a statement boundary passes both. The manifest entry binds the exact bytes
-  # we run to the released artifact.
+  # Astral does not publish a checksum that covers uv-installer.sh itself:
+  # the per-release sha256.sum and dist-manifest.json only list the platform
+  # archives, and the archives' digests are embedded in this script (which
+  # pins APP_VERSION and verifies them after download). The meaningful checks
+  # for the script fetch are therefore the shebang and parse checks below:
+  # they catch a captive-portal HTML page and a truncated body, which are the
+  # realistic failure modes for this URL.
   #
-  # Fail closed on any verification problem: a mismatch means the bytes are not
-  # what Astral released (supply-chain anomaly), and an unreachable manifest
-  # means we can no longer tell — continuing anyway would make the check
-  # silently optional. This runs for both the curl and wget paths; when curl
-  # exists it does the fetch, otherwise the already-resolved wget does.
-  local uv_sums uv_sums_rc=0
-  uv_sums=$(mktemp 2>/dev/null) || {
-    log_error "mktemp is required to create a secure temp file."
-    exit 1
-  }
-  register_temp "$uv_sums"
-  if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
-    curl -fsSL https://github.com/astral-sh/uv/releases/latest/download/sha256.sum \
-      --proto '=https' --proto-redir '=https' --max-redirs 3 \
-      -o "$uv_sums" 2>"$uv_install_out" || uv_sums_rc=$?
-  elif command -v wget >/dev/null 2>&1; then
-    wget_download "$uv_sums" https://github.com/astral-sh/uv/releases/latest/download/sha256.sum "" false \
-      2>"$uv_install_out" || uv_sums_rc=$?
-  else
-    uv_sums_rc=1
-  fi
-  if [ "$uv_sums_rc" -ne 0 ]; then
-    cat "$uv_install_out" >&2
-    rm -f "$uv_install_out" "$uv_script" "$uv_sums"
-    log_error "Could not download the uv release checksum manifest (exit ${uv_sums_rc})."
-    log_error "  Cannot verify the installer download — aborting rather than running unverified code."
-    log_error "  Try again, or install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
-    exit 1
-  fi
-  # The manifest lists every release artifact as `<hash> *<name>`; keep only
-  # the installer line so a renamed or missing entry fails closed below.
-  local uv_expected uv_actual
-  uv_expected=$(awk '$2 == "*uv-installer.sh" { print $1; exit }' "$uv_sums")
-  rm -f "$uv_sums"
-  if [ -z "$uv_expected" ]; then
-    rm -f "$uv_install_out" "$uv_script"
-    log_error "The uv release checksum manifest has no entry for uv-installer.sh."
-    log_error "  Cannot verify the installer download — aborting rather than running unverified code."
-    log_error "  Try again, or install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
-    exit 1
-  fi
-  if command -v sha256sum >/dev/null 2>&1; then
-    uv_actual=$(sha256sum "$uv_script" | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then
-    uv_actual=$(shasum -a 256 "$uv_script" | awk '{print $1}')
-  else
-    rm -f "$uv_install_out" "$uv_script"
-    log_error "sha256sum or shasum is required to verify the uv installer download."
-    log_error "  Install one (coreutils / perl-Digest-SHA), or install uv manually:"
-    log_error "  https://docs.astral.sh/uv/getting-started/installation/"
-    exit 1
-  fi
-  if [ "$uv_actual" != "$uv_expected" ]; then
-    rm -f "$uv_install_out" "$uv_script"
-    log_error "uv installer checksum mismatch — the download does not match the released artifact."
-    log_error "  This can indicate a tampered or corrupted download; aborting."
-    log_error "  Try again, or install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
-    exit 1
-  fi
-
   # Verify the downloaded script starts with a shell shebang before executing
   # it. This catches a non-shell response — an HTML error page or JSON from a
   # proxy or captive portal that returned 200 — that would otherwise fail

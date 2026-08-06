@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
 ExternalPluginRepositorySourceType = Literal["github", "git-subdir", "url"]
+PluginFormat = Literal["legacy", "agent-plugins-v1"]
 UnsupportedComponent = Literal["agents", "commands"]
 """Plugin component directory that `deepagents-code` does not load."""
 
@@ -63,6 +64,7 @@ class PluginManifest:
         inline_mcp: Inline MCP servers declared in the manifest.
         inline_hooks: Inline hook configuration declared in the manifest, in
             `hooks.json` document form.
+        format: Package format that controls component discovery semantics.
     """
 
     name: str | None
@@ -71,6 +73,7 @@ class PluginManifest:
     inline_mcp: JsonObject
     inline_hooks: JsonObject = field(default_factory=dict)
     display_name: str | None = None
+    format: PluginFormat = "legacy"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

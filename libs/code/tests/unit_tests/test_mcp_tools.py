@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from langchain_mcp_adapters.client import Connection
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
+from deepagents_code.mcp_config import MCP_REDIRECTS_DISABLED
 from deepagents_code.mcp_tools import (
     MCPServerInfo,
     MCPSessionManager,
@@ -32,6 +33,7 @@ from deepagents_code.mcp_tools import (
     _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
+    _create_no_redirect_http_client,
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
@@ -493,6 +495,14 @@ class TestLoadMCPConfig:
         """Stdio `env` must be a dict."""
         path = write_config({"mcpServers": {"fs": {"command": "x", "env": []}}})
         with pytest.raises(TypeError, match="env"):
+            load_mcp_config(path)
+
+    def test_stdio_cwd_wrong_type(self, write_config: Callable[..., str]) -> None:
+        """Stdio `cwd` must be a string."""
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "x", "cwd": ["invalid"]}}}
+        )
+        with pytest.raises(TypeError, match="cwd"):
             load_mcp_config(path)
 
     def test_remote_missing_url(self, write_config: Callable[..., str]) -> None:
@@ -1414,6 +1424,36 @@ class TestGetMCPTools:
         assert recorded[0]["url"] == "https://mcp.linear.app/mcp"
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
 
+    async def test_remote_redirect_marker_uses_no_redirect_client(
+        self,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """Adapted Agent Plugins servers do not forward headers through redirects."""
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                "remote": {
+                    "type": "streamable-http",
+                    "url": "https://example.com/mcp",
+                    "headers": {"X-Plugin": "value"},
+                    MCP_REDIRECTS_DISABLED: True,
+                }
+            }
+        }
+
+        with patch(
+            "deepagents_code.mcp_tools._check_remote_server",
+            new=AsyncMock(),
+        ):
+            await _load_tools_from_config(config)
+
+        assert recorded[0]["httpx_client_factory"] is _create_no_redirect_http_client
+        client = _create_no_redirect_http_client(
+            headers={"X-Plugin": "value"}, timeout=httpx.Timeout(1)
+        )
+        assert client.follow_redirects is False
+        await client.aclose()
+
     async def test_stdio_fields_resolve_before_preflight_and_connection(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1429,6 +1469,7 @@ class TestGetMCPTools:
                 "srv": {
                     "command": "${DA_MCP_HOME}/server",
                     "args": ["--root", "${DA_MCP_HOME}"],
+                    "cwd": "${DA_MCP_HOME}/work",
                     "env": {"TOKEN": "${DA_MCP_TOKEN}"},
                 }
             }
@@ -1442,9 +1483,11 @@ class TestGetMCPTools:
 
         assert checked[0]["command"] == "/opt/mcp/server"
         assert checked[0]["args"] == ["--root", "/opt/mcp"]
+        assert checked[0]["cwd"] == "/opt/mcp/work"
         assert recorded[0] == {
             "command": "/opt/mcp/server",
             "args": ["--root", "/opt/mcp"],
+            "cwd": "/opt/mcp/work",
             "env": {"TOKEN": "token"},
             "transport": "stdio",
         }
@@ -1908,6 +1951,47 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(manager, MCPSessionManager)
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
         assert "auth" not in recorded[0]
+        await manager.cleanup()
+
+    async def test_agent_plugin_authorization_uses_stored_oauth(self) -> None:
+        """Client-managed OAuth overrides Agent Plugins package headers."""
+        from mcp.client.auth import OAuthClientProvider
+        from mcp.shared.auth import OAuthToken
+
+        storage = FileTokenStorage("notion", server_url="https://mcp.notion.com/mcp")
+        await storage.set_tokens(OAuthToken(access_token="at", token_type="Bearer"))
+
+        recorded: list[dict[str, Any]] = []
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            recorded.append(connection)
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            config = {
+                "mcpServers": {
+                    "notion": {
+                        "transport": "http",
+                        "url": "https://mcp.notion.com/mcp",
+                        "headers": {"Authorization": "Bearer package-value"},
+                        MCP_REDIRECTS_DISABLED: True,
+                    }
+                }
+            }
+            tools, manager, _ = await _load_tools_from_config(config)
+
+        assert tools == []
+        assert isinstance(manager, MCPSessionManager)
+        assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
         await manager.cleanup()
 
     async def test_discovery_401_challenge_marks_unauthenticated(

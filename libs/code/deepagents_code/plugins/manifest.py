@@ -8,6 +8,11 @@ import re
 from pathlib import Path, PureWindowsPath
 
 from deepagents_code.plugins._json import json_object
+from deepagents_code.plugins.agent_plugins import (
+    AGENT_PLUGIN_FORMAT,
+    AgentPluginError,
+    load_agent_plugin_manifest,
+)
 from deepagents_code.plugins.models import (
     ComponentInventory,
     JsonObject,
@@ -17,7 +22,9 @@ from deepagents_code.plugins.models import (
 
 logger = logging.getLogger(__name__)
 
+_AGENT_PLUGIN_MANIFEST_PATH = Path("plugin.json")
 _MANIFEST_RELATIVE_PATHS = (
+    _AGENT_PLUGIN_MANIFEST_PATH,
     Path(".claude-plugin") / "plugin.json",
     Path(".codex-plugin") / "plugin.json",
 )
@@ -188,7 +195,7 @@ def _inline_hooks(value: object) -> JsonObject:
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
-    """Load a Claude/Codex plugin manifest.
+    """Load an Agent Plugins, Claude, or Codex plugin manifest.
 
     Args:
         root: Plugin root directory.
@@ -203,12 +210,33 @@ def load_manifest(
     manifest_path = find_manifest_path(root)
     if manifest_path is None:
         return None, None, ()
+    is_agent_plugin = manifest_path == root / _AGENT_PLUGIN_MANIFEST_PATH
+    if is_agent_plugin:
+        try:
+            if not manifest_path.resolve().is_relative_to(root.resolve()):
+                msg = f"Agent Plugins manifest escapes plugin root: {manifest_path}"
+                raise PluginManifestError(msg)
+            raw, agent_plugin_warnings = load_agent_plugin_manifest(manifest_path)
+        except (OSError, RuntimeError) as exc:
+            msg = f"Could not resolve Agent Plugins manifest {manifest_path}: {exc}"
+            raise PluginManifestError(msg) from exc
+        except AgentPluginError as exc:
+            raise PluginManifestError(str(exc)) from exc
+        version_value = raw.get("version")
+        manifest = PluginManifest(
+            name=_validate_name(raw.get("name")),
+            version=version_value if isinstance(version_value, str) else None,
+            component_paths={},
+            inline_mcp={},
+            format=AGENT_PLUGIN_FORMAT,
+        )
+        return manifest, manifest_path, agent_plugin_warnings
     try:
         decoded = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         msg = f"Invalid JSON syntax in {manifest_path}: {exc}"
         raise PluginManifestError(msg) from exc
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         msg = f"Could not read plugin manifest {manifest_path}: {exc}"
         raise PluginManifestError(msg) from exc
     if not isinstance(decoded, dict):
@@ -289,6 +317,54 @@ def _unsupported_component_dirs(
     return tuple(found)
 
 
+def _agent_plugin_skills(plugin_root: Path, warnings: list[str]) -> tuple[Path, ...]:
+    skills_root = plugin_root / "skills"
+    try:
+        if not skills_root.exists():
+            return ()
+        resolved_root = skills_root.resolve()
+        if not resolved_root.is_relative_to(plugin_root) or not resolved_root.is_dir():
+            warnings.append("ignoring invalid Agent Plugins skills component")
+            return ()
+        children = sorted(resolved_root.iterdir(), key=lambda path: path.name)
+    except (OSError, RuntimeError) as exc:
+        warnings.append(f"ignoring Agent Plugins skills component: {exc}")
+        return ()
+
+    skills: list[Path] = []
+    for child in children:
+        skill_file = child / "SKILL.md"
+        try:
+            if not child.is_dir() or not skill_file.is_file():
+                continue
+            resolved = skill_file.resolve()
+            if not resolved.is_relative_to(plugin_root):
+                warnings.append(
+                    f"ignoring Agent Plugins skill outside root: {child.name}"
+                )
+                continue
+        except (OSError, RuntimeError) as exc:
+            warnings.append(f"ignoring Agent Plugins skill {child.name}: {exc}")
+            continue
+        skills.append(resolved)
+    return tuple(skills)
+
+
+def _agent_plugin_mcp(plugin_root: Path, warnings: list[str]) -> tuple[Path, ...]:
+    path = plugin_root / "mcp.json"
+    try:
+        if not path.exists():
+            return ()
+        resolved = path.resolve()
+        if not resolved.is_relative_to(plugin_root) or not resolved.is_file():
+            warnings.append("ignoring invalid Agent Plugins MCP component")
+            return ()
+    except (OSError, RuntimeError) as exc:
+        warnings.append(f"ignoring Agent Plugins MCP component: {exc}")
+        return ()
+    return (resolved,)
+
+
 def build_inventory(
     plugin_root: Path,
     manifest: PluginManifest | None,
@@ -306,8 +382,14 @@ def build_inventory(
     """
     plugin_root = plugin_root.resolve()
     warnings = list(manifest_warnings)
-    metadata_paths = manifest.component_paths if manifest else {}
+    if manifest is not None and manifest.format == AGENT_PLUGIN_FORMAT:
+        return ComponentInventory(
+            skills=_agent_plugin_skills(plugin_root, warnings),
+            mcp_files=_agent_plugin_mcp(plugin_root, warnings),
+            warnings=tuple(warnings),
+        )
 
+    metadata_paths = manifest.component_paths if manifest else {}
     default_skills = _existing_component_path(plugin_root / "skills", plugin_root)
     root_skill = (
         ()

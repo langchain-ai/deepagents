@@ -97,7 +97,7 @@ dependencies = [
     "anyio>=4.14.2,<5.0.0",
 
     # ACP
-    "deepagents-acp>=0.0.9,<1.0.0",
+    "deepagents-acp>=0.0.10,<1.0.0",
     "mcp>=1.28.1,<2.0.0",
 ]
 
@@ -208,6 +208,7 @@ include = [
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+deepagents-acp = { path = "../acp", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }

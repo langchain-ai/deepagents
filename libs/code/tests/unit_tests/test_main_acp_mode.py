@@ -190,7 +190,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
         additional_configs=plugin_configs,
     )
     discover_plugin_mcp.assert_called_once_with(project_dir=acp_project_root)
-    model_result.apply_to_settings.assert_called_once_with()
+    assert model_result.apply_to_settings.call_count == 2
     mock_create_agent.assert_called_once()
     call_kwargs = mock_create_agent.call_args.kwargs
     assert call_kwargs["model"] is model_obj

@@ -41,9 +41,100 @@ identically to deleting an empty file.
   insertion — so `diff_stats` is `None` and the body must not be rendered.
 - `unreadable_after`: the operation succeeded but its result could not be read
   back, so there is nothing to diff. `after_read_error` carries the reason.
-- `terminators_only`: the bytes changed but `diff` is empty, because the change
+- `terminators_only`: the bytes changed but `diff` is `None`, because the change
   lives entirely in line terminators, which `splitlines()` discards.
 """
+
+
+def display_caveat(
+    outcome: DiffOutcome, tool_name: str, after_read_error: str | None = None
+) -> str:
+    """Return what a successful file operation could not show, if anything.
+
+    Every case here leaves the caveat as the user's only account of a change the
+    transcript cannot render, so each has to name what is missing. Silence would
+    read as a complete report.
+
+    Covers all of `DiffOutcome` rather than the subset that mounts a diff: a
+    `delete` whose pre-image was lost produces no diff at all, so a caveat routed
+    only through the diff would leave destroying a 5,000-line file rendering
+    exactly like destroying an empty one.
+
+    Lives here rather than on any one surface because three need it: the tool
+    row, the `DiffMessage` that may replace it, and `non_interactive`'s printed
+    output. A caveat produced in only one place is a caveat that goes missing on
+    whichever surface the user happens to be using — which is how `-p` came to
+    print an unqualified path for a change it could not verify.
+
+    Keyed on the outcome rather than on a `FileOperationRecord` so a widget
+    holding only the outcome produces the identical sentence, and the wording
+    cannot drift between surfaces.
+
+    Args:
+        outcome: What the operation can honestly say about what it changed.
+        tool_name: Name of the tool that ran, quoted into the sentence.
+        after_read_error: Reason the post-operation read failed. Required in
+            substance for `unreadable_after`, where it is the only part of the
+            sentence that says anything actionable.
+
+    Returns:
+        A caveat to show alongside the tool's own output, or empty when the
+        operation's changes are fully displayable.
+    """
+    match outcome:
+        case "unreadable_after":
+            # Gate on the outcome, not on `record.status == "error"`: that is
+            # also set when the tool's own output reports a failure, where
+            # claiming the operation succeeded would be a false statement.
+            # Reachable for `write_file` and `edit_file` only; `delete`
+            # synthesizes an empty post-image instead of reading one back, so it
+            # has no read to fail.
+            #
+            # `record.error` is deliberately not a fallback here: on that path it
+            # is the fixed string "Could not read updated file content.", so
+            # using it would restate the sentence it is meant to explain.
+            detail = after_read_error or "the reason was not reported"
+            return (
+                f"The `{tool_name}` call succeeded, but its changes "
+                f"could not be displayed: {detail}"
+            )
+        case "untrusted_before":
+            return (
+                f"The `{tool_name}` call succeeded, but the file's prior "
+                "contents could not be read, so what changed cannot be shown."
+            )
+        case "terminators_only":
+            return (
+                f"The `{tool_name}` call succeeded. The change is confined to "
+                "line terminators, so there is no line-level diff to show."
+            )
+        case "shown":
+            return ""
+        case _:
+            # `diff_outcome` is a plain `str` at runtime, so a member added to
+            # `DiffOutcome` without a case here would fall off the end and
+            # return `None` against this signature — silently degrading to "the
+            # change was fully displayed", the one answer that is never safe to
+            # guess. Type-checking still flags the missing case; this only
+            # decides what happens when it ships anyway.
+            logger.warning("Unhandled diff outcome %r", outcome)
+            return (
+                f"The `{tool_name}` call succeeded, but its changes could not "
+                "be fully displayed."
+            )
+
+
+def record_display_caveat(record: FileOperationRecord | None) -> str:
+    """Return `display_caveat` for a completed record, or empty for none.
+
+    Returns:
+        The caveat for `record`'s outcome, or empty when there is no record.
+    """
+    if record is None:
+        return ""
+    return display_caveat(
+        record.diff_outcome, record.tool_name, record.after_read_error
+    )
 
 
 @dataclass
@@ -55,6 +146,13 @@ class ApprovalPreview:
     diff: str | None = None
     diff_title: str | None = None
     error: str | None = None
+    stats: DiffStats | None = None
+    """Change counts for `diff`, taken before it was clipped for display.
+
+    The prompt's `+N -M` header must not be recounted from `diff`: previews are
+    built with `max_lines=100`, so a recount describes the preview rather than
+    the change, and on the delete path that number gates destroying the file.
+    """
 
 
 def _response_failure_reason(responses: list[Any]) -> str:
@@ -98,7 +196,15 @@ def _safe_read(path: Path) -> str | None:
     """
     content, reason = _read_with_reason(path)
     if content is None:
-        logger.debug("Failed to read file %s: %s", path, reason)
+        if path.exists():
+            # The file is there and still could not be read — a permission
+            # error, a directory, a binary file. That leaves an approval prompt
+            # describing a change it cannot show, so it belongs at the same
+            # level as the tracker's read failures rather than in debug-only
+            # logs the user will never see.
+            logger.warning("Failed to read file %s: %s", path, reason)
+        else:
+            logger.debug("Failed to read file %s: %s", path, reason)
     return content
 
 
@@ -145,7 +251,7 @@ def compute_unified_diff(
         )
     )
     if not diff_lines:
-        return None, DiffStats(0, 0)
+        return None, DiffStats(additions=0, deletions=0)
     stats = count_diff_change_lines(diff_lines)
     if max_lines is not None and len(diff_lines) > max_lines:
         diff_lines = [*diff_lines[: max_lines - 1], DIFF_TRUNCATION_MARKER]
@@ -363,6 +469,7 @@ def build_approval_preview(
             details=details,
             diff=diff,
             diff_title=f"Diff {display_path}",
+            stats=stats,
         )
 
     if tool_name == "delete":
@@ -375,8 +482,13 @@ def build_approval_preview(
             )
         before = _safe_read(physical_path)
         diff = None
+        stats = None
         if before is not None:
-            diff, _ = compute_unified_diff(before, "", display_path, max_lines=100)
+            # The preview is clipped at 100 lines; `stats` is not. Carrying it
+            # is what keeps the prompt's `-N` describing the file rather than
+            # the excerpt — a 5,000-line delete otherwise asks the user to
+            # approve what reads as a 96-line one.
+            diff, stats = compute_unified_diff(before, "", display_path, max_lines=100)
             details.append(f"Lines to delete: {_count_lines(before)}")
         elif physical_path.exists():
             details.append("Contents: directory or unreadable file")
@@ -385,6 +497,7 @@ def build_approval_preview(
             details=details,
             diff=diff,
             diff_title=f"Diff {display_path}",
+            stats=stats,
         )
 
     if tool_name == "edit_file":
@@ -429,6 +542,7 @@ def build_approval_preview(
             details=details,
             diff=diff,
             diff_title=f"Diff {display_path}",
+            stats=stats,
         )
 
     return None
@@ -623,6 +737,17 @@ class FileOpTracker:
                     record.before_content or ""
                 ):
                     record.metrics.lines_added = record.metrics.lines_written
+                elif diff is None and before_lines != record.metrics.lines_written:
+                    # Same guard, same reason: `before_lines` is counted from
+                    # `before_content`, which under `untrusted_before` is the
+                    # stand-in empty string. Outside the guard this would book a
+                    # whole-file `lines_added` for an edit whose pre-image was
+                    # lost. That is a no-op today only because a lost pre-image
+                    # with no diff implies both sides are empty — a coincidence,
+                    # not an invariant.
+                    record.metrics.lines_added = max(
+                        record.metrics.lines_written - before_lines, 0
+                    )
             record.metrics.bytes_written = len(record.after_content.encode("utf-8"))
             if (
                 record.diff_outcome == "shown"
@@ -641,10 +766,6 @@ class FileOpTracker:
                 # `untrusted_before`, which says the change cannot be shown at
                 # all rather than merely that it has no line diff.
                 record.diff_outcome = "terminators_only"
-            if record.diff is None and before_lines != record.metrics.lines_written:
-                record.metrics.lines_added = max(
-                    record.metrics.lines_written - before_lines, 0
-                )
 
         self._finalize(record)
         return record

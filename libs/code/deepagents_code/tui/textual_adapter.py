@@ -107,7 +107,7 @@ from deepagents_code._tool_stream import (
     tool_call_buffer_key,
 )
 from deepagents_code.config import build_stream_config, get_glyphs
-from deepagents_code.file_ops import FileOperationRecord, FileOpTracker
+from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
     dispatch_hook,
     dispatch_hook_fire_and_forget,
@@ -409,58 +409,6 @@ def _set_running_unless_deferred(tool_msg: ToolCallMessage) -> None:
     if tool_msg.is_awaiting_deferred_result:
         return
     tool_msg.set_running()
-
-
-def _display_caveat(record: FileOperationRecord | None) -> str:
-    """Return what a successful file operation could not show, if anything.
-
-    Every case here leaves the tool row as the user's only account of a change
-    the transcript cannot render, so each has to name what is missing. Silence
-    would read as a complete report.
-
-    Covers all of `DiffOutcome` rather than the subset that mounts a
-    `DiffMessage`: a `delete` whose pre-image was lost produces no diff widget
-    at all, so a caveat routed only through the widget would leave destroying a
-    5,000-line file rendering exactly like destroying an empty one.
-
-    Args:
-        record: Completed file-operation record, or `None` for a non-file tool.
-
-    Returns:
-        A caveat to show alongside the tool's own output, or empty when the
-        operation's changes are fully displayable.
-    """
-    if record is None:
-        return ""
-    match record.diff_outcome:
-        case "unreadable_after":
-            # Gate on the outcome, not on `record.status == "error"`: that is
-            # also set when the tool's own output reports a failure, where
-            # claiming the operation succeeded would be a false statement.
-            # Reachable for `write_file` and `edit_file` only; `delete`
-            # synthesizes an empty post-image instead of reading one back, so it
-            # has no read to fail.
-            #
-            # `record.error` is deliberately not a fallback here: on this path it
-            # is the fixed string "Could not read updated file content.", so
-            # using it would restate the sentence it is meant to explain.
-            detail = record.after_read_error or "the reason was not reported"
-            return (
-                f"The {record.tool_name} succeeded, but its changes "
-                f"could not be displayed: {detail}"
-            )
-        case "untrusted_before":
-            return (
-                f"The {record.tool_name} succeeded, but the file's prior "
-                "contents could not be read, so what changed cannot be shown."
-            )
-        case "terminators_only":
-            return (
-                f"The {record.tool_name} succeeded. The change is confined to "
-                "line terminators, so there is no line-level diff to show."
-            )
-        case "shown":
-            return ""
 
 
 def _reject_tracked_rows(
@@ -1961,6 +1909,12 @@ async def execute_task_textual(
                             completed_compaction_ids.add(compaction_id)
                             await _after_automatic_compact()
                         record = file_op_tracker.complete_with_message(message)
+                        # Computed once, ahead of the four branches below, so a
+                        # caveat cannot depend on which of them this result takes
+                        # — the diff mounts outside all four, so a torn-down row
+                        # used to yield a `DiffMessage` and no explanation.
+                        caveat = record_display_caveat(record)
+                        caveat_shown = False
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
@@ -2019,7 +1973,6 @@ async def execute_task_textual(
                                     # retry an edit that already applied.
                                     # Prepended, not appended, so the caveat
                                     # survives the collapsed output preview.
-                                    caveat = _display_caveat(record)
                                     tool_msg.set_success(
                                         "\n\n".join(
                                             part
@@ -2027,6 +1980,13 @@ async def execute_task_textual(
                                             if part
                                         )
                                     )
+                                    if caveat:
+                                        # The row now carries the only account of
+                                        # a change that cannot be shown, so it
+                                        # must not be folded into a group summary
+                                        # built from tool names.
+                                        tool_msg.mark_display_caveat()
+                                        caveat_shown = True
                                 else:
                                     tool_msg.set_error(output_str or "Error")
                                 adapter._sync_tool_widget(tool_msg)
@@ -2114,16 +2074,14 @@ async def execute_task_textual(
                                     assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
-                            # Hiding the tool row makes the diff the sole record
-                            # of the edit, so only a diff that can actually
-                            # stand in for it earns that. `shown` is the only
-                            # outcome that qualifies: a lost pre-image makes the
-                            # body fiction, and a terminator-only change has no
-                            # body at all. An empty diff never qualifies either
-                            # — if there is nothing to show, nothing needs to be
-                            # hidden, and replacing the row with a widget
-                            # asserting "no changes" would make any inaccuracy
-                            # in the read-back the only surviving account.
+                            # Hiding the row makes the diff the sole record of
+                            # the edit, so only a diff that can stand in for it
+                            # earns that — `shown` is the only outcome that
+                            # qualifies, for the reasons in `DiffOutcome`. An
+                            # empty body never qualifies either: with nothing to
+                            # show, nothing needs hiding, and a widget asserting
+                            # "no changes" would leave any inaccuracy in the
+                            # read-back as the only surviving account.
                             replaces_row = (
                                 ToolCallMessage.can_be_superseded(record.tool_name)
                                 and record.status == "success"
@@ -2144,12 +2102,13 @@ async def execute_task_textual(
                                             before=record.before_content or "",
                                             after=record.after_content or "",
                                             stats=record.diff_stats,
-                                            changes_unknown=(
-                                                record.diff_outcome
-                                                == "untrusted_before"
-                                            ),
+                                            outcome=record.diff_outcome,
                                         )
                                     )
+                                    # The mounted diff renders the same caveat
+                                    # for any outcome but `shown`, so it stands
+                                    # in for the row when there was none.
+                                    caveat_shown = caveat_shown or bool(caveat)
                                     if tool_msg is not None and replaces_row:
                                         tool_msg.mark_superseded_by_diff()
                                         adapter._sync_tool_widget(tool_msg)
@@ -2158,6 +2117,18 @@ async def execute_task_textual(
                                         "Failed to mount diff for %s",
                                         record.display_path,
                                     )
+                            if caveat and not caveat_shown:
+                                # No row took the caveat (its widget was torn
+                                # down) and no diff mounted to carry it — a
+                                # `delete` with a lost pre-image is the live
+                                # case. Nothing on screen will say the change
+                                # could not be shown, so at least leave it
+                                # somewhere a user can find it.
+                                logger.warning(
+                                    "No surface carried the display caveat for %s: %s",
+                                    record.display_path,
+                                    caveat,
+                                )
 
                         # Reshow spinner only when all in-flight tools have
                         # completed (avoids premature "Thinking..." when

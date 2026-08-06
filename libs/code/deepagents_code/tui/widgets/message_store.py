@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from textual.widget import Widget
 
     from deepagents_code.diff_utils import DiffStats
+    from deepagents_code.file_ops import DiffOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_expanded",
         "tool_reject_reason",
         "tool_diff_superseded",
+        "tool_display_caveat",
         "skill_expanded",
         "rubric_expanded",
         "user_expanded",
@@ -169,6 +171,15 @@ class MessageData:
     tool_diff_superseded: bool = False
     """Whether a mounted diff replaces this successful tool row."""
 
+    tool_display_caveat: bool = False
+    """Whether `tool_output` opens with a caveat that must not be folded away.
+
+    Persisted rather than re-derived from the output text: matching prose would
+    tie rehydration to the caveat's exact wording, and the cost of getting it
+    wrong is a transcript that folds the change's only account into a summary
+    line. See `ToolCallMessage.has_display_caveat`.
+    """
+
     # ---
 
     diff_file_path: str | None = None
@@ -178,16 +189,27 @@ class MessageData:
     """Name of the file tool that produced the diff (DIFF messages only)."""
 
     diff_before_content: str | None = None
-    """Bounded content prefix before the change, used to highlight DIFF messages."""
+    """Content prefix before the change, used to highlight DIFF messages.
+
+    Bounded by `_MAX_HIGHLIGHT_CHARS` as trimmed by `highlight_source_prefixes`
+    on the way to the widget; `from_widget` reads the already-trimmed value. This
+    field does not clamp, so a direct constructor call can park an unbounded copy
+    of a file in a store whose whole point is that thousands of messages cost
+    little.
+    """
 
     diff_after_content: str | None = None
-    """Bounded content prefix after the change, used to highlight DIFF messages."""
+    """Content prefix after the change, same bound and same caveat."""
 
     diff_stats: DiffStats | None = None
     """True change counts, which survive a truncated DIFF body."""
 
-    diff_changes_unknown: bool = False
-    """Whether the diff's pre-operation content was unavailable."""
+    diff_outcome: DiffOutcome = "shown"
+    """What the operation could honestly say about what it changed.
+
+    One field rather than a `stats`-plus-"counts unknown" pair, so a rehydrated
+    diff cannot come back holding counts it also declares fictional.
+    """
 
     # SKILL message fields - only populated for SKILL messages
     skill_name: str | None = None
@@ -316,6 +338,8 @@ class MessageData:
                 widget._deferred_duration = self.tool_duration
                 widget._deferred_expanded = self.tool_expanded
                 widget._deferred_reject_reason = self.tool_reject_reason
+                if self.tool_display_caveat:
+                    widget.mark_display_caveat()
                 if self.tool_diff_superseded:
                     # Go through the widget's own setter so a rehydrated row
                     # passes the same tool-name guard as the live path; writing
@@ -361,7 +385,7 @@ class MessageData:
                     before=self.diff_before_content or "",
                     after=self.diff_after_content or "",
                     stats=self.diff_stats,
-                    changes_unknown=self.diff_changes_unknown,
+                    outcome=self.diff_outcome,
                     id=self.id,
                 )
 
@@ -453,6 +477,7 @@ class MessageData:
                 tool_expanded=widget._expanded,
                 tool_reject_reason=widget._reject_reason,
                 tool_diff_superseded=widget._diff_superseded,
+                tool_display_caveat=widget.has_display_caveat,
             )
 
         if isinstance(widget, ErrorMessage):
@@ -475,7 +500,7 @@ class MessageData:
                 diff_before_content=widget._before,
                 diff_after_content=widget._after,
                 diff_stats=widget._stats,
-                diff_changes_unknown=widget._changes_unknown,
+                diff_outcome=widget._outcome,
             )
 
         if isinstance(widget, SummarizationMessage):

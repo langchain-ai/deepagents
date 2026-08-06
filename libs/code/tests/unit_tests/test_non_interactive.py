@@ -669,9 +669,15 @@ class TestQuietFileOpNotification:
     """The file-operation (📝) notification honors quiet mode."""
 
     @staticmethod
-    def _run(*, quiet: bool) -> str:
+    def _run(*, quiet: bool, diff_outcome: str = "shown") -> str:
         """Drive a file-op `ToolMessage` chunk and return captured stderr."""
-        record = SimpleNamespace(diff="--- a\n+++ b", display_path="src/foo.py")
+        record = SimpleNamespace(
+            diff="--- a\n+++ b" if diff_outcome == "shown" else None,
+            display_path="src/foo.py",
+            diff_outcome=diff_outcome,
+            tool_name="delete",
+            after_read_error=None,
+        )
         tracker = MagicMock()
         tracker.complete_with_message.return_value = record
 
@@ -692,6 +698,22 @@ class TestQuietFileOpNotification:
 
     def test_non_quiet_emits_file_op_notification(self) -> None:
         assert "foo.py" in self._run(quiet=False)
+
+    def test_a_lost_pre_image_is_reported_without_a_diff(self) -> None:
+        """Headless output must not stay silent about a change it cannot verify.
+
+        A `delete` whose pre-image was lost produces no diff, so gating the
+        notification on `record.diff` printed nothing at all — leaving `-p` and
+        CI users with no signal that the file's contents were never read.
+        """
+        output = self._run(quiet=False, diff_outcome="untrusted_before")
+
+        assert "foo.py" in output
+        assert "prior contents could not be read" in output
+
+    def test_quiet_still_suppresses_a_caveat(self) -> None:
+        """Quiet mode owns the whole notification, caveat included."""
+        assert self._run(quiet=True, diff_outcome="untrusted_before") == ""
 
 
 class TestNoStreamMode:

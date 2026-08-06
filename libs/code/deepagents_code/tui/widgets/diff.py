@@ -50,7 +50,8 @@ Below this the two lines are treated as unrelated rewrites, where emphasising
 _MAX_EMPHASIS_LEN = 400
 """Longest line eligible for word emphasis.
 
-`SequenceMatcher` over per-character tokens is quadratic, so minified JS or
+`SequenceMatcher` is quadratic in token count, and `_TOKEN_RE` degenerates to
+one token per character on punctuation-dense lines — so minified JS or
 single-line JSON would stall the compose path. Longer lines render unemphasised.
 """
 
@@ -104,9 +105,12 @@ class _RowStyle(NamedTuple):
 # (30%, applied per-span in `_compose_diff_content`). Keep them ordered that way
 # — equal tiers flatten the row and lose the distinction.
 #
-# Keyed over a total row kind so a new one fails type-checking here rather than
-# silently rendering with no marker or emphasis. One map rather than three so a
-# kind cannot be added to some of them and missed in the rest.
+# Keyed over all of `_DiffRowKind`, so a new *numbered* row kind fails
+# type-checking here rather than silently rendering with no marker or emphasis.
+# Decoration kinds live only in the wider `_RowKind` and are handled by the early
+# `continue`s in `_compose_diff_content`, which is what narrows `row.kind` to a
+# valid key. One map rather than three so a kind cannot be added to some of them
+# and missed in the rest.
 _ROW_STYLES: dict[_DiffRowKind, _RowStyle] = {
     "added": _RowStyle(
         "$text-success 80% on $success 20%", "+", "$text-success", "on $success 30%"
@@ -118,6 +122,17 @@ _ROW_STYLES: dict[_DiffRowKind, _RowStyle] = {
 }
 
 
+_BEFORE_KINDS: tuple[_DiffRowKind, ...] = ("removed",)
+_AFTER_KINDS: tuple[_DiffRowKind, ...] = ("added", "context")
+"""Which row kinds are read from which side's source, keyed by `_Row.number`.
+
+Follows the numbering in `_Row.number`: only removed rows are numbered in the old
+file. Named once because `highlight_source_prefixes` sizes each prefix and
+`_highlighted_rows` reads from it, and a row kind sized against one side but read
+from the other loses its highlighting with nothing to explain why.
+"""
+
+
 class _Row(NamedTuple):
     """One rendered line of a diff.
 
@@ -126,14 +141,18 @@ class _Row(NamedTuple):
             source lines; `separator`/`truncated`/`note` are decorations.
         text: The line with its diff marker stripped. Empty for `separator` and
             `truncated`.
-        number: For `added`, the line number in the *new* file; for `context`
-            and `removed`, the line number in the *old* file. `0` for
-            decoration rows, where it carries no meaning.
+        number: Line number in the file the user can still open — the *new* file
+            for `added` and `context`, the *old* file for `removed`, which is
+            the only kind that no longer exists in the new one. Numbering
+            context from the old file instead would make every row after an
+            insertion disagree with the file on disk, and repeat numbers the
+            added rows had just used. `None` for decoration rows, which have no
+            line to name.
     """
 
     kind: _RowKind
     text: str
-    number: int
+    number: int | None
 
 
 def compose_diff_lines(
@@ -157,9 +176,11 @@ def compose_diff_lines(
             whole run its word emphasis, not just the clipped half.
         path: Path of the diffed file, used to pick a syntax highlighter.
         before: Source aligned to the diff's *old* line numbers. May be a
-            truncated prefix or empty; rows whose text does not match the
-            lexed source are left unhighlighted (logged at debug).
+            truncated prefix or empty; rows whose text does not match the lexed
+            source are left unhighlighted (logged once per side at warning).
         after: Source aligned to the diff's *new* line numbers, same contract.
+            Context rows are read from here, not from `before` — see
+            `_Row.number`.
         show_numbers: Whether to render the line-number gutter. Pass `False`
             when the diff's line numbers are not the file's — e.g. a diff of
             edit fragments, whose hunks always start at 1.
@@ -167,8 +188,8 @@ def compose_diff_lines(
     Yields:
         One `Static` per rendered row, plus a trailing count when rows were
         dropped to fit `max_lines`. An empty `diff` yields a single "no changes"
-        row; both callers already distinguish that case in their own headers, so
-        this is a defensive fallback rather than the live path.
+        row; both callers already handle that case in their own output, so this
+        is a defensive fallback rather than the live path.
     """
     if not diff:
         yield Static(Content.styled("No changes detected", "dim"))
@@ -224,18 +245,17 @@ def highlight_source_prefixes(diff: str, before: str, after: str) -> tuple[str, 
         Before and after prefixes, with oversized sides omitted.
     """
     rows = _parse_rows(split_diff_lines(diff))
-    before_line = max(
-        (row.number for row in rows if row.kind in {"removed", "context"}),
-        default=0,
-    )
-    after_line = max(
-        (row.number for row in rows if row.kind == "added"),
-        default=0,
-    )
+    before_line = _max_number(rows, _BEFORE_KINDS)
+    after_line = _max_number(rows, _AFTER_KINDS)
     return (
         _highlight_source_prefix(before, before_line),
         _highlight_source_prefix(after, after_line),
     )
+
+
+def _max_number(rows: list[_Row], kinds: tuple[_DiffRowKind, ...]) -> int:
+    """Return the highest line number among rows of `kinds`, or 0 for none."""
+    return max((row.number or 0 for row in rows if row.kind in kinds), default=0)
 
 
 def _highlight_source_prefix(source: str, line: int) -> str:
@@ -286,7 +306,7 @@ def _compose_diff_content(
     hidden = total - len(rows)
     emphasis = _emphasis_by_row(rows)
     highlighted = _highlighted_rows(rows, path, before, after)
-    width = max(2, len(str(max((row.number for row in rows), default=0))))
+    width = max(2, len(str(max((row.number or 0 for row in rows), default=0))))
 
     for index, row in enumerate(rows):
         if row.kind == "separator":
@@ -307,7 +327,7 @@ def _compose_diff_content(
             for start, end in emphasis.get(index, []):
                 body = body.stylize(style.emphasis, start, end)
         parts: list[Content | str | tuple[str, str]] = []
-        if show_numbers:
+        if show_numbers and row.number is not None:
             parts += [(f"{row.number:>{width}}", style.gutter), " "]
         parts += [(style.marker, style.marker_style), " ", body]
         yield Static(
@@ -344,8 +364,12 @@ def _highlighted_rows(
     if not path:
         return {}
     highlighted: dict[int, Content] = {}
-    for kinds, code in ((("removed", "context"), before), (("added",), after)):
-        wanted = {row.number: i for i, row in enumerate(rows) if row.kind in kinds}
+    for kinds, code in ((_BEFORE_KINDS, before), (_AFTER_KINDS, after)):
+        wanted = {
+            row.number: i
+            for i, row in enumerate(rows)
+            if row.kind in kinds and row.number is not None
+        }
         if not wanted or not code:
             continue
         head = _highlight_source_prefix(code, max(wanted))
@@ -387,7 +411,7 @@ def _highlight_lines(code: str, path: str) -> tuple[Content, ...] | None:
 
     Cached because scrolling rebuilds a `DiffMessage` from `MessageData` on every
     pass, and each mount would otherwise re-lex both sides. Two entries per diff,
-    so this holds the last two — the scrolling case it exists for.
+    so `maxsize=4` holds the last two diffs — the scrolling case it exists for.
 
     Sized small on purpose. `_MAX_HIGHLIGHT_CHARS` bounds the *input*, not what is
     retained: an entry is one `Content` per line, each carrying a span list, and
@@ -426,7 +450,7 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
         if match := HUNK_RE.match(line):
             old, new = int(match.group(1)), int(match.group(3))
             if seen_hunk:
-                rows.append(_Row("separator", "", 0))
+                rows.append(_Row("separator", "", None))
             seen_hunk = True
         elif line.startswith("-"):
             rows.append(_Row("removed", line[1:], old))
@@ -435,13 +459,19 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
             rows.append(_Row("added", line[1:], new))
             new += 1
         elif line.startswith(" "):
-            rows.append(_Row("context", line[1:], old))
+            # Numbered from `new`, not `old` — see `_Row.number`. Both walkers
+            # still advance: `old` is what the *next* removed row is numbered
+            # from.
+            rows.append(_Row("context", line[1:], new))
             old += 1
             new += 1
         elif line.strip() == DIFF_TRUNCATION_MARKER:
-            rows.append(_Row("truncated", "", 0))
+            # Checked after the marker prefixes above, so a context or added
+            # line whose own text is `...` stays a source row. Reordering these
+            # branches would render it as "diff truncated".
+            rows.append(_Row("truncated", "", None))
         else:
-            rows.append(_Row("note", line, 0))
+            rows.append(_Row("note", line, None))
     return rows
 
 

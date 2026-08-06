@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 from typing import TYPE_CHECKING, Any
 
+from deepagents_code.diff_utils import split_diff_lines
 from deepagents_code.file_ops import build_approval_preview, format_display_path
 from deepagents_code.tui.widgets.tool_widgets import (
     EditFileApprovalWidget,
@@ -98,9 +99,17 @@ class DeleteFileRenderer(ToolRenderer):
         if preview.diff:
             return EditFileApprovalWidget, {
                 "file_path": format_display_path(path),
-                "diff_lines": preview.diff.splitlines(),
+                # `split_diff_lines`, not `splitlines()`: the diff was joined
+                # with `"\n"`, and splitting on every boundary `splitlines()`
+                # recognizes would cut a deleted line into an unmarked tail
+                # fragment shown as neutral metadata.
+                "diff_lines": split_diff_lines(preview.diff),
                 "old_string": "",
                 "new_string": "",
+                # The preview body is clipped at 100 lines; these counts are
+                # not. Without them the prompt for deleting a 5,000-line file
+                # reads "-96".
+                "stats": preview.stats,
             }
         data: dict[str, Any] = {"file_path": format_display_path(path)}
         details = [
@@ -146,8 +155,13 @@ class EditFileRenderer(ToolRenderer):
         if not old_string and not new_string:
             return []
 
-        old_lines = old_string.split("\n") if old_string else []
-        new_lines = new_string.split("\n") if new_string else []
+        # `splitlines()`, matching `compute_unified_diff` and the source split in
+        # `_highlight_source_prefix`. Splitting on `"\n"` alone leaves `\r`,
+        # U+2028 and the rest inside a diff line, so the highlighter — which
+        # splits on all of them — lines up against a different set of lines and
+        # reports every row as drifted.
+        old_lines = old_string.splitlines() if old_string else []
+        new_lines = new_string.splitlines() if new_string else []
 
         # Generate unified diff
         diff = difflib.unified_diff(

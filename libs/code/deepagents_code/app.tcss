@@ -175,7 +175,8 @@ Screen {
     padding: 0 1;
 }
 
-/* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content) */
+/* Diff row styling — used by compose_diff_lines.
+   Row backgrounds set bg only; fg comes from Content. */
 .diff-line-removed {
     background: $error 10%;
 }
@@ -184,6 +185,7 @@ Screen {
     background: $success 10%;
 }
 
+/* Hunk separator: a centered glyph, not a tinted row — no background. */
 .diff-hunk-break {
     width: 1fr;
     text-align: center;

@@ -5,7 +5,10 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Markdown
 
-from deepagents_code.tui.widgets.tool_renderers import get_renderer
+from deepagents_code.tui.widgets.tool_renderers import (
+    DeleteFileRenderer,
+    get_renderer,
+)
 from deepagents_code.tui.widgets.tool_widgets import (
     _MAX_LINES,
     EditFileApprovalWidget,
@@ -297,3 +300,47 @@ def test_delete_renderer_surfaces_unresolvable_path_error() -> None:
 
     assert widget_class is GenericApprovalWidget
     assert data["error"] == "Unable to resolve file path."
+
+
+class TestDeleteApprovalCounts:
+    """The delete prompt's `-N` is what a user approves before losing a file."""
+
+    def test_counts_describe_the_file_not_the_clipped_preview(
+        self, tmp_path: Path
+    ) -> None:
+        """Recounting the 100-line preview reported `-96` for 5,000 lines.
+
+        `build_approval_preview` now carries the pre-truncation counts, and the
+        renderer has to hand them to the widget — recomputing from `diff_lines`
+        would put the excerpt's number back on the prompt.
+        """
+        target = tmp_path / "big.py"
+        target.write_text("value = 1\n" * 5000, encoding="utf-8")
+
+        _widget, data = DeleteFileRenderer.get_approval_widget(
+            {"file_path": str(target)}
+        )
+
+        assert data["stats"].deletions == 5000
+
+    def test_diff_lines_are_split_on_the_producer_s_boundary(
+        self, tmp_path: Path
+    ) -> None:
+        r"""`splitlines()` here strands content as unmarked metadata.
+
+        The preview is `"\n"`-joined, so splitting on `\r`, U+2028 and the rest
+        cuts a deleted line into a tail fragment with no `-` marker — which the
+        approval prompt renders as a neutral note rather than as content about
+        to be destroyed.
+        """
+        target = tmp_path / "sep.py"
+        target.write_text("value =  payload\n", encoding="utf-8")
+
+        _widget, data = DeleteFileRenderer.get_approval_widget(
+            {"file_path": str(target)}
+        )
+
+        body = [line for line in data["diff_lines"] if not line.startswith(("-", "+"))]
+        assert not any("payload" in line for line in body), (
+            "content was split into an unmarked fragment"
+        )

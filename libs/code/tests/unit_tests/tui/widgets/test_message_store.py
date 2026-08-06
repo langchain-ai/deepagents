@@ -471,7 +471,7 @@ class TestMessageData:
             before="a\nunused before\n",
             after="b\nunused after\n",
             stats=DiffStats(additions=200, deletions=200),
-            changes_unknown=True,
+            outcome="untrusted_before",
             id="test-diff-highlight",
         )
 
@@ -479,8 +479,8 @@ class TestMessageData:
 
         assert isinstance(restored, DiffMessage)
         assert (restored._before, restored._after) == ("a", "b")
-        assert restored._stats == (200, 200)
-        assert restored._changes_unknown is True
+        assert restored._stats == DiffStats(additions=200, deletions=200)
+        assert restored._outcome == "untrusted_before"
 
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""
@@ -1354,3 +1354,32 @@ class TestMessageStoreIndex:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_display_caveat_survives_the_store_roundtrip() -> None:
+    """A rehydrated caveated row must still refuse to fold.
+
+    The flag cannot be re-derived from `tool_output` without matching the
+    caveat's prose, so it is persisted. Losing it means a scrolled-away write
+    whose contents could not be read comes back folded into a summary that says
+    only `▸ Wrote 1 file`.
+    """
+    tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+    tool.set_success("could not be shown\n\nWrote file")
+    tool.mark_display_caveat()
+
+    restored = MessageData.from_widget(tool).to_widget()
+
+    assert isinstance(restored, ToolCallMessage)
+    assert restored.has_display_caveat is True
+
+
+def test_an_ordinary_row_roundtrips_without_the_caveat_flag() -> None:
+    """The default must stay `False`, or nothing would ever group again."""
+    tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+    tool.set_success("Wrote file")
+
+    restored = MessageData.from_widget(tool).to_widget()
+
+    assert isinstance(restored, ToolCallMessage)
+    assert restored.has_display_caveat is False

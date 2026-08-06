@@ -769,7 +769,7 @@ class TestDiffMessageCredentialRedaction:
             tool_name="edit_file",
             before="API_KEY=old",
             after="API_KEY=supersecret",
-            changes_unknown=True,
+            outcome="untrusted_before",
         )
         texts = self._texts(message)
         assert any("may contain credentials" in text for text in texts)
@@ -804,7 +804,10 @@ class TestDiffMessageNoChanges:
         diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new\n..."
         texts = self._texts(
             DiffMessage(
-                diff, "m.py", tool_name="edit_file", stats=DiffStats(1000, 1000)
+                diff,
+                "m.py",
+                tool_name="edit_file",
+                stats=DiffStats(additions=1000, deletions=1000),
             )
         )
         assert texts[0] == "Edited m.py  +1000 -1000"
@@ -855,21 +858,28 @@ class TestDiffMessageNoChanges:
         assert texts[0] == "Edited m.py  +1 -1"
 
     def test_zero_stats_do_not_suppress_a_recount(self) -> None:
-        """`DiffStats(0, 0)` is a truthy tuple, so `or` would let it win.
+        """An all-zero `DiffStats` is still truthy, so `or` would let a recount win.
 
         A stored all-zero pair reaching a non-empty body must not blank the
         header: the counts are wrong, not absent.
         """
         diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
         texts = self._texts(
-            DiffMessage(diff, "m.py", tool_name="edit_file", stats=DiffStats(0, 0))
+            DiffMessage(
+                diff,
+                "m.py",
+                tool_name="edit_file",
+                stats=DiffStats(additions=0, deletions=0),
+            )
         )
         assert texts[0] == "Edited m.py"
 
     def test_unreadable_before_content_does_not_claim_no_changes(self) -> None:
         """Without the pre-edit content, "no changes" would be a false claim."""
         texts = self._texts(
-            DiffMessage("", "main.py", tool_name="edit_file", changes_unknown=True)
+            DiffMessage(
+                "", "main.py", tool_name="edit_file", outcome="untrusted_before"
+            )
         )
         assert texts[0] == "Edited main.py"
         assert "prior contents could not be read" in texts[1]
@@ -884,7 +894,9 @@ class TestDiffMessageNoChanges:
         """
         diff = "--- a/main.py\n+++ b/main.py\n@@ -0,0 +1,2 @@\n+one\n+two"
         texts = self._texts(
-            DiffMessage(diff, "main.py", tool_name="edit_file", changes_unknown=True)
+            DiffMessage(
+                diff, "main.py", tool_name="edit_file", outcome="untrusted_before"
+            )
         )
         assert texts[0] == "Edited main.py"
         assert "prior contents could not be read" in texts[1]
@@ -6123,3 +6135,67 @@ class TestRubricResultMessage:
             await pilot.pause()
 
             assert app.expansions == [True, False]
+
+
+class _CaveatGroupApp(App[None]):
+    """Live group holding two groupable write rows."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("write_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("write_file", {"file_path": "b.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
+class TestCaveatedRowsLeaveTheGroup:
+    """A caveat is carried in the row, so folding the row hides the caveat.
+
+    `write_file` and `delete` are groupable, and the collapsed summary is built
+    from tool names alone. Without eviction, deleting a 5,000-line file whose
+    contents could not be read renders as `▸ Wrote 1 file` — indistinguishable
+    from the successful case, which is the exact failure this PR set out to fix.
+    """
+
+    async def test_a_caveated_row_is_evicted_and_revealed(self) -> None:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _CaveatGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            caveated = pilot.app.query_one("#t1", ToolCallMessage)
+            plain = pilot.app.query_one("#t2", ToolCallMessage)
+            summary.add_member(caveated)
+            summary.add_member(plain)
+            await pilot.pause()
+            assert caveated.display is False, "the group never folded the row"
+
+            caveated.set_success("could not be shown\n\nWrote file")
+            caveated.mark_display_caveat()
+            summary.close()
+            await pilot.pause()
+
+            assert caveated.display is True
+            assert plain.display is False, "an ordinary row was evicted too"
+
+    async def test_an_uncaveated_success_stays_folded(self) -> None:
+        """Eviction must be the exception, or grouping stops working at all."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _CaveatGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+            summary.add_member(tool)
+            await pilot.pause()
+
+            tool.set_success("Wrote file")
+            summary.close()
+            await pilot.pause()
+
+            assert tool.has_display_caveat is False
+            assert tool.display is False

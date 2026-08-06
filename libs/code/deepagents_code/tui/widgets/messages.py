@@ -43,7 +43,11 @@ from deepagents_code.diff_utils import (
     count_diff_change_lines,
     split_diff_lines,
 )
-from deepagents_code.file_ops import is_sensitive_file_path
+from deepagents_code.file_ops import (
+    DiffOutcome,
+    display_caveat,
+    is_sensitive_file_path,
+)
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -179,9 +183,8 @@ _TOOL_SUPERSEDED_BY_DIFF = "edit_file"
 """The one tool whose successful row is replaced by the `DiffMessage` after it.
 
 The row self-hides via `mark_superseded_by_diff`, and only ever behind a diff
-that can actually stand in for it: the adapter requires a non-empty body and a
-`shown` outcome, so a lost pre-image, a terminator-only change, and an empty
-diff all leave the row visible to speak for itself.
+that can actually stand in for it — the adapter requires a non-empty body and a
+`shown` outcome. `DiffOutcome` explains why the other outcomes cannot.
 
 Ask `ToolCallMessage.can_be_superseded` rather than comparing against this
 constant — the adapter checks a tool name from a different source, and the two
@@ -1605,6 +1608,7 @@ class ToolCallMessage(Vertical):
         self._visibility_accessories: list[Widget] = []
         self._diff_superseded: bool = False
         self._self_hidden: bool = False
+        self._has_display_caveat: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -1698,14 +1702,9 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
-        # `_diff_superseded` is restored by `to_widget` before mount, but not
-        # every restore path applies visibility: a row with no deferred status
-        # returns early above, and `_TIMED_SUCCESS_TOOLS` takes a branch that
-        # never applies it. Defense in depth rather than a fix for a live bug —
-        # neither path can currently carry a superseded row (`_TIMED_SUCCESS_TOOLS`
-        # is disjoint from the one supersedable tool, and hiding requires a
-        # success status anyway). Applied here so hiding does not depend on which
-        # branch a tool happens to take.
+        # `to_widget` sets `_diff_superseded` before mount, but not every
+        # `_restore_deferred_state` branch applies visibility. Applied here so
+        # hiding does not depend on which branch a tool takes.
         self._apply_own_visibility()
 
     def _restore_deferred_state(self) -> None:
@@ -2099,6 +2098,8 @@ class ToolCallMessage(Vertical):
         self._stop_animation()
         self._status = "error"
         self._apply_status_class("error")
+        # Not a no-op: `_superseded_by_diff` is gated on success, so this is what
+        # reveals a row that was hidden behind a diff before its status flipped.
         self._apply_own_visibility()
         # For shell commands, prepend the full command so users can see what failed
         command = self._args.get("command") if self._tool_name == "execute" else None
@@ -2223,11 +2224,18 @@ class ToolCallMessage(Vertical):
         """Apply self-hide reasons without disturbing group visibility.
 
         Only touches `display` when a self-hide reason applies or is being
-        released, so a row the group has collapsed stays collapsed. The other
-        direction is `has_own_hide_reason`, which group code checks before
-        revealing — and which this reads, so the set of hide reasons is defined in
-        exactly one place and a new one cannot be honoured by the group checks
-        while being ignored here.
+        released — a row with no self-hide history is left exactly as the group
+        set it. Releasing is the narrower guarantee: it restores `display` to
+        `True` unconditionally, so a row that was *both* group-collapsed and
+        self-hidden would reveal itself into a collapsed group. Not reachable
+        today (the one supersedable tool is group-excluded, and rows awaiting
+        approval are evicted rather than folded), but a new hide reason that can
+        coexist with a group must consult the group's state here.
+
+        The other direction is `has_own_hide_reason`, which group code checks
+        before revealing — and which this reads, so the set of hide reasons is
+        defined in exactly one place and a new one cannot be honoured by the
+        group checks while being ignored here.
         """
         if self.has_own_hide_reason:
             self.display = False
@@ -3588,8 +3596,34 @@ class ToolCallMessage(Vertical):
 
     @property
     def _superseded_by_diff(self) -> bool:
-        """Whether this row hides because its `DiffMessage` says it all."""
+        """Whether this row hides because its `DiffMessage` says it all.
+
+        Gated on success so a row whose status later flips to error is revealed
+        again: `_diff_superseded` stays set, this goes `False`, and `set_error`
+        re-applies visibility for exactly that reason. Without the conjunct a
+        failure would be hidden behind a diff of the change it did not make.
+        """
         return self.is_success and self._diff_superseded
+
+    @property
+    def has_display_caveat(self) -> bool:
+        """Whether this row's output leads with a caveat that must stay visible.
+
+        A caveat is the user's only account of a change the transcript cannot
+        render, and it is carried inside this row's output. A groupable tool
+        (`write_file`, `delete`) is folded at mount, and the collapsed summary
+        line is built from tool names alone — so without this the caveat is
+        folded away and destroying a 5,000-line file whose contents could not be
+        read renders as `▸ Deleted 1 file`, exactly like destroying an empty one.
+
+        Read by the group code alongside `is_failed`: a caveated row is not a
+        failure, but it has the same claim on staying on screen.
+        """
+        return self._has_display_caveat
+
+    def mark_display_caveat(self) -> None:
+        """Record that this row's output opens with a display caveat."""
+        self._has_display_caveat = True
 
     @property
     def is_failed(self) -> bool:
@@ -4007,7 +4041,7 @@ class ToolGroupSummary(Static):
     live, finished calls stay visible in the past tense next to the ones still
     running in the present tense (e.g. "Ran 2 shell commands, running 1 agent…")
     so the work already done in the step doesn't disappear. Failed, rejected,
-    and skipped tools are evicted to standalone rows (see `_evict_failed`) so
+    and skipped tools are evicted to standalone rows (see `_evict_unfoldable`) so
     errors stay visible. Clicking the line or pressing Ctrl+O expands the
     underlying tool rows (and their diffs).
 
@@ -4155,7 +4189,7 @@ class ToolGroupSummary(Static):
         past tense as though the tool ran successfully.
         """
         self._accepting_members = False
-        self._evict_failed()
+        self._evict_unfoldable()
         in_progress = self._sync_lifecycle()
         if not self.is_attached:
             return
@@ -4262,9 +4296,16 @@ class ToolGroupSummary(Static):
         self._sync_timer()
         return in_progress
 
-    def _evict_failed(self) -> None:
-        """Un-fold errored/rejected/skipped tools so non-successes stay visible."""
-        failed = [t for t in self._tools if t.is_failed]
+    def _evict_unfoldable(self) -> None:
+        """Un-fold tools the summary line cannot speak for.
+
+        Two reasons qualify. A non-success (errored, rejected, skipped) must stay
+        visible so a failure is not summarized away. So must a success whose
+        output opens with a display caveat: the summary is built from tool names
+        alone, so folding one hides the only statement that the change could not
+        be shown — see `ToolCallMessage.has_display_caveat`.
+        """
+        failed = [t for t in self._tools if t.is_failed or t.has_display_caveat]
         if not failed:
             return
         for tool in failed:
@@ -4292,7 +4333,7 @@ class ToolGroupSummary(Static):
         try:
             self._spinner_pos += 1
             before = len(self._tools)
-            self._evict_failed()
+            self._evict_unfoldable()
             evicted = len(self._tools) != before
             if self._collapsed:
                 # Re-assert hidden state in case a member was shown externally
@@ -4426,7 +4467,7 @@ class DiffMessage(Static):
         before: str = "",
         after: str = "",
         stats: DiffStats | None = None,
-        changes_unknown: bool = False,
+        outcome: DiffOutcome = "shown",
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4436,17 +4477,19 @@ class DiffMessage(Static):
             file_path: Path to the file being modified
             tool_name: Name of the file tool that produced the diff
             before: Source aligned to the diff's old line numbers. Pass the
-                whole file or a prefix this widget previously returned; stored
+                whole file, or a prefix `highlight_source_prefixes` previously
+                produced — which is what `MessageData` round-trips. Stored
                 trimmed, and dropped entirely for a credential path.
             after: Source aligned to the diff's new line numbers, same contract.
             stats: Authoritative `(additions, deletions)`, counted before
                 truncation. Always preferred over recounting the diff body;
                 `None` recounts.
-            changes_unknown: The pre-operation content could not be read, so the
-                diff describes a file state that never existed. The body is
-                suppressed and replaced by a caveat — a dim header note over a
-                hundred green rows removes the quiet false claim and keeps the
-                loud one.
+            outcome: What the operation can honestly say about what it changed.
+                Anything but `shown` suppresses the body and replaces it with
+                that outcome's caveat. Taken as the outcome rather than as
+                independent flags because they are not independent: a
+                `stats`-plus-"counts are fiction" pair is representable, and
+                whichever of the two a reader trusts, the other contradicts it.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4462,7 +4505,7 @@ class DiffMessage(Static):
                 diff_content, before, after
             )
         self._stats = stats
-        self._changes_unknown = changes_unknown
+        self._outcome = outcome
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -4483,16 +4526,21 @@ class DiffMessage(Static):
             yield Static(
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
-        elif self._changes_unknown:
-            # The pre-edit content was lost, so the diff was computed against a
-            # stand-in empty file: a one-line edit renders as a whole-file
-            # insertion. Suppressing only the counts would leave the body making
-            # the same false claim more loudly, so the caveat replaces it.
+        elif self._outcome != "shown":
+            # The body cannot be trusted. Under `untrusted_before` the diff was
+            # computed against a stand-in empty file, so a one-line edit renders
+            # as a whole-file insertion; suppressing only the counts would leave
+            # the body making the same false claim more loudly, so the caveat
+            # replaces it outright.
+            #
+            # The caveat is the shared one, so this widget stands on its own:
+            # the tool row that also carries it can be folded into a group, or
+            # never have mounted at all, and pointing at it would leave the
+            # reader chasing text that is not on screen.
             yield Static(Content.assemble(*parts), classes="diff-header")
             yield Static(
                 Content.styled(
-                    "The file's prior contents could not be read, so what "
-                    "changed cannot be shown. See the tool output above.",
+                    display_caveat(self._outcome, self._tool_name or "operation"),
                     "dim",
                 )
             )

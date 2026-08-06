@@ -9,7 +9,11 @@ import pytest
 from textual.widgets import Static
 
 from deepagents_code.config import get_glyphs
-from deepagents_code.diff_utils import DiffStats, count_diff_changes
+from deepagents_code.diff_utils import (
+    DiffStats,
+    count_diff_change_lines,
+    split_diff_lines,
+)
 from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.diff import (
     compose_diff_lines,
@@ -143,7 +147,9 @@ class TestComposeDiffLines:
         """`+++`/`---` headers are not counted as additions/deletions."""
         # Two additions (added1, added2), one deletion (removed) — headers
         # `+++ b/f.py` and `--- a/f.py` must not inflate the counts.
-        assert count_diff_changes(_SAMPLE_DIFF) == (2, 1)
+        assert count_diff_change_lines(split_diff_lines(_SAMPLE_DIFF)) == DiffStats(
+            additions=2, deletions=1
+        )
 
     def test_content_starting_with_header_markers_is_counted_and_rendered(
         self,
@@ -151,7 +157,9 @@ class TestComposeDiffLines:
         """Changed `--`/`++` content is not mistaken for file metadata."""
         diff = "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n---old value\n+++new value"
 
-        assert count_diff_changes(diff) == (1, 1)
+        assert count_diff_change_lines(split_diff_lines(diff)) == DiffStats(
+            additions=1, deletions=1
+        )
         texts = _texts(_rendered(diff))
         assert any(text.endswith("--old value") for text in texts)
         assert any(text.endswith("++new value") for text in texts)
@@ -171,8 +179,8 @@ class TestComposeDiffLines:
             ]
         )
 
-        assert any(text.lstrip().startswith("10") for text in numbered)
-        assert not any(text.strip().startswith(("10", "11", "12")) for text in plain)
+        assert any(text.lstrip().startswith("11") for text in numbered)
+        assert not any(text.strip().startswith(("11", "12", "13")) for text in plain)
         # The marker and body survive; only the gutter is gone.
         assert any(text.strip() == "- removed" for text in plain)
         assert any(text.strip() == "+ added1" for text in plain)
@@ -193,10 +201,11 @@ class TestComposeDiffLines:
         removed = next(t for t in texts if "removed" in t)
         added1 = next(t for t in texts if "added1" in t)
         added2 = next(t for t in texts if "added2" in t)
-        # Hunk starts at old=10, new=12. Context uses the old counter (10);
-        # the deletion follows at old=11; additions use the new counter,
-        # which advanced past the context line to 13 then 14.
-        assert "10" in ctx
+        # Hunk starts at old=10, new=12. Context is numbered in the *new* file
+        # (12) so its number matches the file the user can still open; the
+        # deletion keeps its old-file number (11), the only line that no longer
+        # exists. Additions follow the new counter past the context line.
+        assert "12" in ctx
         assert "11" in removed
         assert "13" in added1
         assert "14" in added2
@@ -505,7 +514,7 @@ class TestFormatDiffStats:
 
     def test_both_sides_are_separated(self) -> None:
         """The common case: an edit that adds and removes."""
-        assert format_diff_stats(DiffStats(3, 2)).plain == "+3 -2"
+        assert format_diff_stats(DiffStats(additions=3, deletions=2)).plain == "+3 -2"
 
     def test_additions_only_carry_no_separator(self) -> None:
         """What every `write_file` approval renders.
@@ -513,12 +522,81 @@ class TestFormatDiffStats:
         An unconditional separator would leave a stray trailing space that no
         both-sided test can see.
         """
-        assert format_diff_stats(DiffStats(3, 0)).plain == "+3"
+        assert format_diff_stats(DiffStats(additions=3, deletions=0)).plain == "+3"
 
     def test_deletions_only_carry_no_leading_space(self) -> None:
         """What every `delete` approval renders."""
-        assert format_diff_stats(DiffStats(0, 2)).plain == "-2"
+        assert format_diff_stats(DiffStats(additions=0, deletions=2)).plain == "-2"
 
     def test_zero_renders_nothing(self) -> None:
         """An unchanged file gets no counts rather than `+0 -0`."""
-        assert format_diff_stats(DiffStats(0, 0)).plain == ""
+        assert format_diff_stats(DiffStats(additions=0, deletions=0)).plain == ""
+
+
+class TestGutterNumbersTheFileOnDisk:
+    """The gutter names lines in the file the user can still open."""
+
+    _INSERTION = (
+        "@@ -1,3 +1,5 @@\n"
+        " def f():\n"
+        "+    # added a\n"
+        "+    # added b\n"
+        "     return 1\n"
+        " end = True"
+    )
+
+    def _numbers(self, diff: str) -> list[str]:
+        """Return the leading gutter token of every rendered row.
+
+        Returns:
+            One gutter string per row, in render order.
+        """
+        return [_plain(w).split()[0] for w in _rendered(diff)]
+
+    def test_context_after_an_insertion_follows_the_new_file(self) -> None:
+        """Numbering context from the old file contradicts the file on disk.
+
+        With context taken from the old counter, a two-line insertion rendered
+        `1, 2, 3, 2, 3` — the numbers going backwards and repeating the ones the
+        added rows had just used, while naming lines that no longer exist at
+        those positions.
+        """
+        assert self._numbers(self._INSERTION) == ["1", "2", "3", "4", "5"]
+
+    def test_removed_rows_keep_their_old_file_numbers(self) -> None:
+        """A removed line has no number in the new file, so it keeps the old one."""
+        diff = "@@ -1,3 +1,2 @@\n keep\n-gone\n tail"
+
+        assert self._numbers(diff) == ["1", "2", "2"]
+
+    def test_context_is_highlighted_from_the_after_source(self) -> None:
+        """Lookup side must follow the numbering, or highlighting silently drops.
+
+        Context rows are numbered in the new file, so they have to be read from
+        `after`. Reading them from `before` at a new-file number lands on the
+        wrong line, the drift check rejects it, and the row renders plain.
+        """
+        before = "def f():\n    return 1\nend = True\n"
+        after = "def f():\n    # added a\n    # added b\n    return 1\nend = True\n"
+        widgets = [
+            w
+            for w in compose_diff_lines(
+                self._INSERTION, 100, path="m.py", before=before, after=after
+            )
+            if isinstance(w, Static)
+        ]
+
+        context = next(w for w in widgets if "end = True" in _plain(w))
+        spans = cast("Content", context.render()).spans
+        assert spans, "a context row lost its syntax highlighting"
+
+    def test_prefix_sizing_covers_the_context_rows(self) -> None:
+        """`highlight_source_prefixes` must size `after` for context, not just added."""
+        before = "def f():\n    return 1\nend = True\n"
+        after = "def f():\n    # added a\n    # added b\n    return 1\nend = True\n"
+
+        _, after_prefix = highlight_source_prefixes(self._INSERTION, before, after)
+
+        assert "end = True" in after_prefix, (
+            "the last context row is outside the lexed prefix"
+        )

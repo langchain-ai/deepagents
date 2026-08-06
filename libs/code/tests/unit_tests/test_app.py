@@ -34592,7 +34592,7 @@ class TestToolGroupCollapse:
     async def test_evicted_failed_tool_releases_its_footer(self) -> None:
         """Ejecting a failed tool restores its footer along with its row.
 
-        `_evict_failed` is the last owner of that footer's marker class: once
+        `_evict_unfoldable` is the last owner of that footer's marker class: once
         the tool is out of the group nothing else will clear it, so a failure
         would leave an error row visible with no timestamp beneath it.
         """

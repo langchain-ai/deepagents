@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from deepagents_code.diff_utils import (
     DiffStats,
-    count_diff_changes,
+    count_diff_change_lines,
     file_header_indexes,
     split_diff_lines,
 )
@@ -14,6 +16,10 @@ from deepagents_code.diff_utils import (
 
 def _diff(*lines: str) -> str:
     return "\n".join(lines)
+
+
+def _count(diff: str) -> DiffStats:
+    return count_diff_change_lines(split_diff_lines(diff))
 
 
 class TestSplitDiffLines:
@@ -47,7 +53,7 @@ class TestSplitDiffLines:
 
     def test_counts_follow_the_same_boundary(self) -> None:
         """A separator inside a line must not be counted as a second line."""
-        assert count_diff_changes("@@ -1 +1 @@\n+a b") == DiffStats(1, 0)
+        assert _count("@@ -1 +1 @@\n+a b") == DiffStats(additions=1, deletions=0)
 
 
 class TestFileHeaderIndexes:
@@ -129,7 +135,7 @@ class TestCountDiffChanges:
 
     def test_counts_exclude_file_headers(self) -> None:
         diff = _diff("--- a/x.py", "+++ b/x.py", "@@ -1,2 +1,2 @@", " keep", "-a", "+b")
-        assert count_diff_changes(diff) == DiffStats(additions=1, deletions=1)
+        assert _count(diff) == DiffStats(additions=1, deletions=1)
 
     def test_counts_span_multiple_files(self) -> None:
         diff = _diff(
@@ -144,7 +150,7 @@ class TestCountDiffChanges:
             "-c",
             "+d",
         )
-        assert count_diff_changes(diff) == DiffStats(additions=2, deletions=2)
+        assert _count(diff) == DiffStats(additions=2, deletions=2)
 
     def test_content_resembling_headers_is_counted(self) -> None:
         diff = _diff(
@@ -154,16 +160,31 @@ class TestCountDiffChanges:
             "-+++ old marker",
             "++++ new marker",
         )
-        assert count_diff_changes(diff) == DiffStats(additions=1, deletions=1)
+        assert _count(diff) == DiffStats(additions=1, deletions=1)
 
     def test_empty_diff_counts_nothing(self) -> None:
-        assert count_diff_changes("") == DiffStats(additions=0, deletions=0)
+        assert _count("") == DiffStats(additions=0, deletions=0)
 
     def test_result_is_a_named_pair(self) -> None:
         """Fields are named so callers can't silently swap the order."""
-        stats = count_diff_changes(
-            _diff("--- a/x.py", "+++ b/x.py", "@@ -1,3 +1,2 @@", "-a", "-b", "+c")
+        stats = count_diff_change_lines(
+            split_diff_lines(
+                _diff("--- a/x.py", "+++ b/x.py", "@@ -1,3 +1,2 @@", "-a", "-b", "+c")
+            )
         )
         assert stats.additions == 1
         assert stats.deletions == 2
-        assert tuple(stats) == (1, 2)
+
+    def test_counts_cannot_be_built_positionally(self) -> None:
+        """The type's whole claim is that the pair cannot be transposed.
+
+        A `NamedTuple` would accept `DiffStats(1, 2)` and let a producer emit the
+        counts backwards — which reads as a plausible `+2 -1` and is the one
+        error nothing downstream can detect.
+        """
+        # Routed through `Any` so the call reaches the runtime check; the point
+        # is that it raises rather than that a checker rejects it, because the
+        # producers this guards are not all type-checked at their call site.
+        positional: Any = DiffStats
+        with pytest.raises(TypeError):
+            positional(1, 2)

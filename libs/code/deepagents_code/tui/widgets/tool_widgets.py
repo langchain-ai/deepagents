@@ -25,7 +25,7 @@ _MAX_LINES = 30
 _MAX_DIFF_LINES = 50
 _MAX_PREVIEW_LINES = 20
 
-_NO_STATS = DiffStats(0, 0)
+_NO_STATS = DiffStats(additions=0, deletions=0)
 """Stand-in for a header with no counts to show."""
 
 
@@ -66,18 +66,28 @@ def _file_header(file_path: str, stats: DiffStats = _NO_STATS) -> ComposeResult:
 
 
 def _count_diff_stats(
-    diff_lines: list[str], old_string: str, new_string: str
+    diff_lines: list[str],
+    old_string: str,
+    new_string: str,
+    stats: DiffStats | None = None,
 ) -> DiffStats:
-    """Count additions and deletions from diff data.
+    """Resolve the counts to show above an approval diff.
 
     Args:
         diff_lines: Unified diff output lines.
         old_string: Original text being replaced (fallback when no diff).
         new_string: Replacement text (fallback when no diff).
+        stats: Authoritative counts from the preview's producer, taken before
+            the body was clipped. Always preferred: approval previews are built
+            with `max_lines=100`, so recounting `diff_lines` describes the
+            excerpt rather than the change — and on the delete path that number
+            is what the user approves.
 
     Returns:
         Line counts for the change.
     """
+    if stats is not None:
+        return stats
     if diff_lines:
         return count_diff_change_lines(diff_lines)
     return DiffStats(
@@ -148,7 +158,8 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
 
             # File header with line count
             yield from _file_header(
-                file_path, DiffStats(total_lines if content else 0, 0)
+                file_path,
+                DiffStats(additions=total_lines if content else 0, deletions=0),
             )
 
             if total_lines > _MAX_LINES:
@@ -177,7 +188,9 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         old_string = format_display_content(self.data.get("old_string", ""))
         new_string = format_display_content(self.data.get("new_string", ""))
 
-        stats = _count_diff_stats(diff_lines, old_string, new_string)
+        stats = _count_diff_stats(
+            diff_lines, old_string, new_string, self.data.get("stats")
+        )
         yield from _file_header(file_path, stats)
 
         # Never render the diff of credential files (e.g. `.env`); the stats

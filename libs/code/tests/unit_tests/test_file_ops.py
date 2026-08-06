@@ -2,16 +2,28 @@ import shutil
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest import mock
 
 import pytest
 from langchain_core.messages import ToolMessage
 
-from deepagents_code.diff_utils import DiffStats, count_diff_changes
+from deepagents_code.diff_utils import (
+    DiffStats,
+    count_diff_change_lines,
+    split_diff_lines,
+)
+
+if TYPE_CHECKING:
+    from deepagents.backends.protocol import BackendProtocol
+
+    from deepagents_code.file_ops import DiffOutcome
+
 from deepagents_code.file_ops import (
+    FileOperationRecord,
     FileOpTracker,
     build_approval_preview,
+    display_caveat,
     is_sensitive_file_path,
 )
 
@@ -298,10 +310,10 @@ def test_record_diff_stats_survive_truncation(tmp_path: Path) -> None:
     assert record is not None
     assert record.diff is not None
     assert record.diff.rstrip().endswith("..."), "expected a truncated body"
-    assert record.diff_stats == DiffStats(500, 500)
-    assert count_diff_changes(record.diff) != record.diff_stats, (
-        "the body no longer carries the true counts, which is the point"
-    )
+    assert record.diff_stats == DiffStats(additions=500, deletions=500)
+    assert (
+        count_diff_change_lines(split_diff_lines(record.diff)) != record.diff_stats
+    ), "the body no longer carries the true counts, which is the point"
 
 
 def test_failed_read_back_still_reports_what_the_request_knew(
@@ -628,3 +640,195 @@ def test_build_delete_approval_preview_unresolvable_path() -> None:
 
     assert preview is not None
     assert preview.error == "Unable to resolve file path."
+
+
+def _tool_message(content: str, tool_call_id: str) -> object:
+    """Build the minimal shape `complete_with_message` reads.
+
+    Returns:
+        An object exposing `content`, `status`, and `tool_call_id`.
+    """
+    return SimpleNamespace(content=content, status="success", tool_call_id=tool_call_id)
+
+
+class TestUntrustedBeforeThroughCompletion:
+    """The lost-pre-image gate, exercised past `start_operation`.
+
+    Every other test for this outcome stops at `tracker.active` and never calls
+    `complete_with_message`, so the guard that keeps fictional counts out of
+    `diff_stats` *and* out of session accounting has no coverage at all.
+    """
+
+    @staticmethod
+    def _complete(tmp_path: Path) -> FileOperationRecord:
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n" * 400, encoding="utf-8")
+        tracker = FileOpTracker(assistant_id=None)
+
+        with mock.patch(
+            "deepagents_code.file_ops._read_with_reason",
+            return_value=(None, "Permission denied"),
+        ):
+            tracker.start_operation("edit_file", {"file_path": str(target)}, "t-1")
+        record = tracker.complete_with_message(_tool_message("Updated file", "t-1"))
+        assert record is not None
+        return record
+
+    def test_counts_are_left_unknown(self, tmp_path: Path) -> None:
+        """`None` is the only way this says unknown; `DiffStats(0, 0)` is a zero."""
+        record = self._complete(tmp_path)
+
+        assert record.diff_outcome == "untrusted_before"
+        assert record.diff_stats is None
+
+    def test_fictional_counts_never_reach_session_accounting(
+        self, tmp_path: Path
+    ) -> None:
+        """A diff against a stand-in empty file is a whole-file insertion.
+
+        Booking those lines into `metrics` reports 400 added lines for a
+        one-line edit, in a place where nothing marks the number unreliable.
+        """
+        record = self._complete(tmp_path)
+
+        assert record.metrics.lines_added == 0
+        assert record.metrics.lines_removed == 0
+
+
+class TestBackendReadBack:
+    """The backend branch of `_populate_after_content`.
+
+    Its pre-image counterparts each have a test; the post-image ones had none,
+    so a read-back failure that left `after_read_error` unset would degrade the
+    user-facing caveat to "the reason was not reported" — the exact tautology
+    `_read_with_reason` exists to avoid.
+    """
+
+    @staticmethod
+    def _complete(backend: mock.Mock) -> FileOperationRecord:
+        tracker = FileOpTracker(
+            assistant_id=None, backend=cast("BackendProtocol", backend)
+        )
+        tracker.start_operation("edit_file", {"file_path": "/x.txt"}, "b-1")
+        record = tracker.complete_with_message(_tool_message("Updated file", "b-1"))
+        assert record is not None
+        return record
+
+    @staticmethod
+    def _backend(pre: list[object], post: list[object]) -> mock.Mock:
+        backend = mock.Mock()
+        backend.download_files.side_effect = [pre, post]
+        return backend
+
+    @staticmethod
+    def _found(content: bytes) -> list[object]:
+        from deepagents.backends.protocol import FileDownloadResponse
+
+        return [FileDownloadResponse(path="/x.txt", content=content, error=None)]
+
+    def test_an_error_response_carries_its_reason(self) -> None:
+        from deepagents.backends.protocol import FileDownloadResponse
+
+        record = self._complete(
+            self._backend(
+                self._found(b"value = 1\n"),
+                [
+                    FileDownloadResponse(
+                        path="/x.txt", content=None, error="permission_denied"
+                    )
+                ],
+            )
+        )
+
+        assert record.diff_outcome == "unreadable_after"
+        assert record.after_read_error == "permission_denied"
+
+    def test_an_empty_response_list_reports_why(self) -> None:
+        record = self._complete(self._backend(self._found(b"value = 1\n"), []))
+
+        assert record.diff_outcome == "unreadable_after"
+        assert record.after_read_error == "no response"
+
+    def test_a_contract_violating_response_reports_why(self) -> None:
+        """`content=None` with `error=None` asserts success and failure at once."""
+        from deepagents.backends.protocol import FileDownloadResponse
+
+        record = self._complete(
+            self._backend(
+                self._found(b"value = 1\n"), [FileDownloadResponse(path="/x.txt")]
+            )
+        )
+
+        assert record.diff_outcome == "unreadable_after"
+        assert record.after_read_error == "no content and no error reported"
+
+    def test_a_malformed_response_does_not_abort_the_turn(self) -> None:
+        """A backend contract bug runs unguarded on the turn loop."""
+        backend = mock.Mock()
+        backend.download_files.side_effect = [self._found(b"value = 1\n"), [object()]]
+
+        record = self._complete(backend)
+
+        assert record.diff_outcome == "unreadable_after"
+        assert record.after_read_error
+
+
+def test_a_missing_file_path_is_reported_as_the_read_failure() -> None:
+    """The tool call carried no path, so there is nothing to read back."""
+    backend = mock.Mock()
+    tracker = FileOpTracker(assistant_id=None, backend=cast("BackendProtocol", backend))
+    record = FileOperationRecord(
+        tool_name="edit_file",
+        display_path="x.txt",
+        physical_path=None,
+        tool_call_id="p-1",
+    )
+
+    tracker._populate_after_content(record)
+
+    assert record.after_content is None
+    assert record.after_read_error == "the tool call carried no file path"
+
+
+class TestDisplayCaveat:
+    """The caveat is the only account of a change the transcript cannot show."""
+
+    def test_a_displayable_change_says_nothing(self) -> None:
+        assert display_caveat("shown", "edit_file") == ""
+
+    def test_an_unreadable_read_back_names_the_reason(self) -> None:
+        """Without the reason the sentence restates the problem."""
+        caveat = display_caveat("unreadable_after", "edit_file", "Permission denied")
+
+        assert "Permission denied" in caveat
+
+    def test_an_unknown_outcome_fails_loud_rather_than_reassuring(self) -> None:
+        """A new `DiffOutcome` shipped without a case must not read as "fine".
+
+        `diff_outcome` is a plain `str` at runtime, so an unhandled value used to
+        fall off the end of the `match` and return `None` — which the caller
+        filters as falsy, degrading silently to "the change was fully
+        displayed". That is the one answer that is never safe to guess.
+        """
+        caveat = display_caveat(cast("DiffOutcome", "some_future_outcome"), "edit_file")
+
+        assert "could not be fully displayed" in caveat
+
+
+def test_delete_preview_counts_the_file_not_the_excerpt(tmp_path: Path) -> None:
+    """The prompt's `-N` gates destroying the file, so it must not be clipped.
+
+    The preview body is built with `max_lines=100`. Recounting it reported 96
+    deletions for a 5,000-line file — an understatement of ~50x on the one
+    number a user reads before approving an irreversible operation.
+    """
+    target = tmp_path / "big.py"
+    target.write_text("value = 1\n" * 5000, encoding="utf-8")
+
+    preview = build_approval_preview("delete", {"file_path": str(target)}, None)
+
+    assert preview is not None
+    assert preview.stats is not None
+    assert preview.stats.deletions == 5000
+    assert preview.diff is not None
+    assert len(preview.diff.splitlines()) <= 100, "the body should still be clipped"

@@ -44,6 +44,7 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.diff_utils import DiffStats
 from deepagents_code.hooks.manager import HooksManager, PromptOutcome
 from deepagents_code.hooks.models.domain import (
     HookEvent,
@@ -3081,6 +3082,147 @@ class TestExecuteTaskTextualFileOpDiffs:
         )
         return mounted
 
+    @staticmethod
+    async def _run_write(target: Path, content: str) -> list[object]:
+        """Run a tracked `write_file` and return the widgets it mounted.
+
+        Returns:
+            Every widget mounted during the turn, in order.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        args = {"file_path": str(target), "content": content}
+        chunks = [
+            ((), "messages", (_tool_call_message("write_file", args, "w-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Wrote file", tool_call_id="w-1"), {}),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="write the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+        return mounted
+
+    async def test_a_displayable_edit_hides_its_row_behind_the_diff(
+        self, tmp_path: Path
+    ) -> None:
+        """The whole point of the feature, asserted positively.
+
+        Every other case here is a *negative* — a reason the row must stay. With
+        no test for the case that does hide, `replaces_row` could be hard-coded
+        to `False`, or any of its four conjuncts inverted, and the feature would
+        be silently dead while the suite stayed green: every edit rendering both
+        a row and a diff, which is exactly what this PR set out to stop.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # The fake agent does not touch the file, so the pre-image is overridden
+        # to differ from what the read-back finds — the same device the guard
+        # tests above use to produce a real diff.
+        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
+
+        diffs = [m for m in mounted if isinstance(m, DiffMessage)]
+        assert len(diffs) == 1
+        assert diffs[0]._outcome == "shown"
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is False, "the diff mounted but the row was not hidden"
+
+    async def test_the_diff_is_built_from_the_records_sources_and_counts(
+        self, tmp_path: Path
+    ) -> None:
+        """`before`/`after`/`stats` must actually travel from record to widget.
+
+        Nothing else asserts this: the widget-level highlighting tests hand
+        `before`/`after` in directly, so dropping either argument here would
+        remove syntax highlighting from every diff in the real transcript
+        without failing a test. Dropping `stats` is quieter still — a truncated
+        edit's header silently becomes "change counts unavailable".
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 2\nkeep = 2\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: ("value = 1\nkeep = 2\n", None))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
+
+        diff = next(m for m in mounted if isinstance(m, DiffMessage))
+        assert "value = 1" in diff._before, "the pre-image never reached the widget"
+        assert "value = 2" in diff._after, "the post-image never reached the widget"
+        assert diff._stats == DiffStats(additions=1, deletions=1)
+
+    async def test_a_write_file_diff_never_hides_its_row(self, tmp_path: Path) -> None:
+        """Only `edit_file` may be superseded, and a diff alone is not enough.
+
+        `write_file` mounts a `DiffMessage` on the same path, so the guard that
+        keeps its row visible is exercised only here — the store-level test for
+        the same rule uses `shell`, which mounts no diff at all.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 2\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: ("value = 1\n", None))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_write(target, "value = 2\n")
+        read.assert_both_phases_ran()
+
+        assert any(isinstance(m, DiffMessage) for m in mounted)
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True, "a write_file row was hidden behind its diff"
+
+    async def test_a_write_file_caveat_is_kept_out_of_its_group(
+        self, tmp_path: Path
+    ) -> None:
+        """A groupable tool's caveat must not be foldable.
+
+        `write_file` and `delete` are not in `_TOOL_GROUP_EXCLUSIONS`, so their
+        rows fold into a summary built from tool names alone. Without this flag
+        the only statement that the change could not be shown is summarized away
+        as `▸ Wrote 1 file`.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_write(target, "value = 2\n")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert "prior contents could not be read" in (tool._output or "")
+        assert tool.has_display_caveat is True
+
+    async def test_a_displayable_edit_carries_no_caveat_flag(
+        self, tmp_path: Path
+    ) -> None:
+        """The flag is not set for ordinary work, or nothing would ever fold."""
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.has_display_caveat is False
+
     async def test_delete_with_a_lost_pre_image_says_so(self, tmp_path: Path) -> None:
         """Destroying a large file must not render like destroying an empty one.
 
@@ -3270,7 +3412,7 @@ class TestExecuteTaskTextualFileOpDiffs:
 
         diffs = [m for m in mounted if isinstance(m, DiffMessage)]
         assert len(diffs) == 1
-        assert diffs[0]._changes_unknown is True
+        assert diffs[0]._outcome == "untrusted_before"
 
     async def test_unreadable_read_back_reports_success_with_a_caveat(
         self, tmp_path: Path

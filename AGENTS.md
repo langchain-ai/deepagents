@@ -225,6 +225,17 @@ Ensure the following:
 - Edge cases and error conditions are tested
 - Tests are deterministic (no flaky tests)
 
+#### Warnings are errors
+
+Every package under `libs/` puts `"error"` first in its pytest `filterwarnings`, so any warning the repo has not explicitly accepted fails the test or collection. The entries after `"error"` are the reviewed allowlist.
+
+- Fix actionable warnings first; an allowlist entry is the last resort, not the default.
+- When one test deliberately emits a warning, scope the exception to it with `@pytest.mark.filterwarnings("ignore:<message>:<category>")` instead of a package-level entry.
+- Reserve package-level `ignore:` entries for categorical or third-party warnings nothing in the repo can act on. Each one needs a justification comment and a message prefix narrow enough to not swallow adjacent warnings.
+- Warning filter specs split on `:`, so end the message prefix before the first colon that appears in the warning text.
+- A filter can be version-specific (e.g. only firing on Python 3.14); a filter that does not match anything is harmless.
+- Maintainers can apply the `bypass-warnings-check` PR label and re-run failed jobs to run the suite with warnings demoted. This is an escape hatch for landing fixes under time pressure, not a permanent fix: merge queue runs enforce the policy again, so the warning must still be addressed or allowlisted.
+
 ### Security and risk assessment
 
 - No `eval()`, `exec()`, or `pickle` on user-controlled input

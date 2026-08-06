@@ -15,7 +15,7 @@ from typing_extensions import override
 
 
 class GenericFakeChatModel(BaseChatModel):
-    """Generic fake chat model that can be used to test the chat model interface.
+    r"""Generic fake chat model that can be used to test the chat model interface.
     * Chat model should be usable in both sync and async tests
     * Invokes `on_llm_new_token` to allow for testing of callback related code for new
         tokens.
@@ -26,7 +26,7 @@ class GenericFakeChatModel(BaseChatModel):
             - None (default): Return content in a single chunk (no streaming)
             - A string delimiter (e.g., " "): Split content on this delimiter,
               preserving the delimiter as separate chunks
-            - A regex pattern (e.g., r"(\\s)"): Split using the pattern with a capture
+            - A regex pattern (e.g., r"(\s)"): Split using the pattern with a capture
               group to preserve delimiters
     Examples:
         # No streaming - single chunk

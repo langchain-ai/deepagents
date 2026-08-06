@@ -19,7 +19,7 @@ import types
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import numpy
+import numpy as np
 import pytest
 
 if TYPE_CHECKING:
@@ -111,13 +111,13 @@ def _install_fake_drbench(
 
     utils: Any = types.ModuleType("drbench.agents.utils")
 
-    def get_embeddings(texts: list[str], *_a: Any, **_kw: Any) -> Any:
+    def get_embeddings(texts: list[str], *_a: Any, **_kw: Any) -> Any:  # noqa: ANN401  # stub for an untyped upstream function
         # Mirrors upstream exactly: a C-contiguous float32 ndarray. The caller reads
         # `.shape[1]` and passes it to `faiss.normalize_L2`, which mutates in place, so a
         # stub returning plain lists would hide a real type regression.
         recorded.setdefault("embed_batches", []).append(len(texts))
-        rows = numpy.array([[float(len(text)), 0.5] for text in texts])
-        return numpy.ascontiguousarray(rows, dtype=numpy.float32)
+        rows = np.array([[float(len(text)), 0.5] for text in texts])
+        return np.ascontiguousarray(rows, dtype=np.float32)
 
     utils.get_embeddings = get_embeddings
     utils.OPENAI_MODELS = (
@@ -128,7 +128,7 @@ def _install_fake_drbench(
     # in `OPENAI_MODELS` but not here -- which is why the judge takes the intersection.
     # The cited-URL guard wraps this; a bare pass-through unless a test replaces it.
     class SourceReader:
-        def parse_website(self, url: str) -> Any:
+        def parse_website(self, url: str) -> Any:  # noqa: ANN401  # stub for an untyped upstream method
             recorded.setdefault("fetched", []).append(url)
             return f"content of {url}"
 
@@ -178,15 +178,15 @@ def _install_fake_drbench(
         blocked host was never contacted rather than merely reported after the fact.
         """
 
-        def send(self, request: Any, **kwargs: Any) -> Any:
+        def send(self, request: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # stub for untyped `requests` internals
             recorded.setdefault("sent", []).append((request.url, kwargs.get("timeout")))
             return type("R", (), {"url": request.url})()
 
-        def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        def request(self, method: str, url: str, **kwargs: Any) -> Any:  # noqa: ANN401  # stub for untyped `requests` internals
             recorded.setdefault("requests", []).append((url, kwargs.get("timeout")))
             return self.send(type("P", (), {"url": url})(), **kwargs)
 
-        def resolve_redirects(self, resp: Any, req: Any, **kwargs: Any) -> Any:
+        def resolve_redirects(self, resp: Any, req: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # stub for untyped `requests` internals
             for hop in recorded.get("hops", []):
                 yield self.send(type("P", (), {"url": hop.url})(), **kwargs)
 
@@ -287,7 +287,7 @@ def test_judge_model_raises_on_an_unsupported_request(
     _install_fake_drbench(monkeypatch, scores={})
     monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-luna")
 
-    with pytest.raises(ValueError, match="openrouter/openai/gpt-5.6-luna") as excinfo:
+    with pytest.raises(ValueError, match=r"openrouter/openai/gpt-5\.6-luna") as excinfo:
         judge._judge_model()
 
     assert "gpt-5.6-luna" in str(excinfo.value)
@@ -301,7 +301,7 @@ def test_judge_model_rejects_a_model_in_only_one_registry(
     _install_fake_drbench(monkeypatch, scores={})
     monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-4.1")
 
-    with pytest.raises(ValueError, match="gpt-4.1"):
+    with pytest.raises(ValueError, match=r"gpt-4\.1"):
         judge._judge_model()
 
 
@@ -343,7 +343,7 @@ def test_judge_model_rejects_a_malformed_openrouter_slug(
     _install_fake_drbench(monkeypatch, scores={})
     monkeypatch.setenv("DRBENCH_JUDGE_MODEL", slug)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="is not one upstream DRBench can drive"):
         judge._judge_model()
 
 
@@ -864,10 +864,10 @@ def test_embedding_batching_preserves_the_vectors_exactly(
     judge._install_embedding_batching()
     batched = utils.get_embeddings(texts)
 
-    assert numpy.array_equal(batched, unbatched)
+    assert np.array_equal(batched, unbatched)
     # Type fidelity matters as much as the values: the consumer reads `.shape[1]` and
     # calls `faiss.normalize_L2`, which needs a C-contiguous float32 array.
-    assert isinstance(batched, numpy.ndarray)
+    assert isinstance(batched, np.ndarray)
     assert batched.dtype == unbatched.dtype
     assert batched.flags["C_CONTIGUOUS"]
     assert batched.shape == unbatched.shape
@@ -1152,7 +1152,7 @@ def test_grade_reports_the_judges_verdicts(
 # unreachable citation therefore zeroed all four metrics for a task in a real run.
 
 
-def _fake_requests() -> Any:
+def _fake_requests() -> Any:  # noqa: ANN401  # the registered module stand-in is a dynamic ModuleType
     """The `requests` stand-in `_install_fake_drbench` registered."""
     return sys.modules["requests"]
 
@@ -1160,12 +1160,12 @@ def _fake_requests() -> Any:
 def test_url_guard_turns_a_failed_fetch_into_no_content(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: dict[str, Any] = {}
     _install_fake_drbench(monkeypatch, scores={})
     from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
 
-    def boom(self: Any, url: str) -> Any:
-        raise OSError("name resolution failed")
+    def boom(_self: Any, _url: str) -> Any:  # noqa: ANN401  # stub for an untyped upstream method
+        msg = "name resolution failed"
+        raise OSError(msg)
 
     utils.SourceReader = type("SourceReader", (), {"parse_website": boom})
 

@@ -3172,8 +3172,15 @@ class DeepAgentsApp(App):
         during background startup.
         """
         self._initial_resume_requested = resume_thread is not None
+        """Whether `-r` resume is still in play.
+
+        Gates the startup tip out of `compose`. Every fallback branch of
+        `_resolve_resume_thread` clears this, which is the signal
+        `_restore_startup_tip_after_resume_fallback` uses to mount the tip.
+        """
+
         self._startup_tip_dismissed = False
-        """Whether the startup tip's lifetime ended with the first submission."""
+        """Whether the startup tip has been dismissed and must not be remounted."""
 
         self._resume_thread_resolved_event = asyncio.Event()
         """Set once `-r` resume resolution has completed or is unnecessary."""
@@ -5319,8 +5326,15 @@ class DeepAgentsApp(App):
             # it constructs the state.
             if self._session_state:
                 self._session_state.thread_id = self._lc_thread_id
-            await self._restore_startup_tip_after_resume_fallback()
+            # Signal before restoring the tip: resolution is complete at this
+            # point, and the tip is cosmetic follow-up work. Awaiting it first
+            # would let a mount failure skip `set()` and strand every waiter
+            # (`_write_launch_name_memory`), hanging onboarding.
             self._resume_thread_resolved_event.set()
+            try:
+                await self._restore_startup_tip_after_resume_fallback()
+            except Exception:
+                logger.exception("Failed to restore startup tip after resume fallback")
 
     async def _start_server_background(self) -> None:
         """Background worker: resolve resume-thread intent, start server + MCP preload.
@@ -10342,6 +10356,12 @@ class DeepAgentsApp(App):
     async def _restore_startup_tip_after_resume_fallback(self) -> None:
         """Mount a startup tip when resume resolution starts a fresh session.
 
+        `compose` skips the tip whenever `-r` was passed, so a resume that falls
+        back to a fresh thread has to mount it after the fact. Every fallback
+        branch of `_resolve_resume_thread` clears `_initial_resume_requested`
+        before the `finally` block calls this, so a flag that is still set means
+        the resume succeeded and no tip is wanted.
+
         An initial submission owns the fresh session's startup flow and
         dismisses the tip before it is sent, so do not remount the tip while
         that submission is pending.
@@ -10355,23 +10375,37 @@ class DeepAgentsApp(App):
         ):
             return
 
-        with suppress(NoMatches):
+        # Only the lookups can raise `NoMatches`, and both widgets are composed
+        # unconditionally — a miss means the bottom chrome was restructured, not
+        # an expected transient state, so log it rather than vanishing silently.
+        try:
             bottom = self.query_one("#bottom-app-container", _BottomChrome)
             goal = self.query_one("#goal-status-panel", GoalStatusPanel)
-            tip = StartupTip(id="startup-tip")
-            await bottom.mount(tip, before=goal)
-            if self._startup_tip_dismissed and tip.is_mounted:
-                await tip.remove()
+        except NoMatches:
+            logger.warning(
+                "Bottom chrome or goal panel missing; skipping startup tip restore"
+            )
+            return
+
+        # `mount` registers the widget synchronously before it suspends, so a
+        # dismissal landing during this await finds the tip and removes it
+        # itself — no post-mount re-check is needed.
+        await bottom.mount(StartupTip(id="startup-tip"), before=goal)
 
     async def _dismiss_startup_tip(self) -> None:
-        """Remove the startup tip once the first prompt is submitted.
+        """End the startup tip's lifetime: remove it, and block any remount.
 
         Called from both submission entry points: `_submit_input` (the shared
         interactive/external path) and `_submit_initial_submission` (the
         `-m`/`--skill`/`--goal` startup path, which submits without going
-        through `_submit_input`). Every submission path therefore dismisses
-        the tip. Subsequent calls are no-ops: the widget is already gone and
-        `query_one` raises `NoMatches`.
+        through `_submit_input`), plus `_show_initial_prompt_as_queued` when it
+        mounts the `-m` placeholder ahead of the real submission.
+
+        Latching `_startup_tip_dismissed` matters even when no tip is mounted:
+        under `-r` the tip is skipped in `compose`, and the flag is what stops
+        `_restore_startup_tip_after_resume_fallback` from mounting one after a
+        fallback. Repeat calls are idempotent — the flag is already set and
+        `query_one` raises `NoMatches` for the missing widget.
         """
         self._startup_tip_dismissed = True
         with suppress(NoMatches):

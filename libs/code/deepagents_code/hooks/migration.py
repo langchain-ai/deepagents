@@ -2,6 +2,10 @@
 
 Legacy documents are converted by the loader so lifecycle call sites dispatch
 only canonical events and do not duplicate old dotted-event hooks.
+
+`_LEGACY_EVENT_MAP` is the authoritative list of which legacy events still
+work; events absent from it (e.g. `permission.request`, `tool.use`,
+`tool.result`) are silently dropped during migration.
 """
 
 from __future__ import annotations

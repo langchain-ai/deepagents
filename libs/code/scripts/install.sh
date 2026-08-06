@@ -71,6 +71,10 @@
 #     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
 #   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
 #     Command Line Tools preflight check
+#   DEEPAGENTS_CODE_NO_MODIFY_PATH — set to 1 to skip PATH setup entirely
+#     (no profile edits, no symlinks). The binary is still installed and
+#     verified; add the tool bin dir to PATH yourself, or run it by its
+#     absolute path. Intended for version-managed dotfiles and MDM fleets.
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
 #     unfiltered package diff), the uv installer's own output (shown only when
 #     uv isn't already installed), and the quiet-by-default status lines
@@ -83,6 +87,9 @@
 #   patterns adapted from hermes-agent (NousResearch/hermes-agent).
 #   Snap curl detection, shell-profile PATH modification, and symlink-first
 #   PATH setup adapted from Amp (https://ampcode.com/install.sh).
+#   Multi-profile shell coverage, the fish conf.d file, ZDOTDIR resolution,
+#   and the no-modify-PATH escape hatch adapted from muse
+#   (https://dev.meta.ai/install.sh).
 
 set -euo pipefail
 
@@ -135,6 +142,8 @@ Environment variables:
     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
     Command Line Tools preflight check
+  DEEPAGENTS_CODE_NO_MODIFY_PATH — set to 1 to skip PATH setup entirely
+    (no profile edits, no symlinks)
   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr and additional
     status lines
   UV_BIN — path to uv binary (auto-detected if unset)
@@ -277,6 +286,12 @@ cleanup_on_signal() {
 trap cleanup_on_signal EXIT
 
 cleanup_on_interrupt() {
+  # Default to SIGINT. This runs as a signal handler, so an unbound $1 under
+  # `set -u` would abort partway through and let the EXIT trap print the
+  # contradictory "Installation failed" line that disarming it exists to
+  # prevent — the interrupt path must never depend on the caller's argument.
+  local sig="${1:-2}"
+  local exit_code=$((128 + sig))
   # Disarm the EXIT trap first: exiting from here would otherwise also fire
   # cleanup_on_signal, appending a contradictory "Installation failed" message
   # after the friendly interrupt notice below. Temp files are still cleaned up
@@ -291,9 +306,13 @@ cleanup_on_interrupt() {
   if declare -F release_install_lock >/dev/null 2>&1; then
     release_install_lock
   fi
-  exit 1
+  # Exit with the conventional 128+signal code so callers (CI, wrappers) can
+  # distinguish an interrupted install from an ordinary failure.
+  exit "$exit_code"
 }
-trap cleanup_on_interrupt INT TERM
+trap 'cleanup_on_interrupt 2' INT
+trap 'cleanup_on_interrupt 15' TERM
+trap 'cleanup_on_interrupt 1' HUP
 
 # ---------------------------------------------------------------------------
 # Interactive mode detection
@@ -905,23 +924,124 @@ is_snap_curl() {
   esac
 }
 
+# BusyBox wget intentionally implements only a small subset of GNU wget's
+# long options. Keep the stricter redirect controls when this wget supports
+# them, while still allowing minimal Linux systems to download from an HTTPS
+# URL with normal TLS certificate validation.
+#
+# The help text is captured rather than piped straight into grep: BusyBox exits
+# 1 from `--help`, and under `set -o pipefail` that failure becomes the
+# pipeline's status even when grep matched, so every option would report as
+# unsupported. That fails *open* — it silently drops `-S` and disables the
+# redirect audit below on exactly the minimal systems this branch exists for.
+# `|| true` because a nonzero `--help` is a BusyBox quirk, not "unsupported".
+#
+# The result is cached: this is probed once per hardening flag per attempt, and
+# the defaults keep the function self-contained so it can be extracted and
+# exercised on its own.
+WGET_HELP_TEXT=""
+WGET_HELP_CACHED=false
+wget_supports_option() {
+  if [ "${WGET_HELP_CACHED:-false}" = false ]; then
+    WGET_HELP_TEXT="$(wget --help 2>&1 || true)"
+    WGET_HELP_CACHED=true
+  fi
+  printf '%s\n' "${WGET_HELP_TEXT:-}" | grep -Fq -- "$1"
+}
+
+# Download with wget, adding hardening options only when this wget implements
+# them. `output` may be `-` to write the response to stdout.
+#
+# GNU wget has no real equivalent of curl's --proto-redir: `--https-only` is
+# documented (and implemented) as "when in recursive mode, only HTTPS links are
+# followed", so it does NOT stop a 3xx from downgrading a plain one-shot fetch
+# to plaintext. We therefore pass it for what it's worth, but enforce the
+# scheme ourselves: the request URL must be HTTPS, and the response headers are
+# audited for a non-HTTPS Location so a redirect downgrade fails closed.
+wget_download() {
+  local output="$1" url="$2" ua="${3:-}" quiet="${4:-false}"
+  case "$url" in
+    https://*) ;;
+    *)
+      log_warn "Refusing to download over a non-HTTPS URL: ${url}"
+      return 1
+      ;;
+  esac
+  local -a args
+  if [ "$quiet" = "true" ]; then
+    args=(-qO "$output")
+  else
+    args=(-nv -O "$output")
+  fi
+  if [ -n "$ua" ] && wget_supports_option "--header"; then
+    args+=("--header=User-Agent: ${ua}")
+  fi
+  if wget_supports_option "--max-redirect"; then
+    args+=(--max-redirect=3)
+  fi
+  if wget_supports_option "--https-only"; then
+    args+=(--https-only)
+  fi
+  # -S echoes the response headers (including each redirect's Location) to
+  # stderr, which is what makes the downgrade audit below possible. BusyBox
+  # wget lacks it; there the audit degrades to a no-op, so BusyBox hosts keep
+  # working but rely on wget's own behavior for redirect handling.
+  local can_audit=false
+  if wget_supports_option "-S"; then
+    args+=(-S)
+    can_audit=true
+  else
+    # Say so rather than degrading in silence: without -S there is no
+    # downgrade check at all on the wget path (--https-only does not stop a
+    # one-shot redirect), and a control that is believed active but inert is
+    # worse than one the user knows is missing.
+    log_warn "This wget cannot report response headers (-S); cannot verify redirects stay on HTTPS."
+  fi
+
+  local wget_err rc=0
+  wget_err=$(mktemp 2>/dev/null) || return 1
+  register_temp "$wget_err"
+  wget "${args[@]}" "$url" 2>"$wget_err" || rc=$?
+  if [ "$can_audit" = true ] && \
+    grep -qiE '^[[:space:]]*Location:[[:space:]]*http:' "$wget_err"; then
+    log_warn "Refusing a plaintext HTTP redirect while downloading ${url}."
+    rm -f "$wget_err"
+    return 1
+  fi
+  # Forward wget's own diagnostics so the caller's stderr capture still sees
+  # the real failure reason; -qO callers asked for silence.
+  if [ "$quiet" != "true" ]; then
+    cat "$wget_err" >&2
+  fi
+  rm -f "$wget_err"
+  return "$rc"
+}
+
 # Download a URL to stdout using the first available working downloader.
 # Prefers curl (unless it's a snap install, which has sandbox permission
 # issues), then falls back to wget. Prints nothing and returns non-zero if no
 # working downloader is available.
+# The curl call pins HTTPS for the request and any redirects (--proto /
+# --proto-redir) so a hostile proxy or DNS answer can't silently downgrade the
+# download to plaintext, and caps redirect chains at 3 so a broken or
+# malicious redirect loop fails instead of spinning. wget has no --proto-redir
+# equivalent, so wget_download enforces the same property by rejecting
+# non-HTTPS URLs and auditing the response headers for a downgrade redirect.
 download_to_stdout() {
   local url="$1" ua="${2:-deepagents-code-install}"
   local attempt=1 body="" download_rc=1
   while [ "$attempt" -le 3 ]; do
     if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
-      if body=$(curl -fsSL -H "User-Agent: ${ua}" "$url" 2>/dev/null); then
+      if body=$(curl -fsSL -H "User-Agent: ${ua}" \
+        --proto '=https' --proto-redir '=https' --max-redirs 3 \
+        "$url" 2>/dev/null); then
         printf '%s' "$body"
         return 0
       else
         download_rc=$?
       fi
     elif command -v wget >/dev/null 2>&1; then
-      if body=$(wget -qO- --header="User-Agent: ${ua}" "$url" 2>/dev/null); then
+      if body=$(wget_download - "$url" "$ua" true 2>/dev/null); then
         printf '%s' "$body"
         return 0
       else
@@ -930,8 +1050,11 @@ download_to_stdout() {
     else
       return 1
     fi
+    # 2s then 4s. A 1s/2s backoff is too short to outlast the transient it is
+    # meant to absorb (a captive-portal redirect settling, a CDN edge failing
+    # over); 6s of total waiting is still well inside a user's patience.
     if [ "$attempt" -lt 3 ]; then
-      sleep "$attempt"
+      sleep $((attempt * 2))
     fi
     attempt=$((attempt + 1))
   done
@@ -973,28 +1096,31 @@ install_uv() {
     uv_install_rc=1
     for attempt in 1 2 3; do
       : >"$uv_install_out"
-      if curl -fsSL https://astral.sh/uv/install.sh -o "$uv_script" 2>"$uv_install_out"; then
+      if curl -fsSL https://astral.sh/uv/install.sh -o "$uv_script" \
+        --proto '=https' --proto-redir '=https' --max-redirs 3 \
+        2>"$uv_install_out"; then
         uv_install_rc=0
         break
       else
         uv_install_rc=$?
       fi
       if [ "$attempt" -lt 3 ]; then
-        sleep "$attempt"
+        sleep $((attempt * 2))
       fi
     done
   elif command -v wget >/dev/null 2>&1; then
     uv_install_rc=1
     for attempt in 1 2 3; do
       : >"$uv_install_out"
-      if wget -nv -O "$uv_script" https://astral.sh/uv/install.sh 2>"$uv_install_out"; then
+      if wget_download "$uv_script" https://astral.sh/uv/install.sh "" false \
+        2>"$uv_install_out"; then
         uv_install_rc=0
         break
       else
         uv_install_rc=$?
       fi
       if [ "$attempt" -lt 3 ]; then
-        sleep "$attempt"
+        sleep $((attempt * 2))
       fi
     done
   elif is_snap_curl; then
@@ -1030,7 +1156,9 @@ install_uv() {
   # unpredictably when run by sh. It only inspects the first line, so it is a
   # sanity check on the response type, not an integrity guarantee: it won't
   # detect a truncated or tampered body.
-  if ! head -1 "$uv_script" | grep -qE '^#!.*(sh|bash)'; then
+  local uv_shebang
+  uv_shebang=$(head -1 "$uv_script")
+  if ! printf '%s' "$uv_shebang" | grep -qE '^#!.*(sh|bash)'; then
     rm -f "$uv_install_out" "$uv_script"
     log_error "uv installer download does not start with a shell shebang."
     log_error "  The URL may have returned an error page (proxy, captive portal, or outage)."
@@ -1038,7 +1166,34 @@ install_uv() {
     exit 1
   fi
 
-  sh "$uv_script" >"$uv_install_out" 2>&1 || uv_install_rc=$?
+  # Parse-check the script before executing it. The shebang check above only
+  # proves the response is *meant* to be shell; a truncated download (dropped
+  # connection mid-body) would still pass that and then fail unpredictably
+  # partway through execution. A parse check reads the whole file without
+  # running it, so it catches any truncation that leaves unbalanced syntax (an
+  # open quote, `if` without `fi`, an unterminated function body). It is not a
+  # completeness guarantee: a body cut at a statement boundary still parses.
+  #
+  # Use the interpreter named in the script's own shebang rather than always
+  # `sh`. Upstream currently ships POSIX sh, but if it ever ships bash-only
+  # syntax, checking with dash would report a syntax error and send the user
+  # chasing a nonexistent truncated download. The same interpreter runs the
+  # script below — checking with bash and then executing with sh would let
+  # bash-only syntax pass the check and fail at execution instead, which is
+  # the confusing outcome this branch exists to avoid.
+  local uv_checker="sh"
+  case "$uv_shebang" in
+    *bash*) command -v bash >/dev/null 2>&1 && uv_checker="bash" ;;
+  esac
+  if ! "$uv_checker" -n "$uv_script" 2>"$uv_install_out"; then
+    cat "$uv_install_out" >&2
+    rm -f "$uv_install_out" "$uv_script"
+    log_error "uv installer download failed a shell syntax check — it may be truncated."
+    log_error "  Try again, or install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
+  fi
+
+  "$uv_checker" "$uv_script" >"$uv_install_out" 2>&1 || uv_install_rc=$?
   if [ "$VERBOSE" = "1" ] || [ "$uv_install_rc" -ne 0 ]; then
     cat "$uv_install_out" >&2
   fi
@@ -1468,15 +1623,23 @@ fix_install_log_owner
 # If that directory is not already in PATH, expose the installed binary through
 # one of the user's conventional bin directories.
 #
-# Strategy (adapted from Amp's installer, https://ampcode.com/install.sh):
+# Strategy (symlink-first adapted from Amp's installer,
+# https://ampcode.com/install.sh; multi-profile coverage and the fish conf.d
+# file adapted from muse's installer, https://dev.meta.ai/install.sh):
 #   1. If a common bin dir (~/.local/bin, ~/bin, ~/.bin) is already in PATH,
 #      create a symlink there — no profile modification needed.
 #   2. Otherwise, create ~/.local/bin, symlink dcode there, then add
-#      ~/.local/bin to the user's shell profile (.zshrc, .bashrc,
-#      .bash_profile, or config.fish). Prompt interactively before writing;
-#      auto-add in non-interactive mode (CI, cron, piped install).
+#      ~/.local/bin to the user's shell startup files. Every zsh/bash profile
+#      that already exists gets the entry (plus the primary one for the
+#      current shell), so dcode resolves even if the user later switches
+#      shells; fish gets a standalone conf.d/deepagents-code.fish file, which
+#      fish auto-sources, instead of a config.fish edit. Prompt interactively
+#      before writing; auto-add in non-interactive mode (CI, cron, piped
+#      install).
 #   3. Skip the whole thing if the binary was already on PATH or uv's env file
 #      exposes a binary installed under ~/.local/bin.
+#   DEEPAGENTS_CODE_NO_MODIFY_PATH=1 skips steps 1–2 entirely, for users with
+#   version-managed dotfiles or MDM-managed PATH.
 
 # Check if a directory was in PATH before the installer sourced any env files.
 dir_in_original_path() {
@@ -1524,7 +1687,13 @@ try_symlink_in_path() {
 }
 
 # Detect the user's shell and return the profile file + PATH export statement.
-# Sets SHELL_PROFILE and PATH_EXPORT as globals.
+# Sets SHELL_PROFILE, PATH_EXPORT, and DETECTED_SHELL as globals.
+#
+# For fish, SHELL_PROFILE names config.fish only so the reload hint and the
+# "add this yourself" message have something to point at. The PATH entry itself
+# is never written there: ensure_path_setup writes a standalone
+# conf.d/deepagents-code.fish (see fish_conf_file) and never adds config.fish
+# as a write candidate.
 detect_shell_profile() {
   local default_shell="bash"
   if [ "$OS" = "macos" ]; then
@@ -1532,11 +1701,17 @@ detect_shell_profile() {
   fi
   local shell_name
   shell_name=$(basename "${SHELL:-$default_shell}" 2>/dev/null) || shell_name="$default_shell"
+  # Callers must reuse this rather than re-deriving from $SHELL: an empty
+  # SHELL would otherwise resolve differently here and there.
+  DETECTED_SHELL="${shell_name:-$default_shell}"
+  shell_name="$DETECTED_SHELL"
   SHELL_PROFILE=""
   PATH_EXPORT=""
   case "$shell_name" in
     zsh)
-      SHELL_PROFILE="$HOME/.zshrc"
+      local zdotdir
+      zdotdir="$(resolve_zdotdir)"
+      SHELL_PROFILE="${zdotdir:-$HOME}/.zshrc"
       # shellcheck disable=SC2016  # single-quoted so $HOME/$PATH expand at profile source time, not here
       PATH_EXPORT='export PATH="$HOME/.local/bin:$PATH"'
       ;;
@@ -1562,7 +1737,10 @@ detect_shell_profile() {
       PATH_EXPORT='export PATH="$HOME/.local/bin:$PATH"'
       ;;
     fish)
-      SHELL_PROFILE="$HOME/.config/fish/config.fish"
+      # Reload hint sources config.fish; the PATH entry itself is written to
+      # conf.d/deepagents-code.fish by ensure_path_setup. Honor XDG_CONFIG_HOME
+      # here too, or the hint names a file the user doesn't have.
+      SHELL_PROFILE="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
       # shellcheck disable=SC2016  # single-quoted so $HOME expands at profile source time, not here
       PATH_EXPORT='fish_add_path "$HOME/.local/bin"'
       ;;
@@ -1571,6 +1749,24 @@ detect_shell_profile() {
       ;;
   esac
 }
+
+# The fish PATH entry lives in its own conf.d file, which fish auto-sources at
+# startup. A standalone file keeps the installer from mutating the user's main
+# config.fish and makes the entry trivially removable.
+fish_conf_file() {
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/deepagents-code.fish"
+}
+
+# shellcheck disable=SC2016  # single-quoted so $PATH stays literal for the fish file
+FISH_PATH_EXPORT='contains -- "$HOME/.local/bin" $PATH; or set -gx PATH "$HOME/.local/bin" $PATH'
+
+# The POSIX export line, used for every startup file that isn't fish's conf.d
+# file. Kept separate from PATH_EXPORT because PATH_EXPORT tracks the *current
+# shell* (and is empty for unknown shells), while the line written to a given
+# file has to match *that file's* syntax — a fish user can still have a
+# ~/.zshrc candidate, which must not receive fish syntax.
+# shellcheck disable=SC2016  # single-quoted so $HOME/$PATH expand at profile source time
+POSIX_PATH_EXPORT='export PATH="$HOME/.local/bin:$PATH"'
 
 # Check if ~/.local/bin is already referenced in the shell profile's PATH
 # config. Matches non-commented lines containing .local/bin in a PATH
@@ -1586,7 +1782,134 @@ local_bin_in_profile() {
   local profile="$1"
   [ -f "$profile" ] || return 1
   grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'PATH=.*(\.local/bin|\.local/share/\.\./bin)' \
-    || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'fish_add_path.*(\.local/bin|\.local/share/\.\./bin)'
+    || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE '(fish_add_path|set[[:space:]].*PATH).*(\.local/bin|\.local/share/\.\./bin)'
+}
+
+# Net block-nesting change contributed by one shell line, into
+# SHELL_BLOCK_DELTA (a global: returning it via $(...) would fork per line).
+# Separators that can abut a keyword are flattened to spaces first, so a
+# self-contained `if [ x ]; then y; fi` nets zero rather than opening a block
+# that never closes. This is a line-oriented approximation, not a shell parser:
+# it does not know about quoting or heredocs. It only has to be right about the
+# ordinary conditional wrapper in a hand-written ~/.zshenv.
+SHELL_BLOCK_DELTA=0
+shell_block_delta() {
+  local haystack="$1" word
+  SHELL_BLOCK_DELTA=0
+  haystack="${haystack//;/ }"
+  haystack="${haystack//&/ }"
+  haystack="${haystack//|/ }"
+  haystack="${haystack//(/ }"
+  haystack="${haystack//)/ }"
+  # Unquoted expansion below is deliberate (word splitting); disable globbing so
+  # a `*` in the line can't expand against the cwd.
+  set -f
+  for word in $haystack; do
+    case "$word" in
+      if|case|while|for|until) SHELL_BLOCK_DELTA=$((SHELL_BLOCK_DELTA + 1)) ;;
+      fi|esac|done)            SHELL_BLOCK_DELTA=$((SHELL_BLOCK_DELTA - 1)) ;;
+    esac
+  done
+  set +f
+}
+
+# Resolve the directory holding zsh's .zshrc. ZDOTDIR, when set, relocates all
+# of zsh's dotfiles; users who keep ~/.zshrc elsewhere (e.g.
+# ~/.config/zsh/.zshrc) would otherwise get a stray new ~/.zshrc that zsh never
+# reads, plus no PATH entry in the file zsh does read.
+# Checks $ZDOTDIR itself first, then parses a ZDOTDIR assignment out of
+# ~/.zshenv (the one file zsh always reads from $HOME, and the canonical place
+# to set ZDOTDIR). Prints the resolved directory, or nothing when unresolved.
+resolve_zdotdir() {
+  local line value="" depth=0 scan
+  if [ -n "${ZDOTDIR:-}" ]; then
+    printf '%s\n' "$ZDOTDIR"
+    return 0
+  fi
+  [ -n "${HOME:-}" ] || return 0
+  # `-r`, not just `-f`: a root-owned or 0600 .zshenv belonging to another user
+  # passes `-f` but the redirect below then fails, leaving `value` empty and
+  # silently sending the zshrc to ~/.zshrc — the exact misplacement this
+  # function exists to prevent. Say so instead of guessing.
+  if [ -f "$HOME/.zshenv" ] && [ ! -r "$HOME/.zshenv" ]; then
+    log_warn "Cannot read ~/.zshenv to check for a ZDOTDIR setting; assuming zsh reads ~/.zshrc."
+    return 0
+  fi
+  [ -f "$HOME/.zshenv" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    scan="${line%%#*}"
+    # Only a top-level assignment is authoritative. The common portable-dotfiles
+    # idiom guards the relocation:
+    #
+    #     if [ -d "$HOME/.config/zsh" ]; then export ZDOTDIR="$HOME/.config/zsh"; fi
+    #
+    # While that directory is absent the guard is false and zsh reads ~/.zshrc.
+    # Honoring the assignment anyway would make the caller create the directory,
+    # which flips the guard true and strands every later shell in a config dir
+    # holding nothing but our PATH block. Assignments nested in any block are
+    # therefore skipped; the one-line `[ -d x ] && export ZDOTDIR=y` form is
+    # already skipped because such a line doesn't begin with the assignment.
+    if [ "$depth" -eq 0 ]; then
+      # Strip leading whitespace, then an optional leading `export`.
+      while [[ "$line" == [[:space:]]* ]]; do line="${line#?}"; done
+      if [[ "$line" == export[[:space:]]* ]]; then
+        line="${line#export}"
+        while [[ "$line" == [[:space:]]* ]]; do line="${line#?}"; done
+      fi
+      if [[ "$line" == ZDOTDIR=* ]]; then
+        value="${line#ZDOTDIR=}"
+      fi
+    fi
+    shell_block_delta "$scan"
+    depth=$((depth + SHELL_BLOCK_DELTA))
+    # A stray closer (or a construct this line-oriented scan misreads) must not
+    # drive the depth negative and re-arm the top-level branch inside a block.
+    [ "$depth" -lt 0 ] && depth=0
+  done <"$HOME/.zshenv"
+  # Strip surrounding quotes, or a trailing `;`, `# comment`, or whitespace for
+  # the unquoted form.
+  case "$value" in
+    \"*)
+      value="${value#\"}"
+      value="${value%%\"*}"
+      ;;
+    \'*)
+      value="${value#\'}"
+      value="${value%%\'*}"
+      ;;
+    *)
+      value="${value%%;*}"
+      value="${value%%#*}"
+      value="${value%%[[:space:]]*}"
+      ;;
+  esac
+  # Expand the ~ and $HOME spellings people actually write in .zshenv.
+  case "$value" in
+    \~)            value="$HOME" ;;
+    \~/*)          value="$HOME/${value#\~/}" ;;
+    "\$HOME")      value="$HOME" ;;
+    "\${HOME}")    value="$HOME" ;;
+    "\$HOME"/*)    value="$HOME/${value#\$HOME/}" ;;
+    "\${HOME}"/*)  value="$HOME/${value#\$\{HOME\}/}" ;;
+  esac
+  # Any absolute path is accepted, whether or not it exists yet. A ZDOTDIR=
+  # line in ~/.zshenv tells zsh "look here" — and zsh looks only there — so a
+  # valid absolute ZDOTDIR is authoritative for where the zshrc must go even
+  # when the directory hasn't been created. An existence check would have the
+  # failure mode backwards: on a fresh setup with `ZDOTDIR=$HOME/.config/zsh`,
+  # rejecting the value writes ~/.zshrc, a file zsh never reads once ZDOTDIR
+  # is set, so `dcode` stays off PATH. The caller creates a missing candidate
+  # directory before writing, which is safe only because guarded assignments
+  # were skipped above — creating a directory an `if [ -d ... ]` is waiting on
+  # would silently activate a ZDOTDIR the user has not opted into yet.
+  # Remaining limit: the loop takes the last top-level ZDOTDIR= assignment, so
+  # a value set from a sourced file or a shell function is still missed. That
+  # errs toward ~/.zshrc, which is where zsh looks when the assignment never
+  # runs, and ~/.zshrc is added alongside a ZDOTDIR zshrc whenever it exists.
+  case "$value" in
+    /*) printf '%s\n' "$value" ;;
+  esac
+  return 0
 }
 
 managed_path_block_present() {
@@ -1611,8 +1934,53 @@ append_managed_path_block() {
   } >>"$profile"
 }
 
+# Resolve a symlink to the final non-symlink path in the chain. The result is
+# not canonicalized (a relative hop leaves `..` segments in place) and is not
+# guaranteed to exist or to be a regular file — nothing here checks that. It is
+# absolute only if the input was.
+# Read-only; used to pick the directory an atomic temp-file rewrite must live
+# in. Chains (a -> b -> c) must be followed to the end: resolving one hop and
+# `mv`-ing over it would replace an intermediate link with a regular file, so
+# the real dotfile-manager source stays stale and the next restow recreates the
+# link, reverting the PATH entry. The hop count is capped to bound symlink
+# loops (ELOOP), which we can't detect portably; 40 matches Linux's
+# MAXSYMLINKS, and macOS stops at 32, so any chain a kernel would follow fits.
+resolve_link_target() {
+  local link="$1" target hops=0
+  while [ -L "$link" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+      return 1
+    fi
+    target=$(readlink "$link") || return 1
+    case "$target" in
+      /*) link="$target" ;;
+      *)  link="$(dirname "$link")/$target" ;;
+    esac
+  done
+  printf '%s\n' "$link"
+}
+
 rewrite_managed_path_block() {
   local profile="$1" path_export="$2" tmp_profile mode
+  if [ -L "$profile" ]; then
+    # Dotfile managers (chezmoi, stow, nix home-manager) symlink startup files
+    # into a repo. Replacing the link with a regular file means the next
+    # `apply`/`restow` silently reverts the PATH entry — after we printed a
+    # success message. Write the chain's final target instead, through the same
+    # atomic temp-file + mv used below. Writing the target in place would
+    # truncate it first, so an interrupted install (we trap INT/TERM/HUP) could
+    # leave the dotfile-manager source empty or partial. Resolving the target
+    # first puts the temp file in the target's directory, keeping the mv atomic.
+    local link_target
+    if link_target=$(resolve_link_target "$profile"); then
+      log_warn "$profile is a symlink — editing its target instead of replacing the link."
+      profile="$link_target"
+    else
+      log_warn "Could not resolve the symlink target of $profile; skipping."
+      return 1
+    fi
+  fi
   tmp_profile=$(mktemp "$(dirname "$profile")/.deepagents-code-profile.XXXXXX") || return 1
   register_temp "$tmp_profile"
 
@@ -1652,22 +2020,70 @@ rewrite_managed_path_block() {
   # an in-place rewrite doesn't silently tighten (e.g.) a 0644 ~/.zshrc.
   mode=$(stat -f '%OLp' "$profile" 2>/dev/null || stat -c '%a' "$profile" 2>/dev/null || true)
   if [ -n "$mode" ]; then
-    chmod "$mode" "$tmp_profile" 2>/dev/null || true
+    # Not fatal — the rewrite is still correct — but the user's file quietly
+    # becoming 0600 is the kind of change they should hear about.
+    chmod "$mode" "$tmp_profile" 2>/dev/null \
+      || log_warn "Could not restore mode ${mode} on $(tilde_display "$profile"); it may now be more restrictive."
   fi
-  mv "$tmp_profile" "$profile"
+  mv "$tmp_profile" "$profile" || return 1
+  # `profile` is the final target when the caller supplied a symlink. The
+  # caller still fixes ownership on the original symlink, so also restore the
+  # target's ownership after this root-created atomic replacement.
+  fix_file_owner "$profile"
+  # Explicit: without this the function's status is fix_file_owner's, so the
+  # day an ownership helper starts propagating chown failures, a rewrite that
+  # fully succeeded would report failure.
+  return 0
 }
 
 # Ensure dcode is on PATH for new shell sessions. Creates symlinks and/or
-# modifies the shell profile as needed. Only acts when the binary verified
+# modifies shell startup files as needed. Only acts when the binary verified
 # but isn't already on the user's original PATH.
-# Returns: 0 = PATH is fixed for the current shell (symlink in an on-PATH dir),
+# Returns: 0 = nothing more to say — PATH is fixed for the current shell (a
+#              symlink in an on-PATH dir), or setup was deliberately skipped
+#              and this function already printed the exact guidance,
 #          1 = failure (a specific warning was already printed),
-#          2 = no changes needed, but the current shell still must be reloaded
-#              or sourced before dcode will resolve,
-#          3 = root install to a custom bin; PATH changes are left to MDM policy.
+#          2 = no changes needed, or changes were written to startup files,
+#              but the current shell still must be reloaded or sourced before
+#              dcode will resolve,
+#          3 = root install to a custom bin; PATH changes are left to MDM policy,
+#          4 = the user declined the prompt; nothing was written.
+# rc=0, 3 and 4 suppress the caller's reload hint. Any path that edits a
+# startup file must return 2 (or 1) — a written file never helps the shell that
+# is running right now — and any path that writes nothing must not return 2,
+# or the user is told to restart a shell for a change that was never made.
 ensure_path_setup() {
   local binary_name="$1"
   local binary_path="$2"
+
+  # Escape hatch for version-managed dotfiles (chezmoi, nix home-manager) and
+  # MDM fleets: install and verify the binary, but never touch startup files
+  # or create symlinks. The user adds the bin dir to PATH themselves.
+  #
+  # Accept the same *truthy* spellings as DEEPAGENTS_CODE_YES. The falsy
+  # handling deliberately differs: ASSUME_YES maps anything unrecognized to
+  # off, while this maps it to on. The opt-out exists to protect managed
+  # dotfiles, so an unparsed value must fail toward leaving files alone rather
+  # than editing them. Don't unify the two parsers.
+  local no_modify_path
+  no_modify_path="$(printf '%s' "${DEEPAGENTS_CODE_NO_MODIFY_PATH:-0}" \
+    | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$no_modify_path" in
+    0|false|no|'') no_modify_path="0" ;;
+    1|true|yes)    no_modify_path="1" ;;
+    *)
+      log_warn "Unrecognized DEEPAGENTS_CODE_NO_MODIFY_PATH value — treating it as 1 (leaving startup files alone)."
+      no_modify_path="1"
+      ;;
+  esac
+  if [ "$no_modify_path" = "1" ]; then
+    log_info "Skipping PATH setup (DEEPAGENTS_CODE_NO_MODIFY_PATH is set)."
+    log_info "  ${binary_name} is at ${binary_path} — add its directory to PATH yourself, e.g.:"
+    log_info "    export PATH=\"${binary_path%/*}:\$PATH\""
+    # rc=0 so the caller stays quiet: the generic reload hint would name
+    # ~/.local/bin, contradicting the exact directory printed just above.
+    return 0
+  fi
 
   # uv's env file only exposes binaries that are actually under ~/.local/bin.
   # A custom uv tool bin still needs a symlink or its own PATH entry.
@@ -1690,7 +2106,7 @@ ensure_path_setup() {
     return 0
   fi
 
-  # Step 2: create ~/.local/bin, symlink there, then add to shell profile.
+  # Step 2: create ~/.local/bin, symlink there, then add to shell profiles.
   local local_bin_preexisted=false
   if [ -d "$HOME/.local/bin" ]; then
     local_bin_preexisted=true
@@ -1718,68 +2134,273 @@ ensure_path_setup() {
     fix_file_owner "$symlink_path"
   fi
 
-  # Step 3: detect shell and add ~/.local/bin to profile if needed.
+  # Step 3: detect the current shell, then write the PATH entry into every
+  # relevant startup file that exists — plus the primary file for the current
+  # shell — so dcode resolves no matter which shell the user opens next.
   detect_shell_profile
-  if [ -z "$SHELL_PROFILE" ]; then
-    log_warn "${binary_name} installed to ~/.local/bin but your shell is unknown."
+  # Reuse detect_shell_profile's result rather than re-deriving it from $SHELL,
+  # so the two can't disagree about which shell this is: any second derivation
+  # needs its own fallback for an empty $SHELL, and a mismatch silently drops
+  # the primary profile detect_shell_profile just chose.
+  local shell_name="$DETECTED_SHELL"
+  local zdotdir
+  zdotdir="$(resolve_zdotdir)"
+
+  # Build the candidate profile list (deduped):
+  #   - the current shell's primary file, even if it doesn't exist yet
+  #     (zsh and bash only; fish is covered by its conf.d file below)
+  #   - the zshrc at the resolved ZDOTDIR, plus ~/.zshrc when both exist
+  #     (ZDOTDIR wins for the shell itself; ~/.zshrc covers stale copies)
+  #   - whenever any bash file exists, or the shell is bash: .bashrc (on macOS
+  #     only if it already exists), plus the login file (.bash_profile
+  #     preferred, else .bash_login, else ~/.profile, which is what a bash
+  #     login shell falls back to reading)
+  #   - fish: conf.d/deepagents-code.fish, when fish is the shell or a fish
+  #     config dir exists
+  #   - any other shell: ~/.profile, in addition to whichever of the above
+  #     matched on file existence
+  local candidates=() seen=""
+  add_candidate() {
+    case ":$seen:" in
+      *":$1:"*) ;;
+      *)
+        seen="$seen:$1"
+        candidates+=("$1")
+        ;;
+    esac
+  }
+  has_candidate() {
+    case ":$seen:" in
+      *":$1:"*) return 0 ;;
+    esac
+    return 1
+  }
+  case "$shell_name" in
+    zsh)
+      # detect_shell_profile resolves ZDOTDIR too, so SHELL_PROFILE is already
+      # the same "${zdotdir:-$HOME}/.zshrc" the zsh branch below adds, and
+      # add_candidate dedupes. Adding it here is therefore redundant either
+      # way; the guard just makes the single source of that path obvious.
+      if [ -z "$zdotdir" ] || [ "$zdotdir" = "$HOME" ]; then
+        [ -n "$SHELL_PROFILE" ] && add_candidate "$SHELL_PROFILE"
+      fi
+      ;;
+    bash)
+      [ -n "$SHELL_PROFILE" ] && add_candidate "$SHELL_PROFILE"
+      ;;
+    # fish is covered solely by its conf.d file below — never edit config.fish.
+  esac
+  if [ "$shell_name" = "zsh" ] || [ -f "${zdotdir:-$HOME}/.zshrc" ]; then
+    add_candidate "${zdotdir:-$HOME}/.zshrc"
+    # ~/.zshrc is added alongside a ZDOTDIR zshrc only when it already exists.
+    # When ZDOTDIR is already set in the *environment*, zsh reads
+    # ${ZDOTDIR}/.zshenv rather than ~/.zshenv, so zsh's live ZDOTDIR can
+    # differ from whatever resolve_zdotdir parsed out of ~/.zshenv — and on a
+    # machine set up that way, ~/.zshrc may not exist at all.
+    if [ -n "$zdotdir" ] && [ "$zdotdir" != "$HOME" ] && [ -f "$HOME/.zshrc" ]; then
+      add_candidate "$HOME/.zshrc"
+    fi
+  fi
+  if [ "$shell_name" = "bash" ] || [ -f "$HOME/.bashrc" ] || \
+    [ -f "$HOME/.bash_profile" ] || [ -f "$HOME/.bash_login" ]; then
+    # .bashrc is sourced for interactive non-login shells (the default on
+    # Linux); macOS Terminal runs login shells instead, so a .bashrc created
+    # here wouldn't be read by the default Terminal session — skip creating
+    # one there. (A non-login bash started by hand on macOS does read it,
+    # which is why an existing .bashrc is still updated.)
+    if [ -f "$HOME/.bashrc" ] || [ "$OS" != "macos" ]; then
+      add_candidate "$HOME/.bashrc"
+    fi
+    # Test existence *or* already-queued: the bash branch above may have queued
+    # a not-yet-created ~/.bash_profile as the shell's primary file. Looking
+    # only at the filesystem would miss that, fall through to ~/.profile, and
+    # create both — after which bash reads the .bash_profile we just made and
+    # never the .profile, leaving a stray file behind.
+    if [ -f "$HOME/.bash_profile" ] || has_candidate "$HOME/.bash_profile"; then
+      add_candidate "$HOME/.bash_profile"
+    elif [ -f "$HOME/.bash_login" ] || has_candidate "$HOME/.bash_login"; then
+      add_candidate "$HOME/.bash_login"
+    else
+      # bash files exist but no login file. A bash login shell reads the first
+      # of .bash_profile / .bash_login / .profile that exists, so with neither
+      # of the first two present, ~/.profile is the file it will read — and
+      # ~/.bashrc alone leaves login shells (macOS Terminal, `bash -l`, ssh)
+      # without the entry. add_candidate dedupes if it's already listed.
+      add_candidate "$HOME/.profile"
+    fi
+  fi
+  if [ "$shell_name" = "fish" ] || [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/fish" ]; then
+    add_candidate "$(fish_conf_file)"
+  fi
+  case "$shell_name" in
+    zsh|bash|fish) ;;
+    *) add_candidate "$HOME/.profile" ;;
+  esac
+
+  # Defensive only: every branch above adds at least one candidate (unknown
+  # shells fall through to ~/.profile), so this should be unreachable.
+  if [ ${#candidates[@]} -eq 0 ]; then
+    log_warn "${binary_name} installed to ~/.local/bin but no startup file could be selected."
     log_warn "  Add ~/.local/bin to your PATH manually."
     return 1
   fi
 
-  # Collapse $HOME prefix to ~ for a tidier display path.
-  local tilde_profile="${SHELL_PROFILE/#$HOME/\~}"
+  # Collapse $HOME prefix to ~ for tidier display paths. Done with a case +
+  # prefix strip rather than "${1/#$HOME/\~}": bash 3.2 (still the default
+  # /bin/bash on macOS, and this script is run as `curl … | bash`) does not
+  # unescape the \~ in a pattern-substitution replacement, so that form
+  # renders literally as "\~/.zshrc".
+  tilde_display() {
+    case "$1" in
+      "$HOME"/*) printf '~%s\n' "${1#"$HOME"}" ;;
+      "$HOME")   printf '~\n' ;;
+      *)         printf '%s\n' "$1" ;;
+    esac
+  }
 
-  if managed_path_block_present "$SHELL_PROFILE"; then
-    if managed_path_block_has_line "$SHELL_PROFILE" "$PATH_EXPORT"; then
-      if [ "$VERBOSE" = "1" ]; then
-        log_info "deepagents-code PATH block already configured in ${tilde_profile}."
-      fi
-      return 2
+  # A candidate is satisfied when it already has our managed block with the
+  # right line, or (legacy installs, manual entries) any ~/.local/bin PATH
+  # reference at all.
+  profile_satisfied() {
+    local profile="$1" export_line="$2"
+    if managed_path_block_present "$profile"; then
+      managed_path_block_has_line "$profile" "$export_line"
+      return $?
     fi
-    if rewrite_managed_path_block "$SHELL_PROFILE" "$PATH_EXPORT"; then
-      fix_owner "$SHELL_PROFILE"
-      log_success "Updated deepagents-code PATH block in ${tilde_profile}."
-      return 2
-    fi
-    log_warn "Could not update deepagents-code PATH block in ${tilde_profile}."
-    return 1
-  fi
+    local_bin_in_profile "$profile"
+  }
 
-  # Already in profile? No changes needed, but the current shell may still
-  # lack ~/.local/bin on PATH (stale shell). Return 2 so the caller can emit
-  # a reload/source hint instead of silently returning success.
-  if local_bin_in_profile "$SHELL_PROFILE"; then
+  # The line to write is a property of the *target file*, never of the current
+  # shell. Using PATH_EXPORT here would write fish syntax (`fish_add_path …`)
+  # into a fish user's ~/.zshrc — which is a candidate whenever that file
+  # exists — so every zsh session would fail with `command not found:
+  # fish_add_path` and never get ~/.local/bin. Only the fish conf.d file gets
+  # fish syntax; everything else (.zshrc, .bashrc, .bash_profile, .profile) is
+  # POSIX-compatible.
+  export_line_for() {
+    if [ "$1" = "$(fish_conf_file)" ]; then
+      printf '%s' "$FISH_PATH_EXPORT"
+    else
+      printf '%s' "$POSIX_PATH_EXPORT"
+    fi
+  }
+
+  # Partition candidates into satisfied vs needing the entry.
+  local pending=() satisfied=()
+  local profile export_line
+  for profile in "${candidates[@]}"; do
+    export_line="$(export_line_for "$profile")"
+    if profile_satisfied "$profile" "$export_line"; then
+      satisfied+=("$profile")
+    else
+      pending+=("$profile")
+    fi
+  done
+
+  if [ ${#pending[@]} -eq 0 ]; then
     if [ "$VERBOSE" = "1" ]; then
-      # shellcheck disable=SC2088  # display string, literal ~/ is intended for readability
-      log_info "~/.local/bin already in ${tilde_profile}."
+      for profile in "${satisfied[@]}"; do
+        log_info "~/.local/bin already configured in $(tilde_display "$profile")."
+      done
     fi
+    # Nothing to write, but the current shell may still lack ~/.local/bin on
+    # PATH (stale shell). Return 2 so the caller emits a reload/source hint.
     return 2
   fi
 
-  # Prompt interactively, or auto-add when non-interactive.
-  local should_add=true
+  # Prompt interactively (once, covering all files), or auto-add when
+  # non-interactive.
+  # Name every file the answer covers. Consent for one file must not be taken
+  # as consent to edit three: a macOS zsh user with a leftover ~/.bashrc and
+  # ~/.bash_profile would otherwise be asked only about ~/.zshrc.
+  local should_add=true prompt_targets
+  prompt_targets="$(tilde_display "${pending[0]}")"
+  # `pending` is guaranteed non-empty above, so "${pending[@]:1}" is safe even
+  # on the bash 3.2 macOS still ships (an empty *slice* of a non-empty array is
+  # fine there; only expanding a wholly empty array trips `set -u`). The length
+  # check just skips a pointless loop.
+  if [ ${#pending[@]} -gt 1 ]; then
+    local extra
+    for extra in "${pending[@]:1}"; do
+      prompt_targets="${prompt_targets}, $(tilde_display "$extra")"
+    done
+  fi
   if [ "$IS_INTERACTIVE" = true ] && can_prompt; then
-    if ! prompt_yn "Add ~/.local/bin to your PATH in ${tilde_profile}?"; then
+    if ! prompt_yn "Add ~/.local/bin to your PATH in ${prompt_targets}?"; then
       should_add=false
     fi
   fi
-
-  if [ "$should_add" = true ]; then
-    # Create the profile file if it doesn't exist.
-    if [ ! -f "$SHELL_PROFILE" ]; then
-      mkdir -p "$(dirname "$SHELL_PROFILE")" 2>/dev/null || true
-      touch "$SHELL_PROFILE" 2>/dev/null || {
-        log_warn "Could not create ${tilde_profile}. Add ~/.local/bin to PATH manually."
-        return 1
-      }
-    fi
-    append_managed_path_block "$SHELL_PROFILE" "$PATH_EXPORT"
-    fix_owner "$SHELL_PROFILE"
-    log_success "Added ~/.local/bin to PATH in ${tilde_profile}."
-  else
-    log_info "Skipped modifying ${tilde_profile}."
-    log_info "  To use ${binary_name}, add to PATH:  ${PATH_EXPORT}"
+  if [ "$should_add" = false ]; then
+    log_info "Skipped modifying shell startup files."
+    # PATH_EXPORT is empty for unknown shells; fall back to the POSIX line so
+    # this never renders as a bare "add to PATH:" with nothing after it.
+    log_info "  To use ${binary_name}, add to PATH:  ${PATH_EXPORT:-$POSIX_PATH_EXPORT}"
+    # rc=4, not 2: nothing was written, so the caller's "Restart your shell"
+    # hint would be actively wrong — a restart cannot pick up an edit that was
+    # never made. The exact line to run was just printed above.
+    return 4
   fi
+
+  local updated=0 failed=0
+  for profile in "${pending[@]}"; do
+    export_line="$(export_line_for "$profile")"
+    # Create the file (and parents) if missing. Keep the real error text —
+    # "Permission denied", "Read-only file system" and "Not a directory" call
+    # for completely different fixes, and this warning is the user's only
+    # signal that a startup file was skipped.
+    if [ ! -f "$profile" ]; then
+      local mk_err=""
+      if ! mk_err=$(mkdir -p "$(dirname "$profile")" 2>&1); then
+        log_warn "Could not create the directory for $(tilde_display "$profile"): ${mk_err}"
+        failed=$((failed + 1))
+        continue
+      fi
+      if ! mk_err=$(touch "$profile" 2>&1); then
+        log_warn "Could not create $(tilde_display "$profile"): ${mk_err}"
+        failed=$((failed + 1))
+        continue
+      fi
+    fi
+    # Check for an existing managed block first, including for fish: a fish
+    # conf.d file that already has our block (with a stale line) must be
+    # rewritten, not appended to, or every export-line change leaves another
+    # dead block behind. The standalone-file argument only means our block
+    # can't collide with *user* config — it can still collide with our own.
+    if managed_path_block_present "$profile"; then
+      # Our block exists with a stale line — rewrite it in place.
+      if rewrite_managed_path_block "$profile" "$export_line"; then
+        fix_file_owner "$profile"
+        log_success "Updated deepagents-code PATH block in $(tilde_display "$profile")."
+        updated=$((updated + 1))
+      else
+        log_warn "Could not update deepagents-code PATH block in $(tilde_display "$profile")."
+        # Deliberately hedged: rewrite_managed_path_block also returns 1 for an
+        # unresolvable symlink, a mktemp failure and a failed mv, each of which
+        # already printed its own reason just above. Asserting the marker cause
+        # outright would contradict those.
+        log_warn "  One cause is a stray '# >>> deepagents-code installer >>>' line with no matching '<<<' line."
+        failed=$((failed + 1))
+      fi
+    elif append_managed_path_block "$profile" "$export_line"; then
+      fix_file_owner "$profile"
+      log_success "Added ~/.local/bin to PATH in $(tilde_display "$profile")."
+      updated=$((updated + 1))
+    else
+      log_warn "Could not update $(tilde_display "$profile")."
+      failed=$((failed + 1))
+    fi
+  done
+
+  # Never return 0 here. rc=0 tells the caller "PATH is already fixed for the
+  # running shell", which is only true for the symlink path above — a file we
+  # just edited does nothing for the shell that is currently running, so the
+  # user still needs the reload hint. A failure on any candidate returns 1
+  # rather than being masked by a success elsewhere: the file that failed may
+  # be the only one this user's shell actually reads.
+  if [ "$failed" -gt 0 ]; then
+    return 1
+  fi
+  return 2
 }
 
 classify_shadowing_command() {
@@ -1935,10 +2556,14 @@ fi
 if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ] && [ -n "$DCODE_BIN" ]; then
   path_setup_rc=0
   ensure_path_setup "$DCODE_NAME" "$DCODE_BIN" || path_setup_rc=$?
-  if [ "$path_setup_rc" -ne 0 ] && [ "$path_setup_rc" -ne 3 ]; then
+  if [ "$path_setup_rc" -ne 0 ] && [ "$path_setup_rc" -ne 3 ] && \
+    [ "$path_setup_rc" -ne 4 ]; then
     # rc=1: ensure_path_setup printed a specific warning; add the fallback.
-    # rc=2: no profile change needed, but the current shell still lacks
-    #   ~/.local/bin on PATH — emit the same reload/source hint.
+    # rc=2: startup files were written, or no change was needed — either way
+    #   the *running* shell still lacks ~/.local/bin on PATH, so emit the
+    #   reload/source hint.
+    # rc=0/3/4 are silent here: PATH is already fixed, MDM owns it, or the user
+    #   declined and was already given the one line that would help.
     log_warn "  Restart your shell, or run:"
     if [ -f "${HOME}/.local/bin/env" ]; then
       log_warn "  source ~/.local/bin/env"

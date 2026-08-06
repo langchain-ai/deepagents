@@ -9,6 +9,7 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
+from harbor.environments.docker import COMPOSE_NO_NETWORK_PATH
 from harbor.environments.langsmith import LangSmithEnvironment
 
 if TYPE_CHECKING:
@@ -124,6 +125,35 @@ class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
         if result.return_code != 0 or _DOCKERD_STARTED_MARKER not in output:
             msg = f"Failed to detach Docker daemon in LangSmith sandbox: {output[-500:]}"
             raise RuntimeError(msg)
+
+    @override
+    def _create_sandbox_payload(self, snapshot_name: str | None) -> dict[str, Any]:
+        """Allow sidecar egress while Compose isolates the agent container.
+
+        The stock LangSmith no-network policy applies to the whole sandbox,
+        including Docker sidecars. Switchyard must reach model APIs, so its
+        Compose egress network is the enforcement boundary instead: `main` is
+        attached only to an internal network, while Switchyard is also attached
+        to an egress network.
+        """
+        payload = super()._create_sandbox_payload(snapshot_name)
+        payload.pop("proxy_config", None)
+        return payload
+
+    @override
+    def _compose_file_flags(self) -> list[str]:
+        """Replace Harbor's `network_mode: none` with the split overlay network."""
+        flags = super()._compose_file_flags()
+        no_network = f"/harbor/compose/{COMPOSE_NO_NETWORK_PATH.name}"
+        filtered: list[str] = []
+        index = 0
+        while index < len(flags):
+            if flags[index : index + 2] == ["-f", no_network]:
+                index += 2
+                continue
+            filtered.append(flags[index])
+            index += 1
+        return filtered
 
     @override
     def _compose_env_vars(self) -> dict[str, str]:

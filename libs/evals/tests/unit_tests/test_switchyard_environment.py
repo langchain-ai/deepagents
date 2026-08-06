@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import pytest
+import yaml
+from harbor.environments.langsmith import LangSmithEnvironment
 
 from deepagents_harbor import switchyard_environment
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_forwarded_compose_env_is_allowlisted() -> None:
@@ -89,6 +88,64 @@ async def test_docker_daemon_start_rejects_missing_detach_marker() -> None:
 
     with pytest.raises(RuntimeError, match="Failed to detach Docker daemon"):
         await environment._ensure_docker_daemon()
+
+
+def test_sandbox_payload_uses_compose_for_agent_network_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    monkeypatch.setattr(
+        LangSmithEnvironment,
+        "_create_sandbox_payload",
+        lambda _self, _snapshot: {
+            "name": "sandbox",
+            "proxy_config": {"access_control": {"deny_list": ["*"]}},
+        },
+    )
+
+    payload = environment._create_sandbox_payload(None)
+
+    assert payload == {"name": "sandbox"}
+
+
+def test_compose_flags_replace_blanket_no_network_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    no_network = "/harbor/compose/docker-compose-no-network.yaml"
+    monkeypatch.setattr(
+        LangSmithEnvironment,
+        "_compose_file_flags",
+        lambda _self: [
+            "-f",
+            "/harbor/compose/resources.yaml",
+            "-f",
+            "/harbor/environment/switchyard.yaml",
+            "-f",
+            no_network,
+        ],
+    )
+
+    flags = environment._compose_file_flags()
+
+    assert flags == [
+        "-f",
+        "/harbor/compose/resources.yaml",
+        "-f",
+        "/harbor/environment/switchyard.yaml",
+    ]
+
+
+def test_compose_network_isolates_main_and_gives_switchyard_egress() -> None:
+    compose_path = Path(__file__).parents[2] / "switchyard/compose/switchyard.yaml"
+    compose = yaml.safe_load(compose_path.read_text())
+
+    assert compose["services"]["main"]["networks"] == ["switchyard-internal"]
+    assert compose["services"]["switchyard"]["networks"] == [
+        "switchyard-internal",
+        "switchyard-egress",
+    ]
+    assert compose["networks"]["switchyard-internal"]["internal"] is True
 
 
 async def test_snapshot_switchyard_stats_writes_trial_artifact(tmp_path: Path) -> None:

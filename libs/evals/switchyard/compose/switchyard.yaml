@@ -3,6 +3,8 @@ services:
     depends_on:
       switchyard:
         condition: service_started
+    networks:
+      - switchyard-internal
 
   switchyard:
     image: "${SWITCHYARD_IMAGE:?set SWITCHYARD_IMAGE to a digest-pinned public image}"
@@ -20,8 +22,16 @@ services:
       - NVIDIA_API_KEY
     expose:
       - "4000"
+    networks:
+      - switchyard-internal
+      - switchyard-egress
     volumes:
       - type: bind
         source: /harbor/compose/switchyard-routes.toml
         target: /etc/switchyard/routes.toml
         read_only: true
+
+networks:
+  switchyard-internal:
+    internal: true
+  switchyard-egress:

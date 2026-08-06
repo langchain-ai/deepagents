@@ -44,8 +44,7 @@ Twitter = "https://x.com/langchain_oss"
 Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
-# Pull langchain + langgraph from the cc/profiling-test-1 branch (tracing-latency
-# fix) instead of PyPI. Both live in the langchain-ai monorepos under libs/.
+# Temporary: install langgraph and langchain off branches for TracePolicy
 [tool.uv.sources]
 langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1", branch = "cc/profiling-test-1" }
 langgraph = { git = "https://github.com/langchain-ai/langgraph", subdirectory = "libs/langgraph", branch = "revert-8403-cc/revert_tool_policy" }

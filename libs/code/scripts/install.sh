@@ -553,46 +553,53 @@ copy_install_log() {
   # than following it, so this guard is not what makes publishing safe. Keep it
   # anyway — it fails early and explicitly on an obviously tampered path.
   [ ! -L "$INSTALL_LOG" ] || return 1
-  # Publish the already-captured stderr with a same-directory rename, which
-  # never opens INSTALL_LOG: rename(2) swaps the directory entry atomically,
-  # so a symlink planted at that path is replaced, not followed. Stage inside
-  # install_log_dir (not the default TMPDIR) so the final `mv` is a true rename
-  # — a cross-filesystem `mv` degrades to copy+unlink, which does open the
-  # destination and follow links. mktemp creates the staged file with
-  # O_CREAT|O_EXCL, so a symlink pre-planted at the chosen name makes creation
-  # fail rather than be followed. Note that secrecy is *not* the protection: a
-  # target user who owns install_log_dir (possible after a prior root install
-  # handed it over) can readdir the name and swap the file between the mktemp
-  # and the cp. That residual window is accepted — the worst outcome is a
-  # failed publish or a write into a path that user already controls.
-  local staged
-  staged=$(mktemp "${install_log_dir}/.install.log.XXXXXX" 2>/dev/null) || return 2
-  register_temp "$staged"
-  if ! cp "$uv_stderr" "$staged" 2>/dev/null; then
+  # Stage inside a private directory. `mktemp` alone only protects creation:
+  # a user who owns install_log_dir could replace its resulting file before
+  # `cp` reopens it. The directory is mode 700, and copying via a relative
+  # pathname after entering it means the copy never follows such a replacement.
+  # Keeping the stage beneath install_log_dir also keeps the final move a
+  # same-filesystem rename, so it replaces a planted INSTALL_LOG symlink rather
+  # than degrading into a cross-filesystem copy that could follow one.
+  local stage_dir staged
+  stage_dir=$(mktemp -d "${install_log_dir}/.install.log.XXXXXX" 2>/dev/null) || return 2
+  staged="${stage_dir}/install.log"
+  if ! (cd "$stage_dir" && cp "$uv_stderr" install.log) 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
     return 2
   fi
-  # Defense in depth against a directory swap. The same-directory staging above
-  # already defeats it: both `mv` operands are built from install_log_dir, so if
-  # the directory is replaced by a symlink the *source* path resolves through
-  # that link too and no longer names the staged file, and the rename fails
-  # harmlessly. Re-validate anyway to fail early and explicitly. Note this is a
-  # check-then-rename, which narrows the window rather than closing it — the
-  # staging, not this guard, is what makes the operation safe.
+  [ -f "$staged" ] && [ ! -L "$staged" ] || {
+    rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
+    return 1
+  }
+  # Re-validate the parent immediately before publication so a directory swap
+  # is rejected explicitly rather than being mistaken for a write failure.
   [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || {
     rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
     return 1
   }
   if [ "$(id -u)" -eq 0 ]; then
     path_is_under_home "$install_log_dir" || {
       rm -f "$staged" 2>/dev/null || true
+      rmdir "$stage_dir" 2>/dev/null || true
       return 1
     }
   fi
+  # `mv file directory` moves the file *into* the directory and reports
+  # success. Reject that state rather than publishing an undiscoverable log.
+  [ ! -d "$INSTALL_LOG" ] || {
+    rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
+    return 1
+  }
   if ! mv -f "$staged" "$INSTALL_LOG" 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true
+    rmdir "$stage_dir" 2>/dev/null || true
     return 2
   fi
+  rmdir "$stage_dir" 2>/dev/null || true
 }
 
 # Epoch mtime of the lock directory, used as a fallback reference time when the

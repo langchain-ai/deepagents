@@ -2011,8 +2011,7 @@ def test_copy_install_log_refuses_publish_when_log_dir_is_swapped(
         race_hook=(
             "cp() {\n"
             '  command cp "$@"\n'
-            '  rm -f "$1" "$2"\n'
-            '  rmdir "$install_log_dir"\n'
+            '  mv "$install_log_dir" "${install_log_dir}.moved"\n'
             f'  ln -s {str(elsewhere)!r} "$install_log_dir"\n'
             "}\n"
         ),
@@ -2022,6 +2021,20 @@ def test_copy_install_log_refuses_publish_when_log_dir_is_swapped(
     assert not (elsewhere / "install.log").exists()
     assert log_dir.is_symlink()
     assert list(elsewhere.glob(".install.log.*")) == []
+
+
+def test_copy_install_log_refuses_directory_target(tmp_path: Path) -> None:
+    """A directory at the publication path is not treated as a successful move."""
+    log_dir = tmp_path / "home" / "cache"
+    log_dir.mkdir(parents=True)
+    (log_dir / "install.log").mkdir()
+
+    rc, _log_dir, published = _run_copy_install_log(tmp_path, log_dir=log_dir)
+
+    assert rc == 1
+    assert published.is_dir()
+    assert list(published.glob(".install.log.*")) == []
+    assert list(log_dir.glob(".install.log.*")) == []
 
 
 def test_copy_install_log_cleans_up_staged_file_when_publish_fails(

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from textual.app import App, ComposeResult
 from textual.content import Content
@@ -15,10 +15,40 @@ from deepagents_code.tui.widgets.install_confirm import (
     InstallProviderConfirmScreen,
 )
 
+if TYPE_CHECKING:
+    from textual.screen import Screen
+
 
 class _InstallConfirmTestApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("base")
+
+
+def _body_of(screen: Screen[bool]) -> Static:
+    """Return the body widget of an install confirmation screen."""
+    return screen.query_one(".install-confirm-body", Static)
+
+
+def _rendered(widget: Static) -> Content:
+    """Return a widget's rendered `Content`."""
+    content = widget.render()
+    assert isinstance(content, Content)
+    return content
+
+
+def _link_cells(widget: Static) -> list[tuple[int, int]]:
+    """Return every widget-relative cell whose rendered style carries a link.
+
+    Driving hover and click from real cell offsets (rather than synthetic
+    events carrying a URL of the test's own choosing) means these tests fail
+    if the link is dropped, mis-spanned, or never reaches the rendered output.
+    """
+    return [
+        (x, y)
+        for y in range(widget.region.height)
+        for x in range(widget.region.width)
+        if getattr(widget.get_style_at(x, y), "link", None)
+    ]
 
 
 def _assert_pypi_link(content: Content, package: str) -> None:
@@ -29,16 +59,6 @@ def _assert_pypi_link(content: Content, package: str) -> None:
         if isinstance(span.style, TStyle) and span.style.link
     ]
     assert links == [(package, f"https://pypi.org/project/{package}/")]
-
-
-def _link_span_reverses(content: Content) -> list[bool]:
-    """Return the `reverse` flag of every link-styled span in `content`."""
-    reverses: list[bool] = []
-    for span in content.spans:
-        style = span.style
-        if isinstance(style, TStyle) and style.link:
-            reverses.append(bool(style.reverse))
-    return reverses
 
 
 def _link_span_reverses(content: Content) -> list[bool]:
@@ -212,56 +232,44 @@ class TestInstallProviderConfirmScreen:
 class TestLinkHoverAndClick:
     """Link affordance tests shared by both install confirmation screens."""
 
-    def _move_event(self, url: str | None) -> SimpleNamespace:
-        """Build a minimal mouse-move event over a link (or plain text)."""
-        return SimpleNamespace(style=SimpleNamespace(link=url, meta={}))
-
-    def _click_event(self, url: str | None) -> SimpleNamespace:
-        """Build a minimal click event over a link (or plain text)."""
-        return SimpleNamespace(
-            style=SimpleNamespace(link=url),
-            app=SimpleNamespace(notify=MagicMock()),
-            stop=MagicMock(),
-        )
-
-    async def test_hover_shows_pointer_and_highlights_link(self) -> None:
+    async def test_hover_over_link_shows_pointer_and_highlight(self) -> None:
         """Hovering the link sets a pointer cursor and highlights the text."""
         app = _InstallConfirmTestApp()
         async with app.run_test() as pilot:
             screen = InstallPackageConfirmScreen("langchain-custom")
             app.push_screen(screen)
             await pilot.pause()
+            body = _body_of(screen)
 
-            screen.on_mouse_move(
-                self._move_event("https://pypi.org/project/langchain-custom/")  # ty: ignore
-            )
-            await pilot.pause()
+            await pilot.hover(body, offset=_link_cells(body)[0])
 
             assert screen.styles.pointer == "pointer"
-            content = screen.query_one(".install-confirm-body", Static).render()
-            assert isinstance(content, Content)
-            reverses = _link_span_reverses(content)
+            reverses = _link_span_reverses(_rendered(body))
             assert reverses
             assert all(reverses)
 
-    async def test_leaving_link_clears_pointer_and_highlight(self) -> None:
-        """Moving off the link restores the default cursor and plain style."""
+    async def test_hover_off_link_clears_pointer_and_highlight(self) -> None:
+        """Moving onto plain body text restores the cursor and plain style."""
         app = _InstallConfirmTestApp()
         async with app.run_test() as pilot:
             screen = InstallPackageConfirmScreen("langchain-custom")
             app.push_screen(screen)
             await pilot.pause()
+            body = _body_of(screen)
+            cells = _link_cells(body)
+            linked = set(cells)
 
-            screen.on_mouse_move(
-                self._move_event("https://pypi.org/project/langchain-custom/")  # ty: ignore
+            await pilot.hover(body, offset=cells[0])
+            plain = next(
+                (x, y)
+                for y in range(body.region.height)
+                for x in range(body.region.width)
+                if (x, y) not in linked
             )
-            screen.on_mouse_move(self._move_event(None))  # ty: ignore
-            await pilot.pause()
+            await pilot.hover(body, offset=plain)
 
             assert screen.styles.pointer == "default"
-            content = screen.query_one(".install-confirm-body", Static).render()
-            assert isinstance(content, Content)
-            reverses = _link_span_reverses(content)
+            reverses = _link_span_reverses(_rendered(body))
             assert reverses
             assert not any(reverses)
 
@@ -272,38 +280,116 @@ class TestLinkHoverAndClick:
             screen = InstallPackageConfirmScreen("langchain-custom")
             app.push_screen(screen)
             await pilot.pause()
+            body = _body_of(screen)
 
-            screen.on_mouse_move(
-                self._move_event("https://pypi.org/project/langchain-custom/")  # ty: ignore
-            )
+            await pilot.hover(body, offset=_link_cells(body)[0])
             screen.on_leave()
             await pilot.pause()
 
             assert screen.styles.pointer == "default"
-            content = screen.query_one(".install-confirm-body", Static).render()
-            assert isinstance(content, Content)
-            reverses = _link_span_reverses(content)
+            reverses = _link_span_reverses(_rendered(body))
             assert reverses
             assert not any(reverses)
 
-    def test_click_on_link_opens_url(self) -> None:
-        """A click on the package link routes through `open_style_link`."""
-        screen = InstallPackageConfirmScreen("langchain-custom")
-        event = self._click_event("https://pypi.org/project/langchain-custom/")
-        with patch(
-            "deepagents_code.tui.widgets.install_confirm.open_style_link"
-        ) as mock_open:
-            screen.on_click(event)  # ty: ignore
+    async def test_link_covers_exactly_the_package_name(self) -> None:
+        """The clickable region spans the package name and nothing else."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallPackageConfirmScreen("langchain-custom")
+            app.push_screen(screen)
+            await pilot.pause()
 
-        mock_open.assert_called_once_with(event)
+            assert len(_link_cells(_body_of(screen))) == len("langchain-custom")
 
-    def test_provider_screen_click_on_link_opens_url(self) -> None:
-        """The provider screen shares the same click-through behavior."""
-        screen = InstallProviderConfirmScreen("baseten", "baseten")
-        event = self._click_event("https://pypi.org/project/langchain-baseten/")
-        with patch(
-            "deepagents_code.tui.widgets.install_confirm.open_style_link"
-        ) as mock_open:
-            screen.on_click(event)  # ty: ignore
+    async def test_click_on_link_opens_pypi_url(self) -> None:
+        """Clicking the package name opens its PyPI page in a browser."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallPackageConfirmScreen("langchain-custom")
+            app.push_screen(screen)
+            await pilot.pause()
+            body = _body_of(screen)
 
-        mock_open.assert_called_once_with(event)
+            with patch(
+                "deepagents_code.tui.widgets._links.webbrowser.open",
+                return_value=True,
+            ) as mock_open:
+                await pilot.click(body, offset=_link_cells(body)[0])
+
+            mock_open.assert_called_once_with(
+                "https://pypi.org/project/langchain-custom/"
+            )
+
+    async def test_provider_click_opens_resolved_package_url(self) -> None:
+        """The provider screen links the resolved distribution, not the extra.
+
+        `nvidia`'s extra is `nvidia`, but its distribution is
+        `langchain-nvidia-ai-endpoints` -- so this also pins the
+        multi-underscore normalization in `provider_package_name`.
+        """
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallProviderConfirmScreen("nvidia", "nvidia")
+            app.push_screen(screen)
+            await pilot.pause()
+            body = _body_of(screen)
+
+            with patch(
+                "deepagents_code.tui.widgets._links.webbrowser.open",
+                return_value=True,
+            ) as mock_open:
+                await pilot.click(body, offset=_link_cells(body)[0])
+
+            mock_open.assert_called_once_with(
+                "https://pypi.org/project/langchain-nvidia-ai-endpoints/"
+            )
+
+    async def test_provider_hover_highlights_link_beside_model_spec(self) -> None:
+        """With a model spec, hover highlights the link and not the bold model."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallProviderConfirmScreen(
+                "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            body = _body_of(screen)
+
+            await pilot.hover(body, offset=_link_cells(body)[0])
+
+            assert screen.styles.pointer == "pointer"
+            content = _rendered(body)
+            assert all(_link_span_reverses(content))
+            model_spans = [
+                span
+                for span in content.spans
+                if content.plain[span.start : span.end]
+                == "baseten:moonshotai/Kimi-K2.7-Code"
+            ]
+            assert model_spans
+            assert not any(
+                isinstance(span.style, TStyle) and span.style.reverse
+                for span in model_spans
+            )
+
+    async def test_uncurated_provider_renders_package_unlinked(self) -> None:
+        """An unknown provider shows the extra as plain text, not a bad link.
+
+        Extras are not distribution names, so linking one would point at an
+        unrelated PyPI project rather than the integration being installed.
+        """
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            screen = InstallProviderConfirmScreen("not-a-provider", "some-extra")
+            app.push_screen(screen)
+            await pilot.pause()
+            body = _body_of(screen)
+
+            content = _rendered(body)
+            assert "some-extra" in content.plain
+            assert not _link_cells(body)
+            assert not [
+                span
+                for span in content.spans
+                if isinstance(span.style, TStyle) and span.style.link
+            ]

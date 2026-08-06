@@ -8,15 +8,12 @@ install runs. `--force` (or `--yes`) still bypasses the prompt.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
-from textual.events import (
-    Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
-    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
-)
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Static
@@ -25,13 +22,18 @@ from deepagents_code.tui.widgets._links import event_targets_link, open_style_li
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.events import Click, MouseMove
+
+logger = logging.getLogger(__name__)
 
 
 def _package_link(package: str, *, hovered: bool = False) -> Content:
-    """Render a package name as a bold PyPI link.
+    """Render a package name as a bold, underlined PyPI link.
 
     Args:
-        package: The package name to display and link.
+        package: The distribution name to display and link. Callers must only
+            pass names known to exist on PyPI -- the URL is built by
+            interpolation and is never validated against the index.
         hovered: Whether to add a reverse-video highlight, matching the
             pointer cursor shown while the mouse is over the link.
 
@@ -43,37 +45,46 @@ def _package_link(package: str, *, hovered: bool = False) -> Content:
     return Content.assemble((package, style))
 
 
-class _LinkHoverMixin(ModalScreen[bool]):
-    """Pointer-cursor, hover-highlight, and click-to-open for styled links.
+class _InstallConfirmScreen(ModalScreen[bool]):
+    """Base screen adding link hover/click affordances to install prompts.
 
-    Subclasses define `_body_content(hovered: bool) -> Content` to rebuild
-    their body text with the package link's highlight toggled, and the mixin's
-    `_refresh_body(hovered: bool)` writes it into the `.install-confirm-body`
-    widget. The one widget lookup is cached after first use. Inheriting
-    `ModalScreen[bool]` here (rather than a bare mixin) lets the type checker
-    see `styles`/`query_one`, and gives subclasses a single linear MRO.
+    Subclasses define `_body_content(*, hovered: bool) -> Content` to rebuild
+    their body text with the package link's highlight toggled, and must compose
+    exactly one `Static.install-confirm-body` initialized from it;
+    `_refresh_body(hovered=...)` rewrites that widget in place as the pointer
+    enters and leaves the link.
+
+    Subclassing `ModalScreen[bool]` directly, rather than composing a plain
+    mixin, keeps `styles`/`query_one` visible to the type checker without a
+    `Protocol` or multiple inheritance. The trade-off is that this is not
+    reusable by modals with a different dismiss type.
     """
 
     _hovered: bool = False
-    _body_widget: Static | None = None
 
-    def _body_content(self, *, hovered: bool) -> Content:
+    def _body_content(self, *, hovered: bool = False) -> Content:
         """Return the body `Content` with the link hover state applied."""
-        raise NotImplementedError
+        msg = f"{type(self).__name__} must override _body_content"
+        raise NotImplementedError(msg)
 
     def _refresh_body(self, *, hovered: bool) -> None:
         """Rewrite the body widget with the link's hover highlight toggled.
 
+        The widget is looked up on every call rather than cached: a screen
+        instance that is popped and re-pushed re-composes, and a cached
+        `Static` would leave `update` silently writing to a detached widget.
+
         Args:
             hovered: Whether the link should render highlighted.
         """
-        if self._body_widget is None:
-            self._body_widget = self.query_one(".install-confirm-body", Static)
-        self._body_widget.update(self._body_content(hovered=hovered))
+        body = self.query_one(".install-confirm-body", Static)
+        body.update(self._body_content(hovered=hovered))
 
-    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler convention
+    def on_click(self, event: Click) -> None:
         """Open style-embedded hyperlinks on single click."""
-        open_style_link(event)
+        # Pass `app` explicitly: `open_style_link` otherwise reflects it off the
+        # event, and silently drops its failure toasts when that lookup misses.
+        open_style_link(event, app=self.app)
 
     def on_mouse_move(self, event: MouseMove) -> None:
         """Show a pointer cursor over the link and highlight it on hover."""
@@ -91,7 +102,7 @@ class _LinkHoverMixin(ModalScreen[bool]):
             self._refresh_body(hovered=False)
 
 
-class InstallPackageConfirmScreen(_LinkHoverMixin):
+class InstallPackageConfirmScreen(_InstallConfirmScreen):
     """Confirmation overlay for installing an arbitrary `--package`.
 
     Dismisses with `True` when the user confirms and `False` when the user
@@ -202,7 +213,7 @@ class InstallPackageConfirmScreen(_LinkHoverMixin):
         self.dismiss(False)
 
 
-class InstallProviderConfirmScreen(_LinkHoverMixin):
+class InstallProviderConfirmScreen(_InstallConfirmScreen):
     """Confirmation overlay for installing a model provider's extra.
 
     Shown from the model selector when the user picks a model whose provider
@@ -268,6 +279,50 @@ class InstallProviderConfirmScreen(_LinkHoverMixin):
         self._extra = extra
         self._model_spec = model_spec
 
+    def _provider_label(self) -> str:
+        """Return a human-readable label for the provider.
+
+        Reuses the auth UI's curated labels (e.g. `google_genai` -> "Google
+        Gemini") so the prompt reads naturally, falling back to a title-cased
+        provider key. Avoids the event-loop config read in
+        `provider_display_name`, which is overkill for static prompt text.
+
+        Returns:
+            The curated display name, or the title-cased provider key.
+        """
+        from deepagents_code.tui.widgets.auth import PROVIDER_DISPLAY_NAMES
+
+        return PROVIDER_DISPLAY_NAMES.get(
+            self._provider, self._provider.replace("_", " ").title()
+        )
+
+    def _package_content(self, *, hovered: bool) -> Content:
+        """Render the package name, linked to PyPI when the name is known.
+
+        Extras are `deepagents-code` extra names, not distribution names, and
+        several of them (`vertex`, `bedrock`, ...) collide with unrelated real
+        PyPI projects. So an uncurated provider falls back to plain bold text
+        rather than a confident link to the wrong package.
+
+        Args:
+            hovered: Whether the link should render highlighted.
+
+        Returns:
+            The package name as a PyPI link, or as unlinked bold text.
+        """
+        from deepagents_code.config_manifest import provider_package_name
+
+        package = provider_package_name(self._provider)
+        if package is None:
+            logger.warning(
+                "No curated PyPI package for provider %r; rendering extra %r "
+                "without a link",
+                self._provider,
+                self._extra,
+            )
+            return Content.assemble((self._extra, "bold"))
+        return _package_link(package, hovered=hovered)
+
     def _body_content(self, *, hovered: bool = False) -> Content:
         """Build the body text, toggling the link's hover highlight.
 
@@ -277,32 +332,21 @@ class InstallProviderConfirmScreen(_LinkHoverMixin):
         Returns:
             The body `Content` with the package link styled for `hovered`.
         """
-        # Reuse the auth UI's curated labels (e.g. `google_genai` -> "Google
-        # Gemini") so the title reads naturally, falling back to a title-cased
-        # provider key. Avoids the event-loop config read in
-        # `provider_display_name`, which is overkill for a static title.
-        from deepagents_code.config_manifest import provider_package_name
-        from deepagents_code.tui.widgets.auth import PROVIDER_DISPLAY_NAMES
-
-        provider = PROVIDER_DISPLAY_NAMES.get(
-            self._provider, self._provider.replace("_", " ").title()
-        )
-        package = provider_package_name(self._provider) or self._extra
-        package_link = _package_link(package, hovered=hovered)
+        package = self._package_content(hovered=hovered)
         if self._model_spec is not None:
             return Content.assemble(
                 "To use ",
                 (self._model_spec, "bold"),
                 ", dcode needs to install the ",
-                package_link,
+                package,
                 " integration. This will add the provider package to your "
                 "dcode environment.",
             )
         return Content.assemble(
             "To add a key for ",
-            (provider, "bold"),
+            (self._provider_label(), "bold"),
             ", dcode needs to install the ",
-            package_link,
+            package,
             " integration. This will add the provider package to your "
             "dcode environment.",
         )
@@ -313,14 +357,9 @@ class InstallProviderConfirmScreen(_LinkHoverMixin):
         Yields:
             Title, body, and help-row widgets parented inside a `Vertical`.
         """
-        from deepagents_code.tui.widgets.auth import PROVIDER_DISPLAY_NAMES
-
-        provider = PROVIDER_DISPLAY_NAMES.get(
-            self._provider, self._provider.replace("_", " ").title()
-        )
         with Vertical():
             yield Static(
-                f"Install {provider} support?",
+                f"Install {self._provider_label()} support?",
                 classes="install-confirm-title",
                 markup=False,
             )

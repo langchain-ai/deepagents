@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+import threading
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
@@ -34,6 +35,8 @@ _recent_threads_cache: dict[tuple[str | None, int], list[ThreadInfo]] = {}
 _MAX_RECENT_THREADS_CACHE_KEYS = 16
 _DEFAULT_SQLITE_TIMEOUT = 5.0
 """Seconds to wait out a locked database; matches the `sqlite3` default."""
+_auto_prune_lock = threading.Lock()
+_auto_prune_started = False
 
 
 def _patch_aiosqlite() -> None:
@@ -218,6 +221,25 @@ class ThreadInfo(TypedDict):
     """Working directory where the thread was last used."""
 
 
+class PruneResult(TypedDict):
+    """Summary returned by a session-retention prune."""
+
+    thread_ids: list[str]
+    """Threads selected in a dry run or deleted in a real prune."""
+
+    count: int
+    """Number of thread IDs in `thread_ids`."""
+
+    older_than_days: int
+    """Retention window used for the prune."""
+
+    cutoff: str
+    """UTC cutoff computed once when pruning started."""
+
+    dry_run: bool
+    """Whether the prune only reported candidates."""
+
+
 class _CheckpointSummary(NamedTuple):
     """Structured data extracted from a thread's latest checkpoint."""
 
@@ -382,7 +404,7 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
 
 
 _THREADS_LIST_INDEX = "idx_dcode_threads_list"
-"""Covering index that makes the `list_threads` GROUP BY an index-only scan.
+"""Covering index that makes thread-metadata GROUP BY queries index-only scans.
 
 LangGraph's `SqliteSaver` stores each checkpoint's full state blob inline in the
 `checkpoints` row alongside the small `metadata` field. The thread-list query
@@ -394,8 +416,23 @@ the planner satisfies the GROUP BY from the index alone and never touches the
 blob-bearing rows, turning a ~60 s scan into a sub-second lookup.
 
 The column order (leading `thread_id`) also lets the GROUP BY consume the index
-in order. Keep the indexed expressions in sync with the `list_threads` query.
+in order. Keep the indexed expressions in sync with thread-list and prune queries.
 """
+
+_PRUNE_CANDIDATES_QUERY = """
+    SELECT thread_id
+    FROM (
+        SELECT
+            thread_id,
+            MAX(json_extract(metadata, '$.updated_at')) AS latest_updated_at
+        FROM checkpoints INDEXED BY idx_dcode_threads_list
+        GROUP BY thread_id
+    )
+    WHERE latest_updated_at IS NOT NULL
+      AND datetime(latest_updated_at) IS NOT NULL
+      AND latest_updated_at < ?
+"""
+"""Select expired thread IDs without reading checkpoint blob columns."""
 
 
 async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
@@ -1526,7 +1563,165 @@ async def delete_thread(thread_id: str) -> bool:
     from deepagents_code.offload import delete_offloaded_history
 
     delete_offloaded_history(thread_id)
+    try:
+        from deepagents_code.hooks.transcript import delete_thread_transcripts
+        from deepagents_code.model_config import DEFAULT_CONFIG_DIR
+
+        delete_thread_transcripts(DEFAULT_CONFIG_DIR / "transcripts", thread_id)
+    except Exception:
+        logger.warning(
+            "Failed to clean transcript artifacts for thread %s",
+            thread_id,
+            exc_info=True,
+        )
     return deleted
+
+
+def _utc_now() -> datetime:
+    """Return the current UTC time for retention cutoff calculation."""
+    return datetime.now(UTC)
+
+
+async def _prune_threads(
+    older_than_days: int,
+    *,
+    dry_run: bool = False,
+    exclude_thread_ids: frozenset[str] | None = None,
+) -> PruneResult:
+    """Prune expired threads while preserving explicitly excluded IDs.
+
+    Args:
+        older_than_days: Delete threads older than this many days.
+        dry_run: Return candidates without deleting anything.
+        exclude_thread_ids: Thread IDs that must be retained.
+
+    Returns:
+        IDs and count selected or deleted, plus the cutoff used.
+
+    Raises:
+        ValueError: If `older_than_days` is not a positive integer.
+    """
+    if (
+        not isinstance(older_than_days, int)
+        or isinstance(older_than_days, bool)
+        or older_than_days <= 0
+    ):
+        msg = "older_than_days must be a positive integer"
+        raise ValueError(msg)
+
+    excluded = exclude_thread_ids or frozenset()
+    cutoff = _utc_now() - timedelta(days=older_than_days)
+    cutoff_text = cutoff.isoformat()
+    candidates: list[str] = []
+    async with _connect() as conn:
+        if await _table_exists(conn, "checkpoints"):
+            await _ensure_threads_list_index(conn)
+            async with conn.execute(_PRUNE_CANDIDATES_QUERY, (cutoff_text,)) as cursor:
+                rows = await cursor.fetchall()
+            candidates = sorted(row[0] for row in rows if row[0] not in excluded)
+
+    if dry_run:
+        return PruneResult(
+            thread_ids=candidates,
+            count=len(candidates),
+            older_than_days=older_than_days,
+            cutoff=cutoff_text,
+            dry_run=True,
+        )
+
+    deleted_ids = [
+        thread_id for thread_id in candidates if await delete_thread(thread_id)
+    ]
+    return PruneResult(
+        thread_ids=deleted_ids,
+        count=len(deleted_ids),
+        older_than_days=older_than_days,
+        cutoff=cutoff_text,
+        dry_run=False,
+    )
+
+
+async def prune_threads(
+    older_than_days: int,
+    *,
+    dry_run: bool = False,
+) -> PruneResult:
+    """Delete threads whose latest known update predates a retention window.
+
+    Threads without any valid `updated_at` metadata are retained because their
+    age is unknown. Each deletion uses `delete_thread`, keeping transactions
+    bounded and cleaning all per-thread local artifacts.
+
+    Args:
+        older_than_days: Delete threads older than this many days.
+        dry_run: Return candidates without deleting anything.
+
+    Returns:
+        IDs and count selected or deleted, plus the cutoff used.
+    """
+    return await _prune_threads(older_than_days, dry_run=dry_run)
+
+
+async def _auto_prune_threads(active_thread_id: str | None) -> PruneResult | None:
+    """Run one failure-tolerant automatic prune around the active thread.
+
+    Returns:
+        The prune result, or `None` when disabled or unsuccessful.
+    """
+    try:
+        from deepagents_code.model_config import (
+            load_session_auto_prune,
+            load_session_retention_days,
+        )
+
+        if not load_session_auto_prune():
+            logger.debug("Automatic session pruning is disabled")
+            return None
+        excluded = frozenset({active_thread_id}) if active_thread_id else frozenset()
+        result = await _prune_threads(
+            load_session_retention_days(),
+            exclude_thread_ids=excluded,
+        )
+    except Exception:
+        logger.warning("Automatic session pruning failed", exc_info=True)
+        return None
+    if result["count"]:
+        logger.info("Automatically pruned %d expired sessions", result["count"])
+    return result
+
+
+def start_auto_prune(active_thread_id: str | None) -> threading.Thread | None:
+    """Start automatic session pruning on a best-effort daemon thread.
+
+    Args:
+        active_thread_id: Thread being started or resumed, which must be retained.
+
+    Returns:
+        The started worker, or `None` if pruning already started or scheduling
+            failed.
+    """
+    global _auto_prune_started  # noqa: PLW0603  # Process-wide one-shot guard
+
+    with _auto_prune_lock:
+        if _auto_prune_started:
+            return None
+        _auto_prune_started = True
+
+    def run() -> None:
+        try:
+            asyncio.run(_auto_prune_threads(active_thread_id))
+        except Exception:
+            logger.warning("Automatic session prune worker failed", exc_info=True)
+
+    worker = threading.Thread(target=run, name="dcode-session-prune", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError:
+        with _auto_prune_lock:
+            _auto_prune_started = False
+        logger.warning("Could not start automatic session pruning", exc_info=True)
+        return None
+    return worker
 
 
 @asynccontextmanager
@@ -1749,6 +1944,59 @@ async def list_threads_command(
             "Override with -n/--limit or DA_CLI_RECENT_THREADS.[/dim]"
         )
     console.print()
+
+
+async def prune_threads_command(
+    older_than_days: int | None = None,
+    *,
+    dry_run: bool = False,
+    output_format: OutputFormat = "text",
+) -> None:
+    """CLI handler for `deepagents threads prune`.
+
+    Args:
+        older_than_days: Retention window override, or the configured default.
+        dry_run: Report candidates without deleting anything.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+    """
+    if older_than_days is None:
+        from deepagents_code.model_config import load_session_retention_days
+
+        older_than_days = load_session_retention_days()
+    result = await prune_threads(older_than_days, dry_run=dry_run)
+
+    if output_format == "json":
+        from deepagents_code.output import write_json
+
+        write_json("threads prune", dict(result))
+        return
+
+    from rich.markup import escape as escape_markup
+
+    from deepagents_code.config import console
+
+    count = result["count"]
+    noun = "thread" if count == 1 else "threads"
+    if dry_run:
+        if count:
+            console.print(
+                f"Would prune {count} {noun} older than {older_than_days} days:"
+            )
+            for thread_id in result["thread_ids"]:
+                console.print(f"  {escape_markup(thread_id)}")
+        else:
+            console.print(f"No threads older than {older_than_days} days found.")
+        console.print("No changes made.", style="dim")
+        return
+
+    if count:
+        console.print(
+            f"[green]Pruned {count} {noun} older than {older_than_days} days.[/green]"
+        )
+        for thread_id in result["thread_ids"]:
+            console.print(f"  {escape_markup(thread_id)}")
+    else:
+        console.print(f"No threads older than {older_than_days} days found.")
 
 
 async def delete_thread_command(

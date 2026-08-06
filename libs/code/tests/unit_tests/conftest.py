@@ -358,6 +358,12 @@ def _clear_update_env(
 
 
 @pytest.fixture(autouse=True)
+def _disable_automatic_session_pruning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent app tests from touching the developer's real session database."""
+    monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_PRUNE", "0")
+
+
+@pytest.fixture(autouse=True)
 def _disable_app_startup_update_checks(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,

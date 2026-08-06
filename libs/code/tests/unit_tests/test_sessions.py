@@ -416,6 +416,256 @@ class TestThreadFunctions:
         assert not archive.exists()
 
 
+class TestPruneThreads:
+    """Tests for retention-based thread pruning."""
+
+    @pytest.fixture
+    def prune_db(self, tmp_path: Path) -> Path:
+        """Create threads around a fixed 14-day cutoff."""
+        db_path = tmp_path / "prune.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                type TEXT,
+                value BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+            )
+        """)
+        timestamps: dict[str, list[str | None]] = {
+            "old": ["2026-07-17T12:00:00+00:00"],
+            "boundary": ["2026-07-18T12:00:00+00:00"],
+            "new": ["2026-07-19T12:00:00+00:00"],
+            "unknown": [None],
+            "invalid": ["2026-13-01T12:00:00+00:00"],
+            "mixed-old": [None, "2026-07-17T12:00:00+00:00"],
+            "mixed-new": ["2026-07-17T12:00:00+00:00", "2026-07-20T12:00:00+00:00"],
+        }
+        for thread_id, updates in timestamps.items():
+            for index, updated_at in enumerate(updates):
+                metadata = {} if updated_at is None else {"updated_at": updated_at}
+                conn.execute(
+                    "INSERT INTO checkpoints "
+                    "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+                    "VALUES (?, '', ?, ?)",
+                    (thread_id, f"cp-{index}", json.dumps(metadata)),
+                )
+            conn.execute(
+                "INSERT INTO writes "
+                "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel) "
+                "VALUES (?, '', 'cp-0', 'task', 0, 'messages')",
+                (thread_id,),
+            )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    @staticmethod
+    def _fixed_now() -> datetime:
+        return datetime(2026, 8, 1, 12, tzinfo=UTC)
+
+    def test_cutoff_boundary_and_missing_timestamp_skip(
+        self, prune_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only strictly older threads with a known latest update are pruned."""
+        monkeypatch.setattr(sessions, "_utc_now", self._fixed_now)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        with patch.object(sessions, "get_db_path", return_value=prune_db):
+            result = asyncio.run(sessions.prune_threads(14))
+
+        assert result["thread_ids"] == ["mixed-old", "old"]
+        assert result["count"] == 2
+        conn = sqlite3.connect(prune_db)
+        try:
+            remaining = {
+                row[0]
+                for row in conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
+            }
+            remaining_writes = {
+                row[0] for row in conn.execute("SELECT DISTINCT thread_id FROM writes")
+            }
+        finally:
+            conn.close()
+        assert remaining == {
+            "boundary",
+            "new",
+            "unknown",
+            "invalid",
+            "mixed-new",
+        }
+        assert remaining_writes == remaining
+
+    def test_candidate_query_requires_covering_index(
+        self, prune_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The prune lookup is pinned to the metadata-only covering index."""
+        monkeypatch.setattr(sessions, "_utc_now", self._fixed_now)
+        with patch.object(sessions, "get_db_path", return_value=prune_db):
+            asyncio.run(sessions.prune_threads(14, dry_run=True))
+
+        conn = sqlite3.connect(prune_db)
+        try:
+            plan = " ".join(
+                str(row[3])
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN " + sessions._PRUNE_CANDIDATES_QUERY,
+                    ("2026-07-18T12:00:00+00:00",),
+                )
+            )
+        finally:
+            conn.close()
+        assert "idx_dcode_threads_list" in plan
+        assert "sqlite_autoindex_checkpoints_1" not in plan
+
+    def test_dry_run_returns_candidates_without_changes(
+        self, prune_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Dry-run reports IDs while preserving database and filesystem state."""
+        monkeypatch.setattr(sessions, "_utc_now", self._fixed_now)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        config_dir = tmp_path / ".deepagents"
+        archive = config_dir / "conversation_history" / "old.md"
+        archive.parent.mkdir(parents=True)
+        archive.write_text("history")
+
+        from deepagents_code import model_config
+        from deepagents_code.hooks.transcript import TranscriptStore
+
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_DIR", config_dir)
+        store = TranscriptStore(config_dir / "transcripts")
+        transcript = store.thread_path("old")
+        transcript.write_text("transcript")
+
+        with patch.object(sessions, "get_db_path", return_value=prune_db):
+            result = asyncio.run(sessions.prune_threads(14, dry_run=True))
+
+        assert result["thread_ids"] == ["mixed-old", "old"]
+        assert result["count"] == 2
+        assert result["dry_run"] is True
+        assert archive.exists()
+        assert transcript.exists()
+        conn = sqlite3.connect(prune_db)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 9
+            assert conn.execute("SELECT COUNT(*) FROM writes").fetchone()[0] == 7
+        finally:
+            conn.close()
+
+    def test_prune_cleans_all_thread_artifacts(
+        self, prune_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Pruning removes offloaded, root, backup, lock, and subagent artifacts."""
+        monkeypatch.setattr(sessions, "_utc_now", self._fixed_now)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        config_dir = tmp_path / ".deepagents"
+        archive = config_dir / "conversation_history" / "old.md"
+        archive.parent.mkdir(parents=True)
+        archive.write_text("history")
+
+        from deepagents_code import model_config
+        from deepagents_code.hooks.transcript import TranscriptStore
+
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_DIR", config_dir)
+        store = TranscriptStore(config_dir / "transcripts")
+        transcript = store.thread_path("old")
+        backup = transcript.with_suffix(".jsonl.bak-revision")
+        lock = transcript.with_suffix(".jsonl.lock")
+        agent = store.agent_path("old", "agent")
+        agent.parent.mkdir(parents=True)
+        for path in (transcript, backup, lock, agent):
+            path.write_text("artifact")
+
+        with patch.object(sessions, "get_db_path", return_value=prune_db):
+            result = asyncio.run(sessions.prune_threads(14))
+
+        assert "old" in result["thread_ids"]
+        assert not archive.exists()
+        assert not transcript.exists()
+        assert not backup.exists()
+        assert not lock.exists()
+        assert not agent.parent.parent.exists()
+
+    def test_cleanup_failure_does_not_fail_prune(
+        self, prune_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A transcript cleanup error is logged and does not block deletion."""
+        monkeypatch.setattr(sessions, "_utc_now", self._fixed_now)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from deepagents_code.hooks import transcript
+
+        cleanup = MagicMock(side_effect=OSError("read-only"))
+        monkeypatch.setattr(transcript, "delete_thread_transcripts", cleanup)
+        with patch.object(sessions, "get_db_path", return_value=prune_db):
+            result = asyncio.run(sessions.prune_threads(14))
+
+        assert result["count"] == 2
+        assert cleanup.call_count == 2
+
+    def test_auto_prune_excludes_active_thread(
+        self, prune_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Automatic pruning never deletes the thread being resumed."""
+        monkeypatch.setattr(sessions, "_utc_now", self._fixed_now)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        with patch.object(sessions, "get_db_path", return_value=prune_db):
+            result = asyncio.run(
+                sessions._prune_threads(
+                    14,
+                    exclude_thread_ids=frozenset({"old"}),
+                )
+            )
+            assert asyncio.run(sessions.thread_exists("old")) is True
+
+        assert result["thread_ids"] == ["mixed-old"]
+
+    def test_auto_prune_scheduler_is_one_shot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only one background prune worker is scheduled per process."""
+        monkeypatch.setattr(sessions, "_auto_prune_started", False)
+        worker = MagicMock()
+        with patch.object(sessions.threading, "Thread", return_value=worker) as thread:
+            assert sessions.start_auto_prune("active") is worker
+            assert sessions.start_auto_prune("other") is None
+
+        worker.start.assert_called_once_with()
+        thread.assert_called_once_with(
+            target=thread.call_args.kwargs["target"],
+            name="dcode-session-prune",
+            daemon=True,
+        )
+
+    def test_auto_prune_swallows_database_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Automatic pruning logs database failures and lets startup continue."""
+        from deepagents_code import model_config
+
+        monkeypatch.setattr(model_config, "load_session_auto_prune", lambda: True)
+        monkeypatch.setattr(model_config, "load_session_retention_days", lambda: 14)
+        monkeypatch.setattr(
+            sessions,
+            "_prune_threads",
+            AsyncMock(side_effect=sqlite3.DatabaseError("corrupt")),
+        )
+
+        assert asyncio.run(sessions._auto_prune_threads("active")) is None
+
+
 class TestGetCheckpointer:
     """Tests for get_checkpointer async context manager."""
 
@@ -2365,6 +2615,42 @@ class TestDeleteThreadCommandJson:
 
         result = json.loads(buf.getvalue())
         assert result["data"]["deleted"] is False
+
+
+class TestPruneThreadsCommand:
+    """Tests for `prune_threads_command` output and config defaults."""
+
+    _RESULT: ClassVar[sessions.PruneResult] = {
+        "thread_ids": ["old-thread"],
+        "count": 1,
+        "older_than_days": 30,
+        "cutoff": "2026-07-02T12:00:00+00:00",
+        "dry_run": True,
+    }
+
+    def test_json_uses_configured_retention_default(self) -> None:
+        """JSON mode loads configured days when the flag is omitted."""
+        import io
+
+        buf = io.StringIO()
+        prune = AsyncMock(return_value=self._RESULT)
+        with (
+            patch(
+                "deepagents_code.model_config.load_session_retention_days",
+                return_value=30,
+            ),
+            patch.object(sessions, "prune_threads", prune),
+            patch("sys.stdout", buf),
+        ):
+            asyncio.run(
+                sessions.prune_threads_command(dry_run=True, output_format="json")
+            )
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "threads prune"
+        assert result["data"]["thread_ids"] == ["old-thread"]
+        assert result["data"]["count"] == 1
+        prune.assert_awaited_once_with(30, dry_run=True)
 
 
 class TestBatchCheckpointSummaries:

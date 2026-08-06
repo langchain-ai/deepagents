@@ -910,6 +910,7 @@ def show_threads_help() -> None:
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all threads")
     console.print("  delete <ID>       Delete a thread")
+    console.print("  prune             Delete expired threads")
     console.print()
     _print_option_section()
     console.print()
@@ -918,6 +919,7 @@ def show_threads_help() -> None:
     console.print("  dcode threads list -n 10")
     console.print("  dcode threads list --agent mybot")
     console.print("  dcode threads delete abc123")
+    console.print("  dcode threads prune --dry-run")
     console.print()
 
 
@@ -934,6 +936,26 @@ def show_threads_delete_help() -> None:
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode threads delete abc123")
     console.print("  dcode threads delete abc123 --dry-run")
+    console.print()
+
+
+def show_threads_prune_help() -> None:
+    """Show help information for the `threads prune` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode threads prune [options]")
+    console.print()
+    _print_option_section(
+        (
+            "  --older-than DAYS        Delete threads older than DAYS "
+            "(default: config or 14)"
+        ),
+        "  --dry-run                Show what would happen without making changes",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode threads prune")
+    console.print("  dcode threads prune --older-than 30 --dry-run")
     console.print()
 
 

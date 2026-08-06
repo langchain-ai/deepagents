@@ -4531,6 +4531,81 @@ def invalidate_thread_config_cache() -> None:
     _thread_config_cache = None
 
 
+def _load_session_config(config_path: Path | None) -> dict[str, Any]:
+    """Load config data for session-retention option resolution.
+
+    Returns:
+        Parsed config data, or an empty mapping when unavailable.
+    """
+    if config_path is None:
+        from deepagents_code.config_manifest import load_config_toml
+
+        return load_config_toml()
+    try:
+        with config_path.open("rb") as file:
+            return tomllib.load(file)
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read session retention config from %s; using defaults",
+            config_path,
+            exc_info=True,
+        )
+        return {}
+
+
+def load_session_retention_days(config_path: Path | None = None) -> int:
+    """Load the number of days inactive sessions are retained.
+
+    Args:
+        config_path: Optional alternate config file.
+
+    Returns:
+        A positive retention window in days.
+    """
+    from deepagents_code.config_manifest import (
+        SESSION_RETENTION_DAYS_DEFAULT,
+        get_option,
+        resolve_scalar,
+    )
+
+    option = get_option("threads.session_retention_days")
+    if option is None:
+        return SESSION_RETENTION_DAYS_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=_load_session_config(config_path))
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    logger.warning(
+        "Ignoring non-positive session retention window %r; using %d days",
+        value,
+        SESSION_RETENTION_DAYS_DEFAULT,
+    )
+    return SESSION_RETENTION_DAYS_DEFAULT
+
+
+def load_session_auto_prune(config_path: Path | None = None) -> bool:
+    """Load whether expired sessions are pruned automatically at startup.
+
+    Args:
+        config_path: Optional alternate config file.
+
+    Returns:
+        Whether automatic pruning is enabled.
+    """
+    from deepagents_code.config_manifest import (
+        SESSION_AUTO_PRUNE_DEFAULT,
+        get_option,
+        resolve_scalar,
+    )
+
+    option = get_option("threads.auto_prune")
+    if option is None:
+        return SESSION_AUTO_PRUNE_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=_load_session_config(config_path))
+    return value if isinstance(value, bool) else SESSION_AUTO_PRUNE_DEFAULT
+
+
 def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
     """Load thread column visibility from config file.
 

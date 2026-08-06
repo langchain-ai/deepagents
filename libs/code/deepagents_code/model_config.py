@@ -535,10 +535,14 @@ top-level user-facing config and agent directories so listing/iterating
 def default_cache_dir() -> Path:
     """Return the OS-appropriate cache directory for Deep Agents Code.
 
-    Honors `XDG_CACHE_HOME` on Unix-like platforms (falling back to `~/.cache`)
-    and `LOCALAPPDATA` on Windows (falling back to `~/AppData/Local`). The
-    install script uses the Unix-like branch for its own
-    `<cache>/deepagents-code/install.log` path.
+    Uses `~/Library/Caches` on macOS, `LOCALAPPDATA` on Windows (falling back
+    to `~/AppData/Local`), and `XDG_CACHE_HOME` elsewhere when it is an
+    absolute path (falling back to `~/.cache`). The XDG spec treats relative
+    `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
+    resolved against the launch directory. The install script writes its own
+    `<cache>/deepagents-code/install.log` under `${XDG_CACHE_HOME:-~/.cache}`
+    unconditionally, so on macOS its log and the update logs land under
+    different roots.
 
     Returns:
         Base cache directory, before the `deepagents-code` subdirectory.
@@ -548,8 +552,10 @@ def default_cache_dir() -> Path:
         if local_app_data:
             return Path(local_app_data)
         return Path.home() / "AppData" / "Local"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches"
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache_home:
+    if xdg_cache_home and Path(xdg_cache_home).is_absolute():
         return Path(xdg_cache_home)
     return Path.home() / ".cache"
 

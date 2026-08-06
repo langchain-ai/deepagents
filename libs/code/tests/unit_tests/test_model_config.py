@@ -109,21 +109,30 @@ class TestDefaultCacheDir:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert default_cache_dir() == tmp_path / ".cache"
 
-    def test_macos_honors_xdg_cache_home(
+    def test_macos_uses_library_caches(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The macOS resolver uses the same XDG cache location as the installer."""
+        """MacOS resolves to `~/Library/Caches`, ignoring `XDG_CACHE_HOME`."""
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        assert default_cache_dir() == tmp_path / "xdg-cache"
+        assert default_cache_dir() == tmp_path / "Library" / "Caches"
 
-    def test_macos_without_xdg_cache_home_falls_back_to_dot_cache(
+    def test_macos_without_xdg_cache_home_uses_library_caches(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The macOS resolver uses `~/.cache` when `XDG_CACHE_HOME` is unset."""
+        """MacOS resolves to `~/Library/Caches` when `XDG_CACHE_HOME` is unset."""
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / "Library" / "Caches"
+
+    def test_xdg_cache_home_relative_falls_back_to_dot_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative `XDG_CACHE_HOME` is invalid per the XDG spec and ignored."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CACHE_HOME", "cache")
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert default_cache_dir() == tmp_path / ".cache"
 

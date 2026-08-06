@@ -961,12 +961,22 @@ jobs:
 
       - name: "📈 Aggregate Switchyard stats"
         if: ${{ inputs.switchyard_config != '' && env.SHARD_EMPTY != 'true' && steps.latest-job.outputs.job_dir != '' }}
-        continue-on-error: true
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
         run: |
           python3 switchyard/collect_stats.py aggregate "$HARBOR_JOB_DIR" \
             --out "$HARBOR_JOB_DIR/switchyard-stats-summary.json"
+          python3 - "$HARBOR_JOB_DIR/switchyard-stats-summary.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          total = json.loads(path.read_text()).get("total_requests")
+          if type(total) is not int or total <= 0:
+              raise SystemExit("Switchyard smoke recorded zero routed requests")
+          print(f"Switchyard recorded {total} routed request(s)")
+          PY
 
       - name: "📝 Write workflow summary"
         if: always()

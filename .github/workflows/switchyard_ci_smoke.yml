@@ -5,7 +5,11 @@ on:
     branches:
       - srimanth/evals/switchyard-harbor
     paths:
+      - ".github/workflows/_harbor_run.yml"
       - ".github/workflows/switchyard_ci_smoke.yml"
+      - ".github/workflows/unified_evals.yml"
+      - "libs/evals/deepagents_harbor/switchyard_environment.py"
+      - "libs/evals/switchyard/**"
       - "libs/evals/switchyard/image/.dockerignore"
 
 permissions:
@@ -90,10 +94,11 @@ jobs:
           docker image rm "$IMAGE:$tag"
           docker pull "$image_ref"
 
-      - name: "🚀 Dispatch one-task unified eval smoke"
+      - name: "🚀 Dispatch and wait for one-task unified eval smoke"
         env:
           SWITCHYARD_IMAGE: ${{ steps.image.outputs.ref }}
         run: |
+          dispatch_started="$(date -u +%s)"
           gh workflow run unified_evals.yml \
             --ref "$GITHUB_REF_NAME" \
             -f models=openai:switchyard \
@@ -109,6 +114,30 @@ jobs:
             -f switchyard_config=nano \
             -f switchyard_image="$SWITCHYARD_IMAGE"
 
+          run_id=""
+          for _ in $(seq 1 30); do
+            row="$(gh run list \
+              --workflow unified_evals.yml \
+              --branch "$GITHUB_REF_NAME" \
+              --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId,headSha,createdAt \
+              --jq '.[0] | [.databaseId, .headSha, .createdAt] | @tsv')"
+            if [ -n "$row" ]; then
+              IFS=$'\t' read -r candidate_id candidate_sha candidate_created <<< "$row"
+              candidate_epoch="$(date -d "$candidate_created" +%s)"
+              if [ "$candidate_sha" = "$GITHUB_SHA" ] && [ "$candidate_epoch" -ge "$dispatch_started" ]; then
+                run_id="$candidate_id"
+                break
+              fi
+            fi
+            sleep 2
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not locate the dispatched unified-evals run"
+            exit 1
+          fi
+
           {
             echo "## Switchyard CI smoke dispatched"
             echo
@@ -116,4 +145,7 @@ jobs:
             echo "- Upstream SHA: \`$UPSTREAM_SHA\`"
             echo "- Image: \`$SWITCHYARD_IMAGE\`"
             echo "- Task: \`harbor-index/gpqadiamond-cope-rearrangement-products\`"
+            echo "- Unified run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          gh run watch "$run_id" --exit-status --interval 15

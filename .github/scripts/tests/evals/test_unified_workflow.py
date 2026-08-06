@@ -187,6 +187,9 @@ def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
         harbor, '      - name: "🔑 Verify sandbox credentials"'
     )
     run_harbor = _indented_block(harbor, '      - name: "⚓ Run Harbor"')
+    aggregate_stats = _indented_block(
+        harbor, '      - name: "📈 Aggregate Switchyard stats"'
+    )
 
     for name in ("switchyard_config", "switchyard_image"):
         dispatch_input = _indented_block(dispatch, f"      {name}:")
@@ -206,6 +209,8 @@ def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
     assert '"base_url":"http://switchyard:4000/v1"' in run_harbor
     assert '"api_key":"switchyard"' in run_harbor
     assert '"use_responses_api":false' in run_harbor
+    assert "continue-on-error" not in aggregate_stats
+    assert 'total <= 0' in aggregate_stats
 
 
 def test_switchyard_secrets_are_granted_only_when_router_is_enabled() -> None:
@@ -243,6 +248,7 @@ def test_switchyard_smoke_publishes_pinned_image_and_dispatches_unified_eval() -
     assert "docker logout ghcr.io" in workflow
     assert 'docker pull "$image_ref"' in workflow
     assert "gh workflow run unified_evals.yml" in workflow
+    assert "gh run watch \"$run_id\" --exit-status" in workflow
     assert "--ref \"$GITHUB_REF_NAME\"" in workflow
     assert "-f models=openai:switchyard" in workflow
     assert "-f categories=autonomous" in workflow

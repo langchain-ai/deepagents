@@ -24,6 +24,15 @@ _COMPOSE_ENV_NAMES = (
 _REMOTE_CONFIG_PATH = "/harbor/compose/switchyard-routes.toml"
 _SWITCHYARD_BASE_URL = "http://switchyard:4000"
 _HEALTH_TIMEOUT_SECONDS = 60
+_DOCKERD_START_TIMEOUT_SECONDS = 15
+_DOCKERD_STARTED_MARKER = "DOCKERD_STARTED"
+_DOCKERD_START_COMMAND = (
+    "mkdir -p /var/run /var/log && "
+    "command -v setsid >/dev/null 2>&1 && "
+    "setsid -f dockerd --registry-mirror=https://mirror.gcr.io "
+    ">>/var/log/dockerd.log 2>&1 </dev/null && "
+    f"echo {_DOCKERD_STARTED_MARKER}"
+)
 
 
 def _forwarded_compose_env(environ: Mapping[str, str]) -> dict[str, str]:
@@ -85,6 +94,36 @@ class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
             raise ValueError(msg)
         self._switchyard_config = config.resolve()
         super().__init__(*args, **kwargs)
+
+    @override
+    async def _ensure_docker_daemon(self) -> None:
+        """Start Docker without holding LangSmith's command session open.
+
+        Harbor 0.20 backgrounds `dockerd` with `&`, but LangSmith's sandbox
+        command API waits for that process group and consumes Harbor's entire
+        environment-start timeout. `setsid -f` forks it into a detached session
+        so the command returns immediately; Harbor's inherited readiness loop
+        still verifies the daemon and reports its log if startup fails.
+        """
+        probe = await self._exec_sandbox(
+            "docker info >/dev/null 2>&1 && echo ready",
+            cwd="/",
+            timeout_sec=10,
+        )
+        if probe.return_code == 0 and "ready" in (probe.stdout or ""):
+            self.logger.debug("Docker daemon already running in LangSmith sandbox")
+            return
+
+        self.logger.debug("Starting detached Docker daemon in LangSmith sandbox")
+        result = await self._exec_sandbox(
+            _DOCKERD_START_COMMAND,
+            cwd="/",
+            timeout_sec=_DOCKERD_START_TIMEOUT_SECONDS,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.return_code != 0 or _DOCKERD_STARTED_MARKER not in output:
+            msg = f"Failed to detach Docker daemon in LangSmith sandbox: {output[-500:]}"
+            raise RuntimeError(msg)
 
     @override
     def _compose_env_vars(self) -> dict[str, str]:

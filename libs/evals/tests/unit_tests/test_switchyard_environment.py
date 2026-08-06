@@ -41,6 +41,56 @@ def test_python_http_command_uses_only_internal_switchyard_origin() -> None:
     assert "json.load(response)" in stats
 
 
+async def test_docker_daemon_start_detaches_from_langsmith_command() -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    environment.logger = SimpleNamespace(debug=lambda *_args: None)
+    calls: list[tuple[str, str | None, int | None]] = []
+    responses = iter(
+        (
+            SimpleNamespace(return_code=1, stdout="", stderr="not ready"),
+            SimpleNamespace(return_code=0, stdout="DOCKERD_STARTED\n", stderr=""),
+        )
+    )
+
+    async def fake_exec(
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_sec: int | None = None,
+    ) -> SimpleNamespace:
+        calls.append((command, cwd, timeout_sec))
+        return next(responses)
+
+    environment._exec_sandbox = fake_exec
+
+    await environment._ensure_docker_daemon()
+
+    start_command, cwd, timeout = calls[1]
+    assert "setsid -f dockerd" in start_command
+    assert "</dev/null" in start_command
+    assert cwd == "/"
+    assert timeout == 15
+
+
+async def test_docker_daemon_start_rejects_missing_detach_marker() -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    environment.logger = SimpleNamespace(debug=lambda *_args: None)
+    responses = iter(
+        (
+            SimpleNamespace(return_code=1, stdout="", stderr="not ready"),
+            SimpleNamespace(return_code=0, stdout="", stderr=""),
+        )
+    )
+
+    async def fake_exec(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return next(responses)
+
+    environment._exec_sandbox = fake_exec
+
+    with pytest.raises(RuntimeError, match="Failed to detach Docker daemon"):
+        await environment._ensure_docker_daemon()
+
+
 async def test_snapshot_switchyard_stats_writes_trial_artifact(tmp_path: Path) -> None:
     environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
     environment._compose_mode = True

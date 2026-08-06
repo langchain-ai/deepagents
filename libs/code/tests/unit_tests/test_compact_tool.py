@@ -847,7 +847,7 @@ class TestCLICompactionMiddleware:
         assert "RuntimeError" in message.content
 
     def test_factory_builds_cli_middleware_threading_system_prompt(self) -> None:
-        """The factory returns a CLI middleware carrying the SDK's config."""
+        """The factory replaces the SDK summarizer with the retrying variant."""
         from deepagents_code import offload_middleware as om
 
         sdk = MagicMock()
@@ -868,7 +868,10 @@ class TestCLICompactionMiddleware:
         assert isinstance(result, om.CLICompactionMiddleware)
         assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
-        assert result._summarization is sdk._summarization
+        assert isinstance(result._summarization, om.RetryingSummarizationMiddleware)
+        assert result._summarization.model is sdk._summarization.model
+        assert result._summarization._backend is backend
+        assert result._summarization._retry.max_retries == 0
         assert result._model_retry_fallback == 0
 
 

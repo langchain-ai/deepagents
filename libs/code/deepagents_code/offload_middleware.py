@@ -1218,8 +1218,20 @@ def _create_cli_compaction_middleware(
         CLI compaction middleware with the SDK's model-aware defaults.
     """
     sdk_middleware = create_summarization_tool_middleware(model, backend)
+    # The SDK factory resolves model strings and supplies the compact-tool
+    # prompt. Replace its stock summarizer before registering the middleware so
+    # automatic compaction shares the retry/status-event behavior used by the
+    # explicit tool and subagents.
+    retry_fallback = (
+        model_retries if model_retries is not None else DEFAULT_MODEL_RETRIES
+    )
+    summarization = create_retrying_summarization_middleware(
+        sdk_middleware._summarization.model,
+        backend,
+        model_retries=retry_fallback,
+    )
     middleware = CLICompactionMiddleware(
-        sdk_middleware._summarization,
+        summarization,
         system_prompt=sdk_middleware.system_prompt,
     )
     if model_retries is not None:

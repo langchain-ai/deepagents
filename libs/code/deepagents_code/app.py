@@ -177,13 +177,6 @@ _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
 }
 """Lower-latency models recommended for repeated Auto action reviews."""
 
-_AUTO_CLASSIFIER_REVIEW_CAVEAT = "A weaker model weakens that review"
-"""Shared caveat clause for the surfaces that offer a cheaper Auto classifier.
-
-Carries no terminal punctuation so `/auto` usage text can continue the sentence
-where the picker ends it.
-"""
-
 
 def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     """Parse a grader `max-iterations` argument shared by `/rubric` and `/goal`.
@@ -19086,9 +19079,9 @@ class DeepAgentsApp(App):
             "  /auto model <provider:model>\n"
             "  /auto model clear          Reuse the main agent model\n\n"
             "Auto reviews gated actions with a classifier model. It currently "
-            f"uses {self._auto_classifier_model_label()}. "
-            f"{_AUTO_CLASSIFIER_REVIEW_CAVEAT}; actions it cannot review are "
-            "denied, and repeated review failures fall back to your approval.\n\n"
+            f"uses {self._auto_classifier_model_label()}. Actions it cannot "
+            "review are denied, and repeated review failures fall back to your "
+            "approval.\n\n"
             "Changes here apply to this session only. Set "
             "`[models].auto_classifier` in config.toml for a persistent choice."
         )
@@ -19179,13 +19172,13 @@ class DeepAgentsApp(App):
             # removes the modal.
             self.call_after_refresh(start_selection_worker)
 
-        tail = f" {_AUTO_CLASSIFIER_REVIEW_CAVEAT}."
+        tail = ""
         if self._auto_classifier_display_spec() is not None:
             # The picker lists only recommended classifiers, so it offers no
             # entry that reverts to the main agent model. `_auto_usage_text`
             # carries the hint, but it is mounted only for an unrecognized
             # `/auto` subcommand, so no path that opens this modal shows it.
-            tail += " Clear it with `/auto model clear`."
+            tail = " Clear it with `/auto model clear`."
 
         # Every branch hands the screen a `Content`: the description reaches a
         # `Static`, which parses a plain `str` as markup. The branches naming a

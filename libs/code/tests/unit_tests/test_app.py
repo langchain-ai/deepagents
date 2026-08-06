@@ -13122,7 +13122,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-haiku-4-5."
-            " A weaker model weakens that review."
             " Clear it with `/auto model clear`."
         )
 
@@ -13140,7 +13139,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            " A weaker model weakens that review."
             " Clear it with `/auto model clear`."
         )
 
@@ -13156,7 +13154,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-opus-5[dim]."
-            " A weaker model weakens that review."
             " Clear it with `/auto model clear`."
         )
 
@@ -13174,7 +13171,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-opus-5[/]."
-            " A weaker model weakens that review."
             " Clear it with `/auto model clear`."
         )
 
@@ -13218,7 +13214,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            " A weaker model weakens that review."
         )
 
     async def test_selector_description_never_shows_the_inherit_sentinel(self) -> None:
@@ -13233,7 +13228,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            " A weaker model weakens that review."
         )
 
     async def test_selector_description_without_a_resolved_main_model(self) -> None:
@@ -13248,7 +13242,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with the main agent model."
-            " A weaker model weakens that review."
         )
 
     async def test_bare_auto_still_switches_approval_mode(self) -> None:

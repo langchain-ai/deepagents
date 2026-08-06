@@ -5107,7 +5107,7 @@ class DeepAgentsApp(App):
             suffix = "" if count == 1 else "s"
             self.notify(
                 f"{count} skill{suffix} failed to load. "
-                "Run 'dcode skills list' for details.",
+                f"Run '{invoked_name()} skills list' for details.",
                 severity="warning",
                 timeout=8,
                 markup=False,

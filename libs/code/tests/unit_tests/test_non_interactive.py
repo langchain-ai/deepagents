@@ -17,6 +17,8 @@ from rich.console import Console
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
+
+    from deepagents_code.skills.load import SkillLoadFailure
 from rich.style import Style
 from rich.text import Text
 
@@ -1375,6 +1377,111 @@ class TestNonInteractivePrompt:
 
         assert result == 1
         mock_start_server.assert_not_awaited()
+
+    async def test_headless_without_skill_warns_on_load_failures(self) -> None:
+        """Plain headless runs surface malformed-skill warnings.
+
+        Regression: the failure warning must not depend on `--skill`, so a
+        normal `dcode -x "..."` still reports skills that failed to parse.
+        """
+        from deepagents_code.skills import invocation as skill_invocation
+
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+        failures: list[SkillLoadFailure] = [
+            {
+                "path": "/skills/broken/SKILL.md",
+                "error": "Invalid YAML in frontmatter: ...",
+                "source": "user",
+            }
+        ]
+        # Seed the snapshot directly: discovery is patched to a no-op, so it
+        # never records the failures itself.
+        skill_invocation._failure_snapshot.failures = failures
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        try:
+            with (
+                patch(
+                    "deepagents_code.client.non_interactive.create_model",
+                    return_value=ModelResult(
+                        model=MagicMock(),
+                        model_name="test-model",
+                        provider="test",
+                    ),
+                ),
+                patch(
+                    "deepagents_code.client.non_interactive.generate_thread_id",
+                    return_value="test-thread",
+                ),
+                patch(
+                    "deepagents_code.client.non_interactive.settings",
+                ) as mock_settings,
+                patch(
+                    "deepagents_code.skills.invocation.discover_skills_and_roots",
+                    return_value=([], []),
+                ),
+                patch(
+                    "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                    new_callable=AsyncMock,
+                    return_value=(mock_agent, mock_server_proc, None),
+                ),
+                patch.object(sys, "stdout", stdout_buf),
+                patch.object(sys, "stderr", stderr_buf),
+            ):
+                mock_settings.shell_allow_list = None
+                mock_settings.has_tavily = False
+                mock_settings.model_name = None
+
+                await run_non_interactive(message="do a thing", quiet=True)
+
+            # Quiet mode routes console output (including the warning) to stderr.
+            printed = stdout_buf.getvalue() + stderr_buf.getvalue()
+            assert "1 skill failed to load" in printed
+            assert "skills list" in printed
+        finally:
+            skill_invocation._failure_snapshot.failures = []
+
+    async def test_headless_discovery_failure_does_not_break_run(self) -> None:
+        """A discovery error in the no-skill path is logged, never fatal."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.skills.invocation.discover_skills_and_roots",
+                side_effect=OSError("disk gone"),
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="do a thing", quiet=True)
+
+        assert result == 0
 
 
 def _make_interrupt_chunk(interrupt_id: str = "i1") -> tuple:

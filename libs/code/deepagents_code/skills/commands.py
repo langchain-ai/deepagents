@@ -345,6 +345,7 @@ def _print_skill_failures(failures: list[SkillLoadFailure]) -> None:
     """
     from rich.markup import escape as escape_markup
 
+    from deepagents_code._invocation import invoked_name
     from deepagents_code.config import console, get_glyphs
 
     count = len(failures)
@@ -364,8 +365,8 @@ def _print_skill_failures(failures: list[SkillLoadFailure]) -> None:
         )
     console.print()
     console.print(
-        "[dim]Fix the listed SKILL.md files, or run 'dcode skills validate' "
-        "for full frontmatter checks.[/dim]",
+        "[dim]Fix the listed SKILL.md files, or run "
+        f"'{invoked_name()} skills validate' for full frontmatter checks.[/dim]",
         style=theme.MUTED,
         highlight=False,
     )

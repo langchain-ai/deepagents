@@ -110,6 +110,20 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Persist and load sessions
+
+`AgentServerACP` can advertise and implement ACP's `session/load` capability when the
+agent uses a durable LangGraph checkpointer:
+
+```python
+server = AgentServerACP(agent, load_sessions=True)
+```
+
+The checkpointer must remain available across agent-process restarts. An in-memory
+checkpointer is suitable for tests but does not provide restart persistence. On load, the
+adapter restores the LangGraph thread, verifies the original working directory, and replays
+the conversation to the client through `session/update` before returning.
+
 ### Launch with Toad
 
 ```sh
@@ -159,6 +173,9 @@ Select a model by passing `--model` (in `provider:model-name` form) to the comma
 ```
 
 `dcode` reads provider API keys from the environment (e.g. `ANTHROPIC_API_KEY`), the same way it does in the terminal. Run `dcode --help` to see the other flags supported in ACP mode, such as `--mcp-config` and `--no-mcp`.
+
+Sessions created through `dcode --acp` are stored in dcode's SQLite session database and can
+be loaded after the ACP server restarts.
 
 ## Model Switching
 

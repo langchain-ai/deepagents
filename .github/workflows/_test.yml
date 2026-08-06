@@ -34,8 +34,12 @@ on:
         default: ""
         description: "Runner OS of the coverage leg; empty defaults to the primary 'os' input"
 
+# `pull-requests: read` lets the reusable workflow read live PR labels for the
+# warnings bypass below; a called workflow can only narrow the caller's token,
+# never widen it.
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   UV_NO_SYNC: "true"
@@ -115,6 +119,32 @@ jobs:
         shell: bash
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      # Maintainer escape hatch: a PR labeled `bypass-warnings-check` runs
+      # pytest with `-W default`, demoting every warning filter (including
+      # the package-level "error" policy) for that run. Labels are read from
+      # the live GitHub API rather than `github.event.pull_request.labels`
+      # because re-running a job replays the original event payload, which
+      # would miss a label added after the fact. `push` and `merge_group`
+      # runs have no PR label context and always enforce warnings-as-errors.
+      - name: "🏷️ Resolve warnings bypass"
+        id: warnings
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          # Fail closed: if the API call fails, enforce rather than bypass.
+          LABELS="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name' || true)"
+          if [[ $'\n'"$LABELS"$'\n' == *$'\n'bypass-warnings-check$'\n'* ]]; then
+            echo "flag=-W default" >> "$GITHUB_OUTPUT"
+            echo "::warning::'bypass-warnings-check' label present — test warnings will not fail this run"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: "🧪 Run Unit Tests"
         if: runner.os != 'Windows'
         shell: bash
@@ -124,12 +154,15 @@ jobs:
           PY_OS: ${{ matrix.os }}
           COV_PY: ${{ inputs.coverage-python-version }}
           COV_OS: ${{ inputs.coverage-os || inputs.os }}
+          # A command-line `-W` filter outranks every ini `filterwarnings`
+          # entry, so the bypass also demotes intentional `error:` filters.
+          WARNINGS_FLAG: ${{ steps.warnings.outputs.flag }}
         run: |
           if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
-            make test PYTEST_EXTRA=-q
+            make test PYTEST_EXTRA="-q $WARNINGS_FLAG"
           else
             echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
-            make test COV_ARGS= PYTEST_EXTRA=-q
+            make test COV_ARGS= PYTEST_EXTRA="-q $WARNINGS_FLAG"
           fi
 
       # Windows cannot run `make test` because `LocalShellBackend` requires POSIX
@@ -146,12 +179,14 @@ jobs:
           PY_OS: ${{ matrix.os }}
           COV_PY: ${{ inputs.coverage-python-version }}
           COV_OS: ${{ inputs.coverage-os || inputs.os }}
+          # See the POSIX step: the command-line bypass outranks ini filters.
+          WARNINGS_FLAG: ${{ steps.warnings.outputs.flag }}
         run: |
           if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
-            uv run --group test pytest -n auto -vvv tests/unit_tests/ --cov=deepagents --cov-report=term-missing
+            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG tests/unit_tests/ --cov=deepagents --cov-report=term-missing
           else
             echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
-            uv run --group test pytest -n auto -vvv tests/unit_tests/
+            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG tests/unit_tests/
           fi
 
       - name: "🧹 Verify Clean Working Directory"

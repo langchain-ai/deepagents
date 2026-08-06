@@ -17535,6 +17535,10 @@ class DeepAgentsApp(App):
             # it the store keeps the mount-time `False` and rehydration
             # resurrects the row next to the diff that replaced it.
             tool_diff_superseded=data.tool_diff_superseded,
+            # The display caveat can arrive after the initial mount when a
+            # file change cannot be rendered. Keep it through virtualization
+            # so hydration does not fold away the warning.
+            tool_display_caveat=data.tool_display_caveat,
         )
         if data.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING}:
             self._message_store.protect_message(widget.id)

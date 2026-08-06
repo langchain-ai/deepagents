@@ -14670,6 +14670,35 @@ class TestMessageTimestampFooters:
             app._sync_tool_message_state(tool)
             assert stored.tool_diff_superseded is True
 
+    async def test_tool_state_sync_persists_display_caveat(self) -> None:
+        """A late display caveat must survive transcript virtualization.
+
+        The row is stored at mount time, but the caveat is added only when the
+        file change cannot be rendered. Without syncing it back, hydration
+        would treat the successful row as groupable and hide its warning.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tool = ToolCallMessage(
+                "write_file", {"file_path": "a.py"}, id="tool-caveat"
+            )
+            await app._mount_message(tool)
+            await pilot.pause()
+
+            tool.set_success("The file change could not be shown.")
+            tool.mark_display_caveat()
+            app._sync_tool_message_state(tool)
+
+            stored = app._message_store.get_message("tool-caveat")
+            assert stored is not None
+            assert stored.tool_display_caveat is True
+
+            restored = stored.to_widget()
+            assert isinstance(restored, ToolCallMessage)
+            assert restored.has_display_caveat is True
+
     async def test_transcript_mounts_stay_chronological_around_spinner(self) -> None:
         """Rows mounted while the spinner is active stay above the bottom spacer."""
         app = DeepAgentsApp()

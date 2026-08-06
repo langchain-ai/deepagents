@@ -560,15 +560,6 @@ class TestStartServerAndGetAgent:
 
         from deepagents_code.client.launch.server import generate_langgraph_json
 
-        # The offload ref is derived from the agent ref's module rather than
-        # hardcoded: the two graphs share one server runtime only because both
-        # resolve into the same factory closure, so a fixed offload ref would
-        # silently build a second sandbox and MCP session whenever `graph_ref`
-        # named a different module.
-        generate_langgraph_json(tmp_path, graph_ref="server_graph:make_graph")
-        config = json.loads((tmp_path / "langgraph.json").read_text())
-        assert config["graphs"]["offload"] == "server_graph:make_offload_graph"
-
         # The production default (see `server_manager`) resolves to the real
         # installed module.
         generate_langgraph_json(tmp_path)
@@ -578,6 +569,19 @@ class TestStartServerAndGetAgent:
             config["graphs"]["offload"]
             == "deepagents_code.server_graph:make_offload_graph"
         )
+
+    def test_custom_graph_does_not_require_an_offload_factory(
+        self, tmp_path: Path
+    ) -> None:
+        """Custom graph references remain valid without an undocumented pair."""
+        import json
+
+        from deepagents_code.client.launch.server import generate_langgraph_json
+
+        generate_langgraph_json(tmp_path, graph_ref="custom_graph:make_graph")
+
+        config = json.loads((tmp_path / "langgraph.json").read_text())
+        assert config["graphs"] == {"agent": "custom_graph:make_graph"}
 
 
 class TestWritePyproject:

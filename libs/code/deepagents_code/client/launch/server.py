@@ -167,8 +167,8 @@ def generate_langgraph_json(
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
 
-    Registers two graphs: the interactive `agent` and the `offload` operation
-    graph the `/offload` command streams.
+    Registers the interactive `agent` graph. The built-in server graph also
+    registers its paired `offload` operation graph for the `/offload` command.
 
     Args:
         output_dir: Directory to write the config file.
@@ -182,20 +182,16 @@ def generate_langgraph_json(
     Returns:
         Path to the generated config file.
     """
-    # Derive the offload factory from the same module as the agent factory. The
-    # two graphs share one server runtime only because both refs resolve into
-    # the same `_build_graph_factories` closure; a hardcoded offload ref would
-    # silently build a *second* runtime (duplicate sandbox, MCP discovery, and
-    # `atexit` handlers) the moment `graph_ref` named a different module.
-    module, _, _attr = graph_ref.rpartition(":")
-    offload_ref = f"{module}:make_offload_graph" if module else graph_ref
     config: dict[str, Any] = {
         "dependencies": ["."],
-        "graphs": {
-            "agent": graph_ref,
-            "offload": offload_ref,
-        },
+        "graphs": {"agent": graph_ref},
     }
+    # The built-in pair shares one `_build_graph_factories` closure and is the
+    # only documented offload factory. A custom `graph_ref` is not required to
+    # expose a matching `make_offload_graph`, so do not generate an unresolved
+    # reference for it.
+    if graph_ref == "deepagents_code.server_graph:make_graph":
+        config["graphs"]["offload"] = "deepagents_code.server_graph:make_offload_graph"
     if env_file:
         config["env"] = env_file
     if checkpointer_path:

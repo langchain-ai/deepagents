@@ -3531,6 +3531,29 @@ class TestForcedCompactionGraph:
 
         middleware.arun_forced_compaction_update.assert_not_awaited()
 
+    async def test_hook_interrupt_bubbles_to_the_operation_graph(self) -> None:
+        """A hook approval pause must reach the server's interrupt stream."""
+        from langgraph.errors import GraphInterrupt
+        from langgraph.types import Interrupt
+
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock()
+        hooks = MagicMock()
+        hooks.aafter_model = AsyncMock(
+            side_effect=GraphInterrupt((Interrupt(value={"type": "hook_invocation"}),))
+        )
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
+
+        result = await cast("Any", graph).ainvoke(
+            {"messages": []}, context=CLIContext()
+        )
+
+        assert result["__interrupt__"]
+        middleware.arun_forced_compaction_update.assert_not_awaited()
+
     async def test_cost_drain_failure_does_not_discard_the_compaction(self) -> None:
         """A bookkeeping failure must not throw away a committed archive write.
 

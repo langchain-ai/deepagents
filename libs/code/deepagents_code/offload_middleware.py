@@ -24,6 +24,7 @@ from langchain.tools import (
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
 
@@ -1060,6 +1061,10 @@ def create_forced_compaction_graph(
                     ),
                     cast("Runtime[Any]", runtime),
                 )
+            except GraphBubbleUp:
+                # Hook approval requests pause the operation graph through this
+                # control-flow exception. The caller streams and fulfills it.
+                raise
             except Exception as exc:
                 logger.exception("/offload hook dispatch failed")
                 # Same `RuntimeError` re-raise rationale as the compaction

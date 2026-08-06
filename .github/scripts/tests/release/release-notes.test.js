@@ -99,7 +99,7 @@ function makeCore() {
   };
 }
 
-function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', appUser = BOT, files = new Map(), comparison = 'ahead', malformedContent = false, onGetPr = null, onListComments = null } = {}) {
+function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', appUser = BOT, files = new Map(), comparison = 'ahead', malformedContent = false, onGetPr = null, onListComments = null, onCreateComment = null } = {}) {
   const calls = {
     createBlob: [],
     createComment: [],
@@ -139,6 +139,7 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
         },
         createComment: async params => {
           calls.createComment.push(params);
+          if (onCreateComment) onCreateComment({ count: calls.createComment.length, params });
           const comment = { id: 100 + calls.createComment.length, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body };
           comments.push(comment);
           return { data: comment };
@@ -287,6 +288,58 @@ test('parses commands in surrounding text and rejects ambiguous comments', () =>
   assert.equal(releaseNotes.commandFromComment('@release-bot draft and @release-bot apply'), null);
 });
 
+test('captures draft instructions from the command line only', () => {
+  assert.equal(releaseNotes.instructionsFromComment('@release-bot draft'), '');
+  assert.equal(
+    releaseNotes.instructionsFromComment('@release-bot draft emphasize the breaking SDK change'),
+    'emphasize the breaking SDK change',
+  );
+  // Text after `apply` is not instructions: apply republishes the stored draft.
+  assert.equal(releaseNotes.instructionsFromComment('@release-bot apply emphasize this'), '');
+  // Instructions stop at the end of the command's line.
+  assert.equal(
+    releaseNotes.instructionsFromComment('@release-bot draft keep it short\nsome other line'),
+    'keep it short',
+  );
+  // A `@` in the trailing text would read as another mention, so it and
+  // everything after it is dropped rather than smuggled into the prompt.
+  assert.equal(
+    releaseNotes.instructionsFromComment('@release-bot draft cc @someone else'),
+    'cc',
+  );
+  // A second command later in the comment is still ambiguous, not instructions.
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft these notes @release-bot apply'), null);
+  // Over-long instructions are capped.
+  const long = `@release-bot draft ${'x'.repeat(600)}`;
+  assert.equal(releaseNotes.instructionsFromComment(long).length, 500);
+});
+
+test('sanitizeInstructions strips tokens that would corrupt the override comment', () => {
+  // A valid command naming a reserved content marker must not echo that marker
+  // into the parseable comment before the real one (parseOverrideComment scans
+  // for the first occurrence).
+  assert.equal(
+    releaseNotes.sanitizeInstructions('mention <!-- release-notes-content-start --> here'),
+    'mention here',
+  );
+  // Stripping the shared marker prefix leaves inert text (no `<!-- release-notes-`
+  // remains), so no parser can match the residue.
+  assert.equal(
+    releaseNotes.sanitizeInstructions('use <!-- release-notes-content-end --> and <!-- release-notes-override -->'),
+    'use and override -->',
+  );
+  assert.ok(!releaseNotes.sanitizeInstructions('use <!-- release-notes-content-end --> and <!-- release-notes-override -->').includes('<!-- release-notes-'));
+  // A version heading forges a `## [` in the echo whether it is on its own line
+  // or inline (instructions collapse to one line, so both forms are stripped).
+  assert.equal(releaseNotes.sanitizeInstructions('notes\n## [1.2.3]\nmore'), 'notes more');
+  assert.equal(releaseNotes.sanitizeInstructions('mention ## [9.9.9] here'), 'mention here');
+  // The `@` strip, whitespace collapse, and length cap all apply together.
+  assert.equal(releaseNotes.sanitizeInstructions('  keep   it  short @bot now  '), 'keep it short');
+  assert.equal(releaseNotes.sanitizeInstructions('x'.repeat(600)).length, 500);
+  // Non-string input (a caller that did not pre-clean) is coerced, never throws.
+  assert.equal(releaseNotes.sanitizeInstructions(''), '');
+});
+
 test('trusts only marked comments from the configured bot identity', () => {
   const valid = overrideComment();
   const impostor = { ...overrideComment({ id: 11 }), user: { login: BOT.login, id: 99 } };
@@ -338,14 +391,69 @@ test('manual commands ignore comments authored by the configured bot', async () 
   assert.equal(run.calls.createComment.length, 0);
 });
 
+test('an accepted manual command is acknowledged immediately', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot draft', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub({ permission: 'write' });
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, true);
+  assert.equal(result.command, 'draft');
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /Running `draft` for the `deepagents-code` release PR/);
+  // The ack must land on the PR that carried the command, not merely somewhere.
+  assert.equal(run.calls.createComment[0].owner, 'langchain-ai');
+  assert.equal(run.calls.createComment[0].repo, 'deepagents');
+  assert.equal(run.calls.createComment[0].issue_number, 123);
+  // A mention would make the ack re-trigger the workflow on itself.
+  assert.doesNotMatch(run.calls.createComment[0].body, /@release-bot/);
+});
+
+test('a failed acknowledgment still runs the command', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  // A non-Error rejection is the sharp case: reading `.message` off it unguarded
+  // throws out of the catch and drops a command that passed every gate.
+  for (const thrown of [new Error('secondary rate limit'), 'secondary rate limit']) {
+    const run = makeGithub({
+      permission: 'write',
+      onCreateComment: () => { throw thrown; },
+    });
+    const core = makeCore();
+    const result = await releaseNotes.validateTrigger({ github: run.github, context, core });
+    assert.equal(result.shouldRun, true);
+    assert.equal(result.command, 'apply');
+    assert.equal(core.warnings.length, 1);
+    assert.match(core.warnings[0], /Failed to post acknowledgment comment for apply on PR #123: secondary rate limit/);
+  }
+});
+
 test('ready_for_review automatically validates as draft command', async () => {
-  const { github } = makeGithub();
+  const { github, calls } = makeGithub();
   const context = {
     eventName: 'pull_request_target',
     repo: { owner: 'langchain-ai', repo: 'deepagents' },
     payload: { action: 'ready_for_review', pull_request: { number: 123 } },
   };
-  const result = await releaseNotes.validateTrigger({ github, context, core: makeCore() });
+  const core = makeCore();
+  const result = await releaseNotes.validateTrigger({ github, context, core });
+  // The automatic trigger fires on every release PR becoming ready, so it must
+  // stay silent; only manual commands are acknowledged.
+  assert.equal(calls.createComment.length, 0);
+  assert.equal(core.warnings.length, 0);
   assert.deepEqual(result, {
     shouldRun: true,
     command: 'draft',
@@ -354,6 +462,8 @@ test('ready_for_review automatically validates as draft command', async () => {
     version: VERSION,
     head: HEAD,
     branch: RELEASE_BRANCH,
+    // The automatic trigger has no comment, so there are never instructions.
+    instructions: '',
   });
 });
 
@@ -379,6 +489,41 @@ test('prepares agent input from the exact validated head', async t => {
   assert.equal(calls.getContent[0].ref, HEAD);
 });
 
+test('prepares drafting input and state with sanitized maintainer instructions', async t => {
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-runner-'));
+  t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
+  const { github } = makeGithub();
+  const prepared = await releaseNotes.prepareDraft({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    runnerTemp,
+    instructions: 'emphasize the breaking SDK change',
+  });
+  const input = fs.readFileSync(prepared.input, 'utf8');
+  assert.match(input, /^Instructions: emphasize the breaking SDK change$/m);
+  assert.equal(JSON.parse(fs.readFileSync(prepared.state, 'utf8')).instructions, 'emphasize the breaking SDK change');
+
+  // A raw comment tail is re-sanitized here: `@` truncates and length is capped,
+  // so a caller that bypasses parseCommand cannot smuggle a second mention or an
+  // unbounded prompt into the drafting input.
+  const raw = await releaseNotes.prepareDraft({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    runnerTemp,
+    instructions: `keep it short @release-bot apply ${'x'.repeat(600)}`,
+  });
+  const rawInput = fs.readFileSync(raw.input, 'utf8');
+  assert.match(rawInput, /^Instructions: keep it short$/m);
+  assert.ok(!rawInput.includes('@release-bot apply'));
+  assert.equal(JSON.parse(fs.readFileSync(raw.state, 'utf8')).instructions, 'keep it short');
+});
+
 test('posts a bot-authored draft and refuses stale agent output', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -396,12 +541,35 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   assert.match(calls.createComment[0].body, /```\n@release-bot apply\n```/);
   assert.match(calls.createComment[0].body, /```\n@release-bot draft\n```/);
   assert.match(calls.createComment[0].body, /only way to skip the curated-notes merge gate/);
+  // The header advertises the steering form so maintainers learn it from the draft.
+  assert.match(calls.createComment[0].body, /Keep the version heading intact\. To regenerate with steering/);
+  assert.match(calls.createComment[0].body, /@release-bot draft <instructions>/);
+  // No instructions were recorded in state, so nothing is echoed.
+  assert.ok(!calls.createComment[0].body.includes('Drafted with maintainer instructions'));
 
   const stale = makeGithub({ pr: releasePr({ head: { ...releasePr().head, sha: 'c'.repeat(40) } }) });
   await assert.rejects(
     releaseNotes.postDraft({ github: stale.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, ...BOT_AUTH }),
     /changed while notes were being drafted/,
   );
+});
+
+test('posts a draft that echoes the maintainer instructions it used', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING, instructions: 'emphasize the breaking SDK change' }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const { github, calls } = makeGithub();
+  await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, ...BOT_AUTH });
+  assert.equal(calls.createComment.length, 1);
+  assert.match(calls.createComment[0].body, /Drafted with maintainer instructions: emphasize the breaking SDK change/);
+  // The echo sits outside the marked metadata block and the editable content
+  // markers, so it cannot corrupt either parser.
+  const body = calls.createComment[0].body;
+  assert.ok(body.indexOf('-->') < body.indexOf('Drafted with maintainer instructions'));
+  assert.ok(body.indexOf('Drafted with maintainer instructions') < body.indexOf('release-notes-content-start'));
 });
 
 test('prepare apply replaces only the changelog section and records immutable hashes', async t => {
@@ -1232,11 +1400,58 @@ test('manual commands run for maintainers and admins', async () => {
   const maintainResult = await releaseNotes.validateTrigger({ github: maintain.github, context, core: makeCore() });
   assert.equal(maintainResult.shouldRun, true);
   assert.equal(maintainResult.command, 'apply');
-  assert.equal(maintain.calls.createComment.length, 0);
+  // This payload carries no `author_association`, so `canNotify` is false: the
+  // ack fires on write permission alone, unlike every rejection reply.
+  assert.equal(maintain.calls.createComment.length, 1);
+  assert.match(maintain.calls.createComment[0].body, /Running `apply`/);
 
   // The admin flag grants access even when the permission string is not in the set.
   const admin = makeGithub({ permission: 'read', adminFlag: true });
   assert.equal((await releaseNotes.validateTrigger({ github: admin.github, context, core: makeCore() })).shouldRun, true);
+});
+
+test('validateTrigger surfaces draft instructions and drops apply instructions', async () => {
+  const base = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      user: { login: 'maintainer' },
+    },
+  };
+  const draftContext = {
+    ...base,
+    payload: {
+      ...base.payload,
+      comment: { body: '@release-bot draft emphasize the breaking SDK change', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const draftRun = makeGithub({ permission: 'write' });
+  const draftResult = await releaseNotes.validateTrigger({ github: draftRun.github, context: draftContext, core: makeCore() });
+  assert.equal(draftResult.shouldRun, true);
+  assert.equal(draftResult.command, 'draft');
+  assert.equal(draftResult.instructions, 'emphasize the breaking SDK change');
+  // The ack is a plain reply; instructions ride along in the result, not the
+  // comment, so untrusted text never gets echoed back onto the PR.
+  assert.equal(draftRun.calls.createComment.length, 1);
+  assert.match(draftRun.calls.createComment[0].body, /Running `draft`/);
+  assert.doesNotMatch(draftRun.calls.createComment[0].body, /emphasize the breaking SDK change/);
+
+  // Instructions after `apply` never reach the workflow: apply republishes the
+  // stored draft, so the gate reports no instructions for it.
+  const applyContext = {
+    ...base,
+    payload: {
+      ...base.payload,
+      comment: { body: '@release-bot apply emphasize this', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const applyRun = makeGithub({ permission: 'write' });
+  const applyResult = await releaseNotes.validateTrigger({ github: applyRun.github, context: applyContext, core: makeCore() });
+  assert.equal(applyResult.shouldRun, true);
+  assert.equal(applyResult.command, 'apply');
+  assert.equal(applyResult.instructions, '');
 });
 
 test('an explicit command on a non-release PR is explained, not silently ignored', async () => {

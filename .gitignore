@@ -241,8 +241,10 @@ __marimo__/
 #claude
 .claude
 
-# Harbor local job output
+# Harbor local job output. `harbor-jobs/` is the per-suite variant the eval Makefile and
+# the CI workflow write to (`harbor-jobs/<category>`).
 jobs/
+harbor-jobs/
 
 .idea
 TEXTUAL_REFACTOR_PLAN.md

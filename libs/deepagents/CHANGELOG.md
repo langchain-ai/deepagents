@@ -2,6 +2,18 @@
 
 # Deep Agents Changelog
 
+## [0.7.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.4...deepagents==0.7.5) (2026-08-06)
+
+### Bug Fixes
+
+- Identify SDK provider classes that support files. ([#5326](https://github.com/langchain-ai/deepagents/issues/5326))
+
+## [0.7.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.3...deepagents==0.7.4) (2026-08-04)
+
+### Features
+
+- Exposed the `execute` exit code in SDK artifacts. ([#5300](https://github.com/langchain-ai/deepagents/issues/5300))
+
 ## [0.7.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.2...deepagents==0.7.3) (2026-08-03)
 
 ### Bug Fixes

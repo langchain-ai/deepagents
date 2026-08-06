@@ -201,7 +201,7 @@ jobs:
           git checkout -b "$BRANCH"
           git add "$code_pyproject" "$lockfile"
           git commit -m "chore(deps): bump deepagents pin in deepagents-code to $SDK_VERSION"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --set-upstream origin "$BRANCH"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
           {

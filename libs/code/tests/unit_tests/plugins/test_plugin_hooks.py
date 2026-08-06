@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
 from deepagents_code.hooks.models.domain import HookEvent, SessionStartCause
@@ -39,7 +38,6 @@ def _stage_plugins(
     monkeypatch: pytest.MonkeyPatch,
     documents: Mapping[str, dict[str, object] | bytes],
 ) -> tuple[Path, Path]:
-    monkeypatch.setenv(EXPERIMENTAL, "1")
     user_dir = tmp_path / "config"
     user_dir.mkdir(parents=True, exist_ok=True)
     for module in ("model_config", "hooks.loading", "hooks.runtime"):

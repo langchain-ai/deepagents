@@ -3544,7 +3544,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             ), f"Unexpected shell middleware on subagent {name!r}"
 
     def test_subagent_middleware_combines_shell_configurable_model_and_cost(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path
     ) -> None:
         """Restrictive shell + implicit model should yield shell, model, and cost.
 
@@ -3552,13 +3552,11 @@ class TestCreateCliAgentShellMiddlewareWiring:
         must not gain `ConfigurableModelMiddleware`, which would let a runtime
         `/model` switch clobber the pinned model.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -4953,11 +4951,75 @@ class TestCreateCliAgentInterpreterWiring:
         )
         assert auto_middleware._configured_classifier_model is None
 
+    def test_auto_classifier_timeout_comes_from_the_resolver(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The middleware deadline is whatever the bounded resolver returned.
+
+        Asserting the manifest default here would be a tautology — the
+        middleware's own parameter default *is* that constant, so the assertion
+        would hold even if `create_cli_agent` stopped passing the keyword. A
+        sentinel that differs from the default pins the wiring itself.
+        """
+        from deepagents_code import config_manifest
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config_manifest import (
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+
+        sentinel = 7.5
+        assert sentinel != AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+        monkeypatch.setattr(
+            config_manifest,
+            "resolve_auto_classifier_timeout",
+            lambda **_kwargs: sentinel,
+        )
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._classifier_timeout_seconds == pytest.approx(sentinel)
+
+    def test_auto_classifier_timeout_defaults_to_manifest_default(
+        self, tmp_path: Path
+    ) -> None:
+        """Nothing configured leaves the classifier on the default deadline."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config_manifest import (
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert (
+            auto_middleware._classifier_timeout_seconds
+            == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+        )
+
+    def test_auto_classifier_timeout_reads_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A configured deadline reaches the Auto middleware."""
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_TIMEOUT
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        monkeypatch.setenv(AUTO_CLASSIFIER_TIMEOUT, "45")
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._classifier_timeout_seconds == pytest.approx(45.0)
+
     @pytest.mark.parametrize("auto_mode_enabled", [True, False])
     def test_single_hitl_slot_precedes_server_hooks(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
         *,
         auto_mode_enabled: bool,
     ) -> None:
@@ -4969,10 +5031,8 @@ class TestCreateCliAgentInterpreterWiring:
         stay behind whichever one is installed so its `after_model` `PreToolUse`
         pass resolves before approval routing.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         middleware = self._capture_middleware(
             tmp_path, auto_mode_enabled=auto_mode_enabled
         )

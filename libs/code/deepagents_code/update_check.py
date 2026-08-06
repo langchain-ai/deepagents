@@ -189,9 +189,11 @@ INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
 """Directory for persisted update command logs.
 
-Lives under the OS cache directory (`default_cache_dir()`) alongside the
-install script's `<cache>/deepagents-code/install.log`, since these are
-ephemeral `uv`/`pip` diagnostics rather than app state.
+Lives under the OS cache directory (`default_cache_dir()`), since these are
+ephemeral `uv`/`pip` diagnostics rather than app state. Note the install
+script's `<cache>/deepagents-code/install.log` follows
+`${XDG_CACHE_HOME:-~/.cache}` unconditionally, so on macOS the two logs land
+under different roots.
 """
 
 UPDATE_LOG_RETENTION_DAYS = 14

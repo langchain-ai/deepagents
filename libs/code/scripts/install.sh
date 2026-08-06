@@ -1574,8 +1574,16 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     if prompt_yn "Install update?"; then
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
     else
-      log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
-      exit 0
+      update_prompt_rc=$?
+      if [ "$update_prompt_rc" -eq 2 ]; then
+        # `can_prompt` proved the terminal could be opened, but it may still
+        # detach before `prompt_yn` can read from it. As with no TTY at all,
+        # nobody declined the update, so warn and complete the install.
+        log_warn "Could not ask — continuing with the update."
+      else
+        log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
+        exit 0
+      fi
     fi
   else
     # No TTY to prompt (cron, CI, Dockerfile RUN, systemd): there is no human to

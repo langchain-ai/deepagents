@@ -788,6 +788,33 @@ def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> Non
     assert "Keeping deepagents-code 0.1.0" in output
 
 
+def test_install_script_prompt_read_failure_continues_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prompt that becomes unreadable after probing must not decline the update."""
+    script = tmp_path / "install.sh"
+    source = SCRIPT.read_text(encoding="utf-8")
+    source = source.replace(
+        _extract_shell_function("can_prompt"),
+        "can_prompt() {\n  return 0\n}",
+    ).replace(
+        _extract_shell_function("prompt_yn"),
+        "prompt_yn() {\n  return 2\n}",
+    )
+    script.write_text(source, encoding="utf-8")
+    _make_executable(script)
+    monkeypatch.setitem(globals(), "SCRIPT", script)
+
+    proc, args_path = _invoke(
+        tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0"
+    )
+
+    assert proc.returncode == 0
+    assert "Could not ask — continuing with the update." in proc.stderr
+    assert "Keeping deepagents-code 0.1.0" not in proc.stdout
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
 def test_install_script_interactive_accept_updates(tmp_path: Path) -> None:
     """Answering 'y' to the update prompt runs `uv tool install -U`."""
     code, output, args_path = _invoke_interactive(

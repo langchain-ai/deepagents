@@ -8,6 +8,7 @@ filesystem permissions into an `interrupt_on` mapping for
 whether the access intersects an interrupt-mode rule.
 """
 
+import logging
 from collections.abc import Callable
 from pathlib import PurePosixPath
 from typing import Literal
@@ -17,6 +18,8 @@ from langchain.tools.tool_node import ToolCallRequest
 
 from deepagents.backends.utils import _glob_anchor, _paths_overlap, to_posix_path, validate_path
 from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission, _check_fs_permission
+
+logger = logging.getLogger(__name__)
 
 # Scope of a filesystem tool's path argument:
 #   - "exact": the call operates on exactly the named path (read_file,
@@ -85,6 +88,11 @@ def _make_exact_when_predicate(
         try:
             normalized = validate_path(raw_path)
         except ValueError:
+            logger.debug(
+                "validate_path rejected %r for tool %r; fail-open (no interrupt fires)",
+                raw_path,
+                req.tool_call.get("name"),
+            )
             return False
         return _check_fs_permission(rules, operation, normalized) == "interrupt"
 
@@ -115,6 +123,11 @@ def _make_bulk_when_predicate(
         try:
             normalized = validate_path(raw_path)
         except ValueError:
+            logger.debug(
+                "validate_path rejected %r for tool %r; fail-open (no interrupt fires)",
+                raw_path,
+                req.tool_call.get("name"),
+            )
             return False
         # `validate_path` returns `/.` for current-directory aliases like
         # `"."`, `""`, and `"./"`. Those refer to the whole accessible tree

@@ -13543,9 +13543,9 @@ class DeepAgentsApp(App):
             title=title,
             description=description,
             # Grader models have no persistent config key yet, so there is
-            # nothing for Ctrl+S to own here. Passing `None` disables it: the
-            # default scope would persist `[models].default` and retarget the
-            # model the agent itself runs on.
+            # nothing for Ctrl+S to own here. `None` disables it; the main-model
+            # scope would persist `[models].default` and retarget the model the
+            # agent itself runs on.
             default_scope=None,
         )
         self.push_screen(screen, handle_result)
@@ -19184,9 +19184,9 @@ class DeepAgentsApp(App):
         tail = (
             " Recommended models favor lower latency and cost for repeated "
             "reviews; a faster, cheaper model may review actions less carefully."
-            " Enter applies the pick to this session; Ctrl+S additionally stores"
-            " it as `[models].auto_classifier` for future launches — press "
-            "Ctrl+S again on the stored model to remove it."
+            " Enter applies the pick to this session; Ctrl+S stores it as "
+            "`[models].auto_classifier` for future launches without applying it "
+            "now — press Ctrl+S again on the stored model to remove it."
         )
         clear_hint = ""
         if self._auto_classifier_display_spec() is not None:
@@ -19205,9 +19205,11 @@ class DeepAgentsApp(App):
         # a spec containing `[dim]` would render a truncated, dimmed name that is
         # not the model reviewing actions, and one containing `[/]` would raise
         # `MarkupError` when the modal opens. `tail` cannot join the markup
-        # template — its backticked `[models]` tag would close the paragraph —
-        # so it is appended to the built `Content`, and the first branch (no
-        # spec) uses the plain `Content` constructor, which parses nothing.
+        # template either — its backticked `[models]` parses as a style tag,
+        # which silently deletes that literal text and styles the rest of the
+        # line, raising nothing — so it is appended to the built `Content`,
+        # whose `+ str` is literal, and the first branch (no spec) uses the
+        # plain `Content` constructor, which parses nothing.
         active = self._auto_classifier_review_model_spec()
         if active is None:
             description = Content("Auto currently reviews with the main agent model.")
@@ -19871,7 +19873,10 @@ class DeepAgentsApp(App):
             Configured model selector modal.
         """
         from deepagents_code.config import settings
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         return ModelSelectorScreen(
             current_model=settings.model_name,
@@ -19887,6 +19892,11 @@ class DeepAgentsApp(App):
                 if curated
                 else None
             ),
+            # Onboarding advertises no Ctrl+S hint, so give it no scope either:
+            # the binding is unconditional and `action_set_default` has no
+            # curated guard, so a scope here would let Ctrl+S silently write
+            # `[models].default` with nothing on screen saying it did.
+            default_scope=None if curated else MAIN_MODEL_DEFAULT_SCOPE,
             result_callback=result_callback,
         )
 

@@ -2555,11 +2555,13 @@ class ModelConfig:
     """The stored Auto classifier model (from config file `[models].auto_classifier`).
 
     Carries the raw string with only a `str` type guard, so a blank or
-    unbuildable spec reaches this field. The sole consumer is the `/auto model`
-    picker's `(default)` marker, which needs the stored text rather than a
-    resolved model, so validation would be misplaced here:
-    `config.resolve_auto_classifier_model_with_problem` reports a malformed
-    value at launch, and an unbuildable spec fails closed at review time.
+    unbuildable spec reaches this field. Its only *value* consumer is the
+    `/auto model` picker's `(default)` marker, which needs the stored text
+    rather than a resolved model, so this field never rewrites or drops a value:
+    `_validate` logs a warning when the text lacks a `provider:` prefix,
+    `config.resolve_auto_classifier_model_with_problem` rejects a blank or
+    non-string value at launch, and a spec that cannot be built fails closed at
+    review time.
 
     Not the resolution path — a `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` export
     or `--auto-classifier-model` flag outranks this value at launch, so it may
@@ -3137,8 +3139,10 @@ def save_auto_classifier_model(
     """Persist the model the Auto approval classifier reviews actions with.
 
     Writes `[models].auto_classifier`, the persistent counterpart of the
-    session-only `/auto model` switch. A `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`
-    export still wins over the stored value at launch.
+    session-only `/auto model` switch. Both `--auto-classifier-model` and a
+    `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` export outrank the stored value at
+    launch (flag > env > this key), so a successful write does not guarantee the
+    next launch reviews with it.
 
     Args:
         model_spec: The classifier model in `provider:model` format.
@@ -3167,7 +3171,9 @@ def clear_default_model(config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        True if the key was removed (or was already absent), False on I/O error.
+        True if the key was removed or was already absent, False when the config
+            file could not be read or written or its `[models]` section is not a
+            table. See `_clear_model_field` for the full contract.
     """
     return _clear_model_field("default", config_path)
 
@@ -3176,7 +3182,9 @@ def clear_auto_classifier_model(config_path: Path | None = None) -> bool:
     """Remove the stored Auto classifier model from the config file.
 
     Deletes the `[models].auto_classifier` key so future launches review gated
-    actions with the main agent model, unless the environment sets one.
+    actions with the main agent model, unless `--auto-classifier-model` or
+    `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` supplies one — both outrank this key,
+    so clearing it does not guarantee the main agent model is used.
 
     Args:
         config_path: Path to config file.
@@ -3184,7 +3192,9 @@ def clear_auto_classifier_model(config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        True if the key was removed (or was already absent), False on I/O error.
+        True if the key was removed or was already absent, False when the config
+            file could not be read or written or its `[models]` section is not a
+            table. See `_clear_model_field` for the full contract.
 
     Note:
         This function does not preserve comments in the config file.
@@ -3202,7 +3212,11 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        True if the key was removed (or was already absent), False on I/O error.
+        True if the key was removed, or was already absent because the file or
+            its `[models]` table does not exist. False on I/O error, on
+            unparseable TOML, and when `[models]` is present but is not a table
+            — nothing can be deleted from those and the file needs hand repair,
+            so callers must not report a clean clear.
 
     Note:
         This function does not preserve comments in the config file.
@@ -3219,10 +3233,15 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
                 data = tomllib.load(f)
 
             models_section = data.get("models")
+            if models_section is None:
+                # No `[models]` table at all — an ordinary config that simply
+                # never stored a model. Nothing to clear and nothing to report.
+                return True
             if not isinstance(models_section, dict):
                 # Valid TOML of the wrong shape (e.g. a scalar `models = 1`).
-                # Nothing to delete, but log it rather than reporting a clean
-                # clear for a file the user has to fix by hand.
+                # There is no key to delete and the file needs hand repair, so
+                # report failure: `True` is this contract's clean-clear signal,
+                # and callers relay it to the user as "cleared".
                 logger.warning(
                     "Config file %s has a non-table [models] section (%s); "
                     "cannot clear models.%s",
@@ -3230,7 +3249,7 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
                     type(models_section).__name__,
                     field,
                 )
-                return True
+                return False
             if field not in models_section:
                 return True  # Already absent
 

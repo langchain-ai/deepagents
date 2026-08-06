@@ -82,7 +82,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/auto",
         description=(
             "Switch to Auto approval mode, or pick its classifier model for "
-            "this session"
+            "this session or for future launches"
         ),
         # Bare `/auto` still switches mode immediately (the switcher must work
         # mid-turn); `/auto model ...` opens UI or resolves a model, so it waits

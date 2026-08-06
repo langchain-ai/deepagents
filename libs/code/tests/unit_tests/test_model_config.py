@@ -2601,17 +2601,49 @@ class TestAutoClassifierModelPersistence:
 
         assert model_config.ModelConfig.load().auto_classifier_model is None
 
-    def test_clear_reports_success_but_warns_on_non_table_models(
+    def test_clear_fails_and_warns_on_non_table_models(
         self, caplog: pytest.LogCaptureFixture, tmp_path: Path
     ) -> None:
-        """A structurally broken `[models]` is logged, not silently 'cleared'."""
+        """A structurally broken `[models]` reports failure, not a clean clear.
+
+        `True` is this contract's clean-clear signal and the picker relays it to
+        the user as "cleared", so a file that still needs hand repair must not
+        return it — the warning alone reaches no user surface.
+        """
         config_path = tmp_path / "config.toml"
         config_path.write_text("models = 1\n", encoding="utf-8")
 
         with caplog.at_level(logging.WARNING):
-            assert model_config.clear_auto_classifier_model(config_path) is True
+            assert model_config.clear_auto_classifier_model(config_path) is False
 
         assert "non-table [models] section" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("contents", "label"),
+        [("", "empty file"), ('[permissions]\nmode = "auto"\n', "no [models] table")],
+    )
+    def test_clear_is_a_silent_noop_when_no_models_table_exists(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+        contents: str,
+        label: str,
+    ) -> None:
+        """An ordinary config with nothing stored clears cleanly and quietly.
+
+        `data.get("models")` yields `None` here, which must not be mistaken for
+        the wrong-shape branch: telling the user their `[models]` section is
+        broken when they simply never stored a model sends them to repair a file
+        that is fine.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(contents, encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config.clear_auto_classifier_model(config_path) is True
+            assert model_config.clear_default_model(config_path) is True
+
+        assert "non-table [models] section" not in caplog.text, label
 
     def test_validate_warns_when_spec_lacks_provider(
         self, caplog: pytest.LogCaptureFixture, tmp_path: Path

@@ -63,6 +63,8 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 
 Run `@release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
 
+`@release-bot draft` accepts optional one-off editing instructions on the same line, for example `@release-bot draft emphasize the breaking SDK change`. The instruction is passed to the drafting model as guidance subordinate to its fixed editing rules, capped at 500 characters, and echoed in the posted draft comment so the prompt that produced a draft is auditable. Anything after a second `@` on the line is dropped. `@release-bot apply` takes no instructions — it republishes the stored draft verbatim, so text after `apply` is ignored.
+
 During a fanout release each package gets its own release PR, and each needs its own `draft`/`apply`. Commands act only on the PR they are posted to.
 
 The merged changelog is the source for the published GitHub release notes.

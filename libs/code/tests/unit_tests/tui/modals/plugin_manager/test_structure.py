@@ -1086,7 +1086,7 @@ def test_installed_details_explain_unsupported_components() -> None:
     content = str(_installed_plugin_details_content(row))
 
     assert f"Status: {get_glyphs().checkmark} Enabled" in content
-    assert "No supported components (skills/MCP)." in content
+    assert "No supported components (skills/MCP/hooks)." in content
     assert "agents/" in content
     assert "commands/" in content
     assert "No components discovered." not in content

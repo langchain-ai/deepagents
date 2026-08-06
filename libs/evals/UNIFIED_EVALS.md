@@ -9,8 +9,8 @@ This document explains the *decisions* behind that battery: which benchmarks we 
 Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default except `models`:
 
 - **`models`** *(required)* — comma-separated `provider:model` specs (e.g. `anthropic:claude-opus-4-8,openai:gpt-5.2`). The set of models compared in one run; everything else is applied identically across them.
-- **`categories`** *(default `autonomous,conversation,context`)* — which capability axes to run. The radar chart is produced only when all three run.
-- **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous** and **context** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
+- **`categories`** *(default `autonomous,conversation,research`)* — which capability axes to run, replacing the default set rather than adding to it; `context` is available but not in the default set. `research` pins its own runner, sandbox, and concurrency (see below), so it needs no other input changed. The radar chart is produced whenever at least three axes run.
+- **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous**, **context**, and **research** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
 - **`rollouts`** *(default `3`)* — trials per task, i.e. **K** in the two scores reported per `(model × category)`:
   - **pass@K** — fraction of tasks that passed at least once within K rollouts.
   - **avg@K** — passing trials (capped at K per task) ÷ expected trials (tasks × K); missing rollouts count as failures, so a partial run can't inflate the score.
@@ -19,7 +19,84 @@ Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default
 - **`n_shards_autonomous` · `n_shards_conversation` · `n_shards_context`** *(defaults `10` · `3` · `3`)* — how each category's tasks are split across parallel jobs, sized to fit GitHub's 6-hour per-job limit.
 - **`sandbox_env`** *(default `langsmith`)* — where tasks execute.
 - **`force_build`** *(default `false`)* — rebuild each task's environment image/snapshot; required the first time a new dataset runs on the LangSmith sandbox.
-- **`harbor_package_override`** *(required when `categories` includes `conversation`)* — set to `harbor[langsmith] @ git+https://github.com/harbor-framework/harbor.git@a7667a073b42b34aa552034df950f963756f79de`. The pinned Harbor `0.16.1` does not forward task-environment MCP servers to the LangGraph agent, so the `tau3` harness fails without this compatible build. Runs that omit `conversation` can leave the input empty and use the pinned release.
+- **`harbor_package_override`** *(optional)* — install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned release (`harbor[langsmith] 0.20.0`, `harbor-langsmith 0.3.0`), which forwards task-environment MCP servers to the LangGraph agent and so runs every category — including `conversation` (`tau3`) — out of the box. An override is no longer required for any category.
+
+### Dispatch it in CI (`gh workflow run`)
+
+You don't have to use the Actions UI — dispatch the same workflow from the CLI. Only `models` is required; every other `-f` overrides a default shown above. Note the input is `agent_impls` (plural).
+
+```bash
+gh workflow run unified_evals.yml \
+  -f models="anthropic:claude-opus-4-8,openai:gpt-5.2" \
+  -f categories="autonomous,conversation,research" \
+  -f agent_impls="bare" \
+  -f rollouts="3"
+
+# Watch it
+gh run list --workflow unified_evals.yml --limit 1
+gh run watch <run-id>
+```
+
+To run **just one task** (a quick smoke test), pass its exact name via `include_tasks` — it filters the tasks resolved by `categories`/`profile`, and an unknown name fails during prep:
+
+```bash
+gh workflow run unified_evals.yml \
+  -f models="anthropic:claude-opus-4-8" \
+  -f categories="autonomous" \
+  -f include_tasks="hello-world"
+```
+
+Add `--ref <branch>` to dispatch a workflow definition other than the default branch's. No `harbor_package_override` is needed — the pinned Harbor runs every category out of the box (see below).
+
+### Run one category from your machine (`harbor run`)
+
+To iterate locally, run a single category's dataset directly through Harbor with the same LangGraph agent the CI job uses — `graph=bare` for the neutral SDK agent, `graph=dcode` for the product agent. Autonomous (`harbor-index/harbor-index-1.0`) is the simplest since it comes from the Harbor registry:
+
+```bash
+# From libs/evals. Export every host var the command templates below, or Harbor
+# aborts at launch: ANTHROPIC_API_KEY, LANGSMITH_API_KEY, OPENAI_API_KEY,
+# OPENAI_BASE_URL, and (for gateway routing) ANTHROPIC_BASE_URL. Harbor resolves
+# each ${VAR} from the host and raises ValueError on an unset one — use
+# ${VAR:-default} to make a reference optional, or drop the flag entirely.
+make stage-harbor-local-deps          # stage checked-out packages for the sandbox install
+
+uv run harbor run \
+  --agent langgraph \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
+  --agent-kwarg graph=bare \
+  --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --agent-env 'ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}' \
+  --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
+  --agent-env 'LANGSMITH_TRACING=true' \
+  --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}' \
+  --agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}' \
+  --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}' \
+  --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}' \
+  --verifier-env 'JUDGE_PROVIDER=openai' \
+  --verifier-env 'JUDGE_MODELS=gpt-5.6-luna' \
+  --verifier-env 'JUDGE_REPEATS=1' \
+  --verifier-env 'JUDGE_CONCURRENCY=1' \
+  --dataset harbor-index/harbor-index-1.0 \
+  --model anthropic:claude-opus-4-8 \
+  --include-task-name hello-world \
+  -n 4 \
+  --jobs-dir harbor-jobs/unified \
+  --env langsmith \
+  --plugin langsmith \
+  --plugin-kwarg dataset_name=harbor-index/harbor-index-1.0 \
+  --plugin-kwarg experiment_name=unified-local-smoke
+```
+
+`--include-task-name` (`-i`) is the local equivalent of the workflow's `include_tasks`; drop it to run the whole dataset, or repeat it to select several tasks. (`-l N` instead caps the run to the first N tasks.)
+
+The `harbor-index` (and `tau3`) verifiers are **OpenAI LLM judges** — pass the judge's key and base URL through `--verifier-env` (`--ve`) or the verifier exits without writing a reward. `JUDGE_MODELS` is the grader (defaults to `gpt-5.6-luna`; use an independent model to avoid self-grading, e.g. `gpt-5.6-terra` when testing a Luna model), and `JUDGE_PROVIDER=openai` / `JUDGE_REPEATS` / `JUDGE_CONCURRENCY` are the config the native judge requires. `OPENAI_BASE_URL` points at whichever OpenAI-compatible endpoint holds `OPENAI_API_KEY` — OpenAI directly (`https://api.openai.com/v1`) or the LangSmith gateway (`https://gateway.smith.langchain.com/openai/v1`). `OPENAI_BASE_URL` and `OPENAI_API_KEY` are forwarded to the agent too, so switching `--model` to an `openai:` spec resolves through the same endpoint and key (the CI workflow forwards the key conditionally, per model provider).
+
+**The DRBench (`research`) judge is a separate input.** Upstream routes on the model name, so its verifier only drives `gpt-4o` / `gpt-4o-mini` directly; any other grader has to be a single `openrouter/<vendor>/<model>` slug, which upstream resolves ahead of its own registries and which needs `OPENROUTER_API_KEY` in the `evals` environment. A suite-wide `judge_models` that DRBench cannot drive does **not** fail the research leaf: it falls back to `gpt-4o` with a warning in the step summary, so the ordinary independent-grader flow (one grader for tau3 and harbor-index) still works on a mixed dispatch. Use **`research_judge_models`** to choose DRBench's grader deliberately — set explicitly, a value it cannot drive fails prep rather than being rewritten. Any grader other than `gpt-4o` makes the numbers incomparable to earlier DRBench runs and to the paper, so re-baseline rather than reading a delta.
+
+Forward `ANTHROPIC_BASE_URL` to the agent the same way when the Anthropic model-under-test routes through the LangSmith gateway (a gateway-only `sk-ant` key 403s against the default Anthropic endpoint). Drop it to hit the Anthropic API directly.
+
+Full local setup — env vars, `.env`, the `context` / `conversation` local datasets, and Makefile shortcuts — is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 The `prep` job writes a **run-configuration summary** — every input plus the values it derived (resolved model list, effective `shard_parallel` after clamping) — to the run summary, so a dispatch's exact settings are visible for debugging. The run then publishes one cross-model comparison — a leaderboard and (for full runs) a radar chart — to the same run summary.
 
@@ -32,10 +109,21 @@ A "deep agent" is not one skill, so a single benchmark can't score one. We split
 | **autonomous** | End-to-end task execution in a real, sandboxed computer/terminal environment | [`harbor-index/harbor-index-1.0`](https://github.com/laude-institute/harbor) (Harbor registry) | bare · dcode |
 | **conversation** | Multi-turn, tool-using dialogue against a simulated user, following a policy | [`tau3-subset`](https://github.com/sierra-research/tau2-bench) (τ³-bench) | tau3 |
 | **context** | Retrieval + reasoning over a large, multi-file corpus | [`context-retrieval-evals`](https://github.com/letta-ai/letta-evals) (Context-Bench) | bare · dcode |
+| **research** | Open-ended research across a live enterprise app stack **and** the open web, synthesized into a cited report | [`drbench-evals`](https://github.com/ServiceNow/drbench) (DRBench, app mode) | bare · dcode |
 
-The default run exercises all three (`categories: "autonomous,conversation,context"`). A radar chart is only meaningful with the full set, so it is emitted only when all three categories run.
+The default run exercises `autonomous`, `conversation`, and `research` (`categories: "autonomous,conversation,research"`); `context` runs only when named explicitly. A radar chart needs at least three axes to be meaningful, so it is emitted only once that many categories run. Each axis plots `pass@K`, except for categories scored on a graded reward (`research`), which plot `avg@K` — a graded category's `pass@K` is 0.000 by construction, so plotting it would pin that axis at the origin for every model. For the same reason the cross-model ranking is on **macro `avg@K`**: on a `pass@K` ranking, a row whose `research` leaf succeeded was averaged against that structural 0 while a row whose leaf failed was averaged without it, so failing research paid better than completing it.
 
-The `autonomous` and `context` categories run a deep-agents graph: by default the **bare** `create_deep_agent` — the SDK agent with no product scaffolding, which keeps the score a measure of the *model* rather than of a harness wrapped around it — with **`dcode`** (deep-agents-code, the full product agent) selectable as an option. The `conversation` category runs the τ³ runtime, which supplies a **user simulator** the agent must converse with rather than a static prompt.
+**`research`** is in the default set, and it is the odd one out in five ways worth knowing — it now configures each of these itself, so a default dispatch handles them without extra inputs:
+
+- **It pins `sandbox_env: docker` and `runner_label: ubuntu-24.04-arm` for itself**, through `CATEGORY_MAP` in `unified_prep.py`, so one dispatch can run it beside categories that use the dispatch inputs. Upstream publishes DRBench's per-task images for arm64 only, and a runner's architecture only matters when the containers run *on* the runner — with the LangSmith sandbox they run off-runner and the label has no effect.
+- **`network_mode = "public"`**, because DRBench's ground truth includes facts that exist only on the open web. It is also the only category granted `TAVILY_API_KEY`, which is what activates the agent's `web_search` tool.
+- **Scores are continuous, and there are five of them.** Rather than pass/fail, each trial emits `insights_recall`, `distractor_recall`, `factuality`, and `report_quality`, plus a composite under `reward`. The composite is the **harmonic mean** of `insights_recall`, `factuality`, `report_quality`, and `1 − distractor_recall` — the paper's own aggregate (arXiv 2510.00172, Table 2), computed here because upstream's released code ships the four metrics but not the mean. Our only deviation is a 0.01 floor per component. Publish the components beside it regardless.
+- **`research` is reported differently from the other categories.** Because its reward is graded, `pass@K` is 0 by construction (nothing scores a perfect 1.0) and is *suppressed* from its summary rather than shown as a result. It reports `avg@K` — the mean reward over expected trials — plus `macro_avg@K`, the mean of per-task means over the trials that actually ran. The two agree on a complete run, so a divergence means rollouts are missing. The **Overall pass@K** columns in the cross-model table still average every category, so a graded one drags them; read **Overall avg@K** instead.
+- **Disk-bound, so it pins `concurrency: 1` for itself** while other categories keep the dispatch value. Each trial runs a full Nextcloud/Mattermost/Postgres/Roundcube stack from a ~1.22 GiB image on a runner with ~14 GB free, and builds a second image for the verifier (which installs upstream `drbench` and its document parsers). The agent stack is stopped before the verifier starts, so the two never run at once, but both images stay resident on disk.
+
+See [`datasets/drbench-evals/README.md`](datasets/drbench-evals/README.md) for the runtime contract, the two credential regimes, and scoring detail.
+
+The `autonomous`, `context`, and `research` categories run a deep-agents graph: by default the **bare** `create_deep_agent` — the SDK agent with no product scaffolding, which keeps the score a measure of the *model* rather than of a harness wrapped around it — with **`dcode`** (deep-agents-code, the full product agent) selectable as an option. The `conversation` category runs the τ³ runtime, which supplies a **user simulator** the agent must converse with rather than a static prompt.
 
 ## Task-selection philosophy
 
@@ -62,7 +150,7 @@ Four principles cut across all three categories and explain why the task sets lo
 
 **Why this benchmark.** [τ³-bench](https://github.com/sierra-research/tau2-bench) (the Harbor dataset `sierra-research/tau3-bench`; τ³ ships inside the `tau2-bench` repo) is a standard for tool-using conversational agents. The `conversation` category runs it through the `tau3` harness, whose user simulator (an OpenAI model, currently `gpt-5.2`) drives a live back-and-forth — this is the only category that scores *dialogue* rather than a single-shot task.
 
-**How the harness works (tau3 = bare DA + MCP user sim).** `tau3` is not a different agent from the deep-agents categories: it is the same `create_deep_agent`. What changes is only what the graph is wired to. Where `bare` / `dcode` attach a local shell backend (filesystem and command tools), the `tau3` graph attaches the task environment's `tau3-runtime` **MCP** tools (`start_conversation`, `send_message_to_user`, `end_conversation`, plus the domain tools) that Harbor forwards from the sandbox into `configurable["mcp_servers"]`. The **simulated user lives on that MCP server, not in the agent**: the agent holds the conversation by calling `send_message_to_user`, which returns the user's next turn, and a system prompt tells it to converse via those tools rather than finish silently. So the conversation category is really bare deep-agent capability measured through an MCP-hosted user simulator, which is exactly why it needs the Harbor build that forwards task-environment MCP servers (see `harbor_package_override`).
+**How the harness works (tau3 = bare DA + MCP user sim).** `tau3` is not a different agent from the deep-agents categories: it is the same `create_deep_agent`. What changes is only what the graph is wired to. Where `bare` / `dcode` attach a local shell backend (filesystem and command tools), the `tau3` graph attaches the task environment's `tau3-runtime` **MCP** tools (`start_conversation`, `send_message_to_user`, `end_conversation`, plus the domain tools) that Harbor forwards from the sandbox into `configurable["mcp_servers"]`. The **simulated user lives on that MCP server, not in the agent**: the agent holds the conversation by calling `send_message_to_user`, which returns the user's next turn, and a system prompt tells it to converse via those tools rather than finish silently. So the conversation category is really bare deep-agent capability measured through an MCP-hosted user simulator, which is exactly why it depends on Harbor forwarding task-environment MCP servers — the pinned `harbor[langsmith] 0.20.0` does this, so no `harbor_package_override` is needed.
 
 **Why these tasks.** We run a curated **30-task subset** ([`tau3_subset.py`](deepagents_evals/tau3_subset.py)) drawn from two τ³ domains that exercise different conversational skills:
 

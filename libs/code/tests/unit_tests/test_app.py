@@ -50,6 +50,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, OptionList, Static
 
+from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
 from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SYSTEM_MESSAGE_PREFIX,
@@ -279,6 +280,7 @@ class TestInitialPromptOnMount:
         app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
         app.call_after_refresh = lambda cb: cb()  # ty: ignore
         submitted: list[tuple[str, str, str | None]] = []
+        submitted_event = asyncio.Event()
 
         async def capture(  # noqa: RUF029
             skill_name: str,
@@ -287,6 +289,7 @@ class TestInitialPromptOnMount:
             command: str | None = None,
         ) -> None:
             submitted.append((skill_name, args, command))
+            submitted_event.set()
 
         app._invoke_skill = capture  # ty: ignore
 
@@ -297,10 +300,7 @@ class TestInitialPromptOnMount:
                 mcp_server_info=[],
             )
         )
-        # Server-ready schedules `_run_session_start_sequence` onto the loop.
-        # A few yields keep the test stable across that async handoff.
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await asyncio.wait_for(submitted_event.wait(), timeout=1)
 
         assert submitted == [("code-review", "review this diff", None)]
 
@@ -5290,8 +5290,8 @@ class TestMessageQueue:
 
         Without this reset the gate would be sticky: once any turn produced
         output, every later turn's Esc-interrupt would stop restoring the
-        prompt. Closing the worker coroutine leaves the flag as `_send_to_agent`
-        set it, without running the turn.
+        prompt. Stubbing the worker leaves the flag as `_send_to_agent` set it,
+        without running the turn.
         """
         app = DeepAgentsApp()
         app._agent = MagicMock()
@@ -5308,8 +5308,6 @@ class TestMessageQueue:
             with patch.object(app, "run_worker") as mock_rw:
                 mock_rw.return_value = MagicMock()
                 await app._send_to_agent("next question")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
             assert app._active_turn_visible_output_started is False
 
@@ -5552,6 +5550,27 @@ class TestTurnStateRelease:
             app.post_message(ChatInput.Submitted("next message", "normal"))
             await pilot.pause()
             assert not app._pending_messages
+
+    async def test_turn_is_spawned_as_a_callable(self) -> None:
+        """The worker is handed a callable, not an already-built coroutine.
+
+        Textual never runs the work of a worker cancelled before its first
+        event-loop step, so a pre-built coroutine would be left to be finalized
+        unawaited — a `RuntimeWarning`, and an unraisable exception once
+        interpreter teardown has gone far enough to break the import machinery
+        the coroutine's cleanup relies on.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "run_worker") as mock_run_worker:
+                mock_run_worker.return_value = MagicMock()
+                await app._send_to_agent("hello")
+
+            work = mock_run_worker.call_args[0][0]
+            assert not inspect.iscoroutine(work)
+            assert callable(work)
 
     async def test_later_turns_can_still_recover(self) -> None:
         """The started-marker resets at turn end, so turn 2 recovers as well.
@@ -13047,6 +13066,503 @@ class TestRubricCommand:
             assert app._status_bar.rubric_label == ""
 
 
+class TestAutoClassifierModelCommand:
+    """Tests for `/auto model`, which picks the Auto classifier model."""
+
+    async def test_auto_model_bare_opens_classifier_model_selector(self) -> None:
+        """Bare `/auto model` should open the classifier-model picker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app,
+                "_show_auto_classifier_model_selector",
+                new_callable=AsyncMock,
+            ) as show_selector:
+                await app._handle_command("/auto model")
+                await pilot.pause()
+
+            show_selector.assert_awaited_once()
+            assert any("/auto model" in str(w._content) for w in app.query(UserMessage))
+
+    async def test_auto_model_selector_uses_auto_recommendations(self) -> None:
+        """The classifier picker should not reuse main-model recommendations."""
+        from deepagents_code.app import _AUTO_CLASSIFIER_RECOMMENDED_MODELS
+
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            await app._show_auto_classifier_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
+        assert screen._include_recent_models is False
+
+    @staticmethod
+    def _rendered_description(push: MagicMock) -> str:
+        """Return the picker description as the user sees it rendered.
+
+        Reads through `Static.render()` rather than `str(...)` on purpose:
+        `str(Content(s)) == s`, so a `str()` assertion passes whether the
+        description was built as markup-safe `Content` or as a raw `str` that
+        `Static` would parse as markup.
+        """
+        rendered = Static(push.call_args.args[0]._description).render()
+        assert isinstance(rendered, Content)
+        return rendered.plain
+
+    async def test_selector_description_names_the_configured_classifier(self) -> None:
+        """The picker should name the classifier, not the main agent model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-haiku-4-5"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-haiku-4-5."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_marks_a_classifier_matching_the_main_model(
+        self,
+    ) -> None:
+        """A classifier set to the main model should not read as a distinct one."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "openai:gpt-5.5"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_does_not_parse_a_spec_as_markup(self) -> None:
+        """A bracketed spec should render literally, not as a style tag."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-opus-5[dim]"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-opus-5[dim]."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_does_not_crash_on_a_closing_tag_spec(
+        self,
+    ) -> None:
+        """A spec with `[/]` should render, not raise `MarkupError` on open."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-opus-5[/]"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-opus-5[/]."
+            " Clear it with `/auto model clear`."
+        )
+
+    async def test_selector_description_renders_markup_safely_when_mounted(
+        self,
+    ) -> None:
+        """The live modal, not just a hand-built `Static`, must render the spec.
+
+        The other description tests read `screen._description` and wrap it
+        themselves, so they would all still pass if `compose` started coercing
+        the description with `str(...)` — which is exactly the regression that
+        makes a `[/]` spec crash the modal.
+        """
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "anthropic:claude-opus-5[/]"
+            with patch.object(
+                app, "_effective_model_spec", return_value="openai:gpt-5.5"
+            ):
+                await app._show_auto_classifier_model_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            rendered = screen.query_one(".model-selector-description", Static).render()
+            assert isinstance(rendered, Content)
+            assert "anthropic:claude-opus-5[/]" in rendered.plain
+
+    async def test_selector_description_marks_an_inherited_classifier(self) -> None:
+        """With no classifier set, the picker should name the main agent model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = None
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+        )
+
+    async def test_selector_description_never_shows_the_inherit_sentinel(self) -> None:
+        """`--auto-classifier-model ""` should read as inheriting, not as a spec."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = INHERIT_CLASSIFIER_MODEL
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+        )
+
+    async def test_selector_description_without_a_resolved_main_model(self) -> None:
+        """Before credentials resolve a spec, the picker names only the role."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = None
+        with (
+            patch.object(app, "_effective_model_spec", return_value=None),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with the main agent model."
+        )
+
+    async def test_bare_auto_still_switches_approval_mode(self) -> None:
+        """`/auto` without arguments keeps switching approval mode."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app,
+                "_handle_approval_mode_command",
+                new_callable=AsyncMock,
+            ) as switch:
+                await app._handle_command("/auto")
+
+            switch.assert_awaited_once_with(ApprovalMode.AUTO)
+
+    async def test_set_auto_classifier_model_stores_validated_spec(self) -> None:
+        """A resolvable spec is stored and applied without a server restart."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._handle_command("/auto model openai:gpt-5.5-mini")
+            await pilot.pause()
+
+            assert app._auto_classifier_model == "openai:gpt-5.5-mini"
+            assert app._server_kwargs["auto_classifier_model"] == "openai:gpt-5.5-mini"
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Auto classifier model set to openai:gpt-5.5-mini" in rendered
+
+    async def test_set_auto_classifier_model_rejects_colon_only_spec(self) -> None:
+        """A normalized-empty spec must not masquerade as an explicit clear."""
+        startup_spec = "anthropic:claude-haiku-4-5"
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = startup_spec
+            app._server_kwargs = {"auto_classifier_model": startup_spec}
+            with patch(
+                "deepagents_code.app._create_model_with_deepagents_import_lock"
+            ) as create_model:
+                await app._handle_command("/auto model :")
+            await pilot.pause()
+
+            create_model.assert_not_called()
+            assert app._auto_classifier_model == startup_spec
+            assert app._auto_classifier_model_cleared is False
+            assert app._auto_classifier_context_value() == startup_spec
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "Auto classifier model must not be empty" in rendered
+
+    async def test_selected_classifier_reaches_the_turn_context(self) -> None:
+        """The chosen spec must ride the run context, not just app state.
+
+        Every other test here asserts app state or the helper's return value, so
+        dropping the `classifier_model` kwarg from the outgoing `CLIContext`
+        would leave the command reporting success while the server keeps
+        reviewing with whatever it resolved at startup.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            assert mock_execute.await_args is not None
+            context = mock_execute.await_args.kwargs["context"]
+            assert context["classifier_model"] == "openai:gpt-5.5-mini"
+
+    async def test_cleared_classifier_sends_inherit_marker_on_the_turn(self) -> None:
+        """`/auto model clear` must override a server-side startup classifier.
+
+        A bare `None` means "no per-run preference", which would leave a startup
+        classifier in force while the UI claims reviews returned to the main
+        agent model — so the clear has to travel as the explicit marker.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+            app._server_kwargs = {"auto_classifier_model": "openai:gpt-5.5-mini"}
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            assert mock_execute.await_args is not None
+            context = mock_execute.await_args.kwargs["context"]
+            assert context["classifier_model"] == INHERIT_CLASSIFIER_MODEL
+
+    async def test_set_auto_classifier_model_clear_restores_main_model(self) -> None:
+        """`/auto model clear` returns reviews to the main agent model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+            app._server_kwargs = {"auto_classifier_model": "openai:gpt-5.5-mini"}
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            assert app._auto_classifier_model is None
+            assert app._server_kwargs["auto_classifier_model"] is None
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Auto classifier model cleared" in rendered
+
+    async def test_clear_marks_the_run_context_to_inherit(self) -> None:
+        """Clearing must override a startup classifier, not just drop the override.
+
+        The server resolves its own classifier from `--auto-classifier-model`,
+        the env var, or `[models].auto_classifier`, so an absent per-run value
+        would leave that model authorizing actions after the UI said reviews
+        moved back to the main agent model.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+            app._server_kwargs = {"auto_classifier_model": "openai:gpt-5.5-mini"}
+            assert app._auto_classifier_context_value() == "openai:gpt-5.5-mini"
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            assert app._auto_classifier_context_value() == INHERIT_CLASSIFIER_MODEL
+
+    async def test_clear_applies_even_when_no_client_side_spec_is_known(self) -> None:
+        """A first clear is honored; only a second one reports a no-op.
+
+        The client cannot see an env / `config.toml` classifier the server
+        resolved, so `None` here does not prove reviews already run on the main
+        agent model.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            assert app._auto_classifier_context_value() is None
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            assert app._auto_classifier_context_value() == INHERIT_CLASSIFIER_MODEL
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Auto classifier model cleared" in rendered
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "already uses the main agent model" in rendered
+
+    async def test_setting_a_spec_after_clear_sends_that_spec(self) -> None:
+        """A new spec replaces the inherit marker on the run context."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            await app._set_auto_classifier_model(None)
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._set_auto_classifier_model("openai:gpt-5.5-mini")
+            await pilot.pause()
+
+            assert app._auto_classifier_context_value() == "openai:gpt-5.5-mini"
+
+    async def test_selector_result_waits_for_the_modal_to_unwind(self) -> None:
+        """Selector follow-up work is scheduled, never run in the dismiss callback.
+
+        Mounting messages, starting the install worker, and refocusing the chat
+        input inside the callback all act against a modal stack that has not
+        unwound yet.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            deferred: list[Callable[[], None]] = []
+            handlers: list[Callable[[tuple[str, str] | None], None]] = []
+            run_worker = MagicMock()
+            set_model = AsyncMock()
+            focus_input = MagicMock()
+
+            def capture_push(screen: object, callback: object = None) -> None:
+                del screen
+                handlers.append(cast("Any", callback))
+
+            with (
+                patch.object(app, "call_after_refresh", side_effect=deferred.append),
+                patch.object(app, "run_worker", run_worker),
+                patch.object(app, "_set_auto_classifier_model", set_model),
+                patch.object(app, "push_screen", side_effect=capture_push),
+                patch.object(app._chat_input, "focus_input", focus_input),
+            ):
+                await app._show_auto_classifier_model_selector()
+                handlers[0](("openai:gpt-5.5-mini", "openai"))
+
+                # Nothing has run yet: the selector is still on the stack.
+                run_worker.assert_not_called()
+                focus_input.assert_not_called()
+                assert len(deferred) == 1
+
+                deferred[0]()
+                run_worker.assert_called_once()
+                focus_input.assert_called_once()
+                await run_worker.call_args.args[0]
+
+            set_model.assert_awaited_once_with("openai:gpt-5.5-mini")
+
+    async def test_cancelled_selector_names_unchanged_classifier(self) -> None:
+        """Cancelling the picker should name the classifier that stays active."""
+        classifier = "anthropic:claude-haiku-4-5"
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = classifier
+            deferred: list[Callable[[], None]] = []
+            handlers: list[Callable[[tuple[str, str] | None], None]] = []
+            run_worker = MagicMock()
+            mount_message = AsyncMock()
+
+            def capture_push(screen: object, callback: object = None) -> None:
+                del screen
+                handlers.append(cast("Any", callback))
+
+            with (
+                patch.object(app, "call_after_refresh", side_effect=deferred.append),
+                patch.object(app, "run_worker", run_worker),
+                patch.object(app, "push_screen", side_effect=capture_push),
+                patch.object(app, "_mount_message", mount_message),
+            ):
+                await app._show_auto_classifier_model_selector()
+                handlers[0](None)
+                deferred[0]()
+                await run_worker.call_args.args[0]
+
+            assert mount_message.await_args is not None
+            message = mount_message.await_args.args[0]
+            assert str(message._content) == (
+                f"Model not changed. Continuing to use {classifier}"
+            )
+
+    async def test_set_auto_classifier_model_rejects_unresolvable_spec(self) -> None:
+        """An unusable spec is refused outright, keeping the previous value."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+
+            with (
+                patch(
+                    "deepagents_code.app._create_model_with_deepagents_import_lock",
+                    side_effect=RuntimeError("no provider package"),
+                ),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._handle_command("/auto model openai:missing-model")
+            await pilot.pause()
+
+            assert app._auto_classifier_model is None
+            assert "auto_classifier_model" not in app._server_kwargs
+            assert app.query(ErrorMessage)
+
+    async def test_set_auto_classifier_model_auth_block_keeps_previous(self) -> None:
+        """A provider missing credentials must not become the classifier."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        class _BlockingAuth:
+            blocks_start = True
+            provider = "anthropic"
+
+            def missing_detail(self) -> str:
+                return "ANTHROPIC_API_KEY"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_BlockingAuth(),
+            ):
+                await app._set_auto_classifier_model("anthropic:claude-haiku-4-5")
+            await pilot.pause()
+
+            assert app._auto_classifier_model is None
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "Missing credentials" in rendered
+
+
 class TestBuildAgentErrorBody:
     """Cover the docs-link augmentation for agent-stream errors."""
 
@@ -15604,8 +16120,6 @@ class TestShellCommandInterrupt:
             with patch.object(app, "run_worker") as mock_rw:
                 mock_rw.return_value = MagicMock()
                 await app._send_to_agent("what did that print?")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
         app._agent.aupdate_state.assert_awaited_once()
         call = app._agent.aupdate_state.await_args
@@ -15635,8 +16149,6 @@ class TestShellCommandInterrupt:
             with patch.object(app, "run_worker") as mock_rw:
                 mock_rw.return_value = MagicMock()
                 await app._send_to_agent("what did that print?")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
         app._agent.aupdate_state.assert_awaited_once()
         call = app._agent.aupdate_state.await_args
@@ -15853,8 +16365,6 @@ class TestShellCommandInterrupt:
                 manager.attach_mock(app._agent.aupdate_state, "flush")
                 manager.attach_mock(mock_rw, "spawn")
                 await app._send_to_agent("what did that print?")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
         # Flush the `!` pair into state before spawning the turn, so the model
         # sees the shell output ahead of this turn's user message.
@@ -16155,6 +16665,78 @@ class TestApprovalPositionBindings:
         app.action_approval_position(1)
 
         assert app._pending_approval_widget is None
+
+    def test_tab_mirror_must_be_priority(self) -> None:
+        """The Tab mirror needs `priority=True` to beat `Screen.focus_next`.
+
+        Unlike its sibling approval keys, `tab` is already bound by
+        `Screen.BINDINGS` (`app.focus_next`), and the screen resolves before the
+        app - so a non-priority mirror here would silently never fire, leaving
+        the footer's unconditional `Tab reject with feedback` hint a lie whenever
+        the menu is not the focused widget.
+        """
+        bindings = [
+            binding
+            for binding in DeepAgentsApp.BINDINGS
+            if isinstance(binding, Binding) and binding.key == "tab"
+        ]
+
+        assert len(bindings) == 1
+        assert bindings[0].action == "approval_reject_with_reason"
+        assert bindings[0].priority is True
+
+    def test_tab_delegates_to_pending_approval(self) -> None:
+        """The Tab mirror opens the menu's free-text reject field."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        app._pending_approval_widget = approval
+        app._is_input_focused = MagicMock(return_value=False)  # ty: ignore
+
+        app.action_approval_reject_with_reason()
+
+        approval.action_reject_with_reason.assert_called_once_with()
+
+    def test_tab_is_no_op_while_chat_input_focused(self) -> None:
+        """Tab belongs to the chat input's completion while the user is typing."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        app._pending_approval_widget = approval
+        app._is_input_focused = MagicMock(return_value=True)  # ty: ignore
+
+        app.action_approval_reject_with_reason()
+
+        approval.action_reject_with_reason.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("pending", "input_focused", "expected"),
+        [
+            (False, False, False),
+            (True, True, False),
+            (True, False, True),
+        ],
+        ids=["no-approval", "input-focused", "approval-pending"],
+    )
+    def test_check_action_steps_tab_aside_unless_approval_pending(
+        self, *, pending: bool, input_focused: bool, expected: bool
+    ) -> None:
+        """Tab reverts to focus traversal and completion outside an approval.
+
+        The binding is `priority=True`, so without this step-aside it would
+        swallow `tab` app-wide - breaking focus traversal everywhere.
+        """
+        app = DeepAgentsApp()
+        app._pending_approval_widget = MagicMock() if pending else None
+        app._is_input_focused = MagicMock(return_value=input_focused)  # ty: ignore
+
+        assert app.check_action("approval_reject_with_reason", ()) is expected
+
+    def test_check_action_leaves_sibling_approval_keys_enabled(self) -> None:
+        """The Tab gate keys on its own action only."""
+        app = DeepAgentsApp()
+        app._pending_approval_widget = None
+
+        assert app.check_action("approval_yes", ()) is True
+        assert app.check_action("approval_no", ()) is True
 
 
 class TestIsUserTyping:
@@ -17321,6 +17903,26 @@ class TestApprovalModeSlashCommands:
         notify.assert_called_once()
         assert "Already in Manual mode" in str(notify.call_args.args[0])
 
+    async def test_already_in_auto_points_to_classifier_switcher(self) -> None:
+        """A redundant `/auto` command should advertise its model subcommand."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._handle_command("/auto")
+
+        set_mode.assert_not_awaited()
+        notify.assert_called_once_with(
+            "Already in Auto mode.\nUse /auto model to switch classifier models.",
+            severity="information",
+            markup=False,
+        )
+
     async def test_yolo_command_sets_yolo_when_acknowledged(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
 
@@ -17986,14 +18588,14 @@ class TestToolsSlashCommand:
         assert "Reads *any* file | prints `__init__`" in rendered
 
     def test_render_escapes_every_markdown_metacharacter(self) -> None:
-        r"""Each character in `_MARKDOWN_ESCAPES` must round-trip verbatim.
+        r"""Each character in `MARKDOWN_ESCAPES` must round-trip verbatim.
 
         Guards the escape table itself: dropping any single character from it
         silently changes what the user sees — unescaped `<b>` is swallowed as
         HTML, `[d](u)` collapses to its link text, `~~x~~` to struck text, and a
         `\` before punctuation disappears — so each needs a live assertion.
         """
-        from deepagents_code.app import _MARKDOWN_ESCAPES
+        from deepagents_code._markdown import MARKDOWN_ESCAPES as _MARKDOWN_ESCAPES
         from deepagents_code.tool_catalog import (
             ToolEntry,
             build_catalog_from_server_info,
@@ -18916,6 +19518,89 @@ class TestExitGracefulWorkerHandoff:
         assert any(
             "Hook drain did not finish" in record.message
             and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
+
+    async def test_client_session_end_timeout_is_bounded_and_at_most_once(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A slow Hooks v2 `SessionEnd` cannot stall or fire twice on TUI exit."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.hooks.manager import HookSessionIdentity
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            SessionEndDecision,
+        )
+
+        calls = 0
+        cancelled = asyncio.Event()
+        drain_observed_cancellation = asyncio.Event()
+
+        async def invoke(_invocation: object) -> SessionEndDecision:
+            nonlocal calls
+            calls += 1
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return SessionEndDecision(event=HookEvent.SESSION_END)
+
+        async def drain_pending() -> None:
+            try:
+                await asyncio.wait_for(cancelled.wait(), timeout=0.1)
+            except TimeoutError:
+                return
+            drain_observed_cancellation.set()
+
+        runtime = MagicMock()
+        runtime.cwd = Path.cwd()
+        runtime.configured_events.return_value = frozenset({HookEvent.SESSION_END})
+        runtime.invoke = invoke
+        hooks = HooksManager.adopting(
+            runtime,
+            identity=lambda: HookSessionIdentity(
+                thread_id="t1",
+                approval_mode=ApprovalMode.MANUAL,
+            ),
+        )
+        app = DeepAgentsApp()
+        loop = asyncio.get_running_loop()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if app._session_state is None:
+                app._detached_hooks = hooks
+            else:
+                app._session_state.hooks = hooks
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch(
+                    "deepagents_code.app.SESSION_END_DRAIN_TIMEOUT_SECONDS",
+                    0.01,
+                ),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=drain_pending),
+                patch.object(App, "exit") as super_exit,
+            ):
+                started = loop.time()
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+                elapsed = loop.time() - started
+                app.exit()
+
+                assert super_exit.call_count == 2
+
+        assert elapsed < 0.5
+        assert cancelled.is_set()
+        assert drain_observed_cancellation.is_set()
+        assert calls == 1
+        assert any(
+            record.levelno == logging.WARNING
+            and "SessionEnd hook drain did not finish" in record.message
             for record in caplog.records
         )
 
@@ -22310,6 +22995,61 @@ class TestDeferredActions:
             await pilot.pause()
             assert app._can_bypass_queue("/model gpt-4") is False
             assert app._can_bypass_queue("/model --default foo") is False
+
+    async def test_can_bypass_queue_bare_auto_bypasses(self) -> None:
+        """Bare `/auto` and `/auto model` bypass; the mutating forms must not.
+
+        `/auto` is the mid-turn approval-mode switch, so parking it behind a busy
+        queue would break the "stop auto-approving right now" escape. `/auto
+        model` with no further arguments only opens the classifier picker, so it
+        is bare-equivalent; `/auto model <spec>` and `/auto model clear` resolve
+        or mutate classifier state and can wait for idle.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("/auto") is True
+            assert app._can_bypass_queue("/auto model") is True
+            # `_handle_auto_command` strips and reparses the remainder, so
+            # whitespace-variant spellings reach the same selector branch and
+            # must bypass too.
+            assert app._can_bypass_queue("/auto  model") is True
+            assert app._can_bypass_queue("/auto\tmodel") is True
+            assert app._can_bypass_queue("/auto model openai:gpt-5.5-mini") is False
+            assert app._can_bypass_queue("/auto model clear") is False
+
+    async def test_auto_model_opens_selector_while_busy(self) -> None:
+        """`/auto model` opens the selector instead of queueing when busy."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(
+                app,
+                "_show_auto_classifier_model_selector",
+                new_callable=AsyncMock,
+            ) as show_selector:
+                app.post_message(ChatInput.Submitted("/auto model", "command"))
+                await pilot.pause()
+
+            show_selector.assert_awaited_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_auto_model_with_spec_still_queues(self) -> None:
+        """`/auto model <spec>` mutates classifier state, so it must queue."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(
+                ChatInput.Submitted("/auto model openai:gpt-5.5-mini", "command")
+            )
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/auto model openai:gpt-5.5-mini"
 
     async def test_model_with_args_still_queues(self) -> None:
         """/model gpt-4 should be queued when busy, not bypass."""
@@ -26117,14 +26857,43 @@ class TestToastAnchoring:
         app = DeepAgentsApp()
         async with app.run_test(notifications=True) as pilot:
             await pilot.pause()
+            expected_messages = {"first", "second"}
             app.notify("first", timeout=60)
             app.notify("second", timeout=60)
-            await pilot.pause()
+
+            def painted_toast_bottoms(toasts: list[_Toast]) -> list[int]:
+                """Return bottom rows of toast regions the compositor will paint."""
+                bottoms: list[int] = []
+                for toast in toasts:
+                    geometry = app.screen.find_widget(toast)
+                    painted = geometry.region.intersection(geometry.clip)
+                    if painted:
+                        bottoms.append(painted.bottom)
+                return bottoms
+
+            async def wait_for_anchored_toasts() -> None:
+                while True:
+                    toasts = list(app.screen.query(_Toast))
+                    messages = {toast._notification.message for toast in toasts}
+                    bottoms = painted_toast_bottoms(toasts)
+                    chrome_top = self._chrome(app).region.y
+                    if (
+                        expected_messages <= messages
+                        and bottoms
+                        and max(bottoms) == chrome_top
+                    ):
+                        return
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_anchored_toasts(), timeout=5)
 
             toasts = list(app.screen.query(_Toast))
-            assert toasts
+            messages = {toast._notification.message for toast in toasts}
+            assert expected_messages <= messages
+            bottoms = painted_toast_bottoms(toasts)
+            assert bottoms
             chrome_top = self._chrome(app).region.y
-            assert max(toast.region.bottom for toast in toasts) == chrome_top
+            assert max(bottoms) == chrome_top
 
     async def test_growing_chat_input_lifts_the_rack(self) -> None:
         """A taller chat input pushes toasts further up the screen."""
@@ -27329,15 +28098,9 @@ class TestLiveApprovalModeWrites:
         assert app._session_state.approval_mode is ApprovalMode.MANUAL
         assert app._approval_mode_blocked is False
 
-    async def test_session_init_keeps_mode_changed_during_construction(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code._env_vars import EXPERIMENTAL
+    async def test_session_init_keeps_mode_changed_during_construction(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
 
-        # `HooksRuntime.create` is the construction seam probed below, and it
-        # only runs in experimental mode.
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         app = DeepAgentsApp(approval_mode=ApprovalMode.MANUAL)
 
         def change_mode_during_construction(**_kwargs: object) -> None:
@@ -27352,19 +28115,12 @@ class TestLiveApprovalModeWrites:
         assert app._session_state is not None
         assert app._session_state.approval_mode is ApprovalMode.AUTO
 
-    async def test_session_init_builds_one_state_for_concurrent_callers(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_session_init_builds_one_state_for_concurrent_callers(self) -> None:
         """The startup worker and the inline startup fallback must not race.
 
         Idempotency rests on construction staying free of `await`; reintroducing
         one would let both callers pass the guard and build two states.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL
-
-        # `HooksRuntime.create` is the construction seam counted below, and it
-        # only runs in experimental mode.
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         app = DeepAgentsApp()
         creations = 0
 
@@ -27582,11 +28338,13 @@ class TestLiveApprovalModeWrites:
         """First successful Auto toggle shows the education modal once."""
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
-            AUTO_MODE_NOTICE_BODY,
             AutoModeNoticeScreen,
+            build_auto_mode_notice_body,
         )
 
+        classifier = "anthropic:claude-haiku-4-5"
         app = DeepAgentsApp()
+        app._auto_classifier_model = classifier
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -27615,7 +28373,17 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert app._approval_mode is ApprovalMode.AUTO
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == AUTO_MODE_NOTICE_BODY
+                assert app.screen._body == build_auto_mode_notice_body(
+                    classifier, distinct_from_main_model=True
+                )
+                # Names the classifier *and* separates it from the coding model.
+                # "active model" reads as the latter, so it was the wrong label.
+                assert (
+                    f"a separate **classifier model** ({classifier})"
+                    in app.screen._body
+                )
+                assert "not the model writing your code" in app.screen._body
+                assert "active model" not in app.screen._body
                 save_notice.assert_not_called()
                 await pilot.press("enter")
                 await pilot.pause()
@@ -28069,6 +28837,56 @@ class TestLiveApprovalModeWrites:
                 app._prompt_yolo_switcher_acknowledgement()
                 push.assert_not_called()
 
+    async def test_set_approval_mode_reports_distinct_classifier_on_each_auto_entry(
+        self,
+    ) -> None:
+        """A later Auto toggle discloses a distinct startup classifier."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        classifier = "anthropic:claude-haiku-4-5"
+        app = DeepAgentsApp(
+            server_kwargs={"auto_classifier_model": classifier},
+        )
+        app._model_override = "openai:gpt-5.5"
+        with (
+            patch.object(app, "_notify_auto_mode_enabled_once"),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.AUTO) is True
+
+        notify.assert_called_once_with(
+            f"Auto reviews actions with {classifier}.",
+            severity="information",
+            markup=False,
+        )
+
+    @pytest.mark.parametrize("classifier", [None, "openai:gpt-5.5"])
+    async def test_set_approval_mode_skips_classifier_toast_when_same_as_active(
+        self,
+        classifier: str | None,
+    ) -> None:
+        """Inherited and explicitly identical classifiers need no extra toast."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(
+            server_kwargs={"auto_classifier_model": classifier},
+        )
+        app._model_override = "openai:gpt-5.5"
+        with (
+            patch.object(app, "_notify_auto_mode_enabled_once"),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.AUTO) is True
+
+        notify.assert_not_called()
+
+    def test_auto_classifier_label_inherits_effective_main_model(self) -> None:
+        """The notice names the main model when no classifier override exists."""
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.5"
+
+        assert app._auto_classifier_model_label() == "openai:gpt-5.5"
+
     async def test_toggle_warns_when_auto_ineligible_and_switcher_disabled(
         self,
     ) -> None:
@@ -28098,11 +28916,13 @@ class TestLiveApprovalModeWrites:
     async def test_on_auto_approve_enabled_first_modal_and_save(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
-            AUTO_MODE_NOTICE_BODY,
             AutoModeNoticeScreen,
+            build_auto_mode_notice_body,
         )
 
+        classifier = "openai:gpt-5.5-mini"
         app = DeepAgentsApp(auto_approve=False)
+        app._auto_classifier_model = classifier
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -28134,7 +28954,9 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert app._approval_mode is ApprovalMode.AUTO
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == AUTO_MODE_NOTICE_BODY
+                assert app.screen._body == build_auto_mode_notice_body(
+                    classifier, distinct_from_main_model=True
+                )
                 save_notice.assert_not_called()
                 await pilot.press("enter")
                 await pilot.pause()
@@ -28182,10 +29004,11 @@ class TestLiveApprovalModeWrites:
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
             AUTO_MODE_DOCS_URL,
-            AUTO_MODE_NOTICE_BODY,
             AutoModeNoticeScreen,
+            build_auto_mode_notice_body,
         )
 
+        classifier = "anthropic:claude-haiku-4-5"
         with (
             patch(
                 "deepagents_code.approval_mode.has_auto_mode_notice",
@@ -28197,10 +29020,13 @@ class TestLiveApprovalModeWrites:
             ) as save_notice,
         ):
             app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
+            app._auto_classifier_model = classifier
             async with app.run_test() as pilot:
                 await pilot.pause()
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == AUTO_MODE_NOTICE_BODY
+                assert app.screen._body == build_auto_mode_notice_body(
+                    classifier, distinct_from_main_model=True
+                )
                 assert AUTO_MODE_DOCS_URL in app.screen._body
                 save_notice.assert_not_called()
                 await pilot.press("enter")
@@ -28209,7 +29035,7 @@ class TestLiveApprovalModeWrites:
                 assert not isinstance(app.screen, AutoModeNoticeScreen)
                 assert app._approval_mode is ApprovalMode.AUTO
 
-    async def test_mount_auto_silent_when_notice_already_shown(self) -> None:
+    async def test_mount_auto_skips_modal_when_notice_already_shown(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
@@ -28225,6 +29051,29 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert not isinstance(app.screen, AutoModeNoticeScreen)
                 save_notice.assert_not_called()
+
+    async def test_mount_auto_reports_classifier_after_notice_was_shown(self) -> None:
+        """Returning Auto users still see which model authorizes actions."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        classifier = "anthropic:claude-haiku-4-5"
+        with patch(
+            "deepagents_code.approval_mode.has_auto_mode_notice",
+            return_value=True,
+        ):
+            app = DeepAgentsApp(
+                approval_mode=ApprovalMode.AUTO,
+            )
+            app._auto_classifier_model = classifier
+            with patch.object(app, "notify") as notify:
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+
+        notify.assert_any_call(
+            f"Auto reviews actions with {classifier}.",
+            severity="information",
+            markup=False,
+        )
 
     async def test_mount_auto_notice_escape_reverts_to_manual_without_save(
         self,
@@ -32587,12 +33436,18 @@ class TestStatusBarConnectionMirroring:
 class TestResumeThreadCwdSwitch:
     """Tests for cwd mismatch handling while resuming threads."""
 
+    @pytest.mark.parametrize(
+        ("abort", "reload_manager"),
+        [(None, True), ("thread_switch", False)],
+    )
     async def test_offer_switch_changes_process_cwd_and_widgets(
         self,
+        abort: Literal["thread_switch"] | None,
+        reload_manager: bool,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Accepting the prompt switches process and UI cwd before startup."""
+        """Accepting the prompt switches process and UI cwd."""
         from deepagents_code.config import settings
 
         current = tmp_path / "current"
@@ -32613,6 +33468,8 @@ class TestResumeThreadCwdSwitch:
         status_bar = MagicMock()
         status_bar.cwd = str(current)
         app._status_bar = status_bar
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
         reload_calls: list[Path | None] = []
 
         def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
@@ -32629,7 +33486,9 @@ class TestResumeThreadCwdSwitch:
             patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
             patch("deepagents_code.model_config.clear_caches") as clear_caches,
         ):
-            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+            ok = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=False, abort=abort
+            )
 
         assert ok == "continue"
         assert Path.cwd() == target
@@ -32640,6 +33499,7 @@ class TestResumeThreadCwdSwitch:
         clear_caches.assert_called_once_with()
         screen = push_wait.call_args.args[0]
         assert screen._project_settings_change_detected is True
+        retarget.assert_awaited_once_with(reload_manager=reload_manager)
 
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,
@@ -32789,6 +33649,8 @@ class TestResumeThreadCwdSwitch:
         app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
         mount = AsyncMock()
         app._mount_message = mount  # ty: ignore[invalid-assignment]
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
 
         with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
             outcome = await app._offer_thread_cwd_switch(
@@ -32797,6 +33659,7 @@ class TestResumeThreadCwdSwitch:
 
         assert outcome == "abort"
         replace.assert_awaited_once()
+        retarget.assert_not_awaited()
         # The failed switch must be surfaced as a durable message, distinct from
         # the transient toast `_replace_server_after_cwd_switch` already raised.
         mount.assert_awaited_once()
@@ -32892,6 +33755,8 @@ class TestResumeThreadCwdSwitch:
         set_spinner = AsyncMock()
         app._set_spinner = set_spinner  # ty: ignore[invalid-assignment]
         app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
+        reload_hooks = AsyncMock()
+        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         replace_calls: list[Path] = []
 
         def replace_server(cwd: Path) -> str:
@@ -32913,6 +33778,7 @@ class TestResumeThreadCwdSwitch:
         assert app._lc_thread_id == "old-thread"
         set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
+        reload_hooks.assert_awaited_once_with()
 
     async def test_threads_switch_offers_abort_and_cancels(
         self,

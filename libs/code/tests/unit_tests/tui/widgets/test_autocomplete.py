@@ -186,6 +186,13 @@ class TestSlashCommandController:
         assert controller.can_handle("/hel", 4) is True
         assert controller.can_handle("/help", 5) is True
 
+    def test_has_command_matches_exact_name_only(self, controller):
+        """Exact-name lookup distinguishes a command from a same-looking path."""
+        assert controller.has_command("/help") is True
+        assert controller.has_command("/hel") is False
+        assert controller.has_command("help") is False
+        assert controller.has_command("/tmp") is False
+
     def test_cannot_handle_non_slash(self, controller):
         """Does not handle text not starting with /."""
         assert controller.can_handle("hello", 5) is False
@@ -555,6 +562,7 @@ class TestMultiCompletionManager:
     def test_exclude_leaves_other_controllers_active(self, manager):
         """Excluding the slash controller must not disable `@` completions."""
         slash_ctrl = manager._controllers[0]
+        assert isinstance(slash_ctrl, SlashCommandController)
 
         manager.on_text_changed("@file", 5, exclude=(slash_ctrl,))
 
@@ -566,6 +574,7 @@ class TestMultiCompletionManager:
         assert isinstance(manager._active, SlashCommandController)
 
         slash_ctrl = manager._controllers[0]
+        assert isinstance(slash_ctrl, SlashCommandController)
         manager.on_text_changed("/help", 5, exclude=(slash_ctrl,))
 
         assert manager._active is None

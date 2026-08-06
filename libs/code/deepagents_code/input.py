@@ -3,7 +3,9 @@
 import logging
 import re
 import shlex
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -547,48 +549,20 @@ def parse_pasted_file_paths(text: str) -> list[Path]:
     return _parse_pasted_payload_paths(text, _resolve_existing_pasted_path)
 
 
-def parse_pasted_directory_paths(text: str) -> list[Path]:
-    """Parse a paste payload that consists only of dropped directory paths.
-
-    Terminals deliver a dragged folder the same way they deliver a dragged file,
-    so a folder drop reads as an absolute path starting with `/` — the same
-    character that opens slash-command mode in the chat input. Callers use this
-    to recognize such a payload as a path and leave it as literal text;
-    directories are not attachable, so nothing is loaded from them.
-
-    Tokens are resolved strictly first: every shell token must resolve to an
-    existing directory. When that fails the whole payload is retried as one
-    unquoted path, because some terminals paste folder paths verbatim with
-    spaces left intact — an asymmetry with `parse_pasted_file_paths`, which has
-    no such fallback. A payload that satisfies neither is ordinary text.
-
-    Args:
-        text: Raw paste payload from the terminal.
-
-    Returns:
-        List of resolved directory paths, or an empty list when parsing fails.
-    """
-    paths = _parse_pasted_payload_paths(text, _resolve_existing_pasted_directory)
-    if paths:
-        return paths
-
-    # Terminals that paste an unquoted path verbatim leave spaces intact, which
-    # the shell tokenization in `_parse_pasted_payload_paths` splits into
-    # unresolvable tokens.
-    candidate = normalize_pasted_path(text)
-    if candidate is None:
-        return []
-    resolved = _resolve_existing_pasted_directory(candidate)
-    return [resolved] if resolved is not None else []
-
-
 def parse_pasted_any_entry_paths(text: str) -> list[Path]:
     """Parse a paste payload resolving every token to any existing entry.
 
-    Unlike `parse_pasted_file_paths` / `parse_pasted_directory_paths`, this
-    parser does not require a uniform shape: a mixed multi-drop of files and
-    directories is accepted as long as every token resolves to an existing
-    filesystem entry.
+    Unlike `parse_pasted_file_paths`, this parser does not require a uniform
+    shape: a dragged folder, or a mixed multi-drop of files and directories, is
+    accepted as long as every token resolves to an existing filesystem entry.
+    Directories matter because a terminal delivers a dragged folder exactly the
+    way it delivers a dragged file, so a folder drop arrives as an absolute path
+    starting with `/` — the character that opens slash-command mode in the chat
+    input. Recognizing it here keeps it literal text; directories are not
+    attachable, so nothing is loaded from them.
+
+    Tokenization is strict and shell-style, so a payload whose spaces are
+    unquoted resolves through `extract_leading_pasted_entry_path` instead.
 
     Args:
         text: Raw paste payload from the terminal.
@@ -608,7 +582,7 @@ def _parse_pasted_payload_paths(
     Args:
         text: Raw paste payload from the terminal.
         resolve: Resolver deciding whether a path candidate exists in the shape
-            the caller accepts (file or directory).
+            the caller accepts — a file, or any entry.
 
     Returns:
         Resolved paths, or an empty list when any token fails to resolve.
@@ -1068,6 +1042,52 @@ def _normalize_posix_pasted_path(text: str) -> Path | None:
     return None
 
 
+_probe_failures: ContextVar[list[str] | None] = ContextVar(
+    "_probe_failures", default=None
+)
+"""Collector for filesystem probes that raised, when a caller is tracking them.
+
+`None` (the default) means nobody is tracking and failures are only logged.
+"""
+
+
+@contextmanager
+def track_probe_failures() -> Iterator[list[str]]:
+    """Collect filesystem probe failures raised inside the block.
+
+    The probe helpers below deliberately answer `False` when a stat raises, so
+    "this is not a path" and "I could not find out" are indistinguishable to
+    their callers. That is fine for callers that only want a usable path, but
+    wrong for callers that reclassify the payload on a negative answer — for
+    the chat input, an unreadable dropped folder would become a slash command.
+    Wrapping the classification in this block lets such a caller tell the two
+    apart and fail toward the safe direction.
+
+    Nesting is supported; each block sees only its own failures.
+
+    Yields:
+        List that accumulates one description per failed probe.
+    """
+    failures: list[str] = []
+    token = _probe_failures.set(failures)
+    try:
+        yield failures
+    finally:
+        _probe_failures.reset(token)
+
+
+def _record_probe_failure(path: Path, error: Exception) -> None:
+    """Record a failed filesystem probe for any active tracker.
+
+    Args:
+        path: Path whose probe raised.
+        error: Exception the probe raised.
+    """
+    failures = _probe_failures.get()
+    if failures is not None:
+        failures.append(f"{path}: {error}")
+
+
 def _safe_exists(path: Path) -> bool:
     """Return whether `path` exists, treating OS rejections as non-existent.
 
@@ -1095,6 +1115,7 @@ def _safe_exists(path: Path) -> bool:
         return path.exists()
     except OSError as e:
         logger.debug("exists() check failed for %r: %s", path, e)
+        _record_probe_failure(path, e)
         return False
 
 
@@ -1113,6 +1134,7 @@ def _safe_is_file(path: Path) -> bool:
         return path.is_file()
     except OSError as e:
         logger.debug("is_file() check failed for %r: %s", path, e)
+        _record_probe_failure(path, e)
         return False
 
 
@@ -1131,6 +1153,7 @@ def _safe_is_dir(path: Path) -> bool:
         return path.is_dir()
     except OSError as e:
         logger.debug("is_dir() check failed for %r: %s", path, e)
+        _record_probe_failure(path, e)
         return False
 
 
@@ -1144,18 +1167,6 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
         Resolved existing file path, otherwise `None`.
     """
     return _resolve_existing_pasted_entry(path, _safe_is_file)
-
-
-def _resolve_existing_pasted_directory(path: Path) -> Path | None:
-    """Resolve a pasted path candidate to an existing directory.
-
-    Args:
-        path: Parsed path candidate.
-
-    Returns:
-        Resolved existing directory path, otherwise `None`.
-    """
-    return _resolve_existing_pasted_entry(path, _safe_is_dir)
 
 
 def _resolve_existing_pasted_entry_any(path: Path) -> Path | None:
@@ -1180,7 +1191,7 @@ def _resolve_existing_pasted_entry(
     Args:
         path: Parsed path candidate.
         matches: Predicate deciding whether a resolved path is the shape the
-            caller wants (a file or a directory).
+            caller wants — a file, a directory, or any existing entry.
 
     Returns:
         Resolved existing path, otherwise `None`.
@@ -1190,6 +1201,10 @@ def _resolve_existing_pasted_entry(
     except (OSError, RuntimeError, ValueError) as e:
         # ValueError covers an embedded NUL, which `resolve()` rejects outright.
         logger.debug("Path resolution failed for %r: %s", path, e)
+        if not isinstance(e, ValueError):
+            # An embedded NUL is a definitive "not a path"; an OSError or a
+            # symlink-loop RuntimeError only means we could not find out.
+            _record_probe_failure(path, e)
         return None
     if matches(resolved):
         return resolved
@@ -1201,6 +1216,8 @@ def _resolve_existing_pasted_entry(
         resolved_fuzzy = fuzzy.resolve()
     except (OSError, RuntimeError, ValueError) as e:
         logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
+        if not isinstance(e, ValueError):
+            _record_probe_failure(fuzzy, e)
         return None
     if matches(resolved_fuzzy):
         return resolved_fuzzy
@@ -1260,6 +1277,7 @@ def _resolve_with_unicode_space_variants(
             ]
         except OSError as e:
             logger.debug("Failed listing %s for Unicode-space lookup: %s", current, e)
+            _record_probe_failure(current, e)
             return None
 
         if not matches:

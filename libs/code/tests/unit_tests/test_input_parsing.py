@@ -12,10 +12,10 @@ from deepagents_code.input import (
     normalize_pasted_path,
     parse_file_mentions,
     parse_pasted_any_entry_paths,
-    parse_pasted_directory_paths,
     parse_pasted_file_paths,
     parse_pasted_path_payload,
     parse_single_pasted_file_path,
+    track_probe_failures,
 )
 
 
@@ -322,71 +322,67 @@ def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
     assert result == [img.resolve()]
 
 
-def test_parse_pasted_directory_paths_resolves_dropped_folder(tmp_path: Path) -> None:
+def test_parse_pasted_any_entry_paths_resolves_dropped_folder(tmp_path: Path) -> None:
     """A dragged folder payload should resolve to the directory."""
     folder = tmp_path / "assets"
     folder.mkdir()
 
-    assert parse_pasted_directory_paths(str(folder)) == [folder.resolve()]
+    assert parse_pasted_any_entry_paths(str(folder)) == [folder.resolve()]
 
 
-def test_parse_pasted_directory_paths_resolves_quoted_folder(tmp_path: Path) -> None:
+def test_parse_pasted_any_entry_paths_resolves_quoted_folder(tmp_path: Path) -> None:
     """Quoted folder payloads should resolve like quoted file payloads."""
     folder = tmp_path / "my assets"
     folder.mkdir()
 
-    assert parse_pasted_directory_paths(f"'{folder}'") == [folder.resolve()]
+    assert parse_pasted_any_entry_paths(f"'{folder}'") == [folder.resolve()]
 
 
-def test_parse_pasted_directory_paths_resolves_unquoted_folder_with_spaces(
+def test_parse_pasted_any_entry_paths_rejects_unquoted_folder_with_spaces(
     tmp_path: Path,
 ) -> None:
-    """Terminals that paste folder paths verbatim keep spaces unescaped."""
+    """Shell tokenization splits unquoted spaces; the leading extractor covers it."""
     folder = tmp_path / "my assets" / "raw images"
     folder.mkdir(parents=True)
 
-    assert parse_pasted_directory_paths(str(folder)) == [folder.resolve()]
+    assert parse_pasted_any_entry_paths(str(folder)) == []
+
+    result = extract_leading_pasted_entry_path(str(folder))
+    assert result is not None
+    assert result[0] == folder.resolve()
 
 
-def test_parse_pasted_directory_paths_resolves_file_url(tmp_path: Path) -> None:
+def test_parse_pasted_any_entry_paths_resolves_file_url(tmp_path: Path) -> None:
     """`file://` folder payloads should be URL-decoded and resolved."""
     folder = tmp_path / "space name"
     folder.mkdir()
 
     payload = f"file://{str(folder).replace(' ', '%20')}"
 
-    assert parse_pasted_directory_paths(payload) == [folder.resolve()]
+    assert parse_pasted_any_entry_paths(payload) == [folder.resolve()]
 
 
-def test_parse_pasted_directory_paths_resolves_multiple_folders(tmp_path: Path) -> None:
+def test_parse_pasted_any_entry_paths_resolves_multiple_folders(tmp_path: Path) -> None:
     """Dropping several folders at once should resolve every path."""
     first = tmp_path / "one"
     second = tmp_path / "two"
     first.mkdir()
     second.mkdir()
 
-    result = parse_pasted_directory_paths(f"{first}\n{second}")
+    result = parse_pasted_any_entry_paths(f"{first}\n{second}")
 
     assert result == [first.resolve(), second.resolve()]
 
 
-def test_parse_pasted_directory_paths_ignores_files(tmp_path: Path) -> None:
-    """File payloads are handled by the file parser, not this one."""
-    target = tmp_path / "note.txt"
-    target.write_text("hi")
-
-    assert parse_pasted_directory_paths(str(target)) == []
-
-
-def test_parse_pasted_directory_paths_ignores_missing_folder(tmp_path: Path) -> None:
+def test_parse_pasted_any_entry_paths_ignores_missing_folder(tmp_path: Path) -> None:
     """Missing directories should fall back to regular text paste."""
-    assert parse_pasted_directory_paths(str(tmp_path / "missing")) == []
+    assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
 
 
 @pytest.mark.parametrize("payload", ["", "   \n\t  ", "/help", "please inspect this"])
-def test_parse_pasted_directory_paths_ignores_non_path_payloads(payload: str) -> None:
-    """Prose and slash commands must not be read as dropped folders."""
-    assert parse_pasted_directory_paths(payload) == []
+def test_parse_pasted_any_entry_paths_ignores_non_path_payloads(payload: str) -> None:
+    """Prose and slash commands must not be read as dropped entries."""
+    assert parse_pasted_any_entry_paths(payload) == []
 
 
 def test_parse_pasted_any_entry_paths_resolves_mixed_folder_then_file(
@@ -665,6 +661,45 @@ def test_dropped_payload_paths_accepts_windows_unc_shape(mocker) -> None:
     )
 
     assert dropped_payload_paths(r"\\server\share\shot.png") == [resolved]
+
+
+def test_track_probe_failures_records_unreadable_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe that raises is recorded, not silently folded into 'not a path'."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    def _deny(self: Path, *args: object, **kwargs: object) -> bool:  # noqa: ARG001  # Replaces a Path probe signature
+        msg = "permission denied"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(Path, "exists", _deny)
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(str(folder)) == []
+
+    # The Unicode-space fallback re-walks parent segments, so more than one
+    # probe can fail; what matters is that the caller learns at least one did.
+    assert failures
+    assert all("permission denied" in failure for failure in failures)
+
+
+def test_track_probe_failures_empty_for_merely_missing_path(tmp_path: Path) -> None:
+    """A path that simply does not exist is a clean negative, not a failure."""
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
+
+    assert failures == []
+
+
+def test_track_probe_failures_nests_independently(tmp_path: Path) -> None:
+    """Each block sees only the failures raised inside it."""
+    with track_probe_failures() as outer:
+        with track_probe_failures() as inner:
+            assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
+        assert inner == []
+    assert outer == []
 
 
 def test_dropped_payload_paths_ignores_plain_text() -> None:

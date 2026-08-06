@@ -3592,7 +3592,12 @@ class TestDroppedFolderPaste:
     async def test_dropped_quoted_folder_keeps_normal_mode(
         self, tmp_path: Path
     ) -> None:
-        """Quoted folder drops (paths with spaces) should also stay normal."""
+        """Quoted folder drops (paths with spaces) should also stay normal.
+
+        A quoted payload never reaches the `/` mode-trigger branch, so the
+        assertion that matters is that detection still recognized the drop and
+        installed a draft -- otherwise the next keystroke has no protection.
+        """
         folder = tmp_path / "my assets"
         folder.mkdir()
 
@@ -3606,6 +3611,7 @@ class TestDroppedFolderPaste:
 
             assert chat.mode == "normal"
             assert chat._text_area.text == f"'{folder}'"
+            assert chat._dropped_path_draft == f"'{folder}'"
 
     async def test_typing_after_folder_drop_submits_message(
         self, tmp_path: Path
@@ -3826,9 +3832,10 @@ class TestDroppedFolderPaste:
     ) -> None:
         """A bare word matching a cwd folder is prose, not a drop.
 
-        Terminals always deliver drops as absolute, `~/`, or `file://` paths, so
-        requiring that shape keeps `tests` or `..` from resolving against the
-        working directory and installing a bogus dropped-path draft.
+        Terminals deliver drops as absolute, Windows drive/UNC, `~/`, or
+        `file://` paths, so requiring one of those shapes keeps `tests` or `..`
+        from resolving against the working directory and installing a bogus
+        dropped-path draft.
         """
         (tmp_path / "assets").mkdir()
         monkeypatch.chdir(tmp_path)
@@ -3843,11 +3850,193 @@ class TestDroppedFolderPaste:
 
             assert chat._dropped_path_draft is None
 
+            # The guard must not have disabled `/` as a mode trigger.
+            chat._text_area.text = "/help"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+
+    async def test_backspace_after_folder_drop_keeps_leading_slash(
+        self, tmp_path: Path
+    ) -> None:
+        """Correcting a typo in a dropped path must not eat its leading `/`.
+
+        A shrinking edit leaves text that no longer names an existing entry, so
+        revalidating would clear the draft and hand the `/` to command mode --
+        which strips it from the buffer while the user is still editing.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            chat._text_area.move_cursor_to_end()
+            await _pause_for_strip(pilot)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)[:-1]
+
+            # Retyping the deleted character restores the full path.
+            await pilot.press("s")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+
+    async def test_typing_after_recalled_dropped_path_keeps_normal_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """History recall must survive the next keystroke.
+
+        Recall returns early from `on_text_area_changed` before draft detection
+        runs, so the recall handler installs the draft itself; otherwise the
+        classification would last exactly until the user typed one character.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append(str(folder))
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat._dropped_path_draft == str(folder)
+
+            chat._text_area.move_cursor_to_end()
+            await pilot.press("x")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"{folder}x"
+
+    async def test_recalled_slash_command_still_enters_command_mode(self) -> None:
+        """The path check must not demote a real command recalled from history."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("/help")
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+            assert chat._dropped_path_draft is None
+
+    async def test_registered_command_wins_over_root_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """A command whose name exists at the filesystem root stays a command.
+
+        `/docs` and `/tools` are registered and are ordinary directories in many
+        container images; resolving the path first would silently send them to
+        the model as chat text instead of running them.
+        """
+        from deepagents_code.command_registry import CommandEntry
+
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Register a command named for a directory that really exists.
+            chat.update_slash_commands([CommandEntry(str(folder), "stub", "", "")])
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._dropped_path_draft is None
+
+    async def test_draft_cleared_after_submitting_dropped_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A stale draft must not suppress `/` for the rest of the session."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat._dropped_path_draft is None
+
+            chat._text_area.text = "/help"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+
+    async def test_unreadable_dropped_path_stays_normal_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path we cannot stat is still a path, not a slash command.
+
+        A permission-denied probe answers `False` exactly like a missing path,
+        so without failure tracking an unreadable folder would flip to command
+        mode, lose its leading `/`, and let Enter run a fuzzy-matched command.
+        """
+        import pathlib
+
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        # Deny only the dropped path; Textual stats its own files while running.
+        denied = str(folder.resolve())
+
+        def _make_denying(name: str):  # noqa: ANN202  # local test helper
+            original = getattr(pathlib.Path, name)
+
+            def _probe(self: pathlib.Path, *args: object, **kwargs: object) -> bool:
+                if str(self) == denied:
+                    msg = "permission denied"
+                    raise PermissionError(msg)
+                return original(self, *args, **kwargs)
+
+            return _probe
+
+        for probe in ("exists", "is_dir", "is_file"):
+            monkeypatch.setattr(pathlib.Path, probe, _make_denying(probe))
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+            assert chat._dropped_path_draft == str(folder)
+
 
 class TestPathPayloadDetectionGating:
     """Single-keystroke edits should skip the blocking path-detection helpers.
 
-    `_is_dropped_path_payload` and `_apply_inline_dropped_path_replacement`
+    `_detect_dropped_path_draft` and `_apply_inline_dropped_path_replacement`
     reach `Path.exists()` / `Path.is_file()` via
     `deepagents_code.input.parse_pasted_path_payload`, which are synchronous
     stat syscalls on the event-loop thread. They are only meaningful when a
@@ -3865,10 +4054,10 @@ class TestPathPayloadDetectionGating:
 
             detect_calls = 0
             replace_calls = 0
-            original_detect = chat._is_dropped_path_payload
+            original_detect = chat._detect_dropped_path_draft
             original_replace = chat._apply_inline_dropped_path_replacement
 
-            def counting_detect(text: str) -> bool:
+            def counting_detect(text: str) -> str | None:
                 nonlocal detect_calls
                 detect_calls += 1
                 return original_detect(text)
@@ -3878,7 +4067,7 @@ class TestPathPayloadDetectionGating:
                 replace_calls += 1
                 return original_replace(text)
 
-            chat._is_dropped_path_payload = counting_detect  # ty: ignore
+            chat._detect_dropped_path_draft = counting_detect  # ty: ignore
             chat._apply_inline_dropped_path_replacement = counting_replace  # ty: ignore
 
             for char in "hello":
@@ -3902,14 +4091,14 @@ class TestPathPayloadDetectionGating:
             assert ta is not None
 
             detect_calls = 0
-            original_detect = chat._is_dropped_path_payload
+            original_detect = chat._detect_dropped_path_draft
 
-            def counting_detect(text: str) -> bool:
+            def counting_detect(text: str) -> str | None:
                 nonlocal detect_calls
                 detect_calls += 1
                 return original_detect(text)
 
-            chat._is_dropped_path_payload = counting_detect  # ty: ignore
+            chat._detect_dropped_path_draft = counting_detect  # ty: ignore
 
             ta.text = str(target)
             await pilot.pause()

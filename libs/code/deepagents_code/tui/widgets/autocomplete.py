@@ -160,6 +160,20 @@ class SlashCommandController:
         """
         return text.startswith("/")
 
+    def has_command(self, name: str) -> bool:
+        """Return whether `name` is a registered command name.
+
+        Lets callers distinguish a real command from a same-looking absolute
+        path without reaching into the command list.
+
+        Args:
+            name: Candidate command name, including the leading `/`.
+
+        Returns:
+            `True` when a registered command has exactly this name.
+        """
+        return any(entry.name == name for entry in self._commands)
+
     def reset(self) -> None:
         """Clear suggestions."""
         if self._suggestions:
@@ -277,7 +291,10 @@ class SlashCommandController:
             self.reset()
 
     def on_key(
-        self, event: events.Key, _text: str, cursor_index: int
+        self,
+        event: events.Key,
+        text: str,  # noqa: ARG002  # Required by CompletionController protocol
+        cursor_index: int,
     ) -> CompletionResult:
         """Handle key events for navigation and selection.
 
@@ -863,7 +880,7 @@ class MultiCompletionManager:
         text: str,
         cursor_index: int,
         *,
-        exclude: Collection[object] = (),
+        exclude: Collection[CompletionController] = (),
     ) -> None:
         """Handle text change, activating the appropriate controller.
 
@@ -871,11 +888,12 @@ class MultiCompletionManager:
             text: Completion-space text to dispatch on.
             cursor_index: Cursor offset within `text`.
             exclude: Controllers that must not activate for this change, even
-                when they report they can handle it. Matched by identity, so the
-                element type is deliberately loose. Callers use this when context
-                they hold — and the controller cannot see — makes the match
-                wrong, such as a leading `/` that belongs to a dropped path
-                rather than to a slash command.
+                when they report they can handle it. Matched by identity.
+                Callers use this when context they hold — and the controller
+                cannot see — makes the match wrong, such as a leading `/` that
+                belongs to a dropped path rather than to a slash command. An
+                excluded controller that is already active is reset and
+                deactivated, not merely skipped.
         """
         # Find the first controller that can handle this input
         candidate = None

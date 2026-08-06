@@ -27,6 +27,7 @@ from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphBubbleUp
 from pydantic import ValidationError
 
 from deepagents.middleware.rubric import (
@@ -57,14 +58,17 @@ _PASSING_CRITERION: CriterionEval = {"name": "Response answers the question", "p
 # ---------------------------------------------------------------------- #
 
 
-def _runtime(events: list[dict[str, Any]] | None = None) -> Any:  # noqa: ANN401
+def _runtime(
+    events: list[dict[str, Any]] | None = None,
+    context: object | None = None,
+) -> Any:  # noqa: ANN401
     """Build a minimal stub of the LangGraph runtime.
 
-    `RubricMiddleware` only touches `runtime.stream_writer`, so a
-    `SimpleNamespace` is plenty.
+    `RubricMiddleware` only touches `runtime.stream_writer` and
+    `runtime.context`, so a `SimpleNamespace` is plenty.
     """
     sink = events if events is not None else []
-    return SimpleNamespace(stream_writer=sink.append)
+    return SimpleNamespace(stream_writer=sink.append, context=context)
 
 
 def _stub_grader(
@@ -81,13 +85,23 @@ def _stub_grader(
     call_log: list[int] = []
     iterator = iter(responses)
 
-    def _grade(state: dict[str, Any], iteration: int) -> GraderResponse:  # noqa: ARG001
+    def _grade(
+        state: dict[str, Any],  # noqa: ARG001
+        iteration: int,
+        *,
+        context: object | None = None,  # noqa: ARG001
+    ) -> GraderResponse:
         if exc is not None:
             raise exc
         call_log.append(iteration)
         return next(iterator)
 
-    async def _agrade(state: dict[str, Any], iteration: int) -> GraderResponse:  # noqa: ARG001
+    async def _agrade(
+        state: dict[str, Any],  # noqa: ARG001
+        iteration: int,
+        *,
+        context: object | None = None,  # noqa: ARG001
+    ) -> GraderResponse:
         if exc is not None:
             raise exc
         call_log.append(iteration)
@@ -117,6 +131,8 @@ def _stub_invoke_grader(
         state: dict[str, Any],  # noqa: ARG001
         iteration: int,  # noqa: ARG001
         correction: str | None = None,
+        *,
+        context: object | None = None,  # noqa: ARG001
     ) -> GraderResponse:
         corrections.append(correction)
         return next(iterator)
@@ -125,6 +141,8 @@ def _stub_invoke_grader(
         state: dict[str, Any],  # noqa: ARG001
         iteration: int,  # noqa: ARG001
         correction: str | None = None,
+        *,
+        context: object | None = None,  # noqa: ARG001
     ) -> GraderResponse:
         corrections.append(correction)
         return next(iterator)
@@ -697,6 +715,7 @@ class TestGraderPlumbing:
             _payload: dict[str, Any],
             *,
             config: dict[str, Any],
+            context: object | None = None,  # noqa: ARG001
         ) -> dict[str, Any]:
             captured_config.update(config)
             return {
@@ -773,6 +792,7 @@ class TestGraderPlumbing:
             _payload: dict[str, Any],
             *,
             config: dict[str, Any],
+            context: object | None = None,  # noqa: ARG001
         ) -> dict[str, Any]:
             captured_config.update(config)
             return {
@@ -1695,3 +1715,163 @@ class TestRevisionPrompt:
     def test_verified_evaluation_does_not_mention_verification_gaps(self) -> None:
         prompt = RubricMiddleware._revision_prompt(self._evaluation())
         assert "could not verify" not in prompt
+
+
+class TestSubclassSeams:
+    """Extension points relied on by subclasses such as dcode's grader.
+
+    A subclass that wraps a single grader call must override `_invoke_grader`
+    rather than `_grade`, so these pin the seam that makes that possible: the
+    `context` hand-off, the `_grader_input` override point, `GraphBubbleUp`
+    passing through, and `unverified` reaching stream consumers.
+    """
+
+    def _state(self, **overrides: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "messages": [HumanMessage(content="build a thing"), AIMessage(content="done")],
+            "rubric": "- a\n- b",
+            "_active_rubric": "- a\n- b",
+            "_current_grading_run_id": "seam-run",
+            "_rubric_iterations": 0,
+        }
+        base.update(overrides)
+        return base
+
+    def _grader(self, captured: dict[str, Any]) -> Any:  # noqa: ANN401
+        response = GraderResponse(
+            result="satisfied",
+            explanation="ok",
+            criteria=[{"name": "a", "passed": True}, {"name": "b", "passed": True}],
+        )
+
+        def invoke(payload: dict[str, Any], *, config: dict[str, Any], context: object | None = None) -> dict[str, Any]:  # noqa: ARG001
+            captured["payload"] = payload
+            captured["context"] = context
+            return {"messages": [AIMessage(content="")], "structured_response": response}
+
+        async def ainvoke(payload: dict[str, Any], *, config: dict[str, Any], context: object | None = None) -> dict[str, Any]:  # noqa: ARG001
+            captured["payload"] = payload
+            captured["context"] = context
+            return {"messages": [AIMessage(content="")], "structured_response": response}
+
+        return SimpleNamespace(invoke=invoke, ainvoke=ainvoke)
+
+    def test_runtime_context_reaches_the_grader(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        captured: dict[str, Any] = {}
+        monkeypatch.setattr(mw, "_grader", self._grader(captured))
+        sentinel = object()
+
+        mw.after_agent(self._state(), _runtime(context=sentinel))
+
+        assert captured["context"] is sentinel
+
+    async def test_runtime_context_reaches_the_grader_async(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        captured: dict[str, Any] = {}
+        monkeypatch.setattr(mw, "_grader", self._grader(captured))
+        sentinel = object()
+
+        await mw.aafter_agent(self._state(), _runtime(context=sentinel))
+
+        assert captured["context"] is sentinel
+
+    def test_grader_input_override_is_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A subclass may add input channels without reimplementing `_grade`."""
+
+        class _Extended(RubricMiddleware):
+            def _grader_input(
+                self,
+                state: Any,  # noqa: ANN401
+                iteration: int,
+                correction: str | None = None,
+            ) -> dict[str, Any]:
+                payload = super()._grader_input(state, iteration, correction)
+                payload["operation_id"] = "op-1"
+                return payload
+
+        mw = _Extended(model=_STUB_MODEL)
+        captured: dict[str, Any] = {}
+        monkeypatch.setattr(mw, "_grader", self._grader(captured))
+
+        mw.after_agent(self._state(), _runtime())
+
+        assert captured["payload"]["operation_id"] == "op-1"
+        assert "messages" in captured["payload"]
+
+    def test_invoke_grader_override_still_gets_the_coverage_retry(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The retry lives in `_grade`, so wrapping `_invoke_grader` keeps it."""
+        calls: list[str | None] = []
+        short = GraderResponse(result="satisfied", explanation="ok", criteria=[{"name": "a", "passed": True}])
+
+        class _Wrapped(RubricMiddleware):
+            def _invoke_grader(
+                self,
+                state: Any,  # noqa: ANN401
+                iteration: int,
+                correction: str | None = None,
+                *,
+                context: object | None = None,
+            ) -> GraderResponse:
+                calls.append(correction)
+                return short
+
+        mw = _Wrapped(model=_STUB_MODEL)
+        monkeypatch.setattr(mw, "_grader", self._grader({}))
+
+        mw.after_agent(self._state(_rubric_criteria=["a", "b"]), _runtime())
+
+        assert calls == [None, "A previous attempt returned 1 criteria; the rubric has exactly 2."]
+
+    def test_graph_bubble_up_is_not_recorded_as_grader_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An interrupting grader is control flow, not a grading failure."""
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        _stub_grader(mw, monkeypatch, exc=GraphBubbleUp("paused"))
+
+        with pytest.raises(GraphBubbleUp):
+            mw.after_agent(self._state(), _runtime())
+
+    async def test_graph_bubble_up_is_not_recorded_as_grader_error_async(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        _stub_grader(mw, monkeypatch, exc=GraphBubbleUp("paused"))
+
+        with pytest.raises(GraphBubbleUp):
+            await mw.aafter_agent(self._state(), _runtime())
+
+    def test_unverified_is_forwarded_on_the_end_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=5)
+        short = GraderResponse(result="satisfied", explanation="ok", criteria=[])
+        _stub_invoke_grader(mw, monkeypatch, short, short)
+        events: list[dict[str, Any]] = []
+
+        mw.after_agent(self._state(_rubric_criteria=["a", "b"]), _runtime(events))
+
+        end = next(e for e in events if e["type"] == "rubric_evaluation_end")
+        assert end["unverified"] is True
+
+    def test_verified_end_event_reports_unverified_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=5)
+        _stub_invoke_grader(
+            mw,
+            monkeypatch,
+            GraderResponse(
+                result="satisfied",
+                explanation="ok",
+                criteria=[{"name": "a", "passed": True}, {"name": "b", "passed": True}],
+            ),
+        )
+        events: list[dict[str, Any]] = []
+
+        mw.after_agent(self._state(_rubric_criteria=["a", "b"]), _runtime(events))
+
+        end = next(e for e in events if e["type"] == "rubric_evaluation_end")
+        assert end["unverified"] is False

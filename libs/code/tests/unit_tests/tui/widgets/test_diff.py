@@ -580,6 +580,29 @@ class TestClampSelection:
         selection = Selection(Offset(7, 0), None)
         assert clamp_selection(row, selection) == selection
 
+    def test_wrapped_row_keeps_continuation_coordinates(self) -> None:
+        """A wrapped row's gutter exists only on its first visual line.
+
+        Continuation lines restart at column 0 with source text, so a small
+        `x` on a `y > 0` line already indexes source and must not be clamped.
+        """
+        row = self._row("added1")
+        prefix = row.selection_prefix
+
+        # A drag starting on a continuation: skip nothing.
+        start = Offset(2, 1)
+        assert clamp_selection(row, Selection(start, None)) == Selection(start, None)
+
+        # A selection from above ending on a continuation keeps the row.
+        selection = Selection(None, Offset(2, 1))
+        assert clamp_selection(row, selection) == Selection(
+            Offset(prefix, 0), Offset(2, 1)
+        )
+
+        # A range wholly inside a continuation is likewise untouched.
+        selection = Selection(Offset(1, 1), Offset(3, 1))
+        assert clamp_selection(row, selection) == selection
+
     def test_non_diff_widgets_are_untouched(self) -> None:
         """Other widgets' selections pass through unchanged."""
         selection = Selection(Offset(1, 0), None)

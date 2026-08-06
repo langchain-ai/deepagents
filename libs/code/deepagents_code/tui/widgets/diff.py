@@ -231,6 +231,14 @@ def clamp_selection(widget: Widget, selection: Selection) -> Selection | None:
       inside the gutter forward to its end; a range that then collapses
       (wholly gutter) is `None`.
 
+    An endpoint counts as "inside the gutter" only on the row's first visual
+    line (`y == 0`). A row wrapped by Textual continues at column 0 of each
+    following visual line, where the gutter no longer exists — an `x` there
+    already indexes source text, so a continuation coordinate must pass through
+    untouched or a drag starting on a continuation would skip its first
+    gutter-width characters, and one ending within them would drop source the
+    user visibly selected.
+
     Args:
         widget: The row the selection applies to. Anything that is not a
             `_DiffRowStatic` is returned unchanged.
@@ -246,12 +254,12 @@ def clamp_selection(widget: Widget, selection: Selection) -> Selection | None:
     prefix = widget.selection_prefix
     start, end = selection.start, selection.end
     if start is None:
-        if end is not None and end.x <= prefix:
+        if end is not None and end.y == 0 and end.x <= prefix:
             return None
         start = Offset(prefix, 0)
-    elif start.x < prefix:
+    elif start.y == 0 and start.x < prefix:
         start = Offset(prefix, start.y)
-    if end is not None and end.x <= prefix:
+    if end is not None and end.y == 0 and end.x <= prefix:
         end = Offset(prefix, end.y)
     if end is not None and end.transpose <= start.transpose:
         return None

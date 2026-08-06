@@ -6,6 +6,8 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from textual.geometry import Offset
+from textual.selection import Selection
 from textual.widgets import Static
 
 from deepagents_code.config import get_glyphs
@@ -16,6 +18,8 @@ from deepagents_code.diff_utils import (
 )
 from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.diff import (
+    _DiffRowStatic,
+    clamp_selection,
     compose_diff_lines,
     format_diff_stats,
     highlight_source_prefixes,
@@ -505,6 +509,88 @@ class TestComposeDiffLines:
         assert not _keyword_spans(row), (
             f"an oversized source was lexed anyway: {row.spans}"
         )
+
+
+class TestClampSelection:
+    """Diff-row selections exclude the gutter from highlight and copy alike.
+
+    The gutter is dropped by rewriting the stored `Selection` (what Textual
+    paints) rather than by intercepting `get_selection` (what Textual copies),
+    because painting reads the stored geometry directly. Each test below would
+    otherwise pass for the copy while leaving the gutter visually selected.
+    """
+
+    @staticmethod
+    def _row(text: str) -> _DiffRowStatic:
+        """Return the rendered row containing `text`."""
+        widget = next(w for w in _rendered(_SAMPLE_DIFF) if text in _plain(w))
+        assert isinstance(widget, _DiffRowStatic)
+        return widget
+
+    def test_rows_report_their_gutter_width(self) -> None:
+        """Every numbered row knows how wide its gutter is (5 for "13 + ")."""
+        # 5 = width 2 + space + marker + space.
+        assert self._row("added1").selection_prefix == 5
+        assert self._row("ctx").selection_prefix == 5
+
+    def test_unnumbered_rows_report_just_the_marker(self) -> None:
+        """`show_numbers=False` still excludes the marker and its space."""
+        widget = next(
+            w
+            for w in compose_diff_lines(_SAMPLE_DIFF, 100, show_numbers=False)
+            if isinstance(w, _DiffRowStatic) and "added1" in _plain(w)
+        )
+        assert widget.selection_prefix == 2  # marker + space
+
+    def test_select_all_starts_past_the_gutter(self) -> None:
+        """A mid-selection row clamps its start, or the copy would carry numbers."""
+        row = self._row("added1")
+        assert clamp_selection(row, Selection(None, None)) == Selection(
+            Offset(5, 0), None
+        )
+
+    def test_entered_from_above_starts_past_the_gutter(self) -> None:
+        """`Selection(None, end)` covers the gutter unless its start moves."""
+        row = self._row("added1")
+        assert clamp_selection(row, Selection(None, Offset(8, 0))) == Selection(
+            Offset(5, 0), Offset(8, 0)
+        )
+
+    def test_ending_inside_the_gutter_drops_the_row(self) -> None:
+        """A selection reaching only the gutter selects nothing from this row."""
+        row = self._row("added1")
+        assert clamp_selection(row, Selection(None, Offset(5, 0))) is None
+        assert clamp_selection(row, Selection(None, Offset(2, 0))) is None
+
+    def test_starting_inside_the_gutter_moves_the_start(self) -> None:
+        """A drag beginning on a line number still selects from the source."""
+        row = self._row("added1")
+        assert clamp_selection(row, Selection(Offset(2, 0), None)) == Selection(
+            Offset(5, 0), None
+        )
+
+    def test_wholly_gutter_selection_drops_the_row(self) -> None:
+        """A range covering only the gutter leaves nothing to select."""
+        row = self._row("added1")
+        assert clamp_selection(row, Selection(Offset(1, 0), Offset(4, 0))) is None
+
+    def test_selection_inside_the_source_is_untouched(self) -> None:
+        """Endpoints past the gutter keep their exact positions."""
+        row = self._row("added1")
+        selection = Selection(Offset(7, 0), None)
+        assert clamp_selection(row, selection) == selection
+
+    def test_non_diff_widgets_are_untouched(self) -> None:
+        """Other widgets' selections pass through unchanged."""
+        selection = Selection(Offset(1, 0), None)
+        assert clamp_selection(Static("plain"), selection) == selection
+
+    def test_clamped_selection_copies_without_the_gutter(self) -> None:
+        """End to end: the clamped geometry yields source text when extracted."""
+        row = self._row("added1")
+        clamped = clamp_selection(row, Selection(None, None))
+        assert clamped is not None
+        assert row.get_selection(clamped) == ("added1", "\n")
 
 
 class TestRowKinds:

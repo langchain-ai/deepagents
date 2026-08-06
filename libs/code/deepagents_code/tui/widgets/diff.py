@@ -13,10 +13,12 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
 from itertools import accumulate, groupby, pairwise
-from typing import TYPE_CHECKING, Literal, NamedTuple, get_args
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
 from textual.content import Content
+from textual.geometry import Offset
 from textual.highlight import highlight
+from textual.selection import Selection
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -31,6 +33,7 @@ from deepagents_code.diff_utils import (
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.widget import Widget
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +185,77 @@ class _Row(NamedTuple):
     kind: _RowKind
     text: str
     number: int | None
+
+
+class _DiffRowStatic(Static):
+    """A numbered diff row whose gutter is excluded from text selections.
+
+    The gutter (line number, `+`/`-` marker, and the spaces around them) is
+    decorative: a copy taken from a diff should hold the source text, so a
+    paste into an editor does not need the numbers stripped back out. The
+    exclusion is applied to the stored `Selection` itself — see
+    `clamp_selection` — because Textual paints the selection highlight from
+    that same geometry, and a `get_selection` override would leave the gutter
+    visually selected while absent from the copy.
+    """
+
+    def __init__(self, content: Content, prefix_len: int, **kwargs: Any) -> None:
+        """Initialize the row.
+
+        Args:
+            content: The row's full content, gutter included.
+            prefix_len: Cell width of the leading gutter (number, marker, and
+                their separating spaces).
+            **kwargs: Forwarded to `Static`.
+        """
+        super().__init__(content, **kwargs)
+        self.selection_prefix = prefix_len
+
+    selection_prefix: int
+    """Cells at the row's left edge a selection must not cover."""
+
+
+def clamp_selection(widget: Widget, selection: Selection) -> Selection | None:
+    """Return `selection` shifted past a diff row's gutter, if one is set.
+
+    Every form a selection can take over a single-line row covers the gutter
+    unless its start is moved past it:
+
+    - `Selection(None, None)` — the row sits mid-selection. Textual extracts
+      the row's full text, so the start must move to the gutter's end even
+      though no endpoint lands here.
+    - `Selection(None, end)` — entered from above; same move, plus an `end`
+      still inside the gutter means nothing selectable is covered, reported
+      as `None` so the row drops out of the screen's selection map.
+    - `Selection(start, None)` / `Selection(start, end)` — pull any endpoint
+      inside the gutter forward to its end; a range that then collapses
+      (wholly gutter) is `None`.
+
+    Args:
+        widget: The row the selection applies to. Anything that is not a
+            `_DiffRowStatic` is returned unchanged.
+        selection: The geometry Textual computed for this row.
+
+    Returns:
+        The clamped selection, the original selection, or `None` when the
+        covered range lies entirely in the gutter and the row should drop out
+        of the screen's selection map.
+    """
+    if not isinstance(widget, _DiffRowStatic):
+        return selection
+    prefix = widget.selection_prefix
+    start, end = selection.start, selection.end
+    if start is None:
+        if end is not None and end.x <= prefix:
+            return None
+        start = Offset(prefix, 0)
+    elif start.x < prefix:
+        start = Offset(prefix, start.y)
+    if end is not None and end.x <= prefix:
+        end = Offset(prefix, end.y)
+    if end is not None and end.transpose <= start.transpose:
+        return None
+    return Selection(start, end)
 
 
 def compose_diff_lines(
@@ -356,11 +430,16 @@ def _compose_diff_content(
             for start, end in emphasis.get(index, []):
                 body = body.stylize(style.emphasis, start, end)
         parts: list[Content | str | tuple[str, str]] = []
-        if show_numbers and row.number is not None:
+        numbered = show_numbers and row.number is not None
+        if numbered:
             parts += [(f"{row.number:>{width}}", style.gutter), " "]
         parts += [(style.marker, style.marker_style), " ", body]
-        yield Static(
+        # The selectable prefix is everything before the source text: the
+        # padded number and a space, plus the marker and a space.
+        prefix_len = (width + 1 if numbered else 0) + 2
+        yield _DiffRowStatic(
             Content.assemble(*parts),
+            prefix_len,
             classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
         )
     if hidden:

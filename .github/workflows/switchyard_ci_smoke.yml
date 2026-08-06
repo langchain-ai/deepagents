@@ -1,0 +1,122 @@
+name: "🔀 Switchyard image + Harbor smoke"
+
+on:
+  push:
+    branches:
+      - srimanth/evals/switchyard-harbor
+    paths:
+      - ".github/workflows/switchyard_ci_smoke.yml"
+      - "libs/evals/switchyard/image/.dockerignore"
+
+permissions:
+  contents: read
+  packages: write
+  actions: write
+
+jobs:
+  publish-and-dispatch:
+    name: "📦 Publish Switchyard and dispatch unified evals"
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IMAGE: ghcr.io/langchain-ai/switchyard
+      UPSTREAM_SHA: 70aeb1f8e7c17bb9938dc203b5968c4ea9c6c87c
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "📥 Fetch pinned Switchyard source"
+        run: |
+          git init switchyard-src
+          git -C switchyard-src remote add origin https://github.com/NVIDIA-NeMo/Switchyard.git
+          git -C switchyard-src fetch --depth=1 origin "$UPSTREAM_SHA"
+          git -C switchyard-src checkout --detach FETCH_HEAD
+          resolved_sha="$(git -C switchyard-src rev-parse HEAD)"
+          if [ "$resolved_sha" != "$UPSTREAM_SHA" ]; then
+            echo "::error::Resolved Switchyard SHA does not match the pinned commit"
+            exit 1
+          fi
+          cp libs/evals/switchyard/image/.dockerignore switchyard-src/.dockerignore
+
+      - name: "🔐 Log in to GHCR"
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: "🏗️ Build pinned amd64 image"
+        run: |
+          tag="${UPSTREAM_SHA:0:8}"
+          docker build \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/langchain-ai/deepagents" \
+            --label "org.opencontainers.image.revision=$UPSTREAM_SHA" \
+            --file switchyard-src/benchmark/switchyard-rust-server.Dockerfile \
+            --tag "$IMAGE:$tag" \
+            switchyard-src
+
+          if docker history "$IMAGE:$tag" --no-trunc \
+            | grep -Eqi '(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)'; then
+            echo "::error::Credential-related command found in image history"
+            exit 1
+          fi
+
+      - name: "✅ Validate route configs"
+        run: |
+          tag="${UPSTREAM_SHA:0:8}"
+          for route in glm opus escalation nano glm-nano opus-nano; do
+            docker run --rm --platform linux/amd64 \
+              -e ANTHROPIC_API_KEY=dummy \
+              -e BASETEN_API_KEY=dummy \
+              -e GOOGLE_API_KEY=dummy \
+              -e NVIDIA_API_KEY=dummy \
+              -v "$GITHUB_WORKSPACE/libs/evals/switchyard/routes-${route}.toml:/c.toml:ro" \
+              "$IMAGE:$tag" --config /c.toml --dry-run
+          done
+
+      - name: "📤 Push public image"
+        id: image
+        run: |
+          tag="${UPSTREAM_SHA:0:8}"
+          docker push "$IMAGE:$tag"
+          image_ref="$(docker image inspect "$IMAGE:$tag" --format '{{index .RepoDigests 0}}')"
+          if ! [[ "$image_ref" =~ ^ghcr\.io/langchain-ai/switchyard@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Push did not produce the expected digest-pinned image reference"
+            exit 1
+          fi
+          echo "ref=$image_ref" >> "$GITHUB_OUTPUT"
+
+          gh api \
+            --method PATCH \
+            /orgs/langchain-ai/packages/container/switchyard/visibility \
+            -f visibility=public
+
+          docker logout ghcr.io
+          docker image rm "$IMAGE:$tag"
+          docker pull "$image_ref"
+
+      - name: "🚀 Dispatch one-task unified eval smoke"
+        env:
+          SWITCHYARD_IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          gh workflow run unified_evals.yml \
+            --ref "$GITHUB_REF_NAME" \
+            -f models=openai:switchyard \
+            -f categories=autonomous \
+            -f agent_impls=bare \
+            -f profile=lite \
+            -f include_tasks=harbor-index/gpqadiamond-cope-rearrangement-products \
+            -f rollouts=1 \
+            -f n_retries=0 \
+            -f concurrency=1 \
+            -f sandbox_env=langsmith \
+            -f force_build=false \
+            -f switchyard_config=nano \
+            -f switchyard_image="$SWITCHYARD_IMAGE"
+
+          {
+            echo "## Switchyard CI smoke dispatched"
+            echo
+            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- Upstream SHA: \`$UPSTREAM_SHA\`"
+            echo "- Image: \`$SWITCHYARD_IMAGE\`"
+            echo "- Task: \`harbor-index/gpqadiamond-cope-rearrangement-products\`"
+          } >> "$GITHUB_STEP_SUMMARY"

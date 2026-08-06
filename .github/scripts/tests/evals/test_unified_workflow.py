@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[4]
 UNIFIED_WORKFLOW = ROOT / ".github/workflows/unified_evals.yml"
 HARBOR_WORKFLOW = ROOT / ".github/workflows/_harbor_run.yml"
 HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"
+SWITCHYARD_SMOKE_WORKFLOW = ROOT / ".github/workflows/switchyard_ci_smoke.yml"
 EVALS_WORKFLOW = ROOT / ".github/workflows/evals.yml"
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 PREP_SCRIPT = ROOT / ".github/scripts/evals/unified_prep.py"
@@ -227,6 +228,27 @@ def test_switchyard_secrets_are_granted_only_when_router_is_enabled() -> None:
                 f"startsWith(matrix.model, '{provider}:')) && secrets.{key} || '' }}}}"
             )
             assert expected in step
+
+
+def test_switchyard_smoke_publishes_pinned_image_and_dispatches_unified_eval() -> None:
+    workflow = SWITCHYARD_SMOKE_WORKFLOW.read_text()
+
+    assert "srimanth/evals/switchyard-harbor" in workflow
+    assert "packages: write" in workflow
+    assert "actions: write" in workflow
+    assert "70aeb1f8e7c17bb9938dc203b5968c4ea9c6c87c" in workflow
+    assert "--platform linux/amd64" in workflow
+    assert "docker history" in workflow
+    assert "visibility=public" in workflow
+    assert 'docker pull "$image_ref"' in workflow
+    assert "gh workflow run unified_evals.yml" in workflow
+    assert "--ref \"$GITHUB_REF_NAME\"" in workflow
+    assert "-f models=openai:switchyard" in workflow
+    assert "-f categories=autonomous" in workflow
+    assert "-f profile=lite" in workflow
+    assert "-f rollouts=1" in workflow
+    assert "-f switchyard_config=nano" in workflow
+    assert '-f switchyard_image="$SWITCHYARD_IMAGE"' in workflow
 
 
 def test_enumerate_step_gated_on_full_profile() -> None:

@@ -4329,6 +4329,204 @@ class TestMessageQueue:
 
             assert not app.query(StartupTip)
 
+    async def test_startup_tip_not_mounted_for_resume(self) -> None:
+        """A resumed thread should not show a startup tip above the chat input."""
+        app = DeepAgentsApp(resume_thread="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_startup_tip_restored_after_resume_fallback(self) -> None:
+        """A resume fallback to a fresh session should restore the startup tip."""
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(StartupTip)
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            bottom = app.query_one("#bottom-app-container", Container)
+            child_ids = [child.id for child in bottom.children]
+            assert len(app.query(StartupTip)) == 1
+            assert child_ids.index("subagent-panel") < child_ids.index("startup-tip")
+            assert child_ids.index("startup-tip") < child_ids.index("input-area")
+
+    async def test_resume_fallback_does_not_restore_dismissed_tip(self) -> None:
+        """Queued input should keep a fallback session's startup tip dismissed."""
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._dismiss_startup_tip()
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_resume_fallback_does_not_restore_tip_with_initial_prompt(
+        self,
+    ) -> None:
+        """A pending `-m` prompt keeps a fallback session's tip hidden."""
+        app = DeepAgentsApp(
+            resume_thread="__MOST_RECENT__",
+            initial_prompt="hello world",
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(StartupTip)
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_successful_resume_does_not_restore_tip(self) -> None:
+        """A resume that succeeds must not remount the tip the compose gate hid.
+
+        The restore call is unconditional in `_resolve_resume_thread`'s
+        `finally`, so `_initial_resume_requested` staying set is the only thing
+        keeping a resumed thread tip-free.
+        """
+        app = DeepAgentsApp(resume_thread="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+                patch.object(
+                    app,
+                    "_offer_thread_cwd_switch",
+                    AsyncMock(return_value="continue"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert app._lc_thread_id == "thread-123"
+            assert not app.query(StartupTip)
+
+    @pytest.mark.parametrize("fallback", ["not_found", "abort", "lookup_error"])
+    async def test_startup_tip_restored_for_every_resume_fallback(
+        self,
+        fallback: str,
+    ) -> None:
+        """Every fallback branch must leave the fresh session with a tip.
+
+        Each branch clears `_initial_resume_requested` independently, so they
+        are only equivalent for as long as each one remembers to.
+        """
+        app = DeepAgentsApp(resume_thread="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(StartupTip)
+
+            if fallback == "not_found":
+                ctx: list[Any] = [
+                    patch(
+                        "deepagents_code.sessions.thread_exists",
+                        AsyncMock(return_value=False),
+                    ),
+                    patch(
+                        "deepagents_code.sessions.find_similar_threads",
+                        AsyncMock(return_value=[]),
+                    ),
+                ]
+            elif fallback == "abort":
+                ctx = [
+                    patch(
+                        "deepagents_code.sessions.thread_exists",
+                        AsyncMock(return_value=True),
+                    ),
+                    patch.object(
+                        app,
+                        "_offer_thread_cwd_switch",
+                        AsyncMock(return_value="abort"),
+                    ),
+                ]
+            else:
+                ctx = [
+                    patch(
+                        "deepagents_code.sessions.thread_exists",
+                        AsyncMock(side_effect=RuntimeError("boom")),
+                    ),
+                ]
+
+            with contextlib.ExitStack() as stack:
+                for patcher in ctx:
+                    stack.enter_context(patcher)
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert len(app.query(StartupTip)) == 1
+
+    async def test_resume_fallback_respects_hide_tips_env_var(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Opting out of tips also suppresses the post-fallback restore."""
+        from deepagents_code._env_vars import HIDE_SPLASH_TIPS
+
+        monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_resume_resolution_survives_tip_restore_failure(self) -> None:
+        """A tip-restore failure must never strand resume resolution.
+
+        The resolved event gates onboarding's `_write_launch_name_memory`, so
+        skipping `set()` would hang the launch sequence over a cosmetic widget.
+        """
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.sessions.get_most_recent",
+                    AsyncMock(return_value=None),
+                ),
+                patch.object(
+                    app,
+                    "_restore_startup_tip_after_resume_fallback",
+                    AsyncMock(side_effect=RuntimeError("boom")),
+                ),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert app._resume_thread_resolved_event.is_set()
+
     async def test_startup_tip_removed_after_first_submission(self) -> None:
         """The startup tip disappears once the first prompt is submitted."""
         app = DeepAgentsApp()

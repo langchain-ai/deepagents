@@ -1377,6 +1377,22 @@ if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
   shopt -u nullglob
 fi
 
+# Read the extras the existing tool was installed with from uv's receipt. When
+# the user re-runs this installer without DEEPAGENTS_CODE_EXTRAS, uv rebuilds
+# the environment against bare `deepagents-code` and silently drops those
+# extras' packages - warn before that happens so they can re-run with the
+# extras preserved. Only relevant on the default path (no explicit EXTRAS /
+# editable swap), where the user asked for nothing new.
+INSTALLED_EXTRAS=""
+if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ] && [ -n "$UV_TOOL_DIR" ]; then
+  receipt="${UV_TOOL_DIR}/deepagents-code/uv-receipt.toml"
+  if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
+    INSTALLED_EXTRAS=$(sed -nE 's/.*extras = \[([^]]*)\].*/\1/p' "$receipt" \
+      | head -1 \
+      | tr -d ' "' || true)
+  fi
+fi
+
 if [ "$IS_EDITABLE" = true ]; then
   pre_label="${PRE_VERSION:-(version unknown)}"
   if [ -n "$EDITABLE_SRC" ]; then
@@ -1416,10 +1432,13 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
     log_info "deepagents-code ${PRE_VERSION} is current but is outside uv's configured tool bin — installing it there."
   elif [ "$ASSUME_YES" = "1" ]; then
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
+    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
   elif can_prompt; then
-    log_info "What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
-    if prompt_yn "Update deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}?"; then
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
+    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
+    if prompt_yn "Install update?"; then
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
     else
       log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
@@ -1430,7 +1449,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     # ask, and an installer's job is to make the current version present, so
     # complete the upgrade rather than silently no-op. Callers that want a fixed
     # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
-    log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} — updating (no TTY to prompt)."
   fi
 elif [ -n "$PRE_VERSION" ]; then
   log_info "dcode ${PRE_VERSION} found — checking for updates..."
@@ -1493,6 +1512,10 @@ if [ -n "$cache_root" ]; then
 fi
 if [ -z "$INSTALL_LOCK_KIND" ]; then
   acquire_install_lock
+fi
+if [ -n "$INSTALLED_EXTRAS" ]; then
+  log_warn "This install has extras that a bare upgrade will remove: ${INSTALLED_EXTRAS}"
+  log_warn "  To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS=\"${INSTALLED_EXTRAS}\""
 fi
 if [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
@@ -2521,6 +2544,13 @@ elif [ -n "$NEW_VERSION" ]; then
 else
   log_success "deepagents-code installed."
 fi
+# The log captured uv's full stderr (dependency diff, warnings, rebuild
+# notice). Point at it on every run so users can inspect what changed -
+# non-verbose mode trims those lines from the terminal and piped
+# `curl | bash` runs lose scrollback.
+if [ -n "$INSTALL_LOG_DISPLAY" ]; then
+  log_info "Full log: ${INSTALL_LOG_DISPLAY}"
+fi
 
 if [ "$VERBOSE" = "1" ] && [ -n "$DCODE_BIN_DISPLAY" ]; then
   printf "  Location: %s\n" "$DCODE_BIN_DISPLAY"
@@ -2741,9 +2771,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # Done — footer wording depends on what changed:
-#   - same app version + dependency changes → "Dependencies updated"
-#   - already up to date                    → "Already installed"
-#   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
+#   - same app version + dependency changes → "Dependencies updated."
+#   - already up to date                    → "Already installed."
+#   - version actually moved                → "Upgrade complete."
+#   - fresh install / editable→PyPI swap    → "Setup complete."
 # ---------------------------------------------------------------------------
 if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ] && [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
@@ -2751,6 +2782,9 @@ if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] 
 elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
+elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
+  && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then
+  footer_msg="Upgrade complete."
 else
   footer_msg="Setup complete."
 fi

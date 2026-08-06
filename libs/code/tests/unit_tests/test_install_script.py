@@ -76,7 +76,9 @@ def _write_fake_tools(
     tools = tmp_path / "tools"
     bin_dir.mkdir()
     home.mkdir()
-    tools.mkdir()
+    # exist_ok: a test may stage a uv tool receipt under `tools/deepagents-code`
+    # before invoking, which creates `tools` as a side effect.
+    tools.mkdir(exist_ok=True)
 
     # Raw f-string: the embedded bash must keep `\n` as the two literal
     # characters (an f-string would otherwise turn `\n` into a newline). `{{ }}`
@@ -751,7 +753,10 @@ def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> Non
 
     assert code == 0
     assert not args_path.exists()
-    assert "0.1.0 → 0.2.0" in output
+    # The headline must lead with the verdict, not the changelog link.
+    assert output.index(
+        "Update available: deepagents-code 0.1.0 → 0.2.0"
+    ) < output.index("What's new:")
     assert (
         "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
         "deepagents-code%3D%3D0.2.0" in output
@@ -770,10 +775,12 @@ def test_install_script_interactive_accept_updates(tmp_path: Path) -> None:
     # paths, so assert the "Updating ..." line to prove the prompt was shown and
     # answered yes rather than bypassed.
     assert "Updating deepagents-code 0.1.0 → 0.2.0" in output
+    assert "Update available: deepagents-code 0.1.0 → 0.2.0\n" in output
     assert (
         "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
         "deepagents-code%3D%3D0.2.0" in output
     )
+    assert "Install update?" in output
     args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code"
@@ -1121,6 +1128,158 @@ def test_install_script_refuses_symlinked_log_dir(tmp_path: Path) -> None:
     )
     assert "Details:" not in proc.stdout
     assert not (target / "install.log").exists()
+
+
+def _write_uv_receipt(tools: Path, extras: list[str]) -> None:
+    """Stage a uv tool receipt recording the extras the install was built with.
+
+    The install script reads `uv-receipt.toml` to detect extras that a bare
+    re-run would drop; the fake `uv tool dir` points at `tmp_path / "tools"`,
+    so the receipt belongs under `tools/deepagents-code/`. Only the
+    `deepagents-code` subdir is created here — `_write_fake_tools` creates
+    `tools` itself and would fail if it already existed.
+    """
+    receipt_dir = tools / "deepagents-code"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    quoted = ", ".join(f'"{extra}"' for extra in extras)
+    (receipt_dir / "uv-receipt.toml").write_text(
+        "[tool]\n"
+        f'requirements = [{{ name = "deepagents-code", extras = [{quoted}], '
+        'specifier = "==0.1.0" }]\n'
+    )
+
+
+def test_install_script_upgrade_footer_says_upgrade_complete(tmp_path: Path) -> None:
+    """A version move ends with `Upgrade complete.`, not `Setup complete.`."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
+            # Post-install `dcode -v` must report the new version, otherwise
+            # PRE_VERSION == NEW_VERSION and the same-version branch fires.
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.19",
+        },
+        installed_version="0.1.18",
+        latest_version="0.1.19",
+    )
+
+    assert proc.returncode == 0
+    assert "✔ Upgrade complete. Run: dcode" in proc.stdout
+    assert "Setup complete" not in proc.stdout
+
+
+def test_install_script_fresh_install_footer_says_setup_complete(
+    tmp_path: Path,
+) -> None:
+    """A fresh install keeps the `Setup complete.` footer.
+
+    The host `PATH` must be scrubbed of the test venv's real `dcode` —
+    otherwise the pre-install probe finds it and the run becomes a same-version
+    no-op instead of a fresh install. No post-install `dcode` is staged either,
+    so `PRE_VERSION`/`NEW_VERSION` stay empty and the footer holds the
+    fresh-install branch.
+    """
+    env = _env(tmp_path, {}, installed_version=None)
+    env["PATH"] = (
+        f"{env['PATH'].split(os.pathsep)[0]}{os.pathsep}{_path_without_dcode()}"
+    )
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0
+    assert "✔ Setup complete. Run: dcode" in proc.stdout
+
+
+def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
+    """Every run surfaces the persistent uv log, not just failures/dep bumps."""
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.18",
+        latest_version="0.1.19",
+    )
+
+    assert proc.returncode == 0
+    assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
+
+
+def test_install_script_warns_when_upgrade_drops_receipt_extras(tmp_path: Path) -> None:
+    """A bare re-run warns when the existing install was built with extras.
+
+    Without `DEEPAGENTS_CODE_EXTRAS`, `uv tool install -U deepagents-code`
+    rebuilds the environment against the bare package and silently removes the
+    extras' packages. The script must read the extras off uv's receipt and warn
+    (with the re-run hint) before that rebuild happens.
+    """
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert (
+        "This install has extras that a bare upgrade will remove: anthropic,openai"
+        in proc.stderr
+    )
+    assert (
+        'To keep them, re-run with: DEEPAGENTS_CODE_EXTRAS="anthropic,openai"'
+        in proc.stderr
+    )
+
+
+def test_install_script_no_extras_warning_when_receipt_has_none(tmp_path: Path) -> None:
+    """An empty extras list in the receipt stays silent."""
+    _write_uv_receipt(tmp_path / "tools", [])
+
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "extras that a bare upgrade will remove" not in proc.stderr
+
+
+def test_install_script_no_extras_warning_when_receipt_missing(tmp_path: Path) -> None:
+    """No receipt (older uv / non-tool install) degrades quietly."""
+    proc, _ = _invoke(
+        tmp_path,
+        {},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "extras that a bare upgrade will remove" not in proc.stderr
+
+
+def test_install_script_no_extras_warning_when_extras_explicit(tmp_path: Path) -> None:
+    """Passing `DEEPAGENTS_CODE_EXTRAS` is explicit intent — no warning."""
+    _write_uv_receipt(tmp_path / "tools", ["anthropic", "openai"])
+
+    proc, _ = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_EXTRAS": "anthropic,openai"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "extras that a bare upgrade will remove" not in proc.stderr
 
 
 def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:

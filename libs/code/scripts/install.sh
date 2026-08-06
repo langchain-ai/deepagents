@@ -194,9 +194,10 @@ for _arg in "$@"; do
   esac
 done
 
-# Registry of temp files to clean up on exit or interrupt. Functions that
-# create tempfiles append their paths here; cleanup_on_signal removes them all.
+# Registry of temporary paths to clean up on exit or interrupt. Functions that
+# create them append their paths here; the signal handlers remove them all.
 TEMP_FILES=()
+TEMP_DIRS=()
 INSTALL_LOCK_KIND=""
 INSTALL_LOCK_DIR=""
 INSTALL_LOCK_TOKEN=""
@@ -209,9 +210,17 @@ INSTALL_LOCK_STALE_AFTER_SECS=600
 register_temp() {
   TEMP_FILES+=("$1")
 }
+register_temp_dir() {
+  TEMP_DIRS+=("$1")
+}
 cleanup_temp_files() {
   for f in "${TEMP_FILES[@]:-}"; do
     rm -f "$f" 2>/dev/null || true
+  done
+}
+cleanup_temp_dirs() {
+  for dir in "${TEMP_DIRS[@]:-}"; do
+    rm -rf "$dir" 2>/dev/null || true
   done
 }
 
@@ -272,6 +281,7 @@ log_signal_failure_hint() {
 cleanup_on_signal() {
   local exit_code=$?
   cleanup_temp_files
+  cleanup_temp_dirs
   if declare -F release_install_lock >/dev/null 2>&1; then
     release_install_lock
   fi
@@ -303,6 +313,7 @@ cleanup_on_interrupt() {
   echo "" >&2
   log_warn "Installation interrupted."
   cleanup_temp_files
+  cleanup_temp_dirs
   if declare -F release_install_lock >/dev/null 2>&1; then
     release_install_lock
   fi
@@ -568,6 +579,7 @@ copy_install_log() {
   # noclobber create below, which never follows a planted INSTALL_LOG symlink.
   local stage_dir staged
   stage_dir=$(mktemp -d "/tmp/deepagents-code-install-log.XXXXXX" 2>/dev/null) || return 2
+  register_temp_dir "$stage_dir"
   staged="${stage_dir}/install.log"
   if ! (cd "$stage_dir" && cp "$uv_stderr" install.log) 2>/dev/null; then
     rm -f "$staged" 2>/dev/null || true

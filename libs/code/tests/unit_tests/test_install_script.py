@@ -1990,7 +1990,9 @@ def _run_copy_install_log(
     harness.write_text(
         "set -uo pipefail\n"
         "TEMP_FILES=()\n"
+        "TEMP_DIRS=()\n"
         'register_temp() { TEMP_FILES+=("$1"); }\n'
+        'register_temp_dir() { TEMP_DIRS+=("$1"); }\n'
         f"{_extract_shell_function('path_is_under_home')}\n"
         f"{_extract_shell_function('copy_install_log')}\n"
         f"HOME={str(home)!r}\n"
@@ -2058,7 +2060,8 @@ def test_copy_install_log_replaces_symlink_planted_during_the_race(
 
     The `-L` guard runs before staging, so it cannot cover a link planted after
     it. Privileged publication unlinks that directory entry and atomically
-    creates a hard link instead, so the attacker's target remains untouched.
+    creates a new regular file instead, so the attacker's target remains
+    untouched.
     """
     outside = tmp_path / "outside.txt"
     outside.write_text("do not clobber\n")
@@ -2138,6 +2141,33 @@ def test_copy_install_log_refuses_directory_target(tmp_path: Path) -> None:
     assert published.is_dir()
     assert list(published.glob(".install.log.*")) == []
     assert list(log_dir.glob(".install.log.*")) == []
+
+
+def test_copy_install_log_rejects_directory_created_during_publication(
+    tmp_path: Path,
+) -> None:
+    """A directory created after removal makes privileged publication fail.
+
+    `rm -f` does not remove directories. The noclobber redirection must reject
+    one that appears after removal rather than treating it as a destination and
+    publishing `install.log/install.log`.
+    """
+    rc, _log_dir, published = _run_copy_install_log(
+        tmp_path,
+        race_hook=(
+            'id() { printf "0\\n"; }\n'
+            "rm() {\n"
+            '  if [ "${1:-}" = "-f" ] && [ "${2:-}" = "install.log" ]; then\n'
+            '    command mkdir "install.log"\n'
+            "  fi\n"
+            '  command rm "$@"\n'
+            "}\n"
+        ),
+    )
+
+    assert rc == 2
+    assert published.is_dir()
+    assert not (published / "install.log").exists()
 
 
 def test_copy_install_log_cleans_up_staged_file_when_publish_fails(
@@ -3502,7 +3532,7 @@ def test_install_uv_downloads_via_busybox_wget(tmp_path: Path) -> None:
 
 
 def _run_signal_traps(
-    tmp_path: Path, *, interrupt: bool
+    tmp_path: Path, *, interrupt: bool, temp_dir: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Wire the real EXIT + INT/TERM traps from `install.sh` and trip one.
 
@@ -3514,14 +3544,26 @@ def _run_signal_traps(
     """
     script = tmp_path / "signal_trap_harness.sh"
     body = "kill -INT $$\nsleep 5\n" if interrupt else "exit 2\n"
+    setup = ""
+    if temp_dir is not None:
+        setup = (
+            f"mkdir -p {str(temp_dir)!r}\n"
+            f"printf 'stderr\\n' > {str(temp_dir / 'install.log')!r}\n"
+            f"register_temp_dir {str(temp_dir)!r}\n"
+        )
     script.write_text(
         "set -uo pipefail\n"
         'log_warn()  { printf "%s\\n" "$*" >&2; }\n'
         'log_error() { printf "%s\\n" "$*" >&2; }\n'
-        "cleanup_temp_files() { :; }\n"
         # cleanup_on_signal now calls these unconditionally; extract the real
         # implementations so the harness exercises shipped code without emitting
         # "command not found" noise (which would otherwise pass tests by luck).
+        "TEMP_FILES=()\n"
+        "TEMP_DIRS=()\n"
+        f"{_extract_shell_function('register_temp')}\n"
+        f"{_extract_shell_function('register_temp_dir')}\n"
+        f"{_extract_shell_function('cleanup_temp_files')}\n"
+        f"{_extract_shell_function('cleanup_temp_dirs')}\n"
         f"{_extract_shell_function('is_linux_os')}\n"
         f"{_extract_shell_function('restore_terminal_after_signal')}\n"
         f"{_extract_shell_function('log_signal_failure_hint')}\n"
@@ -3533,6 +3575,7 @@ def _run_signal_traps(
         "trap 'cleanup_on_interrupt 2' INT\n"
         "trap 'cleanup_on_interrupt 15' TERM\n"
         "trap 'cleanup_on_interrupt 1' HUP\n"
+        f"{setup}"
         f"{body}",
         encoding="utf-8",
     )
@@ -3572,6 +3615,16 @@ def test_interrupt_shows_notice_without_failure_message(tmp_path: Path) -> None:
     # The harness must define every helper cleanup_on_signal calls; a missing
     # one would still pass the asserts above but corrupt the exercised path.
     assert "command not found" not in stderr
+
+
+def test_interrupt_removes_registered_staging_directory(tmp_path: Path) -> None:
+    """An interrupted installer removes its registered log staging directory."""
+    stage_dir = tmp_path / "deepagents-code-install-log"
+
+    proc = _run_signal_traps(tmp_path, interrupt=True, temp_dir=stage_dir)
+
+    assert proc.returncode == 130
+    assert not stage_dir.exists()
 
 
 def test_exit_trap_reports_failure_on_ordinary_error(tmp_path: Path) -> None:

@@ -1456,6 +1456,53 @@ def dependency_refresh_supported(
     return False, _DEPENDENCY_REFRESH_UNSUPPORTED[method]
 
 
+def _is_windows() -> bool:
+    """Return whether the current platform uses Windows executable suffixes."""
+    return os.name == "nt"
+
+
+def _upgraded_entry_point(upgraded_bin_dir: Path, name: str) -> Path:
+    """Find a console-script shim without searching outside uv's bin directory.
+
+    On Windows, a console-script name without a suffix can refer to any
+    executable extension in `PATHEXT`. Construct the candidate paths directly
+    instead of using `shutil.which`: Python may include the current directory
+    in a Windows `which` lookup even when a `path` argument is supplied.
+
+    Args:
+        upgraded_bin_dir: Directory containing uv's console-script shims.
+        name: Console-script name to resolve.
+
+    Returns:
+        The first existing executable candidate in `upgraded_bin_dir`, or the
+        suffixless candidate when no shim can be found.
+    """
+    filename = Path(name).name
+    candidates = [filename]
+    if _is_windows() and not Path(filename).suffix:
+        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        candidates = [
+            f"{filename}{suffix}"
+            for suffix in pathext.split(";")
+            if suffix.startswith(".") and Path(suffix).name == suffix
+        ]
+
+    for candidate_name in candidates:
+        candidate = upgraded_bin_dir / candidate_name
+        # Keep the selection lexical: resolving a legitimate uv shim follows
+        # its symlink into the tool environment, while this check only guards
+        # against a malformed name or PATHEXT escaping uv's bin directory.
+        if candidate.parent != upgraded_bin_dir:
+            continue
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            logger.debug("Could not inspect upgraded shim candidate %s", candidate)
+
+    return upgraded_bin_dir / filename
+
+
 @dataclass(frozen=True)
 class ShadowedDcode:
     """A different dcode entry point is winning on PATH than the one we upgraded.
@@ -1526,10 +1573,7 @@ class ShadowedDcode:
         resolves the normal shim name directly.
         """
         entry_point = self.entry_point or self.shadowing_bin.name
-        upgraded = shutil.which(entry_point, path=str(self.upgraded_bin_dir))
-        if upgraded is not None:
-            return Path(upgraded)
-        return self.upgraded_bin_dir / entry_point
+        return _upgraded_entry_point(self.upgraded_bin_dir, entry_point)
 
 
 def _uv_tool_bin_dir() -> Path | None:
@@ -1626,7 +1670,7 @@ def _resolves_to_upgraded_entry_point(
     try:
         return (
             Path(path_entry).resolve()
-            == (upgraded_bin_dir / Path(path_entry).name).resolve()
+            == _upgraded_entry_point(upgraded_bin_dir, name).resolve()
         )
     except OSError:
         # `Path.resolve` is non-strict, so a merely missing path does not land

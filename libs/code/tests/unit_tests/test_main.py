@@ -797,8 +797,8 @@ class TestStartupAutoUpdate:
                 return_value=shadow,
             ),
             patch(
-                "deepagents_code.update_check.shutil.which",
-                return_value="C:/uv/bin/dcode.exe",
+                "deepagents_code.update_check._upgraded_entry_point",
+                return_value=Path("C:/uv/bin/dcode.exe"),
             ),
             patch(
                 "deepagents_code.main._restart_current_process",

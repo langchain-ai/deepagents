@@ -2005,14 +2005,14 @@ class TestDetectShadowedDcode:
     def test_returns_none_for_windows_convenience_symlink_to_upgraded_shim(
         self, tmp_path
     ) -> None:
-        """A `.exe` alias to uv's shim is not a Windows PATH shadow."""
+        """A `.cmd` alias to uv's `.exe` shim is not a Windows PATH shadow."""
         uv_bin = tmp_path / "uv-bin"
         uv_bin.mkdir()
         other_bin = tmp_path / "usr-local-bin"
         other_bin.mkdir()
         upgraded_shim = uv_bin / "dcode.exe"
         upgraded_shim.write_text("")
-        alias = other_bin / "dcode.exe"
+        alias = other_bin / "dcode.cmd"
         alias.symlink_to(upgraded_shim)
 
         def _which(name: str) -> str | None:
@@ -2023,7 +2023,11 @@ class TestDetectShadowedDcode:
                 "deepagents_code.update_check.detect_install_method",
                 return_value="uv",
             ),
-            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch.dict(
+                os.environ,
+                {"UV_TOOL_BIN_DIR": str(uv_bin), "PATHEXT": ".exe;.cmd"},
+            ),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
             patch("shutil.which", side_effect=_which),
         ):
             assert detect_shadowed_dcode() is None
@@ -2148,21 +2152,45 @@ class TestDetectShadowedDcode:
         self, tmp_path
     ) -> None:
         """The direct restart target uses uv's `.exe`, not a stale `.cmd`."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        upgraded_shim = uv_bin / "dcode.exe"
+        upgraded_shim.write_text("")
         shadow = ShadowedDcode(
             shadowing_bin=tmp_path / "old-bin" / "dcode.cmd",
-            upgraded_bin_dir=tmp_path / "uv-bin",
+            upgraded_bin_dir=uv_bin,
             entry_point="dcode",
         )
 
         with (
-            patch(
-                "deepagents_code.update_check.shutil.which",
-                return_value=str(tmp_path / "uv-bin" / "dcode.exe"),
-            ) as which,
+            patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
         ):
-            assert shadow.upgraded_bin == tmp_path / "uv-bin" / "dcode.exe"
+            assert shadow.upgraded_bin == upgraded_shim
 
-        which.assert_called_once_with("dcode", path=str(tmp_path / "uv-bin"))
+    def test_upgraded_bin_does_not_search_current_directory_on_windows(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project-local shim cannot become the auto-update restart target."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        project_shim = project / "dcode.exe"
+        project_shim.write_text("")
+        shadow = ShadowedDcode(
+            shadowing_bin=tmp_path / "old-bin" / "dcode.cmd",
+            upgraded_bin_dir=uv_bin,
+            entry_point="dcode",
+        )
+        monkeypatch.chdir(project)
+
+        with (
+            patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
+        ):
+            assert shadow.upgraded_bin == uv_bin / "dcode"
+        assert shadow.upgraded_bin != project_shim
 
     def test_warning_text_quotes_fix_command_path(self, tmp_path) -> None:
         """The suggested PATH command must be safe to copy with odd paths."""

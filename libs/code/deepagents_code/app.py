@@ -354,6 +354,20 @@ def _coerce_provisional_cost_delta_usd(value: object) -> float | None:
     return delta_usd
 
 
+def _persisted_context_tokens(state_values: dict[str, Any]) -> int:
+    """Read a checkpoint's `_context_tokens`, coercing absent or invalid to 0.
+
+    Args:
+        state_values: Thread state values from the checkpoint.
+
+    Returns:
+        The persisted context size, or 0 when it is missing or not a
+        non-negative `int`.
+    """
+    raw = state_values.get("_context_tokens")
+    return raw if isinstance(raw, int) and raw >= 0 else 0
+
+
 def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     """Report persisted goal/rubric channels that are present but malformed.
 
@@ -9337,6 +9351,8 @@ class DeepAgentsApp(App):
                         ),
                     )
                     return
+                if start_cause is SessionStartCause.RESUME:
+                    await self._restore_resumed_context_tokens()
 
             if not await self._run_session_start_hook(start_cause):
                 self._initial_session_start_stopped = True
@@ -9348,6 +9364,9 @@ class DeepAgentsApp(App):
                 # One-shot: clear to avoid re-running on any subsequent server swap.
                 self._startup_cmd = None
                 await self._run_startup_command(cmd)
+
+            if start_cause is SessionStartCause.RESUME:
+                await self._maybe_compact_after_resume()
 
             if should_load_history:
                 await self._remount_pending_goal_rubric_review()
@@ -10173,6 +10192,7 @@ class DeepAgentsApp(App):
         from deepagents_code.command_registry import (
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
+            IMMEDIATE_UI_ARG_FORMS,
             SIDE_EFFECT_FREE,
             STARTUP_RECOVERY_COMMANDS,
         )
@@ -10200,11 +10220,16 @@ class DeepAgentsApp(App):
                 or self._modal_command_running()
             )
         if cmd in IMMEDIATE_UI:
-            # Only bare form (no args) bypasses — the selector-opening form is
-            # safe, but an argument form does a direct action that shouldn't
-            # race the agent (e.g. `/model <name>` switches models, `/threads
-            # -r <id>` resumes a thread).
-            return value == cmd
+            # Only UI-opening forms bypass: the bare command, or an argument
+            # form whitelisted in IMMEDIATE_UI_ARG_FORMS (e.g. `/auto model`,
+            # which opens the classifier picker). Other argument forms do a
+            # direct action that shouldn't race the agent (e.g. `/model <name>`
+            # switches models, `/threads -r <id>` resumes a thread,
+            # `/auto model <spec>` mutates classifier state). Whitespace is
+            # canonicalized for the whitelist check because `_handle_command`
+            # strips and reparses the same way — `/auto  model` (double space,
+            # tab) reaches the selector branch once processed.
+            return value == cmd or " ".join(value.split()) in IMMEDIATE_UI_ARG_FORMS
         return cmd in SIDE_EFFECT_FREE
 
     async def _submit_input(
@@ -16502,10 +16527,7 @@ class DeepAgentsApp(App):
             context-token count, and the persisted model spec (if any).
         """
         state_values = await self._get_thread_state_values(thread_id)
-        raw_tokens = state_values.get("_context_tokens")
-        context_tokens = (
-            raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
-        )
+        context_tokens = _persisted_context_tokens(state_values)
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
         raw_params = state_values.get("_model_params")
@@ -19063,9 +19085,9 @@ class DeepAgentsApp(App):
             "  /auto model <provider:model>\n"
             "  /auto model clear          Reuse the main agent model\n\n"
             "Auto reviews gated actions with a classifier model. It currently "
-            f"uses {self._auto_classifier_model_label()}. A weaker model makes "
-            "that review weaker; actions it cannot review are denied, and "
-            "repeated review failures fall back to your approval.\n\n"
+            f"uses {self._auto_classifier_model_label()}. Actions it cannot "
+            "review are denied, and repeated review failures fall back to your "
+            "approval.\n\n"
             "Changes here apply to this session only. Set "
             "`[models].auto_classifier` in config.toml for a persistent choice."
         )
@@ -19156,6 +19178,43 @@ class DeepAgentsApp(App):
             # removes the modal.
             self.call_after_refresh(start_selection_worker)
 
+        tail = ""
+        if self._auto_classifier_display_spec() is not None:
+            # The picker lists only recommended classifiers, so it offers no
+            # entry that reverts to the main agent model. `_auto_usage_text`
+            # carries the hint, but it is mounted only for an unrecognized
+            # `/auto` subcommand, so no path that opens this modal shows it.
+            tail = " Clear it with `/auto model clear`."
+
+        # Every branch hands the screen a `Content`: the description reaches a
+        # `Static`, which parses a plain `str` as markup. The branches naming a
+        # spec use `from_markup` with `$spec` per `AGENTS.md`, because the spec
+        # is user-supplied: `/auto model <spec>` validates, but the startup seed
+        # from `--auto-classifier-model` / `config.toml` does not. Interpolated
+        # into a plain `str` instead,
+        # a spec containing `[dim]` would render a truncated, dimmed name that is
+        # not the model reviewing actions, and one containing `[/]` would raise
+        # `MarkupError` when the modal opens. The first branch names no spec, so
+        # the plain `Content` constructor — which parses nothing — suffices.
+        active = self._auto_classifier_review_model_spec()
+        if active is None:
+            description = Content(
+                "Auto currently reviews with the main agent model." + tail
+            )
+        elif not self._auto_classifier_is_distinct():
+            # Not `display_spec() is None`: that asks where the spec came from,
+            # but the sentence claims the spec *is* the main agent model. They
+            # diverge when a configured classifier matches the main model, which
+            # `_notify_auto_classifier_active` also treats as "not distinct".
+            description = Content.from_markup(
+                "Auto currently reviews with $spec, the main agent model." + tail,
+                spec=active,
+            )
+        else:
+            description = Content.from_markup(
+                "Auto currently reviews with $spec." + tail, spec=active
+            )
+
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
@@ -19163,12 +19222,7 @@ class DeepAgentsApp(App):
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
-            description=(
-                "Recommended models favor lower latency and cost for repeated "
-                "reviews. A faster, cheaper model may review actions less "
-                "carefully. Clear it with `/auto model clear` to reuse the main "
-                "agent model."
-            ),
+            description=description,
         )
         self.push_screen(screen, handle_result)
 
@@ -20936,6 +20990,9 @@ class DeepAgentsApp(App):
                     thread=previous_thread_id,
                 )
                 await self._mount_message(AppMessage(resume_hint))
+
+            if resume_thread_id is not None:
+                await self._maybe_compact_after_resume()
 
             # Drain any messages the user typed after we cleared the queue
             # but before the new server was ready.
@@ -24219,17 +24276,43 @@ class DeepAgentsApp(App):
         if target is None:
             return
 
-        active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
-        if target.agent_name == active_agent:
-            await self._resume_thread(target.thread_id)
-            return
-
         # This command runs inline on Textual's message pump. Detach before
-        # awaiting the confirmation modal so Enter/Esc can reach it.
+        # awaiting the cwd/compaction modals so Enter/Esc can reach them. Both
+        # continuations mount their own failure messages.
+        active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
         self._schedule_off_message_pump(
-            self._confirm_then_resume_cross_agent_thread(target),
+            self._resume_same_agent_thread(target.thread_id)
+            if target.agent_name == active_agent
+            else self._confirm_then_resume_cross_agent_thread(target),
             context=f"threads-resume:{target.thread_id}",
         )
+
+    async def _resume_same_agent_thread(self, thread_id: str) -> None:
+        """Resume a thread already owned by the active agent.
+
+        A thin reporting wrapper: `_resume_thread` handles its own failures once
+        the switch is under way, but its pre-switch phase (the cwd prompt, the
+        compaction prompt, and their modal setup) sits outside that boundary.
+        Detached continuations only get logged, so without this a `/threads -r`
+        would end with no visible outcome.
+
+        Args:
+            thread_id: The thread to resume on the current agent.
+
+        Raises:
+            asyncio.CancelledError: If app shutdown cancels the detached flow.
+        """
+        try:
+            await self._resume_thread(thread_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Same-agent resume failed for thread %s", thread_id)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Could not resume thread {thread_id}. Use /threads to try again."
+                )
+            )
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -24942,6 +25025,69 @@ class DeepAgentsApp(App):
             return False
         return bool(changes)
 
+    async def _restore_resumed_context_tokens(self) -> None:
+        """Seed `_context_tokens` from the checkpoint without loading history.
+
+        A launch that resumes *and* carries an initial prompt skips the history
+        load, so nothing would populate the context size — and that path is the
+        one where it matters most, since the prompt is submitted against the
+        full restored context moments later.
+        """
+        if not self._lc_thread_id or not self._agent:
+            return
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+        except Exception:
+            logger.warning(
+                "Could not read the context size for resumed thread %s; "
+                "skipping the compaction suggestion",
+                self._lc_thread_id,
+                exc_info=True,
+            )
+            return
+        tokens = _persisted_context_tokens(state_values)
+        if tokens > 0:
+            self._on_tokens_update(tokens)
+
+    async def _maybe_compact_after_resume(self) -> None:
+        """Offer to compact a just-resumed thread with an oversized context.
+
+        Resuming costs nothing on its own, so the prompt runs once the thread is
+        live and before the user's next turn pays for the restored context.
+        Declining is free: `/compact` remains available for the rest of the
+        session.
+        """
+        from deepagents_code.config_manifest import (
+            COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+            get_option,
+            load_config_toml,
+            resolve_scalar,
+        )
+
+        threshold = COMPACT_ON_RESUME_THRESHOLD_DEFAULT
+        option = get_option("threads.compact_on_resume_threshold")
+        if option is not None:
+            resolved, _ = resolve_scalar(option, toml_data=load_config_toml())
+            if isinstance(resolved, int):
+                threshold = resolved
+        if threshold <= 0 or self._context_tokens <= threshold:
+            return
+
+        from deepagents_code.tui.modals.resume_compact import ResumeCompactPromptScreen
+
+        try:
+            compact = await self._push_screen_wait(
+                ResumeCompactPromptScreen(
+                    context_tokens=self._context_tokens,
+                    threshold=threshold,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to show the compact-on-resume prompt")
+            return
+        if compact:
+            await self._handle_offload()
+
     async def _offer_thread_cwd_switch(
         self,
         thread_id: str,
@@ -25239,6 +25385,12 @@ class DeepAgentsApp(App):
             # or failed load leaves the hint under something else.
             await self._mount_previous_thread_hint(prev_session_thread)
 
+            # Landing on a new thread re-arms the same-thread toast, so stepping
+            # back to a thread and re-selecting it announces itself again.
+            self._last_thread_unchanged = None
+            if await self._run_session_start_hook(SessionStartCause.RESUME):
+                await self._maybe_compact_after_resume()
+
             # Deferred above so it lands last, keeping the interactive prompt
             # at the bottom of the transcript. Guarded because this runs inside
             # the rollback handler's `try`: failing to restore a review must
@@ -25247,12 +25399,6 @@ class DeepAgentsApp(App):
                 await self._remount_pending_goal_rubric_review()
             except Exception:
                 logger.exception("Failed to restore pending goal review")
-
-            # Landing on a new thread re-arms the same-thread toast, so stepping
-            # back to a thread and re-selecting it announces itself again.
-            self._last_thread_unchanged = None
-            if not await self._run_session_start_hook(SessionStartCause.RESUME):
-                return
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)

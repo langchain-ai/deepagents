@@ -163,7 +163,7 @@ async def test_compose_up_uses_extended_timeout(monkeypatch: pytest.MonkeyPatch)
     result = await environment._compose_exec(["up", "-d"], timeout_sec=120)
 
     assert result is expected
-    assert calls == [(["up", "-d"], 900)]
+    assert calls == [(["up", "-d"], 1500)]
 
 
 def test_compose_flags_replace_blanket_no_network_overlay(

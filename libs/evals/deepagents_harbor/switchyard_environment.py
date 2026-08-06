@@ -28,7 +28,9 @@ _REMOTE_CONFIG_PATH = "/harbor/compose/switchyard-routes.toml"
 _SWITCHYARD_BASE_URL = "http://switchyard:4000"
 _AGENT_PYTHON = "/opt/harbor-langgraph-venv/bin/python"
 _HEALTH_TIMEOUT_SECONDS = 60
-_COMPOSE_UP_TIMEOUT_SECONDS = 900
+# The largest lite task allows 1,800 seconds for its full environment startup;
+# reserve five minutes for sandbox boot, dockerd, and post-Compose health checks.
+_COMPOSE_UP_TIMEOUT_SECONDS = 1500
 _MIN_MEMORY_BYTES_PER_VCPU = 2 * 1024**3
 _DOCKERD_START_TIMEOUT_SECONDS = 15
 _DOCKERD_STARTED_MARKER = "DOCKERD_STARTED"

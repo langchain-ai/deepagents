@@ -1,0 +1,254 @@
+# Raise LangChain-ecosystem dependency lower bounds to the latest stable PyPI release.
+#
+# For each in-scope requirement (`langchain*`, `langgraph*`, `langsmith*`,
+# `deepagents*`) that declares a concrete lower bound (`>=` / `~=`) in the
+# selected package's manifest(s) — across `[project.dependencies]`,
+# `[project.optional-dependencies]`, and `[dependency-groups]` — this rewrites
+# that lower bound in place to the newest stable PyPI release that still has a
+# non-yanked file and stays within the requirement's existing range, preserving
+# upper bounds, extras, and markers. Exact `==` pins are left alone (the only
+# in-scope one today, `deepagents==` in `libs/code`, is bumped by
+# `bump_code_sdk_pin.yml`), and a floor already ahead of the latest stable
+# release (intentional prerelease coordination) is never lowered.
+#
+# Triggering:
+# - Runs on a weekly cron (Monday 09:00 UTC) for every release package
+#   (`package = all`).
+# - Can also be run manually from the Actions UI / `gh` CLI against a single
+#   package or `all`.
+#
+# Notes:
+# - One PR is opened per run containing every raised bound plus the regenerated
+#   `uv.lock` for each affected package. That is not only the edited packages: a
+#   lockfile embeds the specifiers of anything it resolves from a local
+#   `[tool.uv.sources]` path, so raising a floor in `libs/deepagents` also
+#   staleness-marks `libs/evals/uv.lock` and friends. The script computes that
+#   closure and reports it as `lock_specs`.
+# - The PR body lists every raised bound, and — when a PyPI lookup or a manifest
+#   rewrite failed — says explicitly what was *not* raised, so a partial run
+#   never reads as a complete one.
+# - The PR title is `chore(deps):` on purpose: a bump-worthy type touching
+#   files inside a managed package would make release-please open a separate
+#   release PR (multi-component fan-out).
+# - The PR is created with the Org Membership App installation token rather
+#   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
+#   `pull_request` workflows, so the required checks would never run.
+# - Idempotent per package: if a PR is already open for the selected package (or
+#   no bound needs raising), the workflow exits without creating a duplicate. A
+#   cron `all` run and a manual single-package run use different branches, so
+#   they are not serialized against each other.
+
+name: "Raise dependency minimums"
+
+on:
+  schedule:
+    # Monday 09:00 UTC.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Release package whose dependency minimums to raise"
+        required: true
+        type: choice
+        default: "deepagents-code"
+        options:
+          - "deepagents-code"
+          - "all"
+          - "deepagents"
+          - "deepagents-cli"
+          - "deepagents-acp"
+          - "deepagents-talon"
+          - "langchain-daytona"
+          - "langchain-modal"
+          - "langchain-quickjs"
+          - "langchain-runloop"
+          - "langchain-vercel-sandbox"
+
+permissions:
+  contents: read
+
+# Cron runs have no `inputs.package`, so they fall back to `all`.
+concurrency:
+  group: raise-dependency-minimums-${{ inputs.package || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  raise:
+    name: "Raise dependency minimums for ${{ inputs.package || 'all' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # `gh pr list` below reads with `github.token`; without this the
+      # duplicate-PR guard would fail open and post a second PR.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python and uv
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          enable-cache: "false"
+
+      - name: Raise dependency minimums
+        id: raise
+        env:
+          PACKAGE: ${{ inputs.package || 'all' }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --with "packaging>=26.2" \
+            python .github/scripts/checks/raise_langchain_minimums.py \
+            --package "$PACKAGE"
+          echo "branch=chore/raise-dependency-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate lockfiles for affected packages
+        # Raising a floor makes a package's uv.lock stale (it embeds the direct
+        # requirement specifiers), as well as the lockfile of anything that
+        # path-depends on it. `lock_specs` carries `dir=python` pairs computed
+        # from check_lockfiles_pre_commit, so the interpreter here always matches
+        # the one the required check_lockfiles.yml job will verify against.
+        if: steps.raise.outputs.changed == 'true'
+        env:
+          LOCK_SPECS: ${{ steps.raise.outputs.lock_specs }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra specs <<< "$LOCK_SPECS"
+          for spec in "${specs[@]}"; do
+            dir="${spec%%=*}"
+            py="${spec##*=}"
+            echo "Regenerating $dir/uv.lock (python $py)"
+            uv lock --directory "$dir" --python "$py"
+            if [ ! -f "$dir/uv.lock" ]; then
+              echo "::error::Expected $dir/uv.lock to exist after uv lock"
+              exit 1
+            fi
+          done
+
+      - name: Verify the edits landed
+        # The script reports what it intended to write; confirm the working tree
+        # agrees before building a PR around it. A manifest listed as changed but
+        # identical on disk means a rewrite silently no-opped.
+        if: steps.raise.outputs.changed == 'true'
+        env:
+          CHANGED_FILES: ${{ steps.raise.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra files <<< "$CHANGED_FILES"
+          for file in "${files[@]}"; do
+            if git diff --quiet -- "$file"; then
+              echo "::error::$file was reported as edited but is unchanged on disk"
+              exit 1
+            fi
+          done
+
+      - name: Log if nothing to do
+        # The actual skip is implemented by the `if:` guards on every
+        # subsequent step; this step only emits a log line so the run
+        # history shows why no PR was opened.
+        if: steps.raise.outputs.changed != 'true'
+        run: echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
+
+      - name: Skip if PR already open for this package
+        id: existing
+        if: steps.raise.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.raise.outputs.branch }}
+        run: |
+          set -euo pipefail
+          existing_json=$(gh pr list --head "$BRANCH" --state open --json number,url)
+          count=$(printf '%s' "$existing_json" | jq 'length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -gt 0 ]; then
+            pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
+            echo "Open PR already exists for $BRANCH; skipping."
+            echo "::notice::Open dependency minimums PR already exists: $pr_url"
+          fi
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count == '0'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open minimums bump PR
+        if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PACKAGE: ${{ inputs.package || 'all' }}
+          BRANCH: ${{ steps.raise.outputs.branch }}
+          CHANGED_FILES: ${{ steps.raise.outputs.changed_files }}
+          LOCK_DIRS: ${{ steps.raise.outputs.lock_dirs }}
+          SUMMARY: ${{ steps.raise.outputs.summary }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
+        run: |
+          set -euo pipefail
+
+          # Recreate an orphan branch from a prior run that pushed but failed
+          # before `gh pr create` (the no-open-PR check above already ran, so any
+          # branch still on origin carries no open PR). Distinguish "absent" from
+          # "could not reach origin": `--exit-code` returns 2 for no match, and
+          # anything else is a real error worth failing on rather than
+          # misreading as "no branch there".
+          set +e
+          git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null
+          ls_remote_status=$?
+          set -e
+          if [ "$ls_remote_status" -eq 0 ]; then
+            # Never discard someone else's work: only delete a branch whose tip
+            # this workflow authored.
+            git fetch --depth=1 origin "$BRANCH"
+            tip_email=$(git log -1 --format='%ce' FETCH_HEAD)
+            if [ "$tip_email" != "$BOT_EMAIL" ]; then
+              echo "::error::Branch $BRANCH exists on origin and its tip was authored by $tip_email, not this workflow. Refusing to delete it; resolve the branch manually."
+              exit 1
+            fi
+            echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
+            # The delete can race a concurrent run; fall through with a warning
+            # so a losing race does not kill an otherwise-clean job mid-state.
+            # The push below is not forced, so a delete that failed for any
+            # other reason surfaces as a rejected push.
+            if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
+              echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
+            fi
+          elif [ "$ls_remote_status" -ne 2 ]; then
+            echo "::error::Could not query origin for $BRANCH (git ls-remote exited $ls_remote_status)."
+            exit 1
+          fi
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "$BOT_EMAIL"
+          git checkout -b "$BRANCH"
+
+          # Stage the edited manifests plus every lockfile the edits invalidated
+          # (the package's own, and any package that path-depends on it).
+          IFS=',' read -ra files <<< "$CHANGED_FILES"
+          IFS=',' read -ra dirs <<< "$LOCK_DIRS"
+          lockfiles=()
+          for dir in "${dirs[@]}"; do
+            lockfiles+=("$dir/uv.lock")
+          done
+          git add -- "${files[@]}" "${lockfiles[@]}"
+          git commit -m "chore(deps): raise dependency minimums for $PACKAGE"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+
+          body_file="$(mktemp)"
+          {
+            printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$PACKAGE"
+            printf '%s\n\n' "$SUMMARY"
+            printf 'Opened automatically by `raise_langchain_minimums.yml`. Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
+          } > "$body_file"
+
+          pr_url=$(gh pr create \
+            --head "$BRANCH" \
+            --base "$DEFAULT_BRANCH" \
+            --title "chore(deps): raise dependency minimums for $PACKAGE" \
+            --body-file "$body_file")
+          echo "Opened dependency minimums PR: $pr_url"
+          echo "::notice::Opened dependency minimums PR: $pr_url"

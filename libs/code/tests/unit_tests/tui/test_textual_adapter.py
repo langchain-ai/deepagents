@@ -44,6 +44,7 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 from deepagents_code.hooks.manager import HooksManager, PromptOutcome
 from deepagents_code.hooks.models.domain import (
     HookEvent,
@@ -59,6 +60,7 @@ from deepagents_code.tui.textual_adapter import (
     _dispatch_tool_result_hook,
     _format_rubric_details,
     _format_rubric_event,
+    _frame_reject_reason,
     _handle_interrupt_cleanup,
     _interrupt_owned_tool_rows,
     _is_auto_mode_classifier_chunk,
@@ -1334,6 +1336,38 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-default-approve", assistant_id=None)
         assert "dcode_auto_approve" not in config["metadata"]
 
+    def test_term_program_included_when_set(self) -> None:
+        """The launch terminal should be identifiable in trace metadata."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}):
+            config = build_stream_config("t-term", assistant_id=None)
+        assert config["metadata"]["dcode_term_program"] == "iTerm.app"
+
+    def test_term_program_absent_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Terminals that never set `TERM_PROGRAM` omit the key entirely."""
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        config = build_stream_config("t-no-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_absent_when_empty(self) -> None:
+        """Shells that export `TERM_PROGRAM=""` are treated as unset."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": ""}):
+            config = build_stream_config("t-empty-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_absent_when_whitespace_only(self) -> None:
+        """A whitespace-only `TERM_PROGRAM` must not form a grouping bucket."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "   "}):
+            config = build_stream_config("t-blank-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_stripped(self) -> None:
+        """A padded `TERM_PROGRAM` groups with its unpadded form."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "  vscode\n"}):
+            config = build_stream_config("t-padded-term", assistant_id=None)
+        assert config["metadata"]["dcode_term_program"] == "vscode"
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -1451,6 +1485,15 @@ class TestIsAutoModeClassifierChunk:
     def test_returns_true_for_auto_mode_classifier_source(self) -> None:
         """Classifier chunks are identified by their callback metadata."""
         metadata = {"lc_source": "auto_mode_classifier"}
+        assert _is_auto_mode_classifier_chunk(metadata) is True
+
+    def test_returns_true_for_distinct_classifier_model(self) -> None:
+        """Filtering keys on the source, so a separate classifier stays hidden."""
+        metadata = {
+            "lc_source": "auto_mode_classifier",
+            "classifier_model": "openai:gpt-5.5-mini",
+            "ls_model_name": "gpt-5.5-mini",
+        }
         assert _is_auto_mode_classifier_chunk(metadata) is True
 
     def test_returns_false_for_unrelated_metadata(self) -> None:
@@ -1924,23 +1967,28 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
 class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
 
-    async def test_clean_stream_calls_completion_callback(self) -> None:
+    async def test_hook_stop_after_clean_stream_calls_completion_callback(self) -> None:
+        mount_message = AsyncMock()
         adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
+            mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
         callback = MagicMock()
         adapter._on_stream_complete = callback
 
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent([]),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
+        stop = ClientHookStopError("intentional stop")
+        with patch.object(HooksManager, "notify", side_effect=stop):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent([]),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
 
+        message = mount_message.await_args_list[0].args[0]
+        assert str(message._content) == f"Operation stopped by hook: {stop}"
         callback.assert_called_once_with()
 
     async def test_interrupted_stream_skips_completion_callback(self) -> None:
@@ -5433,7 +5481,17 @@ class TestExecuteTaskTextualAskUser:
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
-    async def test_ask_user_cancelled_marks_row_rejected_and_halts(self) -> None:
+    @pytest.mark.parametrize(
+        ("question_count", "expected_message"),
+        [
+            (0, "Question dismissed. Tell the agent what you'd like instead."),
+            (1, "Question dismissed. Tell the agent what you'd like instead."),
+            (2, "Questions dismissed. Tell the agent what you'd like instead."),
+        ],
+    )
+    async def test_ask_user_cancelled_marks_row_rejected_and_halts(
+        self, question_count: int, expected_message: str
+    ) -> None:
         """Cancelled result should reject the row and not resume generation."""
         mounted: list[object] = []
         token_events: list[str] = []
@@ -5456,7 +5514,10 @@ class TestExecuteTaskTextualAskUser:
                     _ask_user_interrupt_chunk(
                         {
                             "type": "ask_user",
-                            "questions": [{"question": "Name?", "type": "text"}],
+                            "questions": [
+                                {"question": f"Question {index}?", "type": "text"}
+                                for index in range(1, question_count + 1)
+                            ],
                             "tool_call_id": "tool-1",
                         }
                     )
@@ -5487,8 +5548,165 @@ class TestExecuteTaskTextualAskUser:
         assert "tool-1" not in adapter._current_tool_messages
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert len(app_messages) == 1
-        assert "Question cancelled" in str(app_messages[0]._content)
+        assert str(app_messages[0]._content) == expected_message
         assert token_events == ["pending", "show:False"]
+
+    async def test_dismissed_questions_accumulate_across_cancelled_calls(self) -> None:
+        """Two dismissed calls of one question each read as plural.
+
+        The subject counts questions across every cancelled call in the batch, not
+        questions within one call, so two single-question prompts still say
+        "Questions". Pins the accumulation: overwriting instead of adding would
+        leave the count at 1 and silently read as singular.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+            future.set_result({"type": "cancelled"})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "updates",
+                        {
+                            "__interrupt__": [
+                                SimpleNamespace(
+                                    id=f"interrupt-{index}",
+                                    value={
+                                        "type": "ask_user",
+                                        "questions": [
+                                            {
+                                                "question": f"Deploy {index}?",
+                                                "type": "text",
+                                            }
+                                        ],
+                                        "tool_call_id": f"ask-{index}",
+                                    },
+                                )
+                                for index in (1, 2)
+                            ]
+                        },
+                    )
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert len(app_messages) == 1
+        assert str(app_messages[0]._content) == (
+            "Questions dismissed. Tell the agent what you'd like instead."
+        )
+
+    async def test_undelivered_banner_names_a_rejection_when_nothing_was_dismissed(
+        self,
+    ) -> None:
+        """A later-iteration rejection discards earlier answers and says so.
+
+        `pending_ask_user` resets each stream iteration, so a rejection in a second
+        iteration enters the halt branch via `not pending_ask_user` while the first
+        iteration's answered row is still awaiting its deferred result. Those
+        answers are discarded exactly as a dismissal would discard them, but no
+        question was dismissed — the banner must name the rejection instead.
+        """
+        mounted: list[object] = []
+        approval: asyncio.Future[object] = asyncio.Future()
+        approval.set_result({"type": "reject"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            return approval
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+            future.set_result({"type": "answered", "answers": ["Alice"]})
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "read_file", "args": {"path": "notes.txt"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "read_file",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert [str(widget._content) for widget in app_messages] == [
+            (
+                "Command rejected, so answers to the other question(s) in this "
+                "batch were not sent. Tell the agent what you'd like instead."
+            )
+        ]
 
     async def test_hitl_rejection_restores_token_display_before_halt(self) -> None:
         """Rejected approval should restore tokens before returning early."""
@@ -5608,7 +5826,12 @@ class TestExecuteTaskTextualAskUser:
         assert isinstance(resume_cmd, Command)
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
         decisions = resume_payload["interrupt-1"]["decisions"]
-        assert decisions == [{"type": "reject", "message": "use a safer command"}]
+        assert decisions == [
+            {
+                "type": "reject",
+                "message": _frame_reject_reason("use a safer command"),
+            }
+        ]
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert not any("Command rejected" in str(msg._content) for msg in app_messages)
 
@@ -7331,6 +7554,7 @@ class TestToolHooksTextual:
         )
 
         with (
+            patch.object(ToolCallMessage, "set_rejected", side_effect=RuntimeError),
             patch(
                 "deepagents_code.tui.textual_adapter.dispatch_hook",
                 new_callable=AsyncMock,
@@ -7599,6 +7823,130 @@ class TestToolHooksTextual:
         assert len(execute_widgets) == 1
         # Stayed rejected despite the resumed error ToolMessage driving set_error.
         assert execute_widgets[0]._status == "rejected"
+
+    async def test_hitl_reasoned_reject_frames_reason_for_model(self) -> None:
+        """The model gets framed rejection text; the row keeps the raw reason."""
+        mounted: list[ToolCallMessage] = []
+
+        async def capture_mount(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "use another command"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=capture_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        expected_message = (
+            "User rejected the tool call with reason: use another command"
+        )
+        assert resume_payload["interrupt-1"]["decisions"] == [
+            {"type": "reject", "message": expected_message}
+        ]
+        execute_widgets = [w for w in mounted if w.tool_name == "execute"]
+        assert len(execute_widgets) == 1
+        assert execute_widgets[0]._reject_reason == "use another command"
+
+    async def test_hitl_blank_reject_reason_stays_bare(self) -> None:
+        """A whitespace-only reason must not synthesize an empty framed reason."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "   "})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        # A blank reason is a bare reject: the turn aborts instead of resuming,
+        # so the upstream canned rejection wording is what the model would see.
+        assert len(agent.stream_inputs) == 1
 
     async def test_tool_use_dispatched_after_streaming_fragments(self) -> None:
         """tool.use reassembles streamed arg fragments and fires exactly once."""
@@ -8289,8 +8637,14 @@ class TestToolHooksTextual:
             if c[0][0] == "tool.error"
         ] == [["execute"]]
 
+    @pytest.mark.parametrize(
+        ("cancelled_question_count", "expected_subject"),
+        [(1, "Question"), (2, "Questions")],
+    )
     async def test_answered_ask_user_settles_when_a_sibling_is_cancelled(
         self,
+        cancelled_question_count: int,
+        expected_subject: str,
     ) -> None:
         """Cancelling one `ask_user` call reports an answered sibling as undelivered.
 
@@ -8311,13 +8665,20 @@ class TestToolHooksTextual:
         `ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY`, distinct from
         `ASK_USER_ANSWERED_NO_RESULT_SUMMARY` (answers delivered, tool never
         completed).
+
+        The banner naming that loss is asserted here too, parametrized so the
+        dismissed subject is exercised in both singular and plural: this is the
+        only path that renders it inside the longer sentence.
         """
         mounted: list[ToolCallMessage] = []
+        app_messages: list[AppMessage] = []
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            elif isinstance(widget, AppMessage):
+                app_messages.append(widget)
 
         results: list[AskUserWidgetResult] = [
             {"type": "answered", "answers": ["Alice"]},
@@ -8333,7 +8694,10 @@ class TestToolHooksTextual:
             return future
 
         answered_qs: list[Question] = [{"question": "Name?", "type": "text"}]
-        cancelled_qs: list[Question] = [{"question": "Deploy?", "type": "text"}]
+        cancelled_qs: list[Question] = [
+            {"question": f"Deploy {index}?", "type": "text"}
+            for index in range(1, cancelled_question_count + 1)
+        ]
         agent = _SequencedAgent(
             streams_by_call=[
                 [
@@ -8416,6 +8780,13 @@ class TestToolHooksTextual:
         assert "Alice" not in str(mock_dispatch_background.call_args_list)
         assert payloads["ask-2"]["tool_status"] == "error"
         assert payloads["ask-2"]["tool_output"] == ASK_USER_CANCELLED_SUMMARY
+        # The banner is the user's only signal that the answers are gone, so pin
+        # it exactly — a dropped space in the implicit concatenation would show.
+        assert len(app_messages) == 1
+        assert str(app_messages[0]._content) == (
+            f"{expected_subject} dismissed, so answers to the other question(s) "
+            "in this batch were not sent. Tell the agent what you'd like instead."
+        )
 
     @pytest.mark.parametrize(
         ("tool_status", "transcript"),

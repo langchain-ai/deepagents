@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 from deepagents_code import terminal_capabilities
 from deepagents_code._env_vars import KITTY_KEYBOARD
 from deepagents_code.terminal_capabilities import (
+    _inside_terminal_multiplexer,
     _override_supports_kitty_keyboard_protocol,
     _terminal_identity_supports_kitty_keyboard_protocol,
     supports_kitty_keyboard_protocol,
@@ -78,6 +79,30 @@ class TestOverrideSupportsKittyKeyboardProtocol:
         )
 
 
+class TestInsideTerminalMultiplexer:
+    """Tests for multiplexer detection."""
+
+    def test_detects_tmux_via_socket_var(self) -> None:
+        """Tmux exports `TMUX` into every pane it owns."""
+        assert _inside_terminal_multiplexer({"TMUX": "/tmp/tmux-0/default,1,0"}) is True
+
+    def test_detects_tmux_via_term(self) -> None:
+        """A pane's `TERM` is rewritten even when `TMUX` is stripped."""
+        assert _inside_terminal_multiplexer({"TERM": "tmux-256color"}) is True
+
+    def test_detects_screen_via_term(self) -> None:
+        """GNU Screen (and tmux's compatibility default) use a `screen` TERM."""
+        assert _inside_terminal_multiplexer({"TERM": "screen-256color"}) is True
+
+    def test_detects_screen_via_sty_var(self) -> None:
+        """GNU Screen exports `STY` even when `TERM` is overridden."""
+        assert _inside_terminal_multiplexer({"STY": "12345.pts-0.host"}) is True
+
+    def test_bare_terminal_is_not_a_multiplexer(self) -> None:
+        """A terminal owning its own pty should not be flagged."""
+        assert _inside_terminal_multiplexer({"TERM": "xterm-kitty"}) is False
+
+
 class TestTerminalIdentitySupportsKittyKeyboardProtocol:
     """Tests for the conservative terminal-identity heuristic."""
 
@@ -104,6 +129,28 @@ class TestTerminalIdentitySupportsKittyKeyboardProtocol:
                 {"TERM": "xterm-ghostty"}
             )
             is True
+        )
+
+    def test_ignores_kitty_window_id_inherited_by_a_tmux_pane(self) -> None:
+        """Tmux inherits `KITTY_WINDOW_ID` but never forwards the protocol."""
+        assert (
+            _terminal_identity_supports_kitty_keyboard_protocol(
+                {
+                    "KITTY_WINDOW_ID": "17",
+                    "TERM": "tmux-256color",
+                    "TMUX": "/tmp/tmux-0/default,1,0",
+                }
+            )
+            is False
+        )
+
+    def test_ignores_kitty_term_under_screen(self) -> None:
+        """A `screen` TERM outranks a stale kitty marker in the environment."""
+        assert (
+            _terminal_identity_supports_kitty_keyboard_protocol(
+                {"KITTY_WINDOW_ID": "17", "TERM": "screen-256color"}
+            )
+            is False
         )
 
     def test_does_not_auto_detect_wezterm(self) -> None:
@@ -189,6 +236,54 @@ class TestSupportsKittyKeyboardProtocolDetection:
             ),
         ):
             assert supports_kitty_keyboard_protocol() is True
+
+    def test_override_can_force_true_inside_tmux(self) -> None:
+        """Tmux 3.6 users who know their setup works can still opt in."""
+        with (
+            _fake_tty(),
+            patch.dict(
+                os.environ,
+                {
+                    KITTY_KEYBOARD: "1",
+                    "TERM": "tmux-256color",
+                    "TMUX": "/tmp/tmux-0/default,1,0",
+                },
+                clear=True,
+            ),
+        ):
+            assert supports_kitty_keyboard_protocol() is True
+
+    def test_tmux_pane_under_kitty_falls_back_to_legacy_hint(self) -> None:
+        """Without an override, a kitty-hosted tmux pane must not claim support."""
+        with (
+            _fake_tty(),
+            patch.dict(
+                os.environ,
+                {
+                    "KITTY_WINDOW_ID": "17",
+                    "TERM": "tmux-256color",
+                    "TMUX": "/tmp/tmux-0/default,1,0",
+                },
+                clear=True,
+            ),
+        ):
+            assert supports_kitty_keyboard_protocol() is False
+
+    def test_screen_pane_under_kitty_falls_back_to_legacy_hint(self) -> None:
+        """A Screen window that overrode `TERM` still must not claim support."""
+        with (
+            _fake_tty(),
+            patch.dict(
+                os.environ,
+                {
+                    "KITTY_WINDOW_ID": "17",
+                    "TERM": "xterm-kitty",
+                    "STY": "12345.pts-0.host",
+                },
+                clear=True,
+            ),
+        ):
+            assert supports_kitty_keyboard_protocol() is False
 
     def test_returns_false_for_unrecognized_terminal(self) -> None:
         """Unknown terminals should keep the legacy newline hint."""

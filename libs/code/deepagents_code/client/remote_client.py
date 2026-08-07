@@ -136,6 +136,7 @@ class RemoteAgent:
         self._api_key = api_key
         self._headers = headers
         self._graph: Any = None
+        self._sibling_clients: dict[str, RemoteAgent] = {}
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -153,6 +154,38 @@ class RemoteAgent:
                 headers=self._headers,
             )
         return self._graph
+
+    def for_graph(self, graph_name: str) -> RemoteAgent:
+        """Return a client for another graph served by the same runtime.
+
+        Cached per graph name, mirroring the `_graph` cache: each `RemoteGraph`
+        builds its own `httpx` async *and* sync client, neither of which is
+        pooled by the SDK or closed here, so constructing one per call would
+        leak two connection pools on every use.
+
+        Args:
+            graph_name: Registered LangGraph graph name.
+
+        Returns:
+            A client that preserves this connection's URL and credentials. The
+                same instance is returned for repeated calls with one name, and
+                `self` when asked for the graph this client already serves.
+        """
+        if graph_name == self._graph_name:
+            # Otherwise this builds a second client for the graph the receiver
+            # already serves -- the exact duplicate-connection-pool leak the
+            # cache exists to prevent.
+            return self
+        cached = self._sibling_clients.get(graph_name)
+        if cached is None:
+            cached = RemoteAgent(
+                self._url,
+                graph_name=graph_name,
+                api_key=self._api_key,
+                headers=self._headers,
+            )
+            self._sibling_clients[graph_name] = cached
+        return cached
 
     async def astream(
         self,
@@ -465,6 +498,56 @@ class RemoteAgent:
             logger.warning(
                 "Failed to ensure thread %s exists on remote server",
                 thread_id,
+                exc_info=True,
+            )
+            raise
+
+    async def arebind_thread(self, config: Mapping[str, Any]) -> None:
+        """Associate an existing remote thread with this client's graph.
+
+        A run through a sibling graph changes the server-side thread's
+        `graph_id`. Restore it before a caller makes an out-of-run state
+        update, whose `as_node` is resolved against that association.
+
+        The metadata write merges server-side, so it does not clobber other
+        thread metadata.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            ValueError: If `thread_id` is not present in `config`.
+            AttributeError: If the installed LangGraph SDK no longer exposes
+                `RemoteGraph._validate_client`.
+            Exception: Any transport or API failure from the metadata update,
+                logged at WARNING and re-raised for the caller to classify.
+        """  # noqa: DOC502 — `ValueError` raised by `_require_thread_id`
+        thread_id = _require_thread_id(config)
+        graph = self._get_graph()
+
+        # Private SDK accessor. Checked explicitly because the alternative is an
+        # `AttributeError` that the caller's blanket rebind handler downgrades
+        # to a warning -- `/offload` would keep "working" while every later
+        # `/goal` and `/rubric` failed on a mis-bound thread, permanently and
+        # with nothing connecting the two.
+        validate_client = getattr(graph, "_validate_client", None)
+        if validate_client is None:
+            msg = (
+                "RemoteGraph._validate_client is unavailable; the LangGraph SDK "
+                "changed and threads can no longer be rebound to their graph."
+            )
+            raise AttributeError(msg)
+
+        try:
+            client = validate_client()
+            await client.threads.update(
+                thread_id, metadata={"graph_id": self._graph_name}
+            )
+        except Exception:
+            logger.warning(
+                "Failed to associate thread %s with graph %s",
+                thread_id,
+                self._graph_name,
                 exc_info=True,
             )
             raise

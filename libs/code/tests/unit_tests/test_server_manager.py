@@ -550,6 +550,39 @@ class TestStartServerAndGetAgent:
         assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
 
+    def test_offload_operation_graph_is_registered(self, tmp_path: Path) -> None:
+        """`/offload` streams this graph by name, so it must always be served.
+
+        Dropping the entry turns every `/offload` into a server 404 that no
+        other unit test would catch.
+        """
+        import json
+
+        from deepagents_code.client.launch.server import generate_langgraph_json
+
+        # The production default (see `server_manager`) resolves to the real
+        # installed module.
+        generate_langgraph_json(tmp_path)
+        config = json.loads((tmp_path / "langgraph.json").read_text())
+        assert config["graphs"]["agent"] == "deepagents_code.server_graph:make_graph"
+        assert (
+            config["graphs"]["offload"]
+            == "deepagents_code.server_graph:make_offload_graph"
+        )
+
+    def test_custom_graph_does_not_require_an_offload_factory(
+        self, tmp_path: Path
+    ) -> None:
+        """Custom graph references remain valid without an undocumented pair."""
+        import json
+
+        from deepagents_code.client.launch.server import generate_langgraph_json
+
+        generate_langgraph_json(tmp_path, graph_ref="custom_graph:make_graph")
+
+        config = json.loads((tmp_path / "langgraph.json").read_text())
+        assert config["graphs"] == {"agent": "custom_graph:make_graph"}
+
 
 class TestWritePyproject:
     """Tests for the generated runtime pyproject."""

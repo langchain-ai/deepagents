@@ -1,11 +1,11 @@
 """Integration coverage for the server-side `/offload` path.
 
-`/offload` drives the agent's own `compact_conversation` tool (with
-`force=True`) server-side, so the offloaded archive lands in the agent's
-composite backend and is readable via `read_file` in every run mode — not in a
-client-local directory the server can never read. These tests construct the app
-the PRODUCTION way (`backend=None`) and prove the archive is readable *through
-the agent*.
+For a server-backed agent `/offload` runs the dedicated `offload` operation
+graph, which compacts without a model node or a synthetic tool call. Either way
+the offloaded archive lands in the agent's composite backend and is readable via
+`read_file` in every run mode — not in a client-local directory the server can
+never read. These tests construct the app the PRODUCTION way (`backend=None`)
+and prove the archive is readable *through the agent*.
 """
 
 from __future__ import annotations
@@ -20,7 +20,16 @@ if TYPE_CHECKING:
 
 
 def _write_model_config(home_dir: Path) -> None:
-    """Write a temp config that points the server subprocess at the test model."""
+    """Write a temp config that points the server subprocess at the test model.
+
+    The fake model's 8k-token default profile overflows once the system
+    prompt plus two seeded long turns cross the 85% auto-compaction trigger,
+    so auto-compaction fires during seeding and leaves `/offload` nothing
+    genuine to compact. Widening the window past the seeded size keeps the
+    thread uncompacted until `/offload`, while the fraction-based retention
+    window (~800 tokens) stays smaller than the seeded ~4.4k, so the forced
+    compaction still has real work to do.
+    """
     config_dir = home_dir / ".deepagents"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.toml").write_text(
@@ -28,6 +37,9 @@ def _write_model_config(home_dir: Path) -> None:
 [models.providers.itest]
 class_path = "deepagents_code._testing_models:DeterministicIntegrationChatModel"
 models = ["fake"]
+
+[models.providers.itest.profile]
+max_input_tokens = 32000
 """.strip()
         + "\n"
     )
@@ -44,15 +56,19 @@ def _build_long_prompt(turn: int) -> str:
 
 async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) -> None:
     """Execute one real remote agent turn and drain the stream to completion."""
-    from deepagents_code.config import build_stream_config
+    from deepagents_code.config import build_stream_config, settings
 
     config = build_stream_config(thread_id, assistant_id)
     stream_input = {"messages": [{"role": "user", "content": prompt}]}
+    # Send the resolved context limit so the server's compaction/summarization
+    # layers see the same window the model profile was widened to; without it
+    # the server falls back to its own default and auto-compaction fires early.
     async for _chunk in agent.astream(
         stream_input,
         stream_mode=["messages", "updates"],
         subgraphs=True,
         config=config,
+        context={"model_context_limit": settings.model_context_limit},
         durability="exit",
     ):
         pass
@@ -88,14 +104,20 @@ async def _read_file_through_agent(agent, *, thread_id: str, file_path: str) -> 
             {"name": "read_file", "args": {"file_path": file_path}, "id": tool_call_id}
         ],
     )
-    await agent.aensure_thread(config)
-    await agent.aupdate_state(config, {"messages": [seed]}, as_node="model")
+    # `/offload` restores the thread's main-graph association before returning,
+    # so this seeds the read straight through the interactive `agent` graph's
+    # model node. Seeding against that client (rather than the app's default
+    # graph) also keeps the test pinned to the interactive graph `/offload`
+    # shares its checkpoint with.
+    agent_graph = agent.for_graph("agent")
+    await agent_graph.aensure_thread(config)
+    await agent_graph.aupdate_state(config, {"messages": [seed]}, as_node="model")
 
     interrupt_ids: list[str] = []
     tool_contents: list[str] = []
 
     async def _drain(stream_input) -> None:
-        async for chunk in agent.astream(
+        async for chunk in agent_graph.astream(
             stream_input,
             stream_mode=["messages", "updates"],
             subgraphs=True,
@@ -136,6 +158,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
     enough content, runs `/offload`, and asserts:
 
     - no `ErrorMessage` and an "Offloaded " success message,
+    - no HITL interrupt is surfaced, the operation graph having no tool node,
     - a persisted `_summarization_event` with `cutoff > 0` and
       `file_path == /conversation_history/<thread>.md`,
     - the archive is readable THROUGH THE AGENT (via its own `read_file` tool),
@@ -189,6 +212,19 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
             config = {"configurable": {"thread_id": thread_id}}
 
+            # Captured before the run so the replay can be checked against it.
+            # The `/offload` run input is *authoritative* for the `messages`
+            # channel against a real server -- it replaces the conversation
+            # rather than merging into it (streaming `{"messages": []}` here
+            # empties the thread outright). No unit test can observe that: an
+            # in-process checkpointer honors the `add_messages` reducer and
+            # leaves the checkpointed list intact either way.
+            before_state = await agent.aget_state(config)
+            messages_before = list(
+                (getattr(before_state, "values", None) or {}).get("messages", [])
+            )
+            assert messages_before
+
             # Production construction: no client-owned backend.
             app = DeepAgentsApp(
                 agent=agent,  # ty: ignore
@@ -198,6 +234,31 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                 thread_id=thread_id,
             )
 
+            offload_interrupts: list[object] = []
+            recorded_chunks = 0
+            plain_for_graph = agent.for_graph
+
+            def _recording_for_graph(graph_id: str):  # noqa: ANN202
+                """Instrument the `offload` client `/offload` actually streams."""
+                offload_client = plain_for_graph(graph_id)
+                plain_astream = offload_client.astream
+
+                async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                    """Record every interrupt the server surfaces to the client."""
+                    nonlocal recorded_chunks
+                    async for chunk in plain_astream(*args, **kwargs):
+                        if isinstance(chunk, tuple) and len(chunk) == 3:
+                            recorded_chunks += 1
+                            _ns, mode, data = chunk
+                            if mode == "updates" and isinstance(data, dict):
+                                offload_interrupts.extend(
+                                    data.get("__interrupt__") or []
+                                )
+                        yield chunk
+
+                offload_client.astream = _recording_astream  # ty: ignore
+                return offload_client
+
             async with app.run_test() as pilot:
                 for _ in range(120):
                     await pilot.pause(0.1)
@@ -206,15 +267,28 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
                 assert app._message_store.total_count > 0
 
-                await app._handle_offload()
+                agent.for_graph = _recording_for_graph  # ty: ignore
+                try:
+                    await app._handle_offload()
 
-                for _ in range(120):
-                    await pilot.pause(0.1)
-                    if any(
-                        "Offloaded " in str(widget._content)
-                        for widget in app.query(AppMessage)
-                    ):
-                        break
+                    for _ in range(120):
+                        await pilot.pause(0.1)
+                        if any(
+                            "Offloaded " in str(widget._content)
+                            for widget in app.query(AppMessage)
+                        ):
+                            break
+                finally:
+                    agent.for_graph = plain_for_graph  # ty: ignore
+
+                # The operation graph has no HITL middleware and manufactures no
+                # tool call, so the slash command is the whole authorization
+                # boundary: there is nothing left to approve in any approval
+                # mode (this app runs the default Manual mode).
+                assert offload_interrupts == []
+                # Positive control: the recorder must have seen chunks, so the
+                # empty-interrupt assertion above cannot pass vacuously.
+                assert recorded_chunks > 0
 
                 app_messages = [
                     str(widget._content) for widget in app.query(AppMessage)
@@ -230,6 +304,18 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             # The summarization event must be visible through server state.
             state = await agent.aget_state(config)
             values = getattr(state, "values", None) or {}
+
+            # `/offload` frees context by advancing the summarization cutoff, not
+            # by deleting messages: the raw conversation stays in the checkpoint
+            # so `/context` and resume still see it. Because the replay replaces
+            # this channel, a stale or empty input would silently truncate it
+            # here and still report success -- so assert identity, not count.
+            messages_after = values.get("messages", [])
+            assert len(messages_after) == len(messages_before)
+            assert [getattr(m, "id", None) for m in messages_after] == [
+                getattr(m, "id", None) for m in messages_before
+            ]
+
             summarization_event = values.get("_summarization_event")
             assert summarization_event is not None
             cutoff = _event_field(summarization_event, "cutoff_index")

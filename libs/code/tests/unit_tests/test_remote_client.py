@@ -1074,3 +1074,143 @@ class TestAgentErrorType:
 
     def test_non_dict_payload_uses_class_name(self) -> None:
         assert agent_error_type(ValueError("boom")) == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent.for_graph
+# ---------------------------------------------------------------------------
+
+
+class TestForGraph:
+    """Sibling clients for other graphs served by the same runtime."""
+
+    def _agent(self) -> RemoteAgent:
+        return RemoteAgent(
+            "http://localhost:1234",
+            graph_name="agent",
+            api_key="secret-key",
+            headers={"x-proxy": "yes"},
+        )
+
+    def test_preserves_url_and_credentials(self) -> None:
+        """A dropped key would 401 only on authenticated deployments."""
+        sibling = self._agent().for_graph("offload")
+
+        assert sibling._graph_name == "offload"
+        assert sibling._url == "http://localhost:1234"
+        assert sibling._api_key == "secret-key"
+        assert sibling._headers == {"x-proxy": "yes"}
+
+    def test_repeated_calls_return_one_client(self) -> None:
+        """Each `RemoteGraph` opens an httpx async *and* sync client.
+
+        Neither is pooled by the SDK nor closed here, so building a client per
+        call would leak two connection pools on every `/offload`.
+        """
+        agent = self._agent()
+
+        assert agent.for_graph("offload") is agent.for_graph("offload")
+
+    def test_own_graph_name_returns_self(self) -> None:
+        """Asking for the graph this client already serves must not build a second.
+
+        `test_offload_server_side.py` takes exactly this path
+        (`agent.for_graph("agent")`), and without the short-circuit it creates
+        the duplicate httpx sync+async pair the cache exists to prevent.
+        """
+        agent = self._agent()
+
+        assert agent.for_graph("agent") is agent
+        assert agent._sibling_clients == {}
+
+    def test_distinct_names_get_distinct_clients(self) -> None:
+        agent = self._agent()
+
+        assert agent.for_graph("offload") is not agent.for_graph("agent")
+
+    def test_sibling_does_not_share_the_parents_graph(self) -> None:
+        """The cached `RemoteGraph` is per-graph-name, not shared."""
+        agent = self._agent()
+        with patch("langgraph.pregel.remote.RemoteGraph") as remote_graph:
+            remote_graph.side_effect = lambda name, **_kwargs: SimpleNamespace(
+                name=name
+            )
+            parent_graph = agent._get_graph()
+            sibling_graph = agent.for_graph("offload")._get_graph()
+
+        assert parent_graph is not sibling_graph
+        assert parent_graph.name == "agent"
+        assert sibling_graph.name == "offload"
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent.arebind_thread
+# ---------------------------------------------------------------------------
+
+
+class TestArebindThread:
+    """Re-associating a thread with this client's graph after a sibling run."""
+
+    def _agent(self) -> RemoteAgent:
+        return RemoteAgent("http://localhost:1234", graph_name="agent")
+
+    async def test_writes_graph_id_into_thread_metadata(self) -> None:
+        """The rebind must go through thread *metadata*, not a state update.
+
+        The server resolves an out-of-run `as_node=` write from
+        `thread["metadata"]["graph_id"]`. `threads.update_state` sends no graph
+        id at all, so an empty state update resolves against whichever graph ran
+        last -- i.e. it cannot undo a sibling-graph run. Only a metadata write
+        rebinds the thread.
+        """
+        agent = self._agent()
+        client = MagicMock()
+        client.threads.update = AsyncMock()
+
+        graph = SimpleNamespace(_validate_client=lambda: client)
+        with patch.object(agent, "_get_graph", return_value=graph):
+            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})
+
+        client.threads.update.assert_awaited_once_with(
+            "t-1", metadata={"graph_id": "agent"}
+        )
+
+    async def test_missing_thread_id_raises(self) -> None:
+        """A silent no-op would leave the thread bound to the sibling graph."""
+        agent = self._agent()
+
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.arebind_thread({"configurable": {}})
+
+    async def test_missing_sdk_accessor_reports_the_real_cause(self) -> None:
+        """An SDK rename must not degrade into a generic rebind warning.
+
+        `_validate_client` is private. If it disappears, the bare attribute
+        access would raise inside the caller's blanket rebind handler, which
+        downgrades everything to a warning -- `/offload` would keep "working"
+        while every later `/goal` and `/rubric` failed on a mis-bound thread,
+        permanently and with nothing connecting the two.
+        """
+        agent = self._agent()
+
+        with (
+            patch.object(agent, "_get_graph", return_value=SimpleNamespace()),
+            pytest.raises(AttributeError, match="_validate_client is unavailable"),
+        ):
+            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})
+
+    async def test_transport_failure_propagates(self) -> None:
+        """The caller decides whether a failed rebind is fatal, so re-raise."""
+        agent = self._agent()
+        client = MagicMock()
+        client.threads.update = AsyncMock(side_effect=RuntimeError("server gone"))
+
+        with (
+            patch.object(
+                agent,
+                "_get_graph",
+                return_value=SimpleNamespace(_validate_client=lambda: client),
+            ),
+            pytest.raises(RuntimeError, match="server gone"),
+        ):
+            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})

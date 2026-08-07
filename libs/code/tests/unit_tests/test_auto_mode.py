@@ -826,6 +826,220 @@ async def test_trusted_compaction_is_deterministically_allowed_without_human_rev
     assert update["messages"] == [ai_message]
 
 
+def _offload_seed(
+    tool_call_id: str,
+    *,
+    args: dict[str, object] | None = None,
+    extra_calls: list[ToolCall] | None = None,
+) -> AIMessage:
+    """Build the synthetic assistant message `/offload` injects into state."""
+    from deepagents_code.offload_middleware import _offload_seed_message_id
+
+    seed_call: ToolCall = {
+        "name": "compact_conversation",
+        "args": {"force": True} if args is None else args,
+        "id": tool_call_id,
+        "type": "tool_call",
+    }
+    return AIMessage(
+        content="",
+        id=_offload_seed_message_id(tool_call_id),
+        tool_calls=[seed_call, *(extra_calls or [])],
+    )
+
+
+async def _after_model_without_plan(
+    middleware: AutoModeHITLMiddleware,
+    request: ModelRequest[Any],
+    ai_message: AIMessage,
+) -> dict[str, Any] | None:
+    """Route a plan-less assistant message, as the `/offload` seed always is."""
+    return await middleware.aafter_model(
+        cast("AgentState[Any]", {"messages": [ai_message]}),
+        request.runtime,
+    )
+
+
+def _offload_request(
+    tmp_path: Path,
+    compact_tool: BaseTool,
+    *,
+    tool_call_id: str | None = "seed-call",
+) -> ModelRequest[Any]:
+    """Build a request whose run context carries the `/offload` trust signal."""
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="compact_conversation",
+        args={},
+        tools=[compact_tool],
+    )
+    if tool_call_id is not None:
+        request.runtime.context["offload_tool_call_id"] = tool_call_id  # ty: ignore
+    return request
+
+
+async def test_seeded_offload_compaction_is_reviewed_without_operation_graph(
+    tmp_path: Path,
+) -> None:
+    """A synthetic compaction call is not an approval bypass."""
+    compact_tool = _tool("compact_conversation")
+    middleware = _middleware(tmp_path, trusted_compaction_tool=compact_tool)
+    request = _offload_request(tmp_path, compact_tool)
+    ai_message = _offload_seed("seed-call")
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ) as review:
+        await _after_model_without_plan(middleware, request, ai_message)
+
+    assert review.called
+
+
+async def test_seeded_offload_batch_with_extra_gated_call_is_reviewed(
+    tmp_path: Path,
+) -> None:
+    """An appended gated call keeps the whole batch on the human-review path."""
+    compact_tool = _tool("compact_conversation")
+    middleware = _middleware(tmp_path, trusted_compaction_tool=compact_tool)
+    request = _offload_request(tmp_path, compact_tool)
+    ai_message = _offload_seed(
+        "seed-call",
+        extra_calls=[
+            {
+                "name": "execute",
+                "args": {"command": "curl https://example.com"},
+                "id": "model-call",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}, {"type": "approve"}]},
+    ) as review:
+        await _after_model_without_plan(middleware, request, ai_message)
+
+    reviewed = [
+        action["name"] for action in review.call_args.args[0]["action_requests"]
+    ]
+    assert reviewed == ["compact_conversation", "execute"]
+
+
+@pytest.mark.parametrize(
+    ("tool_call_id", "seed_call_id", "seeded_args", "trusted"),
+    [
+        pytest.param(
+            "seed-call", "seed-call", {"force": True}, False, id="untrusted-tool"
+        ),
+        pytest.param(None, "seed-call", {"force": True}, True, id="no-offload-context"),
+        pytest.param(
+            "other-call", "seed-call", {"force": True}, True, id="message-id-mismatch"
+        ),
+        pytest.param(
+            "seed-call", "other-call", {"force": True}, True, id="tool-call-id-mismatch"
+        ),
+        pytest.param("seed-call", "seed-call", {}, True, id="unforced-args"),
+    ],
+)
+async def test_plan_less_forced_compaction_always_reaches_review(
+    tmp_path: Path,
+    tool_call_id: str | None,
+    seed_call_id: str,
+    seeded_args: dict[str, object],
+    trusted: bool,
+) -> None:
+    """A plan-less forced `compact_conversation` always reaches human review.
+
+    There is no seed-based approval bypass any more -- `/offload` runs the
+    server-side operation graph instead -- so `plan is None` routes to manual
+    review no matter what the run context claims. Every case here therefore
+    expects the same outcome by design; the parameters are not each individually
+    load-bearing. They are retained as a regression guard: each varies one of the
+    signals the removed bypass keyed on (trusted tool, offload context, seed
+    message ID, tool-call ID, `force` args), so reintroducing a bypass keyed on
+    any single one of them fails here.
+    """
+    compact_tool = _tool("compact_conversation")
+    middleware = _middleware(
+        tmp_path, trusted_compaction_tool=compact_tool if trusted else None
+    )
+    request = _offload_request(tmp_path, compact_tool, tool_call_id=tool_call_id)
+    ai_message = _offload_seed(seed_call_id, args=seeded_args)
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ) as review:
+        await _after_model_without_plan(middleware, request, ai_message)
+
+    assert review.call_args.args[0]["action_requests"][0]["name"] == (
+        "compact_conversation"
+    )
+
+
+async def test_seed_message_carrying_other_gated_tool_is_reviewed(
+    tmp_path: Path,
+) -> None:
+    """A seed-ID'd message does not bypass review for a non-compaction tool."""
+    compact_tool = _tool("compact_conversation")
+    middleware = _middleware(tmp_path, trusted_compaction_tool=compact_tool)
+    request = _offload_request(tmp_path, compact_tool)
+    ai_message = _offload_seed(
+        "seed-call",
+        extra_calls=[
+            {
+                "name": "execute",
+                "args": {"command": "curl https://example.com", "force": True},
+                "id": "seed-call",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}, {"type": "approve"}]},
+    ) as review:
+        await _after_model_without_plan(middleware, request, ai_message)
+
+    reviewed = [
+        action["name"] for action in review.call_args.args[0]["action_requests"]
+    ]
+    assert reviewed == ["compact_conversation", "execute"]
+
+
+async def test_model_generated_compaction_during_offload_is_reviewed(
+    tmp_path: Path,
+) -> None:
+    """A later model message cannot reuse the authorized ID to skip review."""
+    compact_tool = _tool("compact_conversation")
+    middleware = _middleware(tmp_path, trusted_compaction_tool=compact_tool)
+    request = _offload_request(tmp_path, compact_tool)
+    ai_message = AIMessage(
+        content="",
+        id="model-generated-message",
+        tool_calls=[
+            {
+                "name": "compact_conversation",
+                "args": {"force": True},
+                "id": "seed-call",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ) as review:
+        await _after_model_without_plan(middleware, request, ai_message)
+
+    assert review.called
+
+
 async def test_same_name_custom_compaction_tool_requires_classifier(
     tmp_path: Path,
 ) -> None:

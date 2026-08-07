@@ -167,10 +167,17 @@ def generate_langgraph_json(
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
 
+    Registers the interactive `agent` graph, and — for the default `graph_ref`
+    only — its paired `offload` operation graph for the `/offload` command.
+
     Args:
         output_dir: Directory to write the config file.
         graph_ref: Python "module:attribute" reference to the graph, where the
             attribute is a graph factory (e.g. `make_graph`) or a graph object.
+            Only the default ref registers a paired `offload` graph; a custom
+            ref serves `agent` alone. Because `_handle_offload` routes every
+            server-backed agent to `remote.for_graph("offload")`, `/offload`
+            fails against a custom ref's missing graph.
         env_file: Optional path to an env file.
         checkpointer_path: Import path to an async context manager that yields a
             `BaseCheckpointSaver`. When set, the server persists checkpoint data
@@ -183,6 +190,12 @@ def generate_langgraph_json(
         "dependencies": ["."],
         "graphs": {"agent": graph_ref},
     }
+    # The built-in pair shares one `_build_graph_factories` closure and is the
+    # only documented offload factory. A custom `graph_ref` is not required to
+    # expose a matching `make_offload_graph`, so do not generate an unresolved
+    # reference for it.
+    if graph_ref == "deepagents_code.server_graph:make_graph":
+        config["graphs"]["offload"] = "deepagents_code.server_graph:make_offload_graph"
     if env_file:
         config["env"] = env_file
     if checkpointer_path:

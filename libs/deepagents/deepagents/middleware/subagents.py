@@ -14,6 +14,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
@@ -661,6 +663,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
 
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(
         self,

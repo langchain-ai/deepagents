@@ -63,6 +63,7 @@ class PluginManifest:
         inline_mcp: Inline MCP servers declared in the manifest.
         inline_hooks: Inline hook configuration declared in the manifest, in
             `hooks.json` document form.
+        auto_update: Whether this plugin permits automatic updates.
     """
 
     name: str | None
@@ -71,6 +72,7 @@ class PluginManifest:
     inline_mcp: JsonObject
     inline_hooks: JsonObject = field(default_factory=dict)
     display_name: str | None = None
+    auto_update: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

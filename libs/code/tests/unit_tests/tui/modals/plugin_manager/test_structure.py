@@ -534,6 +534,10 @@ async def test_settings_tab_toggles_plugin_auto_updates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", raising=False)
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.plugin_auto_update_setting",
+        lambda: (False, "config.toml"),
+    )
     save = MagicMock(return_value=True)
     monkeypatch.setattr(
         "deepagents_code.tui.modals.plugin_manager._save_toml_field", save

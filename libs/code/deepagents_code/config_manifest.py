@@ -1616,10 +1616,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Plugins",
         summary=(
             "Update enabled, versioned plugins from remote marketplaces in the "
-            "background after the first prompt."
+            "background after the first prompt; disable as a global kill switch."
         ),
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         env_var=_env_vars.PLUGIN_AUTO_UPDATE,
         toml_keys=("plugins", "auto_update"),
         empty_env_is_false=True,

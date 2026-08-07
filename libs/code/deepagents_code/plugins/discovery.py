@@ -352,7 +352,7 @@ def plugin_auto_update_setting() -> tuple[bool, str]:
 
     option = get_option("plugins.auto_update")
     if option is None:
-        return False, "default"
+        return True, "default"
     enabled, source = resolve_scalar(option, toml_data=load_config_toml())
     return bool(enabled), source
 
@@ -452,7 +452,12 @@ def auto_update_plugins() -> tuple[str, ...]:
                             raise MarketplaceError(msg) from exc
 
                         version = manifest.version if manifest is not None else None
-                        if version is None or version == installed_entry.version:
+                        if (
+                            manifest is None
+                            or not manifest.auto_update
+                            or version is None
+                            or version == installed_entry.version
+                        ):
                             continue
 
                         validate = partial(

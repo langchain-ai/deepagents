@@ -338,24 +338,59 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
     assert install_plugin(plugin_id).version is None
 
 
-def test_plugin_auto_update_stages_new_version_for_reload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("global_enabled", "manifest_enabled", "should_update"),
+    [
+        (True, False, False),
+        (True, True, True),
+        (False, False, False),
+        (False, True, False),
+        (None, True, True),
+    ],
+    ids=(
+        "global-on-manifest-off",
+        "global-on-manifest-on",
+        "global-off-manifest-off",
+        "global-off-manifest-on",
+        "default-global-on",
+    ),
+)
+def test_plugin_auto_update_requires_global_and_manifest_enablement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    global_enabled: bool | None,
+    manifest_enabled: bool,
+    should_update: bool,
 ) -> None:
     marketplace_root, plugin_id = _install_remote_plugin(tmp_path, monkeypatch)
+    if global_enabled is None:
+        monkeypatch.delenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE")
+    else:
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1" if global_enabled else "0"
+        )
     old_cache = Path(load_installed_plugins()[plugin_id].install_path)
     _write_json(
-        marketplace_root
-        / "plugins"
-        / "quality-review-plugin"
-        / ".claude-plugin"
-        / "plugin.json",
-        {"name": "quality-review-plugin", "version": "2.0.0"},
+        marketplace_root / "plugins" / "quality-review-plugin" / "plugin.json",
+        {
+            "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+            "name": "quality-review-plugin",
+            "version": "2.0.0",
+            "extensions": {
+                "com.langchain.deepagents.code": {
+                    "autoUpdate": manifest_enabled,
+                }
+            },
+        },
     )
 
-    assert auto_update_plugins() == (plugin_id,)
-    updated = load_installed_plugins()[plugin_id]
-    assert updated.version == "2.0.0"
-    assert Path(updated.install_path) == versioned_cache_path(plugin_id, "2.0.0")
+    expected = (plugin_id,) if should_update else ()
+    assert auto_update_plugins() == expected
+    installed = load_installed_plugins()[plugin_id]
+    expected_version = "2.0.0" if should_update else "1.0.0"
+    assert installed.version == expected_version
+    if should_update:
+        assert Path(installed.install_path) == versioned_cache_path(plugin_id, "2.0.0")
     assert old_cache.is_dir()
 
 

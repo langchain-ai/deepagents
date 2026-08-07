@@ -18,6 +18,7 @@ from deepagents_code.plugins.models import (
 logger = logging.getLogger(__name__)
 
 _MANIFEST_RELATIVE_PATHS = (
+    Path("plugin.json"),
     Path(".claude-plugin") / "plugin.json",
     Path(".codex-plugin") / "plugin.json",
 )
@@ -27,6 +28,7 @@ _UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
     "commands",
 )
 _NAME_RE = re.compile(r"^[^\s]+$")
+_DEEPAGENTS_EXTENSION_NAMESPACE = "com.langchain.deepagents.code"
 
 
 class PluginManifestError(ValueError):
@@ -185,10 +187,46 @@ def _inline_hooks(value: object) -> JsonObject:
     return {"hooks": normalized}
 
 
+def _auto_update_from_extensions(raw: JsonObject, warnings: list[str]) -> bool:
+    """Resolve the Deep Agents Code auto-update extension.
+
+    Agent Plugins reserves client-specific manifest data for reverse-domain
+    namespaces under `extensions`: https://agent-plugins.org/specification#8-client-extensions
+
+    Returns:
+        Whether automatic updates are permitted for this plugin.
+    """
+    extensions = raw.get("extensions")
+    if extensions is None:
+        return True
+    if not isinstance(extensions, dict):
+        warnings.append("ignoring extensions: expected object")
+        return True
+    settings = extensions.get(_DEEPAGENTS_EXTENSION_NAMESPACE)
+    if settings is None:
+        return True
+    if not isinstance(settings, dict):
+        warnings.append(
+            "disabling auto-update: "
+            f"{_DEEPAGENTS_EXTENSION_NAMESPACE} must be an object"
+        )
+        return False
+    value = settings.get("autoUpdate")
+    if value is None:
+        return True
+    if not isinstance(value, bool):
+        warnings.append(
+            "disabling auto-update: "
+            f"{_DEEPAGENTS_EXTENSION_NAMESPACE}.autoUpdate must be a boolean"
+        )
+        return False
+    return value
+
+
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
-    """Load a Claude/Codex plugin manifest.
+    """Load an Agent Plugins, Claude, or Codex plugin manifest.
 
     Args:
         root: Plugin root directory.
@@ -241,6 +279,7 @@ def load_manifest(
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
+        auto_update=_auto_update_from_extensions(raw, warnings),
     )
     return manifest, manifest_path, tuple(warnings)
 

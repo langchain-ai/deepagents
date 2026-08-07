@@ -350,16 +350,16 @@ def _clear_update_env(
     directly from the environment by `is_auto_update_enabled`, so a developer who
     exports it would otherwise make auto-update tests fail or pass spuriously.
 
-    Most unit tests should not run the app startup PyPI update check at all: it
-    performs DNS in a background worker, which pytest-socket reports under
-    `--disable-socket` even when the app swallows the failure. Set the production
-    opt-out env var by default so subprocess tests inherit the same no-network
-    behavior. Tests marked `self_managed_update_check` cover the update-check
-    gate directly, so they opt out of this default below.
+    Most unit tests should not run the app startup PyPI update check or the plugin
+    updater: both perform network requests in background workers. Set their
+    production opt-out env vars by default so subprocess tests inherit the same
+    no-network behavior. Tests marked `self_managed_update_check` cover the app
+    update-check gate directly, so they opt out of that default below.
     """
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "0")
 
     if _self_manages_update_check(request):
         monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)

@@ -44,7 +44,6 @@ from deepagents_code.plugins.store import (
     plugin_mutation_lock,
     remove_marketplace_record,
     save_marketplace_record,
-    serialized_plugin_mutation,
     set_plugin_enabled,
     uninstall_plugin as uninstall_plugin_record,
     versioned_cache_path,
@@ -53,7 +52,7 @@ from deepagents_code.plugins.store import (
 logger = logging.getLogger(__name__)
 
 
-@serialized_plugin_mutation
+@plugin_mutation_lock()
 def add_local_marketplace(path: str | Path) -> PluginMarketplace:
     """Add a local marketplace to dcode state.
 
@@ -75,7 +74,7 @@ def add_local_marketplace(path: str | Path) -> PluginMarketplace:
     return marketplace
 
 
-@serialized_plugin_mutation
+@plugin_mutation_lock()
 def add_marketplace_source(raw: str) -> PluginMarketplace:
     """Add a marketplace from a pasted source string.
 
@@ -99,7 +98,7 @@ def add_marketplace_source(raw: str) -> PluginMarketplace:
     return marketplace
 
 
-@serialized_plugin_mutation
+@plugin_mutation_lock()
 def remove_marketplace(name: str) -> bool:
     """Remove a marketplace and every plugin installed from it.
 
@@ -155,7 +154,7 @@ def _require_installed_plugin(plugin_id: str) -> None:
         raise MarketplaceError(msg)
 
 
-@serialized_plugin_mutation
+@plugin_mutation_lock()
 def set_installed_plugin_enabled(plugin_id: str, *, enabled: bool) -> None:
     """Set the enabled state of an installed plugin.
 
@@ -169,7 +168,7 @@ def set_installed_plugin_enabled(plugin_id: str, *, enabled: bool) -> None:
         ensure_plugin_data_dir(plugin_id)
 
 
-@serialized_plugin_mutation
+@plugin_mutation_lock()
 def uninstall_plugin(plugin_id: str) -> None:
     """Uninstall a plugin (disable, clear records, delete orphaned cache).
 
@@ -202,7 +201,7 @@ def _resolve_marketplace_and_entry(
     return marketplace, entry
 
 
-@serialized_plugin_mutation
+@plugin_mutation_lock()
 def install_plugin(plugin_id: str) -> PluginInstance:
     """Install a marketplace plugin into the versioned cache and enable it.
 
@@ -358,20 +357,6 @@ def plugin_auto_update_setting() -> tuple[bool, str]:
     return bool(enabled), source
 
 
-def set_plugin_auto_update(enabled: bool) -> bool:
-    """Persist the plugin auto-update preference to `config.toml`.
-
-    Args:
-        enabled: Whether plugin auto-updates should be enabled.
-
-    Returns:
-        Whether the preference was saved.
-    """
-    from deepagents_code.model_config import _save_toml_field
-
-    return _save_toml_field("plugins", "auto_update", enabled)
-
-
 def auto_update_plugins() -> tuple[str, ...]:
     """Stage updated versions of enabled remote marketplace plugins.
 
@@ -385,10 +370,7 @@ def auto_update_plugins() -> tuple[str, ...]:
 
     from deepagents_code._env_vars import OFFLINE, is_env_truthy
 
-    if is_env_truthy(OFFLINE):
-        return ()
-    enabled, _ = plugin_auto_update_setting()
-    if not enabled:
+    if is_env_truthy(OFFLINE) or not plugin_auto_update_setting()[0]:
         return ()
 
     try:

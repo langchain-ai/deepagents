@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.model_config import _save_toml_field
 from deepagents_code.plugins import (
     add_marketplace_source,
     install_plugin,
@@ -41,10 +42,7 @@ from deepagents_code.plugins import (
     set_installed_plugin_enabled,
     uninstall_plugin,
 )
-from deepagents_code.plugins.discovery import (
-    plugin_auto_update_setting,
-    set_plugin_auto_update,
-)
+from deepagents_code.plugins.discovery import plugin_auto_update_setting
 from deepagents_code.plugins.marketplace import MarketplaceError
 from deepagents_code.tui.modals.plugin_manager.content import (
     _confirm_marketplace_removal_options,
@@ -267,16 +265,6 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             or query in row.description.casefold()
         )
 
-    def _auto_update_option(self) -> Option:
-        label = "enabled" if self._auto_update_enabled else "disabled"
-        env_override = self._auto_update_source.startswith("env (")
-        suffix = " (set by environment)" if env_override else ""
-        return Option(
-            f"Auto-update plugins: {label}{suffix}",
-            id="action:toggle-auto-update",
-            disabled=env_override,
-        )
-
     def _current_options(self) -> list[Option]:
         glyphs = get_glyphs()
         if self._tab == "discover":
@@ -335,7 +323,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 )
             return options
         if self._tab == "settings":
-            return [self._auto_update_option()]
+            label = "enabled" if self._auto_update_enabled else "disabled"
+            env_override = self._auto_update_source.startswith("env (")
+            suffix = " (set by environment)" if env_override else ""
+            return [
+                Option(
+                    f"Auto-update plugins: {label}{suffix}",
+                    id="action:toggle-auto-update",
+                    disabled=env_override,
+                )
+            ]
         if not self._state.errors:
             return [Option("No plugin errors.", id="empty")]
         return [Option(Content(error), id="empty") for error in self._state.errors]
@@ -857,15 +854,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
 
     async def _toggle_auto_update(self) -> None:
         enabled = not self._auto_update_enabled
-        if not await asyncio.to_thread(set_plugin_auto_update, enabled):
+        if not await asyncio.to_thread(
+            _save_toml_field, "plugins", "auto_update", enabled
+        ):
             self._error = "Could not save the plugin auto-update setting."
             self._status = None
             self._refresh_view()
             return
         self._auto_update_enabled = enabled
         self._auto_update_source = "config.toml"
-        label = "enabled" if enabled else "disabled"
-        self._status = f"Plugin auto-updates {label}."
+        self._status = f"Plugin auto-updates {'enabled' if enabled else 'disabled'}."
         self._error = None
         self._refresh_view()
 

@@ -137,22 +137,15 @@ def _install_remote_plugin(
     )
     marketplace_root = tmp_path / "marketplace"
     _make_marketplace(marketplace_root)
-    plugin_id = "quality-review-plugin@company-tools"
-    save_marketplace_record(
-        MarketplaceRecord(
-            name="company-tools",
-            source_type="git",
-            source="https://example.com/company-tools.git",
-            install_location=str(marketplace_root),
-        )
-    )
-    install_plugin(plugin_id)
-    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1")
-    monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE")
     monkeypatch.setattr(
         "deepagents_code.plugins.discovery.materialize_marketplace_source",
         lambda _source: (load_marketplace(marketplace_root), marketplace_root),
     )
+    add_marketplace_source("https://example.com/company-tools.git")
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1")
+    monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE")
     return marketplace_root, plugin_id
 
 

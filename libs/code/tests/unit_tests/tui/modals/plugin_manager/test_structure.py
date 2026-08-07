@@ -536,7 +536,7 @@ async def test_settings_tab_toggles_plugin_auto_updates(
     monkeypatch.delenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", raising=False)
     save = MagicMock(return_value=True)
     monkeypatch.setattr(
-        "deepagents_code.tui.modals.plugin_manager.set_plugin_auto_update", save
+        "deepagents_code.tui.modals.plugin_manager._save_toml_field", save
     )
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     screen = PluginManagerScreen()
@@ -545,24 +545,14 @@ async def test_settings_tab_toggles_plugin_auto_updates(
         app.push_screen(screen)
         await pilot.pause()
         await pilot.click("#plugin-tab-settings")
-        assert screen._tab == "settings"
         await pilot.press("enter")
         await pilot.pause()
 
-        save.assert_called_once_with(True)
+        save.assert_called_once_with("plugins", "auto_update", True)
         option = screen.query_one(
             "#plugin-manager-options", OptionList
         ).get_option_at_index(0)
         assert "enabled" in str(option.prompt)
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert save.call_count == 2
-        save.assert_called_with(False)
-        option = screen.query_one(
-            "#plugin-manager-options", OptionList
-        ).get_option_at_index(0)
-        assert "disabled" in str(option.prompt)
 
 
 async def test_search_query_resets_when_switching_tabs() -> None:

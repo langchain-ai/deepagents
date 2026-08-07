@@ -905,18 +905,19 @@ def test_install_script_uv_output_uses_cache_log_not_predictable_tmp(
     """
     proc, _ = _invoke(
         tmp_path,
-        {},
+        {"FAKE_UV_INSTALL_STDERR": "live log output"},
         installed_version="0.1.0",
         latest_version="0.2.0",
         mktemp_fails=True,
     )
 
     assert proc.returncode == 0
+    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
+        "live log output\n"
+    )
     script = SCRIPT.read_text(encoding="utf-8")
-    assert "/tmp/deepagents-install.$$" not in script
-    assert "/tmp/deepagents-ripgrep-setup.$$" not in script
-    assert proc.returncode == 0
-    script = SCRIPT.read_text(encoding="utf-8")
+    assert 'eval "exec $UV_LIVE_LOG_FD>\\"\\$INSTALL_LOG\\""' in script
+    assert ': > "$INSTALL_LOG"' not in script
     assert "/tmp/deepagents-install.$$" not in script
     assert "/tmp/deepagents-ripgrep-setup.$$" not in script
 

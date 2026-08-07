@@ -1747,21 +1747,21 @@ if [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ]; then
     INSTALL_LOG_DISPLAY=""
   else
     [ ! -e "$INSTALL_LOG" ] || rm -f "$INSTALL_LOG" 2>/dev/null || true
-    # Noclobber-create the log, then keep the validated file as an open fd
-    # (UV_LIVE_LOG_FD) and have uv write to *that* (`2>&$UV_LIVE_LOG_FD`) at
-    # the invocation instead of re-opening the pathname. A path-based
-    # `2>"$INSTALL_LOG"` would re-resolve the name with ordinary truncating
-    # semantics at uv's launch, so a process able to write the cache dir could
-    # swap install.log for a symlink after this check and have uv truncate the
-    # symlink's target. The inherited fd pins the inode the noclobber create
-    # verified, so the later redirect never touches the path again. `uv_stderr`
-    # keeps the real path so the post-install readers (awk/cat/grep/cp) operate
-    # on a file; the fd is only the write target.
-    if (set -o noclobber; : > "$INSTALL_LOG") 2>/dev/null \
-      && eval "exec $UV_LIVE_LOG_FD>>\"\$INSTALL_LOG\"" 2>/dev/null; then
+    # Create the log and retain it as an open fd in one noclobber-protected
+    # operation. A path-based `2>"$INSTALL_LOG"` would re-resolve the name at
+    # uv's launch, so a process able to write the cache dir could swap
+    # install.log for a symlink after this check and redirect uv's output. The
+    # inherited fd pins the inode created here, so the later redirect never
+    # touches the path again. `uv_stderr` keeps the real path so the
+    # post-install readers (awk/cat/grep/cp) operate on a file; the fd is only
+    # the write target.
+    set -o noclobber
+    if eval "exec $UV_LIVE_LOG_FD>\"\$INSTALL_LOG\"" 2>/dev/null; then
+      set +o noclobber
       uv_stderr="$INSTALL_LOG"
       UV_LIVE_LOG=true
     else
+      set +o noclobber
       eval "exec $UV_LIVE_LOG_FD>&-" 2>/dev/null || true
       rm -f "$INSTALL_LOG" 2>/dev/null || true
     fi

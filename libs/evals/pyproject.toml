@@ -213,4 +213,8 @@ known-first-party = ["deepagents_evals", "deepagents_harbor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+]
 asyncio_mode = "auto"

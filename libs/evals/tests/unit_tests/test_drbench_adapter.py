@@ -410,7 +410,8 @@ def test_generated_task_toml_validates_against_harbors_own_schema(
         qa=[_qa("IN1", "kept"), _qa("DI1", "planted", qa_type="distractor")],
     )
     task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
-    config = TaskConfig.model_validate(tomllib.load((task_dir / "task.toml").open("rb")))
+    with (task_dir / "task.toml").open("rb") as f:
+        config = TaskConfig.model_validate(tomllib.load(f))
 
     # Each of these is only meaningful if Harbor actually parsed it into the model.
     assert config.artifacts == ["/app/report.md"]
@@ -749,9 +750,7 @@ def test_pruning_leaves_directories_this_adapter_did_not_generate(
     assert (unrelated / "task.toml").is_file()
 
 
-def test_subset_verification_reports_a_vendored_copy_that_drifted(
-    vendor: Path, tmp_path: Path
-) -> None:
+def test_subset_verification_reports_a_vendored_copy_that_drifted(vendor: Path) -> None:
     """The vendored list is the denominator of every score, so it must match the pin."""
     upstream_subsets = adapter.ensure_upstream_checkout() / "drbench" / "data" / "subsets"
     upstream_subsets.mkdir(parents=True)

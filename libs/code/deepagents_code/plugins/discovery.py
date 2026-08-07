@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -46,7 +45,6 @@ from deepagents_code.plugins.store import (
     save_marketplace_record,
     set_plugin_enabled,
     uninstall_plugin as uninstall_plugin_record,
-    versioned_cache_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,25 +317,6 @@ def _plugin_from_install_path(
     return instance, inventory.warnings
 
 
-def _validate_update_copy(
-    root: Path,
-    *,
-    plugin_id: str,
-    marketplace_name: str,
-    fallback_name: str,
-) -> None:
-    plugin, warnings = _plugin_from_install_path(
-        plugin_id=plugin_id,
-        root=root,
-        marketplace_name=marketplace_name,
-        fallback_name=fallback_name,
-    )
-    if plugin is None:
-        detail = "; ".join(warnings) or "cached plugin could not be loaded"
-        msg = f"Cannot update {plugin_id}: {detail}"
-        raise MarketplaceError(msg)
-
-
 def plugin_auto_update_setting() -> tuple[bool, str]:
     """Resolve whether plugin auto-updates are enabled and from which source.
 
@@ -396,17 +375,14 @@ def auto_update_plugins() -> tuple[str, ...]:
                         continue
 
                 try:
-                    marketplace, location = materialize_marketplace_source(source)
+                    marketplace, _ = materialize_marketplace_source(source)
                     if marketplace.name != record.name:
                         msg = (
                             f"Marketplace {record.name!r} now declares the name "
                             f"{marketplace.name!r}"
                         )
                         raise MarketplaceError(msg)
-                    save_marketplace_record(
-                        replace(record, install_location=str(location))
-                    )
-                except (OSError, ValueError) as exc:
+                except (OSError, RuntimeError, ValueError) as exc:
                     logger.warning(
                         "Could not refresh plugin marketplace %s: %s",
                         marketplace_name,
@@ -443,44 +419,30 @@ def auto_update_plugins() -> tuple[str, ...]:
                         if source_root is None:
                             msg = f"Plugin {plugin_id} has an unsupported source"
                             raise MarketplaceError(msg)
-                        try:
-                            manifest, _manifest_path, _warnings = load_manifest(
-                                source_root, fallback_name=entry.name
-                            )
-                        except PluginManifestError as exc:
-                            msg = f"Cannot update {plugin_id}: {exc}"
-                            raise MarketplaceError(msg) from exc
-
-                        version = manifest.version if manifest is not None else None
+                        manifest, _manifest_path, _warnings = load_manifest(
+                            source_root, fallback_name=entry.name
+                        )
                         if (
                             manifest is None
+                            or manifest.name != plugin_name
                             or not manifest.auto_update
-                            or version is None
-                            or version == installed_entry.version
+                            or not manifest.version
+                            or manifest.version == installed_entry.version
                         ):
                             continue
 
-                        validate = partial(
-                            _validate_update_copy,
-                            plugin_id=plugin_id,
-                            marketplace_name=marketplace.name,
-                            fallback_name=entry.name,
-                        )
-                        existing_cache = versioned_cache_path(plugin_id, version)
-                        if existing_cache.is_dir():
-                            validate(existing_cache)
-                        cache_path = cache_and_register_plugin(
+                        cache_and_register_plugin(
                             plugin_id,
                             source_root,
-                            version=version,
-                            validate=validate,
+                            version=manifest.version,
+                            validate=partial(
+                                _validate_plugin_copy,
+                                plugin_id=plugin_id,
+                                fallback_name=entry.name,
+                            ),
                         )
-                        if (
-                            cache_path.resolve()
-                            != Path(installed_entry.install_path).resolve()
-                        ):
-                            updated.append(plugin_id)
-                    except (OSError, ValueError) as exc:
+                        updated.append(plugin_id)
+                    except (OSError, RuntimeError, ValueError) as exc:
                         logger.warning(
                             "Could not update plugin %s: %s",
                             plugin_id,

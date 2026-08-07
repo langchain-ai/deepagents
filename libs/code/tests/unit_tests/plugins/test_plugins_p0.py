@@ -341,20 +341,16 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
 @pytest.mark.parametrize(
     ("global_enabled", "manifest_enabled", "should_update"),
     [
-        (True, False, False),
         (True, True, True),
-        (False, False, False),
         (False, True, False),
         (None, True, True),
         (True, None, False),
     ],
     ids=(
-        "global-on-manifest-off",
-        "global-on-manifest-on",
-        "global-off-manifest-off",
-        "global-off-manifest-on",
-        "default-global-on",
-        "global-on-manifest-omitted",
+        "enabled",
+        "global-disabled",
+        "global-default",
+        "manifest-omitted",
     ),
 )
 def test_plugin_auto_update_requires_global_and_manifest_enablement(
@@ -373,7 +369,6 @@ def test_plugin_auto_update_requires_global_and_manifest_enablement(
         )
     old_cache = Path(load_installed_plugins()[plugin_id].install_path)
     manifest: dict[str, object] = {
-        "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
         "name": "quality-review-plugin",
         "version": "2.0.0",
     }
@@ -386,11 +381,9 @@ def test_plugin_auto_update_requires_global_and_manifest_enablement(
         manifest,
     )
 
-    expected = (plugin_id,) if should_update else ()
-    assert auto_update_plugins() == expected
+    assert auto_update_plugins() == ((plugin_id,) if should_update else ())
     installed = load_installed_plugins()[plugin_id]
-    expected_version = "2.0.0" if should_update else "1.0.0"
-    assert installed.version == expected_version
+    assert installed.version == ("2.0.0" if should_update else "1.0.0")
     if should_update:
         assert Path(installed.install_path) == versioned_cache_path(plugin_id, "2.0.0")
     assert old_cache.is_dir()

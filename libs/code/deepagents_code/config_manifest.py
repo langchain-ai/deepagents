@@ -1614,10 +1614,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="plugins.auto_update",
         group="Plugins",
-        summary=(
-            "Update enabled, versioned plugins from remote marketplaces in the "
-            "background after the first prompt; disable as a global kill switch."
-        ),
+        summary="Update opted-in plugins after the first prompt; disable globally.",
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.PLUGIN_AUTO_UPDATE,

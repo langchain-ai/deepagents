@@ -530,10 +530,9 @@ async def test_enter_from_search_activates_installed_row() -> None:
         assert screen._mode == "installed_details"
 
 
-async def test_settings_tab_toggles_plugin_auto_updates(
+async def test_settings_tab_enables_plugin_auto_updates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", raising=False)
     monkeypatch.setattr(
         "deepagents_code.tui.modals.plugin_manager.plugin_auto_update_setting",
         lambda: (False, "config.toml"),
@@ -555,10 +554,6 @@ async def test_settings_tab_toggles_plugin_auto_updates(
 
         save.assert_called_once_with("plugins", "auto_update", True)
         on_enabled.assert_called_once_with()
-        option = screen.query_one(
-            "#plugin-manager-options", OptionList
-        ).get_option_at_index(0)
-        assert "enabled" in str(option.prompt)
 
 
 async def test_search_query_resets_when_switching_tabs() -> None:

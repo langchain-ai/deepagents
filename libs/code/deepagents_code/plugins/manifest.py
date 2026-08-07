@@ -28,7 +28,6 @@ _UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
     "commands",
 )
 _NAME_RE = re.compile(r"^[^\s]+$")
-_DEEPAGENTS_EXTENSION_NAMESPACE = "com.langchain.deepagents.code"
 
 
 class PluginManifestError(ValueError):
@@ -187,42 +186,6 @@ def _inline_hooks(value: object) -> JsonObject:
     return {"hooks": normalized}
 
 
-def _auto_update_from_extensions(raw: JsonObject, warnings: list[str]) -> bool:
-    """Resolve the Deep Agents Code auto-update extension.
-
-    Agent Plugins reserves client-specific manifest data for reverse-domain
-    namespaces under `extensions`: https://agent-plugins.org/specification#8-client-extensions
-
-    Returns:
-        Whether automatic updates are permitted for this plugin.
-    """
-    extensions = raw.get("extensions")
-    if extensions is None:
-        return False
-    if not isinstance(extensions, dict):
-        warnings.append("ignoring extensions: expected object")
-        return False
-    settings = extensions.get(_DEEPAGENTS_EXTENSION_NAMESPACE)
-    if settings is None:
-        return False
-    if not isinstance(settings, dict):
-        warnings.append(
-            "disabling auto-update: "
-            f"{_DEEPAGENTS_EXTENSION_NAMESPACE} must be an object"
-        )
-        return False
-    value = settings.get("autoUpdate")
-    if value is None:
-        return False
-    if not isinstance(value, bool):
-        warnings.append(
-            "disabling auto-update: "
-            f"{_DEEPAGENTS_EXTENSION_NAMESPACE}.autoUpdate must be a boolean"
-        )
-        return False
-    return value
-
-
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
@@ -270,6 +233,9 @@ def load_manifest(
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
     display_name_value = raw.get("displayName")
+    auto_update_settings = raw.get("extensions")
+    if isinstance(auto_update_settings, dict):
+        auto_update_settings = auto_update_settings.get("com.langchain.deepagents.code")
     manifest = PluginManifest(
         name=name,
         version=version,
@@ -279,7 +245,10 @@ def load_manifest(
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
-        auto_update=_auto_update_from_extensions(raw, warnings),
+        auto_update=(
+            isinstance(auto_update_settings, dict)
+            and auto_update_settings.get("autoUpdate") is True
+        ),
     )
     return manifest, manifest_path, tuple(warnings)
 

@@ -501,8 +501,7 @@ def cache_and_register_plugin(
         plugin_id: Plugin id in `{name}@{marketplace}` form.
         source_dir: Source plugin root to copy from.
         version: Version declared by the plugin manifest, if any.
-        validate: Optional validation to run against the temporary copy before
-            replacing an existing cache.
+        validate: Optional validation to run before registering the cache.
 
     Returns:
         Absolute path to the cached plugin root.
@@ -520,6 +519,8 @@ def cache_and_register_plugin(
     if cache_path.exists() and version is not None:
         try:
             if any(cache_path.iterdir()):
+                if validate is not None:
+                    validate(cache_path)
                 add_installed_plugin(
                     plugin_id,
                     install_path=str(cache_path),

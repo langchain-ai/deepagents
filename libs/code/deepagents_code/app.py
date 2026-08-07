@@ -15400,13 +15400,8 @@ class DeepAgentsApp(App):
             return
 
         names = [plugin_id.rsplit("@", 1)[0] for plugin_id in updated]
-        match names:
-            case [name]:
-                noun, display = "Plugin", name
-            case [first, second]:
-                noun, display = "Plugins", f"{first} and {second}"
-            case _:
-                noun, display = "Plugins", f"{len(names)} plugins"
+        noun = "Plugin" if len(names) == 1 else "Plugins"
+        display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
         self.notify(
             f"{noun} updated: {display}. Run /reload to apply.",
             timeout=10,

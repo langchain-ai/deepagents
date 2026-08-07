@@ -128,7 +128,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 Plugins whose enabled state differs from this set (enabled but
                 not loaded, or disabled but still loaded) are shown as pending
                 reload.
-            on_auto_update_enabled: Called after the auto-update preference is enabled.
+            on_auto_update_enabled: Called after auto-update is enabled.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
@@ -525,11 +525,6 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 f"Enter {action} {glyphs.bullet} {search_hint}Left/Right tabs "
                 f"{glyphs.bullet} Esc close"
             )
-        elif self._tab == "settings":
-            help_text.update(
-                f"Enter toggle {glyphs.bullet} Left/Right tabs "
-                f"{glyphs.bullet} Esc close"
-            )
         else:
             help_text.update(f"Left/Right tabs {glyphs.bullet} Esc close")
 
@@ -557,15 +552,14 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         # state and shows a fresh list, so a leftover query would hide results.
         # Details round-trips use `_refresh_view` instead and keep the query.
         self._search_query = ""
-        self._state, auto_update = await asyncio.gather(
-            asyncio.to_thread(
-                _load_manager_state,
-                self._mcp_server_info,
-                loaded_plugin_ids=self._loaded_plugin_ids,
-            ),
-            asyncio.to_thread(plugin_auto_update_setting),
+        self._state = await asyncio.to_thread(
+            _load_manager_state,
+            self._mcp_server_info,
+            loaded_plugin_ids=self._loaded_plugin_ids,
         )
-        self._auto_update_enabled, self._auto_update_source = auto_update
+        self._auto_update_enabled, self._auto_update_source = await asyncio.to_thread(
+            plugin_auto_update_setting
+        )
         if self._selected_plugin is not None:
             refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
             if refreshed is None:
@@ -919,7 +913,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 self._mode = "list"
                 self._tab = "installed"
                 self._selected_plugin = None
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
             self._error = f"Could not update plugin state: {exc}"
             self._status = None
             self._refresh_view()

@@ -19063,6 +19063,161 @@ class TestToolsSlashCommand:
         assert "| Tool | Description |" not in source
 
 
+class TestUsageSlashCommands:
+    """Tests for the `/cost` and `/tokens` markdown summaries."""
+
+    @staticmethod
+    def _display(source: str, *, width: int = 100) -> str:
+        """Return the text a markdown `AppMessage` shows for `source`.
+
+        Both summaries are emitted as markdown source, so assertions about what
+        the user actually sees (escapes resolved, table cells laid out) must go
+        through the same renderer the widget uses.
+
+        Args:
+            source: Markdown source as returned by one of the summaries.
+            width: Render width in terminal cells.
+
+        Returns:
+            The rendered display text, laid out at a fixed width.
+        """
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        return _markdown_to_content(source, width).plain
+
+    @staticmethod
+    def _priced_app() -> DeepAgentsApp:
+        """Build an app whose thread has one priced and one unpriced request."""
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.08,
+            kind="assistant",
+        )
+        stats.record_request("kimi-k3", 500, 50, provider="fireworks")
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+        app._session_cost_usd = 0.08
+        return app
+
+    def test_cost_summary_tables_the_breakdowns(self) -> None:
+        source = self._priced_app()._format_cost_summary()
+
+        assert source.startswith("### Estimated cost for priced requests: $0.08")
+        assert "#### Pricing unavailable" in source
+        assert "| Model | Requests |" in source
+        assert "| fireworks:kimi-k3 | 1 |" in source
+        assert "#### By type since this thread was loaded" in source
+        assert "| Assistant | $0.08 |" in source
+        assert "#### By model since this thread was loaded" in source
+        assert "| openai:gpt-5.5 | $0.08 |" in source
+
+    def test_cost_summary_renders_as_real_tables(self) -> None:
+        """The source lays out as tables rather than degenerating to text."""
+        rendered = self._display(self._priced_app()._format_cost_summary())
+
+        assert "Estimated cost for priced requests: $0.08" in rendered
+        # Column headings and a rule prove the markdown became a table.
+        assert "Type" in rendered
+        assert "Cost" in rendered
+        assert "\u2500" in rendered
+        assert "openai:gpt-5.5" in rendered
+
+    def test_cost_summary_escapes_model_names(self) -> None:
+        """A model name cannot forge a table cell or be parsed as markdown."""
+        stats = SessionStats()
+        stats.record_request(
+            "a|b _c_",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.08,
+        )
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+        app._session_cost_usd = 0.08
+
+        source = app._format_cost_summary()
+
+        assert "| openai:a\\|b \\_c\\_ | $0.08 |" in source
+        assert "openai:a|b _c_" in self._display(source)
+
+    async def test_cost_command_mounts_markdown(self) -> None:
+        app = self._priced_app()
+
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/cost")
+
+        assert mount.await_count == 2
+        echo, summary = (c.args[0] for c in mount.await_args_list)
+        assert isinstance(echo, UserMessage)
+        assert isinstance(summary, AppMessage)
+        assert summary._is_markdown
+
+    async def test_token_summary_tables_the_context_split(self) -> None:
+        app = self._priced_app()
+        app._context_tokens = 13_500
+
+        with (
+            patch.object(
+                app,
+                "_get_conversation_token_count",
+                AsyncMock(return_value=42),
+            ),
+            patch("deepagents_code.config.settings.model_name", "gpt-5.5"),
+            patch(
+                "deepagents_code.config.settings.model_context_limit",
+                1_100_000,
+            ),
+        ):
+            source = await app._format_token_summary()
+
+        assert source.startswith("### 13.5K / 1.1M tokens (1%)")
+        assert "Model: gpt-5.5" in source
+        assert "| Segment | Tokens |" in source
+        # Spend on the thread appends a `/cost` pointer to the same message.
+        assert "estimated spend of $0.08" in source
+        assert "run `/cost` for the full breakdown" in source
+        rendered = self._display(source)
+        assert "13.5K / 1.1M tokens (1%)" in rendered
+        assert "Segment" in rendered
+        # The approximate marker survives the table's escaping.
+        assert "System prompt + tools (fixed)  ~13.5K" in rendered
+        assert "Conversation                   ~42" in rendered
+
+    async def test_token_summary_without_usage(self) -> None:
+        app = DeepAgentsApp()
+
+        with (
+            patch("deepagents_code.config.settings.model_name", "gpt-5.5"),
+            patch(
+                "deepagents_code.config.settings.model_context_limit",
+                1_100_000,
+            ),
+        ):
+            source = await app._format_token_summary()
+
+        assert (
+            source
+            == "### No token usage yet\n\n1.1M token context window \u00b7 gpt-5.5"
+        )
+
+    async def test_tokens_command_mounts_markdown(self) -> None:
+        app = DeepAgentsApp()
+
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tokens")
+
+        assert mount.await_count == 2
+        echo, summary = (c.args[0] for c in mount.await_args_list)
+        assert isinstance(echo, UserMessage)
+        assert isinstance(summary, AppMessage)
+        assert summary._is_markdown
+
+
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 

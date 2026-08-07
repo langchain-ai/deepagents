@@ -7689,11 +7689,83 @@ class DeepAgentsApp(App):
 
         return not pricing_data_available()
 
+    async def _format_token_summary(self) -> str:
+        """Build the context-window usage summary for `/tokens`.
+
+        The result is markdown source, mounted through the markdown
+        `AppMessage` path: the running total is a heading and the fixed /
+        conversation split is a table, so the two figures line up under a
+        labeled column instead of trailing box-drawing prefixes.
+
+        Returns:
+            User-facing token usage for the active thread, as markdown source,
+                with a `/cost` pointer appended once the thread has spend.
+        """
+        from deepagents_code.config import settings
+
+        model_name = settings.model_name
+        context_limit = settings.model_context_limit
+        count = self._context_tokens
+        blocks: list[str] = []
+        if count > 0:
+            formatted = format_token_count(count)
+            if context_limit is None:
+                usage = f"{formatted} tokens used"
+            else:
+                limit_str = format_token_count(context_limit)
+                pct = count / context_limit * 100
+                usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
+            blocks.append(f"### {usage}")
+            if model_name:
+                blocks.append(f"Model: {_escape_markdown(model_name)}")
+            conversation_tokens = await self._get_conversation_token_count()
+            if conversation_tokens is not None:
+                overhead = max(0, count - conversation_tokens)
+                blocks.append(
+                    _markdown_table(
+                        ("Segment", "Tokens"),
+                        [
+                            (
+                                "System prompt + tools (fixed)",
+                                f"~{format_token_count(overhead)}",
+                            ),
+                            (
+                                "Conversation",
+                                f"~{format_token_count(conversation_tokens)}",
+                            ),
+                        ],
+                    )
+                )
+        else:
+            blocks.append("### No token usage yet")
+            subtitle: list[str] = []
+            if context_limit is not None:
+                limit_str = format_token_count(context_limit)
+                subtitle.append(f"{limit_str} token context window")
+            if model_name:
+                subtitle.append(_escape_markdown(model_name))
+            if subtitle:
+                blocks.append(" \u00b7 ".join(subtitle))
+        if self._displayed_cost_usd > 0:
+            blocks.append(
+                f"This thread has an estimated spend of "
+                f"{format_cost(self._displayed_cost_usd)} — run `/cost` for "
+                "the full breakdown."
+            )
+        return "\n\n".join(blocks)
+
     def _format_cost_summary(self) -> str:
         """Build the running total and type/model breakdown for `/cost`.
 
+        The result is markdown source, mounted through the markdown
+        `AppMessage` path: the total is a heading, and the per-type and
+        per-model breakdowns are tables so their amounts line up and a long
+        model name wraps inside its own cell instead of running back to the
+        left margin.
+
         Returns:
-            User-facing estimated cost summary for the active thread.
+            User-facing estimated cost summary for the active thread, as
+                markdown source.
         """
         displayed_cost_usd = self._displayed_cost_usd
         request_count = self._thread_stats.request_count
@@ -7706,7 +7778,7 @@ class DeepAgentsApp(App):
             if not request_count:
                 if has_unknown_restored_usage:
                     return (
-                        "Cost estimate unavailable\n\n"
+                        "### Cost estimate unavailable\n\n"
                         "Earlier model usage was restored for this thread, but its "
                         "request and pricing details were not persisted. This does "
                         "not mean the usage was free."
@@ -7718,7 +7790,7 @@ class DeepAgentsApp(App):
                         "report usage will appear here."
                     )
                 return "No model usage recorded for this thread yet."
-            lines = [
+            blocks = [
                 # A failed `genai-prices` import makes *every* request
                 # unpriceable, which is a broken install rather than a gap in
                 # the price catalog -- and the only one of the two the user can
@@ -7732,16 +7804,11 @@ class DeepAgentsApp(App):
                 )
             ]
             if has_unknown_restored_usage:
-                lines.extend(
-                    [
-                        "",
-                        (
-                            "Earlier restored model usage also has no persisted "
-                            "request or pricing details."
-                        ),
-                    ]
+                blocks.append(
+                    "Earlier restored model usage also has no persisted "
+                    "request or pricing details."
                 )
-            return "\n".join(lines)
+            return "\n\n".join(blocks)
 
         has_unpriced_requests = priced_request_count < request_count
         heading = (
@@ -7749,36 +7816,34 @@ class DeepAgentsApp(App):
             if has_unpriced_requests or has_unknown_restored_usage
             else "Estimated thread cost"
         )
-        lines = [f"{heading}: {format_cost(displayed_cost_usd)}"]
+        blocks = [f"### {heading}: {format_cost(displayed_cost_usd)}"]
         if has_unpriced_requests:
             included_verb = "is" if priced_request_count == 1 else "are"
-            lines.extend(
+            blocks.extend(
                 [
-                    "",
                     (
                         f"{priced_request_count} of {request_count} recorded requests "
                         f"{included_verb} included."
                     ),
-                    *self._unpriced_request_lines(),
+                    "#### Pricing unavailable",
+                    _markdown_table(
+                        ("Model", "Requests"),
+                        self._unpriced_request_rows(),
+                    ),
                 ]
             )
         if has_unknown_restored_usage:
-            lines.extend(
-                [
-                    "",
-                    (
-                        "Earlier restored model usage has no persisted request or "
-                        "pricing details."
-                    ),
-                ]
+            blocks.append(
+                "Earlier restored model usage has no persisted request or "
+                "pricing details."
             )
         if has_unpriced_requests and self._pricing_is_broken():
             # Reachable whenever pricing broke partway through a thread: earlier
             # requests priced, later ones could not. Gating this on a zero total
             # would leave those sessions blaming the models instead.
-            lines.extend(["", _PRICING_UNAVAILABLE_MESSAGE])
+            blocks.append(_PRICING_UNAVAILABLE_MESSAGE)
         if has_unpriced_requests or has_unknown_restored_usage:
-            lines.append("The full thread cost may be higher.")
+            blocks.append("The full thread cost may be higher.")
         priced_kinds = [
             (kind, self._thread_stats.per_kind[kind])
             for kind in USAGE_KIND_ORDER
@@ -7786,36 +7851,55 @@ class DeepAgentsApp(App):
             and self._thread_stats.per_kind[kind].priced_request_count
         ]
         if priced_kinds:
-            lines.append("By type since this thread was loaded:")
-            for kind, kind_stats in priced_kinds:
-                lines.append(
-                    f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
-                )
+            blocks.extend(
+                [
+                    "#### By type since this thread was loaded",
+                    _markdown_table(
+                        ("Type", "Cost"),
+                        [
+                            (
+                                USAGE_KIND_LABELS[kind],
+                                format_cost(kind_stats.cost_usd),
+                            )
+                            for kind, kind_stats in priced_kinds
+                        ],
+                    ),
+                ]
+            )
         priced_models = [
             model
             for model in self._thread_stats.per_model.values()
             if model.priced_request_count
         ]
         if priced_models:
-            lines.append("By model since this thread was loaded:")
-            for model in priced_models:
-                label = (
-                    f"{model.provider}:{model.model_name}"
-                    if model.provider
-                    else model.model_name
-                )
-                lines.append(f"- {label}: {format_cost(model.cost_usd)}")
+            blocks.extend(
+                [
+                    "#### By model since this thread was loaded",
+                    _markdown_table(
+                        ("Model", "Cost"),
+                        [
+                            (
+                                f"{model.provider}:{model.model_name}"
+                                if model.provider
+                                else model.model_name,
+                                format_cost(model.cost_usd),
+                            )
+                            for model in priced_models
+                        ],
+                    ),
+                ]
+            )
         elif (
             displayed_cost_usd > 0
             and not priced_kinds
             and self._thread_restored_cost_usd > 0
         ):
-            lines.append(
+            blocks.append(
                 "Per-type and per-model details are unavailable for restored usage."
             )
 
         if (priced_kinds or priced_models) and self._thread_restored_cost_usd > 0:
-            lines.append("Restored usage is included only in the total above.")
+            blocks.append("Restored usage is included only in the total above.")
         authoritative_current_cost_usd = max(
             self._session_cost_usd - self._thread_restored_cost_usd,
             0.0,
@@ -7825,7 +7909,7 @@ class DeepAgentsApp(App):
         )
         comparison_tolerance = max(authoritative_current_cost_usd * 1e-6, 1e-9)
         if detail_gap_usd > comparison_tolerance:
-            lines.append(
+            blocks.append(
                 "Some current-session usage is included only in the total because "
                 "detailed usage metadata was unavailable."
             )
@@ -7842,20 +7926,21 @@ class DeepAgentsApp(App):
                     "$0.00."
                 )
             )
-            lines.append(
+            blocks.append(
                 f"{priced_summary} "
                 "Your provider's bill may still differ due to subscriptions, "
                 "credits, or fees not represented here."
             )
-        return "\n".join(lines)
+        return "\n\n".join(blocks)
 
-    def _unpriced_request_lines(self) -> list[str]:
+    def _unpriced_request_rows(self) -> list[tuple[str, str]]:
         """Describe model requests omitted because no price was available.
 
         Returns:
-            Lines naming each unpriced model and its omitted request count.
+            One `(model, request count)` row per unpriced model, unescaped, for
+                `_markdown_table`.
         """
-        lines = ["Pricing was unavailable for:"]
+        rows: list[tuple[str, str]] = []
         named_request_count = 0
         for model in self._thread_stats.per_model.values():
             request_count = model.request_count - model.priced_request_count
@@ -7867,8 +7952,7 @@ class DeepAgentsApp(App):
                 if model.provider
                 else model.model_name
             )
-            request_noun = "request" if request_count == 1 else "requests"
-            lines.append(f"- {label} — {request_count} {request_noun}")
+            rows.append((label, str(request_count)))
 
         unknown_request_count = (
             self._thread_stats.request_count
@@ -7876,9 +7960,8 @@ class DeepAgentsApp(App):
             - named_request_count
         )
         if unknown_request_count > 0:
-            request_noun = "request" if unknown_request_count == 1 else "requests"
-            lines.append(f"- Unknown model — {unknown_request_count} {request_noun}")
-        return lines
+            rows.append(("Unknown model", str(unknown_request_count)))
+        return rows
 
     def _sync_session_cost_from_state(self, state_values: Mapping[str, Any]) -> None:
         """Adopt the checkpoint's cumulative cost as the displayed total.
@@ -14031,57 +14114,14 @@ class DeepAgentsApp(App):
             )
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
-            if self._context_tokens > 0:
-                count = self._context_tokens
-                formatted = format_token_count(count)
-
-                model_name = settings.model_name
-                context_limit = settings.model_context_limit
-
-                if context_limit is not None:
-                    limit_str = format_token_count(context_limit)
-                    pct = count / context_limit * 100
-                    usage = f"{formatted} / {limit_str} tokens ({pct:.0f}%)"
-                else:
-                    usage = f"{formatted} tokens used"
-
-                msg = f"{usage} \u00b7 {model_name}" if model_name else usage
-
-                conv_tokens = await self._get_conversation_token_count()
-                if conv_tokens is not None:
-                    overhead = max(0, count - conv_tokens)
-                    overhead_str = format_token_count(overhead)
-                    conv_str = format_token_count(conv_tokens)
-
-                    overhead_unit = " tokens" if overhead < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
-                    conv_unit = " tokens" if conv_tokens < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
-
-                    msg += (
-                        f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
-                        f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
-                    )
-
-                if self._displayed_cost_usd > 0:
-                    msg += f"\n\n{self._format_cost_summary()}"
-                await self._mount_message(AppMessage(msg))
-            else:
-                model_name = settings.model_name
-                context_limit = settings.model_context_limit
-
-                parts: list[str] = ["No token usage yet"]
-                if context_limit is not None:
-                    limit_str = format_token_count(context_limit)
-                    parts.append(f"{limit_str} token context window")
-                if model_name:
-                    parts.append(model_name)
-
-                msg = " · ".join(parts)
-                if self._displayed_cost_usd > 0:
-                    msg += f"\n\n{self._format_cost_summary()}"
-                await self._mount_message(AppMessage(msg))
+            await self._mount_message(
+                AppMessage(await self._format_token_summary(), markdown=True),
+            )
         elif cmd == "/cost":
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(self._format_cost_summary()))
+            await self._mount_message(
+                AppMessage(self._format_cost_summary(), markdown=True),
+            )
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):

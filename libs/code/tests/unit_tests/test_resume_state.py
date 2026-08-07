@@ -501,7 +501,7 @@ class TestCostDisplayCallbacks:
 
         assert app._thread_stats.request_count == 0
         assert app._format_cost_summary() == (
-            "Cost estimate unavailable\n\n"
+            "### Cost estimate unavailable\n\n"
             "Earlier model usage was restored for this thread, but its request "
             "and pricing details were not persisted. This does not mean the usage "
             "was free."
@@ -577,10 +577,10 @@ class TestCostDisplayCallbacks:
         summary = app._format_cost_summary()
 
         assert "Estimated thread cost: $0.42" in summary
-        assert "By type since this thread was loaded:" in summary
-        assert "Assistant: $0.32" in summary
-        assert "Offload: $0.10" in summary
-        assert "openai:gpt-5.5: $0.42" in summary
+        assert "#### By type since this thread was loaded" in summary
+        assert "| Assistant | $0.32 |" in summary
+        assert "| Offload | $0.10 |" in summary
+        assert "| openai:gpt-5.5 | $0.42 |" in summary
         assert "claude-sonnet-4-6" not in summary
         assert "detailed usage metadata was unavailable" not in summary
 
@@ -604,7 +604,7 @@ class TestCostDisplayCallbacks:
         summary = app._format_cost_summary()
 
         assert "Estimated thread cost: $1.42" in summary
-        assert "openai:gpt-5.5: $0.32" in summary
+        assert "| openai:gpt-5.5 | $0.32 |" in summary
         assert (
             "Some current-session usage is included only in the total because "
             "detailed usage metadata was unavailable."
@@ -638,7 +638,7 @@ class TestCostDisplayCallbacks:
         summary = app._format_cost_summary()
 
         assert "Estimated thread cost: $1.42" in summary
-        assert "openai:gpt-5.5: $0.42" in summary
+        assert "| openai:gpt-5.5 | $0.42 |" in summary
         assert "Restored usage is included only in the total above." in summary
 
     def test_cost_summary_distinguishes_zero_priced_and_unknown_requests(self) -> None:
@@ -658,9 +658,9 @@ class TestCostDisplayCallbacks:
 
         assert "Estimated cost for priced requests: $0.00" in summary
         assert "1 of 2 recorded requests is included." in summary
-        assert "example:unknown-model — 1 request" in summary
+        assert "| example:unknown-model | 1 |" in summary
         assert "The full thread cost may be higher." in summary
-        assert "example:free-model: $0.00" in summary
+        assert "| example:free-model | $0.00 |" in summary
         assert "The recorded request was priced at $0.00." not in summary
 
     @pytest.mark.parametrize(
@@ -690,7 +690,7 @@ class TestCostDisplayCallbacks:
         summary = app._format_cost_summary()
 
         assert "Estimated thread cost: $0.00" in summary
-        assert "example:free-model: $0.00" in summary
+        assert "| example:free-model | $0.00 |" in summary
         assert expected in summary
         assert "Your provider's bill may still differ" in summary
 

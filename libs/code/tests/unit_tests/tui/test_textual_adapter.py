@@ -2515,9 +2515,9 @@ class TestExecuteTaskTextualUsageStats:
         app._thread_stats = turn_stats
         app._set_session_cost(turn_stats.total_cost_usd)
         cost_summary = app._format_cost_summary()
-        assert "Assistant: $0.10" in cost_summary
-        assert "Subagents: $0.10" in cost_summary
-        assert "Offload: $0.10" in cost_summary
+        assert "| Assistant | $0.10 |" in cost_summary
+        assert "| Subagents | $0.10 |" in cost_summary
+        assert "| Offload | $0.10 |" in cost_summary
 
     async def test_interrupt_persists_only_main_agent_context_tokens(
         self, monkeypatch: pytest.MonkeyPatch

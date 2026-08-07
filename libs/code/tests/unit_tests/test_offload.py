@@ -1844,10 +1844,10 @@ class TestDriveServerSideCompaction:
         assert app._displayed_cost_usd == pytest.approx(0.75)
         summary_text = app._format_cost_summary()
         assert "Estimated thread cost: $0.75" in summary_text
-        assert "Assistant: $0.50" in summary_text
-        assert "Offload: $0.25" in summary_text
-        assert "anthropic:summary-model: $0.20" in summary_text
-        assert "openai:active-model: $0.55" in summary_text
+        assert "| Assistant | $0.50 |" in summary_text
+        assert "| Offload | $0.25 |" in summary_text
+        assert "| anthropic:summary-model | $0.20 |" in summary_text
+        assert "| openai:active-model | $0.55 |" in summary_text
         assert "detailed usage metadata was unavailable" not in summary_text
 
     async def test_resume_replay_records_usage_once(self) -> None:
@@ -1918,7 +1918,7 @@ class TestDriveServerSideCompaction:
         assert app._displayed_cost_usd == pytest.approx(0.20)
         summary = app._format_cost_summary()
         assert "Estimated thread cost: $0.20" in summary
-        assert "Offload: $0.20" in summary
+        assert "| Offload | $0.20 |" in summary
 
     async def test_stream_failure_keeps_usage_recorded_once(self) -> None:
         """Usage completed before a stream failure is still merged once."""
@@ -1975,7 +1975,7 @@ class TestDriveServerSideCompaction:
         assert app._displayed_cost_usd == pytest.approx(0.20)
         summary = app._format_cost_summary()
         assert "Estimated thread cost: $0.20" in summary
-        assert "Offload: $0.20" in summary
+        assert "| Offload | $0.20 |" in summary
 
     async def test_fulfills_precompact_before_manual_approval(self) -> None:
         """A precompact hook is fulfilled before the compaction approval."""

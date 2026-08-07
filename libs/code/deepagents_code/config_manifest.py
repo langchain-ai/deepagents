@@ -1135,6 +1135,27 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "cursor_style"),
     ),
     ConfigOption(
+        key="display.cursor_blink",
+        group="Display",
+        summary=(
+            "Blink the chat input cursor (tmux needs 'focus-events on' to hide "
+            "it in unfocused panes)."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.CURSOR_BLINK,
+        toml_keys=("ui", "cursor_blink"),
+    ),
+    ConfigOption(
+        key="display.terminal_progress",
+        group="Display",
+        summary="Report agent activity as terminal taskbar/dock/tab progress.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.TERMINAL_PROGRESS,
+        toml_keys=("ui", "terminal_progress"),
+    ),
+    ConfigOption(
         key="display.show_header",
         group="Display",
         summary="Show Textual's native header bar at the top of the TUI.",

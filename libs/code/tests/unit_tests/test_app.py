@@ -15586,7 +15586,7 @@ class TestDebugConsoleClickToCopyPreference:
 
 
 class TestAppBlurPausesCursorBlink:
-    """Test `on_app_blur` pauses cursor blink without changing widget focus."""
+    """Test the chat input cursor stops drawing when the terminal is blurred."""
 
     async def test_app_blur_pauses_blink(self) -> None:
         """Losing terminal focus should pause the chat input cursor blink."""
@@ -15602,8 +15602,8 @@ class TestAppBlurPausesCursorBlink:
 
             assert app._chat_input._text_area.cursor_blink is False
 
-    async def test_app_blur_preserves_widget_focus(self) -> None:
-        """Pausing blink must not blur the chat input widget."""
+    async def test_handler_alone_preserves_widget_focus(self) -> None:
+        """Pausing blink must not itself blur the chat input widget."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -15616,6 +15616,36 @@ class TestAppBlurPausesCursorBlink:
             await pilot.pause()
 
             assert app._chat_input._text_area.has_focus is True
+
+    async def test_blur_event_hides_cursor_and_focus_restores_it(self) -> None:
+        """A real `AppBlur` must stop drawing the cursor; `AppFocus` restores it.
+
+        This is the symptom users see in an unfocused tmux pane, so drive the
+        real events rather than calling the handlers: Textual's own `AppBlur`
+        handling drops screen focus, and only the combination of that and our
+        handler decides whether a cursor is painted.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            text_area = app._chat_input._text_area
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+            assert text_area._draw_cursor is True
+
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            await pilot.pause()
+
+            assert text_area._draw_cursor is False
+
+            app.post_message(events.AppFocus())
+            await pilot.pause()
+            await pilot.pause()
+
+            assert text_area._draw_cursor is True
 
     async def test_app_blur_noop_before_mount(self) -> None:
         """`on_app_blur` should silently ignore blur events before mount."""
@@ -29441,18 +29471,20 @@ class TestSetSpinnerTerminalProgress:
 
     @pytest.fixture(autouse=True)
     def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Point the config path at an empty temp dir.
+        """Point the config path at an empty temp dir and clear the env override.
 
         Without this, `_load_terminal_progress_preference` reads the developer's
         real `~/.deepagents/config.toml` during `DeepAgentsApp.__init__`, so a
-        local `[ui].terminal_progress = false` would silently flip the
-        positive-path tests below to failing. Tests that need a specific config
-        write to and re-point at this same path.
+        local `[ui].terminal_progress = false` — or an exported
+        `DEEPAGENTS_CODE_TERMINAL_PROGRESS`, which outranks it — would silently
+        flip the positive-path tests below to failing. Tests that need a
+        specific config write to and re-point at this same path.
         """
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "config.toml",
         )
+        monkeypatch.delenv("DEEPAGENTS_CODE_TERMINAL_PROGRESS", raising=False)
 
     async def test_status_triggers_indeterminate_progress(
         self, monkeypatch: pytest.MonkeyPatch

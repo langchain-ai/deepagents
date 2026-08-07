@@ -41,6 +41,10 @@ from deepagents_code.plugins import (
     set_installed_plugin_enabled,
     uninstall_plugin,
 )
+from deepagents_code.plugins.discovery import (
+    plugin_auto_update_setting,
+    set_plugin_auto_update,
+)
 from deepagents_code.plugins.marketplace import MarketplaceError
 from deepagents_code.tui.modals.plugin_manager.content import (
     _confirm_marketplace_removal_options,
@@ -106,6 +110,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         "installed",
         "marketplaces",
         "errors",
+        "settings",
     )
 
     def __init__(
@@ -139,6 +144,8 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._marketplace_spinner = Spinner()
         self._marketplace_spinner_timer: Timer | None = None
         self._search_query = ""
+        self._auto_update_enabled = False
+        self._auto_update_source = "default"
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -260,6 +267,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             or query in row.description.casefold()
         )
 
+    def _auto_update_option(self) -> Option:
+        label = "enabled" if self._auto_update_enabled else "disabled"
+        env_override = self._auto_update_source.startswith("env (")
+        suffix = " (set by environment)" if env_override else ""
+        return Option(
+            f"Auto-update plugins: {label}{suffix}",
+            id="action:toggle-auto-update",
+            disabled=env_override,
+        )
+
     def _current_options(self) -> list[Option]:
         glyphs = get_glyphs()
         if self._tab == "discover":
@@ -317,6 +334,8 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                     )
                 )
             return options
+        if self._tab == "settings":
+            return [self._auto_update_option()]
         if not self._state.errors:
             return [Option("No plugin errors.", id="empty")]
         return [Option(Content(error), id="empty") for error in self._state.errors]
@@ -506,6 +525,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 f"Enter {action} {glyphs.bullet} {search_hint}Left/Right tabs "
                 f"{glyphs.bullet} Esc close"
             )
+        elif self._tab == "settings":
+            help_text.update(
+                f"Enter toggle {glyphs.bullet} Left/Right tabs "
+                f"{glyphs.bullet} Esc close"
+            )
         else:
             help_text.update(f"Left/Right tabs {glyphs.bullet} Esc close")
 
@@ -533,11 +557,15 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         # state and shows a fresh list, so a leftover query would hide results.
         # Details round-trips use `_refresh_view` instead and keep the query.
         self._search_query = ""
-        self._state = await asyncio.to_thread(
-            _load_manager_state,
-            self._mcp_server_info,
-            loaded_plugin_ids=self._loaded_plugin_ids,
+        self._state, auto_update = await asyncio.gather(
+            asyncio.to_thread(
+                _load_manager_state,
+                self._mcp_server_info,
+                loaded_plugin_ids=self._loaded_plugin_ids,
+            ),
+            asyncio.to_thread(plugin_auto_update_setting),
         )
+        self._auto_update_enabled, self._auto_update_source = auto_update
         if self._selected_plugin is not None:
             refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
             if refreshed is None:
@@ -770,6 +798,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._status = None
             self._refresh_view()
             return
+        if option_id == "action:toggle-auto-update":
+            await self._toggle_auto_update()
+            return
         if option_id == "action:install":
             await self._install_selected_plugin()
             return
@@ -823,6 +854,20 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             (row for row in self._state.marketplaces if row.name == name),
             None,
         )
+
+    async def _toggle_auto_update(self) -> None:
+        enabled = not self._auto_update_enabled
+        if not await asyncio.to_thread(set_plugin_auto_update, enabled):
+            self._error = "Could not save the plugin auto-update setting."
+            self._status = None
+            self._refresh_view()
+            return
+        self._auto_update_enabled = enabled
+        self._auto_update_source = "config.toml"
+        label = "enabled" if enabled else "disabled"
+        self._status = f"Plugin auto-updates {label}."
+        self._error = None
+        self._refresh_view()
 
     async def _install_selected_plugin(self) -> None:
         row = self._selected_plugin

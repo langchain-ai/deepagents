@@ -339,6 +339,39 @@ def _validate_update_copy(
         raise MarketplaceError(msg)
 
 
+def plugin_auto_update_setting() -> tuple[bool, str]:
+    """Resolve whether plugin auto-updates are enabled and from which source.
+
+    Returns:
+        The enabled state and its configuration source.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("plugins.auto_update")
+    if option is None:
+        return False, "default"
+    enabled, source = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(enabled), source
+
+
+def set_plugin_auto_update(enabled: bool) -> bool:
+    """Persist the plugin auto-update preference to `config.toml`.
+
+    Args:
+        enabled: Whether plugin auto-updates should be enabled.
+
+    Returns:
+        Whether the preference was saved.
+    """
+    from deepagents_code.model_config import _save_toml_field
+
+    return _save_toml_field("plugins", "auto_update", enabled)
+
+
 def auto_update_plugins() -> tuple[str, ...]:
     """Stage updated versions of enabled remote marketplace plugins.
 
@@ -351,19 +384,11 @@ def auto_update_plugins() -> tuple[str, ...]:
     from filelock import Timeout
 
     from deepagents_code._env_vars import OFFLINE, is_env_truthy
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
 
     if is_env_truthy(OFFLINE):
         return ()
-    option = get_option("plugins.auto_update")
-    if option is None:
-        return ()
-    enabled_option, _ = resolve_scalar(option, toml_data=load_config_toml())
-    if not enabled_option:
+    enabled, _ = plugin_auto_update_setting()
+    if not enabled:
         return ()
 
     try:

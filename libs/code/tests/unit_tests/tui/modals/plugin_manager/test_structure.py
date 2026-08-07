@@ -530,6 +530,41 @@ async def test_enter_from_search_activates_installed_row() -> None:
         assert screen._mode == "installed_details"
 
 
+async def test_settings_tab_toggles_plugin_auto_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", raising=False)
+    save = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.set_plugin_auto_update", save
+    )
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.click("#plugin-tab-settings")
+        assert screen._tab == "settings"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        save.assert_called_once_with(True)
+        option = screen.query_one(
+            "#plugin-manager-options", OptionList
+        ).get_option_at_index(0)
+        assert "enabled" in str(option.prompt)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert save.call_count == 2
+        save.assert_called_with(False)
+        option = screen.query_one(
+            "#plugin-manager-options", OptionList
+        ).get_option_at_index(0)
+        assert "disabled" in str(option.prompt)
+
+
 async def test_search_query_resets_when_switching_tabs() -> None:
     """A query typed on one tab does not silently filter another tab."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

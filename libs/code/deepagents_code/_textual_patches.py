@@ -510,7 +510,10 @@ else:
 
         selections = dict(self.selections)
         changed = False
-        for widget, selection in selections.items():
+        # Iterate over a list snapshot: dropping an entry below mutates the
+        # dict being walked, which raises `RuntimeError: dictionary changed
+        # size during iteration` as soon as the loop advances.
+        for widget, selection in list(selections.items()):
             clamped = clamp_selection(widget, selection)
             if clamped is None:
                 del selections[widget]

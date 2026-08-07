@@ -15,10 +15,13 @@ from textual._time import get_time
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
+from textual.content import Content
 from textual.geometry import Offset
+from textual.selection import Selection
 from textual.widgets import Markdown, Static
 
 from deepagents_code import _textual_patches  # triggers patch
+from deepagents_code.tui.widgets.diff import _DiffRowStatic
 
 
 def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
@@ -289,6 +292,52 @@ class TestPatchedSequenceToKeyEvents:
         normally.
         """
         assert _keys_for(sequence, alt=False) == expected
+
+
+class TestGutterClampWatcher:
+    """Regression coverage for the selection-clamp watcher's dict mutation.
+
+    A drag whose range lies entirely inside a diff row's gutter makes
+    `clamp_selection` return `None`, so the watcher drops that row from its
+    working copy of `screen.selections`. Dropping the copy's only entry and
+    then advancing the iterator raised `RuntimeError: dictionary changed size
+    during iteration` before the loop was switched to a list snapshot.
+    """
+
+    async def test_dropping_the_only_selection_does_not_raise(self) -> None:
+        """The single-entry case crashes without the list snapshot."""
+        async with SelectableTextApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = _DiffRowStatic(Content(" 1 + added"), prefix_len=4)
+            # Direct assignment is the normal way to seed a reactive, but
+            # `ty` flags it because `selections` is a data descriptor with a
+            # custom setter; the assignment is valid at runtime.
+            screen.selections = {  # ty: ignore[invalid-assignment]
+                row: Selection(Offset(2, 0), Offset(4, 0))
+            }
+
+            # The installed patch makes `_watch__select_state` a coroutine;
+            # the stub annotation still says it returns `None`.
+            await screen._watch__select_state(None)  # ty: ignore[invalid-await]
+
+            assert row not in screen.selections
+
+    async def test_dropping_first_of_two_selections_does_not_raise(self) -> None:
+        """Deletion mid-iteration must not disturb the remaining entries."""
+        async with SelectableTextApp().run_test() as pilot:
+            screen = pilot.app.screen
+            dropped = _DiffRowStatic(Content(" 1 + added"), prefix_len=4)
+            kept = _DiffRowStatic(Content(" 2 + kept"), prefix_len=4)
+            screen.selections = {  # ty: ignore[invalid-assignment]
+                dropped: Selection(Offset(2, 0), Offset(4, 0)),
+                kept: Selection(Offset(0, 0), Offset(6, 0)),
+            }
+
+            await screen._watch__select_state(None)  # ty: ignore[invalid-await]
+
+            assert screen.selections == {
+                kept: Selection(Offset(4, 0), Offset(6, 0)),
+            }
 
 
 def test_app_imports_textual_patches_for_side_effect() -> None:

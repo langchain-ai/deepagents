@@ -290,7 +290,7 @@ def test_switchyard_smoke_publishes_pinned_image_and_dispatches_unified_eval() -
     assert "-f rollouts=1" in workflow
     assert "-f sandbox_env=docker" in workflow
     assert "-f switchyard_config=opus" in workflow
-    assert "harbor-index/labbench-read-asap2f-step-response" in workflow
+    assert "harbor-index/gpqadiamond-cope-rearrangement-products" in workflow
     assert '-f switchyard_image="$SWITCHYARD_IMAGE"' in workflow
 
 

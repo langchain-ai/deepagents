@@ -296,10 +296,38 @@ def test_docker_compose_env_includes_validated_route_path(
     assert env == {"BASE": "False", "SWITCHYARD_CONFIG_PATH": str(config)}
 
 
+@pytest.mark.parametrize("has_overlay", [False, True])
+async def test_docker_start_waits_only_when_switchyard_overlay_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+    has_overlay: bool,
+) -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardDockerEnvironment)
+    environment.extra_docker_compose_paths = (
+        [Path("switchyard-docker.yaml")] if has_overlay else []
+    )
+    started: list[bool] = []
+    waited: list[bool] = []
+
+    async def fake_start(_self: object, force_build: bool) -> None:
+        started.append(force_build)
+
+    async def fake_wait() -> None:
+        waited.append(True)
+
+    monkeypatch.setattr(DockerEnvironment, "start", fake_start)
+    environment._wait_for_switchyard = fake_wait
+
+    await environment.start(force_build=True)
+
+    assert started == [True]
+    assert waited == ([True] if has_overlay else [])
+
+
 async def test_docker_capture_writes_stats_and_stops_sidecar(tmp_path: Path) -> None:
     environment = object.__new__(switchyard_environment.SwitchyardDockerEnvironment)
     environment._switchyard_config = tmp_path / "routes-opus.toml"
     environment._switchyard_stopped = False
+    environment.extra_docker_compose_paths = [Path("switchyard-docker.yaml")]
     environment.trial_paths = SimpleNamespace(artifacts_dir=tmp_path / "artifacts")
     environment.logger = SimpleNamespace(warning=lambda *_args: None)
     commands: list[str] = []
@@ -326,6 +354,23 @@ async def test_docker_capture_writes_stats_and_stops_sidecar(tmp_path: Path) -> 
     assert written["total_requests"] == 2
     assert "http://127.0.0.1:4000/v1/stats" in commands[0]
     assert stopped == ["switchyard"]
+
+
+async def test_docker_capture_is_noop_without_switchyard_overlay() -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardDockerEnvironment)
+    environment._switchyard_stopped = False
+    environment.extra_docker_compose_paths = []
+
+    async def unexpected_snapshot(**_kwargs: object) -> bool:
+        pytest.fail("verifier environment must not capture Switchyard stats")
+
+    async def unexpected_stop(_service: str) -> None:
+        pytest.fail("verifier environment must not stop a Switchyard service")
+
+    environment._snapshot_switchyard_stats = unexpected_snapshot
+    environment.stop_service = unexpected_stop
+
+    await environment.capture_and_stop_switchyard()
 
 
 async def test_isolate_main_after_setup_disconnects_and_verifies_topology() -> None:

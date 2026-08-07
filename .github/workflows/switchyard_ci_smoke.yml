@@ -115,7 +115,7 @@ jobs:
             -f categories=autonomous \
             -f agent_impls=bare \
             -f profile=lite \
-            -f include_tasks=harbor-index/labbench-read-asap2f-step-response \
+            -f include_tasks=harbor-index/gpqadiamond-cope-rearrangement-products \
             -f rollouts=1 \
             -f n_retries=0 \
             -f concurrency=1 \
@@ -156,7 +156,7 @@ jobs:
             echo "- Image: \`$SWITCHYARD_IMAGE\`"
             echo "- Sandbox: Harbor Docker (no LangSmith sandbox)"
             echo "- Route: \`opus\`"
-            echo "- Task: \`harbor-index/labbench-read-asap2f-step-response\`"
+            echo "- Task: \`harbor-index/gpqadiamond-cope-rearrangement-products\`"
             echo "- Unified run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
           } >> "$GITHUB_STEP_SUMMARY"
 

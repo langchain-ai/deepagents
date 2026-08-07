@@ -258,9 +258,15 @@ class SwitchyardDockerEnvironment(_SwitchyardStatsMixin, DockerEnvironment):
 
     @override
     async def start(self, force_build: bool) -> None:
-        """Start the native task Compose project and verify the router endpoint."""
+        """Start Compose and verify Switchyard when its overlay is present.
+
+        Harbor reuses the configured environment class for separate verifiers,
+        but intentionally removes every extra Compose overlay from that verifier
+        environment. Only the agent environment should require the sidecar.
+        """
         await super().start(force_build)
-        await self._wait_for_switchyard()
+        if self.extra_docker_compose_paths:
+            await self._wait_for_switchyard()
 
     async def _wait_for_switchyard(self) -> None:
         command = _bash_health_command("127.0.0.1")
@@ -284,7 +290,7 @@ class SwitchyardDockerEnvironment(_SwitchyardStatsMixin, DockerEnvironment):
 
     async def capture_and_stop_switchyard(self) -> None:
         """Persist router stats and remove provider access before verification."""
-        if self._switchyard_stopped:
+        if self._switchyard_stopped or not self.extra_docker_compose_paths:
             return
         try:
             await self._snapshot_switchyard_stats(base_url=_SWITCHYARD_DOCKER_BASE_URL)

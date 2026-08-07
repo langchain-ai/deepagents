@@ -140,6 +140,7 @@ def _install_fake_drbench(
         if service_to_models is None
         else service_to_models
     )
+    gen_agent.AVAILABLE_MODELS = ["gpt-4o-mini", "gpt-4o"]
 
     class AIAgentManager:
         """Mirrors upstream's signature, whose parameter order the shim's guard depends on.
@@ -246,21 +247,20 @@ def test_requested_judge_model_falls_back_when_unset(
     monkeypatch.delenv("DRBENCH_JUDGE_MODEL", raising=False)
     monkeypatch.delenv("JUDGE_MODELS", raising=False)
     monkeypatch.delenv("JUDGE_MODEL", raising=False)
-    assert judge._requested_judge_model() == "gpt-4o"
+    assert judge._requested_judge_model() == "gpt-5.6-luna"
 
 
 def test_requested_judge_model_prefers_drbenchs_own_variable(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The harness sets JUDGE_MODELS for every category to a model DRBench cannot drive.
-    # Without the dedicated variable winning, that default is indistinguishable from a
-    # deliberate override and every run would be rejected.
+    # The harness uses this variable to publish DRBench's resolved fallback without
+    # changing the suite-wide judge used by the other categories.
     monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
     monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-4o")
     assert judge._requested_judge_model() == "gpt-4o"
 
 
-def test_supported_judge_models_is_the_intersection_of_both_registries(
+def test_supported_judge_models_registers_default_in_all_upstream_allowlists(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Upstream gates the judge in two independent places that disagree: `gpt-4.1` is in
@@ -268,7 +268,17 @@ def test_supported_judge_models_is_the_intersection_of_both_registries(
     # A model present in only one gets past `prompt_llm` and then dies inside
     # QASimilarityV2, so only the intersection is actually usable.
     _install_fake_drbench(monkeypatch, scores={})
-    assert judge._supported_judge_models() == {"gpt-4o", "gpt-4o-mini"}
+    assert judge._supported_judge_models() == {
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-5.6-luna",
+    }
+
+    utils: Any = sys.modules["drbench.agents.utils"]
+    gen_agent: Any = sys.modules["drbench.gen_agent"]
+    assert "gpt-5.6-luna" in utils.OPENAI_MODELS
+    assert "gpt-5.6-luna" in gen_agent.SERVICE_TO_MODELS["openai"]
+    assert "gpt-5.6-luna" in gen_agent.AVAILABLE_MODELS
 
 
 def test_judge_model_keeps_a_supported_request(
@@ -279,18 +289,26 @@ def test_judge_model_keeps_a_supported_request(
     assert judge._judge_model() == "gpt-4o-mini"
 
 
+def test_judge_model_keeps_the_unified_default(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_drbench(monkeypatch, scores={})
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-luna")
+    assert judge._judge_model() == "gpt-5.6-luna"
+
+
 def test_judge_model_raises_on_an_unsupported_request(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Raising rather than substituting: a quiet fallback publishes scores under the wrong
     # model's name, and the message has to name the route that does work.
     _install_fake_drbench(monkeypatch, scores={})
-    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-luna")
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-terra")
 
-    with pytest.raises(ValueError, match=r"openrouter/openai/gpt-5\.6-luna") as excinfo:
+    with pytest.raises(ValueError, match=r"openrouter/openai/gpt-5\.6-terra") as excinfo:
         judge._judge_model()
 
-    assert "gpt-5.6-luna" in str(excinfo.value)
+    assert "gpt-5.6-terra" in str(excinfo.value)
 
 
 def test_judge_model_rejects_a_model_in_only_one_registry(
@@ -1008,7 +1026,7 @@ def test_main_refuses_to_score_with_an_unusable_judge(
     # so the misconfiguration would be invisible on the scorecard.
     _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
     reward_path, _ = _stage_paths(judge, monkeypatch, tmp_path)
-    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-luna")
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-terra")
 
     with pytest.raises(ValueError, match="openrouter"):
         judge.main()

@@ -83,10 +83,10 @@ EPSILON = 0.01
 # in this log rather than only in upstream's stdout.
 MAX_REPORT_LENGTH = 60_000
 
-# `gpt-4o` is in both of upstream's model registries (see `_supported_judge_models`), is
-# what `get_metric` itself defaults to, and accepts `temperature=0`, which upstream passes
-# on every judge call.
-_DEFAULT_JUDGE_MODEL = "gpt-4o"
+# The unified eval workflow uses one judge for every category. DRBench predates this model
+# and hardcodes three routing allowlists, so `_install_default_judge_compatibility` adds it
+# to those lists before upstream selects a transport.
+_DEFAULT_JUDGE_MODEL = "gpt-5.6-luna"
 
 # Upstream routes an `openrouter/<vendor>/<model>` slug to OpenRouter's OpenAI-compatible
 # endpoint in both transports, resolving it before either model registry is consulted.
@@ -114,12 +114,11 @@ _CAPTURED_FIELDS = (
 
 
 def _requested_judge_model() -> str:
-    """The judge asked for: DRBench's own variable first, then the suite-wide one.
+    """The judge selected for DRBench, then the suite-wide judge as a fallback.
 
-    ``DRBENCH_JUDGE_MODEL`` exists because the harness sets ``JUDGE_MODELS`` for every
-    category and its default there is a model DRBench cannot drive. Without a separate
-    channel the verifier cannot tell that default from a deliberate override, and would
-    have to treat every run as an override of a judge it has to reject.
+    The harness sets ``DRBENCH_JUDGE_MODEL`` when an unsupported suite-wide judge has to
+    resolve to DRBench's compatible default. Both variables otherwise carry the same
+    value, so one ``judge_models`` input controls every category.
     """
     raw = (
         os.environ.get("DRBENCH_JUDGE_MODEL")
@@ -140,22 +139,47 @@ def _supported_judge_models() -> set[str]:
     ``agents.utils.OPENAI_MODELS`` (used by `prompt_llm`) and
     ``gen_agent.SERVICE_TO_MODELS["openai"]` (used by `AIAgentManager`, which
     `QASimilarityV2` constructs). A model in only one of them fails partway through
-    scoring, so the usable set is the intersection. Derived at runtime rather than
-    hardcoded, so a future upstream bump is picked up for free.
+    scoring, so the usable set is the intersection after registering the one pinned
+    compatibility model. Native models remain derived at runtime, so a future upstream
+    bump is picked up automatically.
     """
     from drbench import gen_agent  # noqa: PLC0415 - installed only in the sandbox
     from drbench.agents import utils  # noqa: PLC0415
 
+    _install_default_judge_compatibility()
+
     return set(utils.OPENAI_MODELS) & set(gen_agent.SERVICE_TO_MODELS.get("openai", []))
+
+
+def _install_default_judge_compatibility() -> None:
+    """Teach pinned upstream DRBench to route the unified default through OpenAI.
+
+    Upstream checks the model in three independent mutable allowlists. Two choose the
+    OpenAI transport, while `AVAILABLE_MODELS` prevents `AIAgentManager.prompt_llm` from
+    silently replacing the requested model with its own default. Registering exactly the
+    workflow's pinned default keeps this compatibility shim narrow; other models still
+    need native upstream support or an explicit `openrouter/<vendor>/<model>` route.
+    """
+    from drbench import gen_agent  # noqa: PLC0415 - installed only in the sandbox
+    from drbench.agents import utils  # noqa: PLC0415
+
+    registries = (
+        utils.OPENAI_MODELS,
+        gen_agent.SERVICE_TO_MODELS.setdefault("openai", []),
+        gen_agent.AVAILABLE_MODELS,
+    )
+    for registry in registries:
+        if _DEFAULT_JUDGE_MODEL not in registry:
+            registry.append(_DEFAULT_JUDGE_MODEL)
 
 
 def _judge_model() -> str:
     """Return the judge to score with, or raise when upstream cannot drive it.
 
-    `gpt-4o` is the default. A bare name is honored only if upstream natively drives it;
-    an ``openrouter/<vendor>/<model>`` slug is honored as-is, because upstream resolves the
-    prefix ahead of its registries -- that is the route to any other model, and the only
-    route to a non-OpenAI one.
+    `gpt-5.6-luna` is the unified default and is registered with upstream's OpenAI
+    transport by `_install_default_judge_compatibility`. Any other bare name is honored
+    only if upstream natively drives it; an ``openrouter/<vendor>/<model>`` slug is honored
+    as-is because upstream resolves the prefix ahead of its registries.
 
     An unusable name raises instead of falling back. Quietly substituting a different judge
     publishes numbers under the wrong model's name, and a run of 30 tasks is a poor place

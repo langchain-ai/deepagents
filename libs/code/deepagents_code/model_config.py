@@ -539,10 +539,17 @@ def default_cache_dir() -> Path:
     to `~/AppData/Local`), and `XDG_CACHE_HOME` elsewhere when it is an
     absolute path (falling back to `~/.cache`). The XDG spec treats relative
     `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
-    resolved against the launch directory. The install script writes its own
-    `<cache>/deepagents-code/install.log` under `${XDG_CACHE_HOME:-~/.cache}`
-    unconditionally, so on macOS its log and the update logs land under
-    different roots.
+    resolved against the launch directory.
+
+    Platform-native locations are the convention for a long-lived app (this is
+    what `platformdirs` codifies and what `uv` itself does — its own cache is
+    `~/Library/Caches/uv` on macOS). The install script deliberately does not
+    follow this: as a portable one-shot POSIX bootstrap it uses XDG-style
+    `${XDG_CACHE_HOME:-~/.cache}` on every platform (like the rustup and uv
+    installers), so on macOS its `<cache>/deepagents-code/install.log` lands
+    under a different root than the update logs. That divergence is
+    intentional; do not "fix" one side to match the other without a concrete
+    need (e.g., a diagnostic command that collects both logs).
 
     Returns:
         Base cache directory, before the `deepagents-code` subdirectory.

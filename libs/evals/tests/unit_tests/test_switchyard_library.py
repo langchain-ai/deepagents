@@ -90,6 +90,7 @@ api_key_env = "NVIDIA_API_KEY"
 id = "private/nvidia/nano"
 llm_client = "nvidia"
 extra_body = { chat_template_kwargs = { enable_thinking = true } }
+model_kwargs = { reasoning_effort = "high" }
 
 [routes.switchyard]
 type = "passthrough"
@@ -125,6 +126,7 @@ target = "nano"
             "api_key": "fake-nvidia-key",
             "base_url": "https://nvidia.example/v1",
             "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+            "model_kwargs": {"reasoning_effort": "high"},
             "use_responses_api": False,
         },
     )

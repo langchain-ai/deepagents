@@ -36,6 +36,7 @@ extra_body = { chat_template_kwargs = { enable_thinking = true } }
 [targets.strong]
 id = "zai-org/GLM-5.2"
 llm_client = "baseten"
+model_kwargs = { reasoning_effort = "high" }
 
 [targets.judge]
 id = "gemini-3.1-flash-lite"

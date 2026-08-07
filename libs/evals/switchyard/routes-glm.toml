@@ -14,6 +14,7 @@ api_key_env = "BASETEN_API_KEY"
 [targets.weak]
 id = "zai-org/GLM-5.2"
 llm_client = "weak_upstream"
+model_kwargs = { reasoning_effort = "high" }
 
 [routes.switchyard]
 id = "switchyard"

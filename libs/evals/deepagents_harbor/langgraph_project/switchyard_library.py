@@ -183,6 +183,11 @@ def _target_model(
     extra_body = target.get("extra_body")
     if extra_body is not None:
         kwargs["extra_body"] = dict(_table(extra_body, f"targets.{target_name}.extra_body"))
+    model_kwargs = target.get("model_kwargs")
+    if model_kwargs is not None:
+        kwargs["model_kwargs"] = dict(
+            _table(model_kwargs, f"targets.{target_name}.model_kwargs")
+        )
 
     client_format = _string(client.get("format"), f"llm_clients.{client_name}.format")
     if client_format == "openai_chat":

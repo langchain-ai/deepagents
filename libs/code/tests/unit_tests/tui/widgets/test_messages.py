@@ -20,6 +20,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
 from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
+from deepagents_code.diff_utils import DiffStats
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -725,9 +726,16 @@ class TestDiffMessageCredentialRedaction:
 
     def test_env_file_diff_is_hidden(self) -> None:
         diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
-        texts = self._texts(DiffMessage(diff, file_path=".env"))
+        message = DiffMessage(
+            diff,
+            file_path=".env",
+            before="API_KEY=old",
+            after="API_KEY=supersecret",
+        )
+        texts = self._texts(message)
         assert any("may contain credentials" in text for text in texts)
         assert all("supersecret" not in text for text in texts)
+        assert (message._before, message._after) == ("", "")
 
     def test_regular_file_diff_is_rendered(self) -> None:
         diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
@@ -745,6 +753,158 @@ class TestDiffMessageCredentialRedaction:
         texts = self._texts(DiffMessage(diff, file_path=""))
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
+
+    def test_redaction_and_an_unknown_change_are_both_reported(self) -> None:
+        """Redaction drops the body; the caveat still says it was never known.
+
+        The two say different things. Redaction alone reads as "the change is
+        known and deliberately withheld", which is a stronger claim than the
+        truth when the pre-image could not be read at all. The caveat names the
+        tool and the failure and quotes no file content, so it is safe to show
+        beside the redaction notice — while the contents themselves must still
+        be dropped rather than merely left unrendered.
+        """
+        diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
+        message = DiffMessage(
+            diff,
+            file_path=".env",
+            tool_name="edit_file",
+            before="API_KEY=old",
+            after="API_KEY=supersecret",
+            outcome="untrusted_before",
+        )
+        texts = self._texts(message)
+        assert any("may contain credentials" in text for text in texts)
+        assert any("prior contents could not be read" in text for text in texts)
+        assert all("supersecret" not in text for text in texts)
+        assert all("API_KEY=old" not in text for text in texts)
+        assert (message._before, message._after) == ("", "")
+
+
+class TestDiffMessageNoChanges:
+    @staticmethod
+    def _texts(widget: DiffMessage) -> list[str]:
+        texts: list[str] = []
+        for child in widget.compose():
+            rendered = child.render()
+            texts.append(
+                rendered.plain if isinstance(rendered, Content) else str(rendered)
+            )
+        return texts
+
+    def test_empty_diff_renders_single_no_changes_row(self) -> None:
+        """The header reports the no-op; no empty diff body follows it."""
+        texts = self._texts(DiffMessage("", "main.py", tool_name="edit_file"))
+        assert texts == ["Edited main.py  no changes"]
+
+    def test_header_counts_come_from_stats_not_the_truncated_body(self) -> None:
+        """Counting the rendered body would undercount a clipped diff.
+
+        The whole reason `stats` is threaded through the adapter and the store is
+        that the body may be truncated, so the header must report the counts
+        taken before truncation.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new\n..."
+        texts = self._texts(
+            DiffMessage(
+                diff,
+                "m.py",
+                tool_name="edit_file",
+                stats=DiffStats(additions=1000, deletions=1000),
+            )
+        )
+        assert texts[0] == "Edited m.py  +1000 -1000"
+
+    @pytest.mark.parametrize(
+        ("tool_name", "expected"),
+        [
+            ("edit_file", "Edited m.py  +1 -1"),
+            ("write_file", "Wrote m.py  +1 -1"),
+            ("delete", "Deleted m.py  +1 -1"),
+            ("read_file", "m.py  +1 -1"),
+        ],
+    )
+    def test_header_verb_matches_the_tool(self, tool_name: str, expected: str) -> None:
+        """Every file tool that mounts a diff needs its own verb.
+
+        Dropping `write` from `_DIFF_HEADER_CATEGORIES`, or shifting the phrase
+        index, breaks two of the three mutating tools — which an `edit_file`-only
+        test cannot see. `read_file` pins the negative case: a non-mutating tool
+        must contribute no verb.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name=tool_name))
+        assert texts[0] == expected
+
+    def test_header_counts_fall_back_to_the_body_without_stats(self) -> None:
+        """An untruncated diff carries its own counts."""
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
+        assert texts[0] == "Edited m.py  +1 -1"
+
+    def test_truncated_body_without_stats_says_counts_are_unavailable(self) -> None:
+        """A number known to be short is worse than no number.
+
+        Recounting a clipped body silently undercounts — an 800-row clip of a
+        900-line change would render `+799`, indistinguishable from correct. With
+        no authoritative counts to fall back on, say they are unavailable:
+        rendering nothing is indistinguishable from a widget that forgot them.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new\n..."
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
+        assert texts[0] == "Edited m.py  change counts unavailable"
+
+    def test_context_line_matching_marker_does_not_suppress_counts(self) -> None:
+        """A unified-diff context line retains its leading space."""
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,2 +1,2 @@\n-old\n+new\n ..."
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
+        assert texts[0] == "Edited m.py  +1 -1"
+
+    def test_zero_stats_do_not_suppress_a_recount(self) -> None:
+        """An all-zero `DiffStats` is still truthy, so `or` would let a recount win.
+
+        A stored all-zero pair reaching a non-empty body must not blank the
+        header: the counts are wrong, not absent.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+        texts = self._texts(
+            DiffMessage(
+                diff,
+                "m.py",
+                tool_name="edit_file",
+                stats=DiffStats(additions=0, deletions=0),
+            )
+        )
+        assert texts[0] == "Edited m.py"
+
+    def test_unreadable_before_content_does_not_claim_no_changes(self) -> None:
+        """Without the pre-edit content, "no changes" would be a false claim."""
+        texts = self._texts(
+            DiffMessage(
+                "", "main.py", tool_name="edit_file", outcome="untrusted_before"
+            )
+        )
+        assert texts[0] == "Edited main.py"
+        assert "prior contents could not be read" in texts[1]
+
+    def test_unreadable_before_content_suppresses_the_whole_diff(self) -> None:
+        """A diff against a lost pre-image reads as a whole-file insertion.
+
+        Reporting `+2` would present a two-line edit as a rewrite — but so does
+        rendering `+one` and `+two` as added rows, and far more loudly. The
+        caveat has to replace the body, not just the counts, or the widget keeps
+        making the same false claim in the element that dominates it.
+        """
+        diff = "--- a/main.py\n+++ b/main.py\n@@ -0,0 +1,2 @@\n+one\n+two"
+        texts = self._texts(
+            DiffMessage(
+                diff, "main.py", tool_name="edit_file", outcome="untrusted_before"
+            )
+        )
+        assert texts[0] == "Edited main.py"
+        assert "prior contents could not be read" in texts[1]
+        assert not any("one" in text or "two" in text for text in texts[1:])
+        assert not any("+2" in text for text in texts)
 
 
 class TestToolCallMessageDuration:
@@ -1596,15 +1756,13 @@ class TestToolCallMessageSuccessStatus:
     """A successful call with no output shows a "Success!" status marker."""
 
     async def test_success_without_output_shows_success_status(self) -> None:
-        """edit_file (no visible output) shows the success marker instead of hiding."""
+        """write_file (no visible output) shows the success marker instead of hiding."""
         from deepagents_code.config import get_glyphs
 
-        app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
+        app = _tool_msg_app("write_file", {"file_path": "/tmp/f.py"})
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.set_success(
-                "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'"
-            )
+            app.msg.set_success("")
             await pilot.pause()
 
             assert app.msg._status_widget is not None
@@ -5980,3 +6138,106 @@ class TestRubricResultMessage:
             await pilot.pause()
 
             assert app.expansions == [True, False]
+
+
+class _CaveatGroupApp(App[None]):
+    """Live group holding two groupable write rows."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("write_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("write_file", {"file_path": "b.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
+class TestCaveatedRowsLeaveTheGroup:
+    """A caveat is carried in the row, so folding the row hides the caveat.
+
+    `write_file` and `delete` are groupable, and the collapsed summary is built
+    from tool names alone. Without eviction, deleting a 5,000-line file whose
+    contents could not be read renders as `▸ Wrote 1 file` — indistinguishable
+    from the successful case, which is the exact failure this PR set out to fix.
+    """
+
+    async def test_a_caveated_row_is_evicted_and_revealed(self) -> None:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _CaveatGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            caveated = pilot.app.query_one("#t1", ToolCallMessage)
+            plain = pilot.app.query_one("#t2", ToolCallMessage)
+            summary.add_member(caveated)
+            summary.add_member(plain)
+            await pilot.pause()
+            assert caveated.display is False, "the group never folded the row"
+
+            caveated.set_success("could not be shown\n\nWrote file")
+            caveated._mark_display_caveat()
+            summary.close()
+            await pilot.pause()
+
+            assert caveated.display is True
+            assert plain.display is False, "an ordinary row was evicted too"
+
+    async def test_a_recompletion_clears_a_caveat_it_overwrote(self) -> None:
+        """The flag must not outlive the sentence it describes.
+
+        `set_success` owns `_output`, so a row completed with a caveat and then
+        re-completed plainly no longer displays one. Leaving the flag set kept
+        that row out of every group for no reason the user could see, while
+        asserting something false about its output.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _CaveatGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+            summary.add_member(tool)
+            await pilot.pause()
+
+            tool.set_success_with_caveat("could not be shown", "Wrote file")
+            assert tool.has_display_caveat is True
+
+            tool.set_success("Wrote file")
+
+            assert tool.has_display_caveat is False
+            assert "could not be shown" not in tool._output
+
+    async def test_a_caveat_survives_its_own_setter(self) -> None:
+        """`set_success_with_caveat` delegates to `set_success`, which now clears.
+
+        Ordering regression guard: clearing after the flag is set would make the
+        pairing unsettable at all, silently disabling every caveat.
+        """
+        async with _CaveatGroupApp().run_test() as pilot:
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+
+            applied = tool.set_success_with_caveat("could not be shown", "Wrote file")
+
+            assert applied is True
+            assert tool.has_display_caveat is True
+            assert tool._output.startswith("could not be shown")
+
+    async def test_an_uncaveated_success_stays_folded(self) -> None:
+        """Eviction must be the exception, or grouping stops working at all."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _CaveatGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            tool = pilot.app.query_one("#t1", ToolCallMessage)
+            summary.add_member(tool)
+            await pilot.pause()
+
+            tool.set_success("Wrote file")
+            summary.close()
+            await pilot.pause()
+
+            assert tool.has_display_caveat is False
+            assert tool.display is False

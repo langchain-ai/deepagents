@@ -1340,12 +1340,10 @@ class Glyphs:
     disclosure_expanded: str  # ▾ vs v
 
     # Box-drawing characters
-    box_vertical: str  # │ vs |
     box_horizontal: str  # ─ vs -
-    box_double_horizontal: str  # ═ vs =
 
     # Diff-specific
-    gutter_bar: str  # ▌ vs |
+    hunk_break: str  # ⋮ vs :
 
     # Status bar
     git_branch: str  # "↗" vs "git:"
@@ -1373,10 +1371,10 @@ UNICODE_GLYPHS = Glyphs(
     disclosure_collapsed="▸",
     disclosure_expanded="▾",
     # Box-drawing characters
-    box_vertical="│",
     box_horizontal="─",
-    box_double_horizontal="═",
-    gutter_bar="▌",
+    # Diff-specific
+    hunk_break="⋮",
+    # Status bar
     git_branch="↗",
 )
 """Glyph set for terminals with full Unicode support."""
@@ -1403,10 +1401,10 @@ ASCII_GLYPHS = Glyphs(
     disclosure_collapsed=">",
     disclosure_expanded="v",
     # Box-drawing characters
-    box_vertical="|",
     box_horizontal="-",
-    box_double_horizontal="=",
-    gutter_bar="|",
+    # Diff-specific
+    hunk_break=":",
+    # Status bar
     git_branch="git:",
 )
 """Glyph set for terminals limited to 7-bit ASCII."""

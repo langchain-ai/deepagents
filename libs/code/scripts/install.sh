@@ -582,14 +582,20 @@ prepare_install_log_dir() {
 # file, so they keep the post-install "Full log:" pointer instead.
 log_update_tail_hint() {
   [ "${UV_LIVE_LOG:-false}" = true ] && [ -n "${INSTALL_LOG_DISPLAY:-}" ] || return 0
-  # Single-quote the path for display: XDG_CACHE_HOME can live somewhere
-  # with spaces or shell metacharacters (e.g. `/Volumes/User Cache`) outside
-  # the ~-collapsed case, where a bare interpolation would make tail read
-  # the words as separate paths. A single-quoted string reproduces the path
-  # literally; a literal single quote is escaped in the standard '\'' form.
+  # Keep the leading `~` unquoted so a pasted command expands it, while
+  # quoting the remainder to preserve paths below a home directory containing
+  # spaces or shell metacharacters. Other paths must be quoted as a whole.
   local quoted
-  quoted=$(printf '%s' "$INSTALL_LOG_DISPLAY" | sed "s/'/'\\\\''/g")
-  log_info "  Update log: tail -f '${quoted}'"
+  case "$INSTALL_LOG_DISPLAY" in
+    \~/*)
+      quoted=$(printf '%s' "${INSTALL_LOG_DISPLAY#\~/}" | sed "s/'/'\\\\''/g")
+      log_info "  Update log: tail -f ~/'${quoted}'"
+      ;;
+    *)
+      quoted=$(printf '%s' "$INSTALL_LOG_DISPLAY" | sed "s/'/'\\\\''/g")
+      log_info "  Update log: tail -f '${quoted}'"
+      ;;
+  esac
 }
 
 fix_install_log_owner() {
@@ -1736,7 +1742,8 @@ UV_LIVE_LOG=false
 # Picked from the user range (9+) so it cannot collide with the script's own
 # redirections, which all use the standard 0-2.
 UV_LIVE_LOG_FD=9
-if [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ]; then
+setup_live_install_log() {
+  [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ] || return 0
   # A planted symlink at the log path disables live logging, matching
   # copy_install_log's refusal: never delete or follow it. Noclobber then
   # refuses to create over any surviving file, so uv's output can never land
@@ -1766,14 +1773,8 @@ if [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ]; then
       rm -f "$INSTALL_LOG" 2>/dev/null || true
     fi
   fi
-fi
-if [ "$UV_LIVE_LOG" = false ]; then
-  uv_stderr=$(mktemp 2>/dev/null) || {
-    log_error "mktemp is required to create a secure temp file."
-    exit 1
-  }
-  register_temp "$uv_stderr"
-fi
+}
+
 uv_rc=0
 UV_REPORTED_PACKAGE_CHANGES=false
 
@@ -1813,7 +1814,6 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
       log_info "deepagents-code is already up to date — rebuilding with requested options."
     else
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
-      log_update_tail_hint
       UPGRADE_INTENDED=true
     fi
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_ON_PATH" = true ]; then
@@ -1827,14 +1827,12 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
     log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
-    log_update_tail_hint
     UPGRADE_INTENDED=true
   elif can_prompt; then
     log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
     log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
     if prompt_yn "Install update?"; then
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
-      log_update_tail_hint
       UPGRADE_INTENDED=true
     else
       update_prompt_rc=$?
@@ -1854,7 +1852,6 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     # complete the upgrade rather than silently no-op. Callers that want a fixed
     # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
     log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} — updating (no TTY to prompt)."
-    log_update_tail_hint
     UPGRADE_INTENDED=true
   fi
 elif [ -n "$PRE_VERSION" ]; then
@@ -1940,8 +1937,21 @@ elif [ -n "$INSTALLED_EXTRAS" ]; then
     fi
   fi
 fi
+# Take the install lock before replacing the prior diagnostic log. Once this
+# succeeds, the run is committed to starting `uv`; no no-op, declined update,
+# or lock-acquisition failure can erase the previous log.
 if [ -z "$INSTALL_LOCK_KIND" ]; then
   acquire_install_lock
+fi
+setup_live_install_log
+if [ "$UV_LIVE_LOG" = false ]; then
+  uv_stderr=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
+  register_temp "$uv_stderr"
+else
+  log_update_tail_hint
 fi
 # In live-log mode, uv's stderr goes to the open UV_LIVE_LOG_FD descriptor
 # (the noclobber-validated install log), not to a re-opened pathname — see
@@ -3316,10 +3326,11 @@ fi
 # The last branch is a catch-all, not an enumerated set. It covers a fresh
 # install and an editable→PyPI swap. The version-move branches split on
 # UPGRADE_INTENDED (set far above): the script can only claim "Upgraded." when
-# it deliberately moved to the PyPI latest it had just fetched and confirmed
-# differed from the installed version. Any other move stays neutral because uv
-# honors custom indexes and configuration whose newest available package can
-# be older than the installed version. Two other known downgrade paths remain
+# it deliberately moved to the PyPI latest it had just fetched, confirmed
+# differed from the installed version, and installed a numerically newer
+# version. Any other move stays neutral because uv honors custom indexes and
+# configuration whose newest available package can be older than the installed
+# version. Two other known downgrade paths remain
 # in the catch-all branch:
 #   - a *pinned* version (VERSION set): `bash -s -- 0.1.0` over an installed
 #     0.2.0 is a downgrade.
@@ -3339,7 +3350,7 @@ elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" 
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ] \
   && [ "$UPGRADE_INTENDED" = true ] && [ -n "${LATEST_VERSION:-}" ] \
-  && [ "$NEW_VERSION" = "$LATEST_VERSION" ]; then
+  && [ "$NEW_VERSION" = "$LATEST_VERSION" ] && version_at_least "$NEW_VERSION" "$PRE_VERSION"; then
   footer_msg="Upgraded."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then

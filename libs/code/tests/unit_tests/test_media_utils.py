@@ -5,12 +5,17 @@ Covers clipboard detection, base64 encoding, and multimodal content.
 
 import base64
 import io
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from deepagents_code.input import MediaTracker
+from deepagents_code.input import (
+    MAX_DETACHED_MEDIA,
+    MAX_DETACHED_MEDIA_BYTES,
+    MediaTracker,
+)
 from deepagents_code.media_utils import (
     ImageData,
     VideoData,
@@ -153,17 +158,20 @@ class TestMediaTracker:
         assert vid.placeholder == "[video 2]"
         assert tracker.next_video_id == 3
 
-    def test_sync_to_text_resets_when_placeholders_removed(self) -> None:
-        """Removing placeholders from input should clear tracked images and IDs."""
-        tracker = MediaTracker()
-        img = ImageData(base64_data="abc", format="png", placeholder="")
+    def test_sync_to_text_detaches_images_and_keeps_ids(self) -> None:
+        """Removing every placeholder detaches the payloads and reserves their IDs.
 
-        tracker.add_image(img)
-        tracker.add_image(img)
+        The counter deliberately does not reset: a reused ID would let an undo
+        that restores an old token bind it to a newer payload.
+        """
+        tracker = MediaTracker()
+
+        tracker.add_image(ImageData(base64_data="abc", format="png", placeholder=""))
+        tracker.add_image(ImageData(base64_data="def", format="png", placeholder=""))
         tracker.sync_to_text("")
 
         assert tracker.images == []
-        assert tracker.next_image_id == 1
+        assert tracker.next_image_id == 3
 
     def test_sync_to_text_keeps_referenced_images(self) -> None:
         """Sync should prune unreferenced images while preserving next ID order."""
@@ -242,6 +250,509 @@ class TestMediaTracker:
         )
 
         assert img.placeholder_span == (0, 9)
+
+    def test_sync_to_text_reattaches_image_when_placeholder_returns(self) -> None:
+        """An undo that restores a deleted token re-attaches its image.
+
+        Regression: deleting `[image 1]` dropped the attachment permanently, so
+        ctrl+z restored the text without the image — the token stopped deleting
+        atomically and the image never reached the model.
+        """
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+        tracker.add_image(img)
+        tracker.sync_to_text("[image 1]")
+
+        edit_token = object()
+        tracker.sync_to_text("", previous_text="[image 1]", edit_token=edit_token)
+        assert tracker.get_images() == []
+
+        tracker.sync_to_text(
+            "[image 1]",
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
+
+        assert len(tracker.get_images()) == 1
+        assert tracker.get_images()[0].base64_data == "abc"
+        assert tracker.next_image_id == 2
+
+    def test_sync_to_text_reattaches_video_when_placeholder_returns(self) -> None:
+        """An undo that restores a deleted token re-attaches its video."""
+        tracker = MediaTracker()
+        vid = VideoData(base64_data="abc", format="mp4", placeholder="")
+        tracker.add_video(vid)
+        tracker.sync_to_text("[video 1]")
+
+        edit_token = object()
+        tracker.sync_to_text("", previous_text="[video 1]", edit_token=edit_token)
+        assert tracker.get_videos() == []
+
+        tracker.sync_to_text(
+            "[video 1]",
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
+
+        assert len(tracker.get_videos()) == 1
+        assert tracker.get_videos()[0].base64_data == "abc"
+
+    def test_sync_to_text_reattaches_only_the_undone_kind(self) -> None:
+        """Deleting one kind leaves the other attached, and undo restores it.
+
+        The `self.clear()` call removed from `sync_to_text` was the only code
+        that touched both kinds at once, so a mixed draft pins that its per-kind
+        replacements are correct. (`MediaTracker.clear()` itself still exists and
+        is still called on the agent dispatch path.)
+        """
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="img", format="png", placeholder=""))
+        tracker.add_video(VideoData(base64_data="vid", format="mp4", placeholder=""))
+        full_text = "[image 1] [video 1]"
+        tracker.sync_to_text(full_text)
+
+        edit_token = object()
+        tracker.sync_to_text(
+            "[image 1]", previous_text=full_text, edit_token=edit_token
+        )
+        assert [img.base64_data for img in tracker.get_images()] == ["img"]
+        assert tracker.get_videos() == []
+
+        tracker.sync_to_text(
+            full_text,
+            previous_text="[image 1]",
+            undo_previous_text="[image 1]",
+            undo_token=edit_token,
+        )
+
+        assert [img.base64_data for img in tracker.get_images()] == ["img"]
+        assert [vid.base64_data for vid in tracker.get_videos()] == ["vid"]
+
+    def test_sync_to_text_reattached_image_keeps_id_order(self) -> None:
+        """A re-attached image is ordered by placeholder ID, not re-attach order."""
+        tracker = MediaTracker()
+        img1 = ImageData(base64_data="one", format="png", placeholder="")
+        img2 = ImageData(base64_data="two", format="png", placeholder="")
+        tracker.add_image(img1)
+        tracker.add_image(img2)
+        tracker.sync_to_text("[image 1] [image 2]")
+
+        edit_token = object()
+        tracker.sync_to_text(
+            "[image 2]",
+            previous_text="[image 1] [image 2]",
+            edit_token=edit_token,
+        )
+        tracker.sync_to_text(
+            "[image 1] [image 2]",
+            previous_text="[image 2]",
+            undo_previous_text="[image 2]",
+            undo_token=edit_token,
+        )
+
+        assert [img.base64_data for img in tracker.get_images()] == ["one", "two"]
+
+    def test_add_image_reserves_detached_placeholder_for_undo(self) -> None:
+        """A replacement cannot reuse an ID retained by undo history."""
+        tracker = MediaTracker()
+        old = ImageData(base64_data="old", format="png", placeholder="")
+        tracker.add_image(old)
+        tracker.sync_to_text("[image 1]")
+        edit_token = object()
+        tracker.sync_to_text("", previous_text="[image 1]", edit_token=edit_token)
+        assert tracker.next_image_id == 2
+
+        new = ImageData(base64_data="new", format="png", placeholder="")
+        assert tracker.add_image(new) == "[image 2]"
+        tracker.sync_to_text("", previous_text="[image 2]")
+        tracker.sync_to_text(
+            "[image 1]",
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
+
+        assert [img.base64_data for img in tracker.get_images()] == ["old"]
+
+    def test_manually_reinserted_placeholder_does_not_reattach_media(self) -> None:
+        """Typing a deleted media token cannot reclaim its detached payload."""
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="secret", format="png", placeholder=""))
+        tracker.sync_to_text("[image 1]")
+        tracker.sync_to_text("", previous_text="[image 1]")
+
+        tracker.sync_to_text("[image 1]", previous_text="")
+
+        assert tracker.get_images() == []
+
+    def test_undo_of_later_literal_edit_does_not_reattach_media(self) -> None:
+        """An undo marker must match the edit which detached the payload."""
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="secret", format="png", placeholder=""))
+        tracker.sync_to_text("[image 1]")
+        deletion_token = object()
+        tracker.sync_to_text("", previous_text="[image 1]", edit_token=deletion_token)
+
+        tracker.sync_to_text(
+            "[image 1]",
+            previous_text="[image 1",
+            undo_previous_text="[image 1",
+            undo_token=object(),
+        )
+
+        assert tracker.get_images() == []
+
+    def test_detached_pool_cap_evicts_oldest_and_strands_its_token(self) -> None:
+        """Past the count cap, only the newest payloads survive an undo.
+
+        The evicted tokens can still come back as text, so they are reported as
+        stranded rather than silently shipped as bare `[image N]` text.
+        """
+        total = MAX_DETACHED_MEDIA + 3
+        tracker = MediaTracker()
+        placeholders = []
+        for index in range(total):
+            img = ImageData(base64_data=str(index), format="png", placeholder="")
+            placeholders.append(tracker.add_image(img))
+        full_text = " ".join(placeholders)
+        tracker.sync_to_text(full_text)
+        assert len(tracker.get_images()) == total
+
+        edit_token = object()
+        for index in range(total):
+            tracker.sync_to_text(
+                " ".join(placeholders[index + 1 :]),
+                previous_text=" ".join(placeholders[index:]),
+                edit_token=edit_token,
+            )
+        tracker.sync_to_text(
+            full_text,
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
+
+        assert [img.base64_data for img in tracker.get_images()] == [
+            str(index) for index in range(3, total)
+        ]
+        assert tracker.take_stranded_placeholders() == [
+            "[image 1]",
+            "[image 2]",
+            "[image 3]",
+        ]
+
+    def test_detached_pool_cap_is_bounded_by_bytes(self) -> None:
+        """Oversized payloads are evicted by byte budget, not just by count."""
+        tracker = MediaTracker()
+        half_budget = "x" * (MAX_DETACHED_MEDIA_BYTES // 2 + 1)
+        placeholders = [
+            tracker.add_image(
+                ImageData(base64_data=half_budget, format="png", placeholder="")
+            )
+            for _ in range(3)
+        ]
+        full_text = " ".join(placeholders)
+        tracker.sync_to_text(full_text)
+
+        edit_token = object()
+        tracker.sync_to_text("", previous_text=full_text, edit_token=edit_token)
+        tracker.sync_to_text(
+            full_text,
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
+
+        # Two payloads exceed the budget, so only the newest is restorable even
+        # though the count cap would have allowed all three.
+        assert [img.placeholder for img in tracker.get_images()] == [placeholders[-1]]
+        assert tracker.take_stranded_placeholders() == placeholders[:2]
+
+    def test_detached_pool_always_keeps_the_newest_payload(self) -> None:
+        """The most recent delete stays undoable even if it alone busts the budget."""
+        tracker = MediaTracker()
+        oversized = "x" * (MAX_DETACHED_MEDIA_BYTES + 1)
+        placeholder = tracker.add_image(
+            ImageData(base64_data=oversized, format="png", placeholder="")
+        )
+        tracker.sync_to_text(placeholder)
+
+        edit_token = object()
+        tracker.sync_to_text("", previous_text=placeholder, edit_token=edit_token)
+        tracker.sync_to_text(
+            placeholder,
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
+
+        assert [img.placeholder for img in tracker.get_images()] == [placeholder]
+        assert tracker.take_stranded_placeholders() == []
+
+    def test_stranded_placeholder_reported_once_per_undo(self) -> None:
+        """A stranded token is surfaced once per undo, then drained."""
+        tracker = MediaTracker()
+        oversized = "x" * (MAX_DETACHED_MEDIA_BYTES + 1)
+        first = tracker.add_image(
+            ImageData(base64_data=oversized, format="png", placeholder="")
+        )
+        second = tracker.add_image(
+            ImageData(base64_data=oversized, format="png", placeholder="")
+        )
+        full_text = f"{first} {second}"
+        tracker.sync_to_text(full_text)
+        edit_token = object()
+        tracker.sync_to_text("", previous_text=full_text, edit_token=edit_token)
+
+        tracker.sync_to_text(
+            full_text,
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
+
+        assert tracker.take_stranded_placeholders() == [first]
+        assert tracker.take_stranded_placeholders() == []
+
+    def test_evicted_token_not_stranded_until_an_undo_restores_it(self) -> None:
+        """Eviction alone raises nothing; only a failed undo restore does.
+
+        Placeholder-shaped text the user types is ordinary text, so it must not
+        trigger a "media is gone" warning.
+        """
+        tracker = MediaTracker()
+        oversized = "x" * (MAX_DETACHED_MEDIA_BYTES + 1)
+        first = tracker.add_image(
+            ImageData(base64_data=oversized, format="png", placeholder="")
+        )
+        second = tracker.add_image(
+            ImageData(base64_data=oversized, format="png", placeholder="")
+        )
+        full_text = f"{first} {second}"
+        tracker.sync_to_text(full_text)
+        tracker.sync_to_text("", previous_text=full_text)
+
+        assert tracker.take_stranded_placeholders() == []
+
+        # Typed, not undone: stays literal text and stays silent.
+        tracker.sync_to_text(full_text, previous_text="")
+
+        assert tracker.take_stranded_placeholders() == []
+
+    def test_clear_releases_detached_media(self) -> None:
+        """`clear()` releases detached payloads so a consumed message frees them."""
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="abc", format="png", placeholder=""))
+        tracker.sync_to_text("[image 1]")
+        tracker.sync_to_text("", previous_text="[image 1]")
+        assert tracker._detached_images
+
+        tracker.clear()
+        tracker.sync_to_text("[image 1]", previous_text="", undo_previous_text="")
+
+        assert tracker.get_images() == []
+
+    def test_release_detached_keeps_attached_media(self) -> None:
+        """`release_detached()` frees undo payloads without dropping attachments."""
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="kept", format="png", placeholder=""))
+        tracker.add_image(ImageData(base64_data="gone", format="png", placeholder=""))
+        tracker.sync_to_text("[image 1] [image 2]")
+        tracker.sync_to_text("[image 1]", previous_text="[image 1] [image 2]")
+
+        tracker.release_detached()
+        tracker.sync_to_text(
+            "[image 1] [image 2]",
+            previous_text="[image 1]",
+            undo_previous_text="[image 1]",
+        )
+
+        assert [img.base64_data for img in tracker.get_images()] == ["kept"]
+
+    def test_snapshot_and_restore_carry_attached_media_only(self) -> None:
+        """Snapshot/restore round-trips attachments and drops undo payloads.
+
+        Submission replaces the draft via `clear_text`, which resets the undo
+        history, so a detached payload carried in the snapshot could never be
+        restored — it would only pin base64 on every transcript message.
+        """
+        tracker = MediaTracker()
+        tracker.add_image(ImageData(base64_data="kept", format="png", placeholder=""))
+        tracker.add_image(ImageData(base64_data="gone", format="png", placeholder=""))
+        tracker.sync_to_text("[image 1] [image 2]")
+        tracker.sync_to_text("[image 1]", previous_text="[image 1] [image 2]")
+
+        snapshot = tracker.snapshot()
+        tracker.clear()
+        tracker.restore(snapshot)
+
+        assert [img.base64_data for img in tracker.get_images()] == ["kept"]
+
+        tracker.sync_to_text(
+            "[image 1] [image 2]",
+            previous_text="[image 1]",
+            undo_previous_text="[image 1]",
+        )
+
+        assert [img.base64_data for img in tracker.get_images()] == ["kept"]
+
+    def test_restore_releases_detached_without_a_preceding_clear(self) -> None:
+        """`restore()` frees the abandoned draft's undo payloads on its own.
+
+        The interrupt-restore path calls `restore()` directly, without the
+        `clear()` that other tests happen to perform first. The restored text
+        arrives with a fresh undo history, so a payload held for the abandoned
+        draft is unreachable and must not survive to bind a same-numbered token
+        in the restored message.
+        """
+        interrupted = MediaTracker()
+        interrupted.add_image(
+            ImageData(base64_data="restored", format="png", placeholder="")
+        )
+        interrupted.sync_to_text("[image 1]")
+        snapshot = interrupted.snapshot()
+
+        tracker = MediaTracker()
+        tracker.add_image(
+            ImageData(base64_data="abandoned", format="png", placeholder="")
+        )
+        tracker.sync_to_text("[image 1]")
+        marker = object()
+        tracker.sync_to_text(
+            "", previous_text="[image 1]", edit_token=marker, undo_token=marker
+        )
+        assert tracker._detached_images
+
+        tracker.restore(snapshot)
+
+        assert tracker._detached_images == []
+        # Even a genuine undo of that exact edit cannot resurrect it.
+        tracker.sync_to_text(
+            "[image 1]",
+            previous_text="",
+            undo_previous_text="",
+            edit_token=marker,
+            undo_token=marker,
+        )
+        assert [img.base64_data for img in tracker.get_images()] == ["restored"]
+
+    def test_take_stranded_placeholders_orders_ids_numerically(self) -> None:
+        """Stranded tokens are listed in ID order, not lexicographic order.
+
+        A lexicographic sort puts `[image 10]` before `[image 2]`, which reads as
+        a mistake in the warning the user sees.
+        """
+        tracker = MediaTracker()
+        tracker._stranded_placeholders.update(
+            {"[image 10]", "[image 2]", "[image 3]", "[video 2]"}
+        )
+
+        assert tracker.take_stranded_placeholders() == [
+            "[image 2]",
+            "[image 3]",
+            "[image 10]",
+            "[video 2]",
+        ]
+        assert tracker.take_stranded_placeholders() == []
+
+    def test_kind_state_keeps_attached_and_detached_disjoint(self) -> None:
+        """The per-kind state never lists one token as both attached and detached.
+
+        `_rebind` is the single writer of that invariant, so a partition that
+        violated it must be corrected there rather than reaching the model as a
+        payload that is simultaneously live and held for undo.
+        """
+        from deepagents_code.input import (
+            IMAGE_PLACEHOLDER_PATTERN,
+            _MediaKindState,
+            _MediaPartition,
+        )
+
+        state: _MediaKindState[ImageData] = _MediaKindState(
+            IMAGE_PLACEHOLDER_PATTERN, "image"
+        )
+        live = ImageData(base64_data="live", format="png", placeholder="[image 1]")
+        stale = ImageData(base64_data="stale", format="png", placeholder="[image 1]")
+
+        state._rebind(
+            _MediaPartition(
+                attached=[live],
+                detached=[stale],
+                evicted=[],
+                detached_edits={"[image 1]": object()},
+                evicted_edits={},
+            )
+        )
+
+        assert [img.base64_data for img in state.attached] == ["live"]
+        assert state.detached == []
+        assert state.detached_edits == {}
+        # The counter still reserves the token that was handed out.
+        assert state.next_id == 2
+
+    def test_kind_state_ids_never_go_backwards(self) -> None:
+        """A kind's next ID keeps rising while a payload holds its token.
+
+        This is what stops a later paste from reusing an ID that an undo could
+        still restore, which would bind a restored token to a different payload.
+        """
+        from deepagents_code.input import (
+            IMAGE_PLACEHOLDER_PATTERN,
+            _MediaKindState,
+        )
+
+        state: _MediaKindState[ImageData] = _MediaKindState(
+            IMAGE_PLACEHOLDER_PATTERN, "image"
+        )
+        first = ImageData(base64_data="one", format="png")
+        assert state.bind(first, "") == "[image 1]"
+        assert state.next_id == 2
+
+        marker = object()
+        state.sync(
+            "",
+            equal_spans=None,
+            previous_text="[image 1]",
+            cursor_offset=None,
+            edit_token=marker,
+            undo_token=None,
+        )
+        assert [img.placeholder for img in state.detached] == ["[image 1]"]
+        assert state.next_id == 2
+
+        second = ImageData(base64_data="two", format="png")
+        assert state.bind(second, "") == "[image 2]"
+
+    def test_unchanged_spans_matches_a_full_diff(self) -> None:
+        """Prefix/suffix trimming agrees with diffing the whole draft.
+
+        The trimming exists purely for speed — a character-level diff over a
+        whole draft is quadratic — so it must not change which occurrences count
+        as carried over.
+        """
+        cases = [
+            ("[image 1] tail", "head [image 1] tail"),
+            ("abc", "abc"),
+            ("", "[image 1]"),
+            ("[image 1]", ""),
+            ("a [image 1] b", "a [image 1] b [image 1]"),
+            ("see [imaxge 1] here", "see [image 1] here"),
+            ("[image 1][image 2]", "[image 2]"),
+        ]
+        for previous_text, text in cases:
+            spans = MediaTracker._unchanged_spans(previous_text, text)
+            # Every reported span must genuinely be common to both texts.
+            for start, end in spans:
+                assert text[start:end] in previous_text, (previous_text, text)
+            # Spans are ascending and non-overlapping.
+            assert spans == sorted(spans), (previous_text, text)
+            for (_, first_end), (second_start, _) in pairwise(spans):
+                assert first_end <= second_start, (previous_text, text)
+            # Identical text is entirely unchanged.
+            if previous_text == text and text:
+                assert spans == [(0, len(text))]
 
     def test_remap_spans_to_text_shifts_span_and_strips_correct_duplicate(
         self,
@@ -701,7 +1212,8 @@ class TestGetImageFromPath:
 
         assert result is not None
         assert result.format == "png"
-        assert result.placeholder == "[image]"
+        # Loaders return unbound payloads; only `add_media` assigns a token.
+        assert result.placeholder == ""
         assert base64.b64decode(result.base64_data)
 
     def test_get_image_from_path_non_image_returns_none(self, tmp_path: Path) -> None:
@@ -819,7 +1331,8 @@ class TestGetVideoFromPath:
 
         assert result is not None
         assert result.format == "mp4"
-        assert result.placeholder == "[video]"
+        # Loaders return unbound payloads; only `add_media` assigns a token.
+        assert result.placeholder == ""
         assert base64.b64decode(result.base64_data) == mp4_content
 
     def test_get_video_from_path_jpg_returns_none(self, tmp_path: Path) -> None:
@@ -986,8 +1499,8 @@ class TestMediaTrackerVideo:
         assert len(tracker.images) == 1
         assert len(tracker.videos) == 1
 
-    def test_sync_to_text_clears_all_when_no_placeholders(self) -> None:
-        """Sync with no placeholders should clear both images and videos."""
+    def test_sync_to_text_detaches_both_kinds_when_no_placeholders(self) -> None:
+        """Sync with no placeholders detaches both kinds, leaving IDs reserved."""
         tracker = MediaTracker()
 
         img = ImageData(base64_data="img", format="png", placeholder="")
@@ -999,8 +1512,8 @@ class TestMediaTrackerVideo:
 
         assert len(tracker.images) == 0
         assert len(tracker.videos) == 0
-        assert tracker.next_image_id == 1
-        assert tracker.next_video_id == 1
+        assert tracker.next_image_id == 2
+        assert tracker.next_video_id == 2
 
 
 class TestCreateMultimodalContentWithVideo:

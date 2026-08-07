@@ -2789,7 +2789,7 @@ class TestDroppedImagePaste:
             # trailing space (unlike backspace which catches it).
             assert "[image" not in chat._text_area.text
             assert app.tracker.get_images() == []
-            assert app.tracker.next_image_id == 1
+            assert app.tracker.next_image_id == 2
 
     async def test_backspace_removes_full_image_placeholder(self, tmp_path) -> None:
         """Backspace should remove `[image N]` as a single token."""
@@ -2813,7 +2813,7 @@ class TestDroppedImagePaste:
 
             assert chat._text_area.text == ""
             assert app.tracker.get_images() == []
-            assert app.tracker.next_image_id == 1
+            assert app.tracker.next_image_id == 2
 
     async def test_backspace_from_line_below_image_keeps_placeholder(
         self, tmp_path
@@ -2854,8 +2854,527 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "[image 1][image 2]"
             assert len(app.tracker.get_images()) == 2
 
-    async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
-        """Re-adding after deleting all placeholders should restart at `[image 1]`."""
+    async def test_undo_after_backspace_keeps_image_atomic(self, tmp_path) -> None:
+        """Ctrl+Z after backspacing `[image N]` restores an atomic, attached token.
+
+        Regression: the attachment was dropped when the token left the draft, so
+        the undo restored placeholder-shaped *text* only. Backspace then chewed
+        it one character at a time (`[image 1`) and the image never reached the
+        model.
+        """
+        img_path = tmp_path / "undo.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="cyan").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
+            chat._text_area.undo()
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
+            chat._text_area.move_cursor((0, len("[image 1] ")))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
+    async def test_typing_deleted_placeholder_does_not_restore_image(
+        self, tmp_path
+    ) -> None:
+        """Only undo, not same-looking typed text, may restore deleted media."""
+        img_path = tmp_path / "deleted.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="cyan").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            chat._text_area.insert("[image 1]")
+            await pilot.pause()
+
+            assert chat._text_area.text == "[image 1]"
+            assert app.tracker.get_images() == []
+
+    async def test_undoing_typed_placeholder_edit_does_not_restore_image(
+        self, tmp_path
+    ) -> None:
+        """Only undoing the original media deletion may restore its payload."""
+        img_path = tmp_path / "typed-undo.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="cyan").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            chat._text_area.insert("[image 1]")
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1"
+
+            chat._text_area.undo()
+            await pilot.pause()
+
+            assert chat._text_area.text == "[image 1]"
+            assert app.tracker.get_images() == []
+
+    async def test_undo_clear_preserves_bound_duplicate_span(self, tmp_path) -> None:
+        """Undo keeps media bound to its original duplicate occurrence."""
+        img_path = tmp_path / "duplicate-undo.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="olive").save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+            chat._text_area.insert("literal [image 1] then ")
+            await pilot.pause()
+            image = app.tracker.get_images()[0]
+            assert image.placeholder_span == (23, 32)
+
+            assert chat.discard_text()
+            await pilot.pause()
+            chat._text_area.undo()
+            await pilot.pause()
+
+            assert image.placeholder_span == (23, 32)
+            chat._submit_value(chat._text_area.text.strip())
+            await pilot.pause()
+            content = create_multimodal_content(
+                app.submitted[-1].value, app.tracker.get_images()
+            )
+
+            assert content[0]["text"] == "literal [image 1] then"
+            assert content[1]["type"] == "image_url"
+
+    async def test_command_submit_releases_detached_media_immediately(
+        self, tmp_path
+    ) -> None:
+        """Non-agent submits clean up their own undo payload at clear time."""
+        img_path = tmp_path / "command-boundary.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="purple").save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert app.tracker._detached_images
+
+            chat.mode = "command"
+            chat._text_area.insert("help")
+            await pilot.pause()
+            chat._submit_value("help")
+
+            assert app.tracker._detached_images == []
+
+    async def test_command_submit_drops_media_still_attached(self, tmp_path) -> None:
+        """A command submit clears media that is still attached to the draft.
+
+        Regression: the submission boundary released only the *detached* pool.
+        Media still attached at that moment survived the clear, then detached on
+        the next keystroke — into a pool nothing releases again. The payload was
+        pinned for the rest of the session and its ID stayed reserved, so the
+        following paste silently became `[image 2]`.
+        """
+        img_path = tmp_path / "command-attached.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="purple").save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/help ")
+            await pilot.pause()
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert len(app.tracker.get_images()) == 1
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Typing again is what used to surface the leak.
+            chat._text_area.insert("next message")
+            await pilot.pause()
+
+            assert app.tracker.get_images() == []
+            assert app.tracker._detached_images == []
+            assert app.tracker.next_image_id == 1
+
+    async def test_history_recall_does_not_restore_deleted_image(
+        self, tmp_path
+    ) -> None:
+        """Recalling a past prompt cannot re-attach a payload deleted since.
+
+        History stores the display token verbatim, so an earlier text-only
+        prompt mentioning `[image 1]` would otherwise pick up an image the user
+        deleted from the current draft.
+        """
+        img_path = tmp_path / "history.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="cyan").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._history._entries.append("look [image 1] here")
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat._text_area.text == "look [image 1] here"
+            assert app.tracker.get_images() == []
+
+    async def test_undo_past_pool_cap_warns_that_media_is_gone(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """An undo that cannot restore a payload warns instead of failing silently.
+
+        Past the pool cap the token comes back as bare text: a placeholder that
+        looks attached but ships no image. This is a cap-induced failure mode of
+        the detached pool, distinct from the original bug (which dropped the
+        payload the moment its token left the draft), but it presents to the user
+        the same way, so it must be reported rather than shipped quietly.
+        """
+        from PIL import Image
+
+        monkeypatch.setattr("deepagents_code.input.MAX_DETACHED_MEDIA", 1)
+        first_path = tmp_path / "first.png"
+        second_path = tmp_path / "second.png"
+        Image.new("RGB", (4, 4), color="red").save(first_path, format="PNG")
+        Image.new("RGB", (4, 4), color="blue").save(second_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            calls = _capture_notifications(monkeypatch, app)
+
+            chat.handle_external_paste(str(first_path))
+            await pilot.pause()
+            chat.handle_external_paste(str(second_path))
+            await pilot.pause()
+            full_text = chat._text_area.text
+            assert len(app.tracker.get_images()) == 2
+
+            # One undoable edit drops both tokens, so the cap of 1 evicts the
+            # older payload.
+            chat._text_area.delete((0, 0), (0, len(full_text)))
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            chat._text_area.undo()
+            await pilot.pause()
+
+            assert chat._text_area.text == full_text
+            attached = [img.placeholder for img in app.tracker.get_images()]
+            assert attached == ["[image 2]"]
+            assert any("[image 1]" in message for message, _ in calls)
+
+    async def test_undo_then_submit_keeps_image_attached(self, tmp_path) -> None:
+        """An image restored by undo survives into the submitted message.
+
+        Covers the half beyond re-attachment: the re-attached item's span must
+        survive `remap_spans_to_text` so the token is stripped from the
+        model-facing text and the payload ships as its own content block.
+        """
+        img_path = tmp_path / "resubmit.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="olive").save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            chat._text_area.undo()
+            await pilot.pause()
+            assert len(app.tracker.get_images()) == 1
+
+            chat._submit_value(chat._text_area.text.strip())
+            await pilot.pause()
+
+            assert app.submitted[-1].value == "[image 1]"
+            content = create_multimodal_content(
+                app.submitted[-1].value,
+                app.tracker.get_images(),
+                app.tracker.get_videos(),
+            )
+            assert [block["type"] for block in content] == ["image_url"]
+
+    async def test_redo_of_a_paste_reattaches_image(self, tmp_path) -> None:
+        """Ctrl+Y after ctrl+Z re-attaches the payload the undo detached.
+
+        Regression: only `undo` was overridden, so redo restored the token
+        through the ordinary change path with no undo identity. The placeholder
+        came back as bare text while its payload sat unreachable in the detached
+        pool — the same failure this feature exists to prevent, on the key
+        Textual binds in the same `BINDINGS` block.
+        """
+        img_path = tmp_path / "redo.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="cyan").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("look ")
+            await pilot.pause()
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            full_text = chat._text_area.text
+            assert len(app.tracker.get_images()) == 1
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            assert "[image 1]" not in chat._text_area.text
+            assert app.tracker.get_images() == []
+
+            await pilot.press("ctrl+y")
+            await pilot.pause()
+
+            assert chat._text_area.text == full_text
+            assert len(app.tracker.get_images()) == 1
+            # The token is bound again, so it deletes atomically.
+            chat._text_area.move_cursor((0, len(full_text.rstrip())))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert "[image" not in chat._text_area.text
+
+    async def test_redo_of_a_delete_detaches_again(self, tmp_path) -> None:
+        """Redoing a deletion re-detaches, and a further undo re-attaches.
+
+        Redo must be symmetric with undo rather than only ever re-attaching:
+        replaying the edit that removed a token has to drop the attachment
+        again, and the payload must stay reclaimable afterwards.
+        """
+        img_path = tmp_path / "redo_delete.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="red").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            assert len(app.tracker.get_images()) == 1
+
+            await pilot.press("ctrl+y")
+            await pilot.pause()
+            assert "[image" not in chat._text_area.text
+            assert app.tracker.get_images() == []
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            assert len(app.tracker.get_images()) == 1
+
+    async def test_undo_of_one_edit_deleting_two_images_restores_both(
+        self, tmp_path
+    ) -> None:
+        """Deleting two tokens in one edit and undoing re-attaches both payloads.
+
+        Each restored token must carry its own image, in placeholder order, with
+        its own span so submission strips both display tokens.
+        """
+        from PIL import Image
+
+        first_path = tmp_path / "first.png"
+        second_path = tmp_path / "second.png"
+        Image.new("RGB", (4, 4), color="red").save(first_path, format="PNG")
+        Image.new("RGB", (4, 4), color="blue").save(second_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(first_path))
+            await pilot.pause()
+            chat.handle_external_paste(str(second_path))
+            await pilot.pause()
+            full_text = chat._text_area.text
+            payloads = [img.base64_data for img in app.tracker.get_images()]
+            assert len(payloads) == 2
+
+            chat._text_area.delete((0, 0), (0, len(full_text)))
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+
+            assert chat._text_area.text == full_text
+            restored = app.tracker.get_images()
+            assert [img.placeholder for img in restored] == ["[image 1]", "[image 2]"]
+            assert [img.base64_data for img in restored] == payloads
+
+            chat._submit_value(chat._text_area.text.strip())
+            await pilot.pause()
+            content = create_multimodal_content(
+                app.submitted[-1].value,
+                app.tracker.get_images(),
+                app.tracker.get_videos(),
+            )
+            assert [block["type"] for block in content] == ["image_url", "image_url"]
+
+    async def test_undo_past_pool_cap_warns_in_plural(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Two stranded tokens are reported together with plural agreement."""
+        from PIL import Image
+
+        monkeypatch.setattr("deepagents_code.input.MAX_DETACHED_MEDIA", 1)
+        paths = []
+        for index, color in enumerate(("red", "blue", "green")):
+            path = tmp_path / f"plural_{index}.png"
+            Image.new("RGB", (4, 4), color=color).save(path, format="PNG")
+            paths.append(path)
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            calls = _capture_notifications(monkeypatch, app)
+
+            for path in paths:
+                chat.handle_external_paste(str(path))
+                await pilot.pause()
+            full_text = chat._text_area.text
+            assert len(app.tracker.get_images()) == 3
+
+            # One undoable edit drops all three tokens; the cap of 1 evicts the
+            # two older payloads.
+            chat._text_area.delete((0, 0), (0, len(full_text)))
+            await pilot.pause()
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+
+            assert [img.placeholder for img in app.tracker.get_images()] == [
+                "[image 3]"
+            ]
+            messages = [message for message, _ in calls]
+            assert any(
+                "[image 1], [image 2] no longer have media attached" in message
+                for message in messages
+            ), messages
+
+    async def test_undo_restores_original_after_replacement_image(
+        self, tmp_path
+    ) -> None:
+        """Undo binds the original payload after a replacement is undone."""
+        from PIL import Image
+
+        old_path = tmp_path / "old.png"
+        new_path = tmp_path / "new.png"
+        Image.new("RGB", (4, 4), color="cyan").save(old_path, format="PNG")
+        Image.new("RGB", (4, 4), color="magenta").save(new_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(old_path))
+            await pilot.pause()
+            old_payload = app.tracker.get_images()[0].base64_data
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            chat.handle_external_paste(str(new_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 2] "
+
+            chat._text_area.undo()
+            await pilot.pause()
+            chat._text_area.undo()
+            await pilot.pause()
+
+            assert chat._text_area.text == "[image 1] "
+            assert [image.base64_data for image in app.tracker.get_images()] == [
+                old_payload
+            ]
+
+    async def test_readding_after_delete_reserves_undo_id(self, tmp_path) -> None:
+        """Re-adding cannot reuse the placeholder retained for undo."""
         img_path = tmp_path / "readd.png"
         from PIL import Image
 
@@ -2873,13 +3392,13 @@ class TestDroppedImagePaste:
 
             await pilot.press("backspace")
             await pilot.pause()
-            assert app.tracker.next_image_id == 1
+            assert app.tracker.next_image_id == 2
 
             chat.handle_external_paste(str(img_path))
             await pilot.pause()
-            assert chat._text_area.text == "[image 1] "
+            assert chat._text_area.text == "[image 2] "
             assert len(app.tracker.get_images()) == 1
-            assert app.tracker.next_image_id == 2
+            assert app.tracker.next_image_id == 3
 
     async def test_typed_image_placeholder_is_not_atomic(self) -> None:
         """Manually typed `[image N]` (no attachment) edits char-by-char.
@@ -3368,14 +3887,15 @@ class TestDroppedImagePaste:
             await pilot.pause()
 
             # After submit, the skip counter fires for the clear_text event.
-            # Typing new text should now sync normally (tracker is cleared).
+            # Typing new text should now sync normally.
             chat._text_area.insert("hello")
             await pilot.pause()
 
-            # The tracker should have synced and cleared images since
-            # the new text has no placeholders.
+            # The tracker synced and detached the image, since the new text has
+            # no placeholders. The payload is retained for undo and its ID stays
+            # reserved; only the agent dispatch path calls `clear()`.
             assert app.tracker.get_images() == []
-            assert app.tracker.next_image_id == 1
+            assert app.tracker.next_image_id == 2
 
     async def test_submit_recovers_if_command_mode_already_stripped_path(
         self, tmp_path
@@ -3457,7 +3977,60 @@ class TestDroppedVideoPaste:
 
             assert "[video" not in chat._text_area.text
             assert app.tracker.get_videos() == []
-            assert app.tracker.next_video_id == 1
+            assert app.tracker.next_video_id == 2
+
+    async def test_undo_after_backspace_reattaches_video(self, tmp_path: Path) -> None:
+        """Ctrl+Z after deleting `[video N]` re-attaches its payload.
+
+        The video sync path is a near-copy of the image one, so it needs its own
+        widget-level coverage: a drift between the two would otherwise only show
+        up as silently missing video attachments.
+        """
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+            payload = app.tracker.get_videos()[0].base64_data
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert app.tracker.get_videos() == []
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+
+            assert "[video 1]" in chat._text_area.text
+            assert [vid.base64_data for vid in app.tracker.get_videos()] == [payload]
+
+    async def test_redo_of_a_video_paste_reattaches(self, tmp_path: Path) -> None:
+        """Ctrl+Y re-attaches a video the undo of its paste detached."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+            payload = app.tracker.get_videos()[0].base64_data
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            assert app.tracker.get_videos() == []
+
+            await pilot.press("ctrl+y")
+            await pilot.pause()
+
+            assert "[video 1]" in chat._text_area.text
+            assert [vid.base64_data for vid in app.tracker.get_videos()] == [payload]
 
     async def test_forward_delete_removes_video_placeholder(
         self, tmp_path: Path

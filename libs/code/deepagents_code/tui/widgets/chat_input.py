@@ -16,6 +16,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Size
 from textual.message import Message
+from textual.message_pump import NoActiveAppError
 from textual.reactive import reactive
 from textual.strip import Strip
 from textual.widgets import Static, TextArea
@@ -107,6 +108,8 @@ A periodic refresh keeps `@` suggestions current; the walk runs off the event
 loop and swaps in atomically, so it never blocks typing."""
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
@@ -527,6 +530,95 @@ class ChatTextArea(PasteBurstTextArea):
         # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
         self._app_blurred = False
         self._refocus_time: float | None = None
+
+    def undo(self) -> None:
+        """Undo one edit batch and restore media owned by that exact edit."""
+        stack = self.history.undo_stack
+        self._reverse_history_batch(super().undo, stack[-1] if stack else None)
+
+    def redo(self) -> None:
+        """Redo one edit batch and restore media owned by that exact edit.
+
+        Redo is the mirror of undo, not a plain re-edit: it re-applies a batch
+        whose inverse this widget already reported to `MediaTracker`. Textual
+        binds it in the same `BINDINGS` block as undo (`ctrl+y`/`super+y`), so
+        leaving it on the ordinary `Changed` path would restore a placeholder as
+        bare text while its payload sat unreachable in the detached pool.
+        """
+        stack = self.history.redo_stack
+        self._reverse_history_batch(super().redo, stack[-1] if stack else None)
+
+    def _reverse_history_batch(
+        self,
+        apply: Callable[[], None],
+        edit_batch: list[Any] | None,
+    ) -> None:
+        """Apply a history operation and re-sync media against that exact batch.
+
+        Both directions pass the batch's identity as *both* the detaching and
+        the restoring edit. Whichever way the batch runs, it is the only edit
+        that can have removed the tokens it puts back, so one marker serves for
+        recording a detach and for authorizing the matching re-attach.
+
+        Args:
+            apply: The base-class `undo`/`redo` to invoke.
+            edit_batch: History batch this operation consumes, used for identity.
+        """
+        previous_text = self.text
+        edit_token = self._media_edit_token(edit_batch)
+        apply()
+        if self.text == previous_text:
+            return
+
+        owner = self._chat_input_owner
+        tracker = owner._image_tracker if owner is not None else None
+        if owner is None or tracker is None:
+            return
+        # Deliberately bypasses `_sync_media_tracker_to_text`: a pending
+        # `_skip_media_sync_events` token belongs to the edit being reversed, and
+        # consuming it here would drop the re-attach this operation exists to
+        # perform. The helper also cannot carry `undo_previous_text`, which is
+        # what marks these spans as restored rather than typed.
+        tracker.sync_to_text(
+            self.text,
+            previous_text=previous_text,
+            cursor_offset=owner._get_cursor_offset(),
+            undo_previous_text=previous_text,
+            edit_token=edit_token,
+            undo_token=edit_token,
+        )
+        # The Changed message posted by Textual arrives later. Keep its diff
+        # baseline aligned with the state already synchronized here. This also
+        # short-circuits `_should_check_path_payload`, so the reversal is not
+        # re-examined as a dropped-path paste.
+        owner._prev_text = self.text
+        owner._notify_stranded_media(self.text)
+
+    @staticmethod
+    def _media_edit_token(edit_batch: list[Any] | None) -> object | None:
+        """Return a stable, lightweight identity for a Textual edit batch.
+
+        The marker lives on the batch's first `Edit`, whose identity Textual
+        preserves when moving the batch between undo and redo stacks. Keeping
+        only this marker in `MediaTracker` avoids retaining the edit's deleted
+        text after Textual itself drops an old history checkpoint.
+
+        Args:
+            edit_batch: Textual history batch, or `None` when no edit produced
+                the current text.
+
+        Returns:
+            Stable marker for the batch, or `None` without a batch.
+        """
+        if not edit_batch:
+            return None
+        edit = edit_batch[0]
+        attribute = "_deepagents_code_media_edit_token"
+        token = getattr(edit, attribute, None)
+        if token is None:
+            token = object()
+            setattr(edit, attribute, token)
+        return token
 
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
@@ -2151,6 +2243,17 @@ class ChatInput(Vertical):
                 value, previous_text=self._text_area.text
             )
 
+        if mode != "normal" and self._image_tracker is not None:
+            # Slash and shell paths never consume media, and `clear_text()` below
+            # replaces the draft that referenced it. Drop the whole tracker at
+            # this submission boundary: releasing only the detached pool would
+            # miss media still *attached* here, which the next keystroke's sync
+            # would then detach into a pool nothing releases again — leaking the
+            # payload and burning its ID for the rest of the session. Clearing
+            # also stops a queued command from running late and mistaking a newer
+            # draft's payloads for its own.
+            self._image_tracker.clear()
+
         self._history.add(value)
         self.post_message(self.Submitted(value, mode))
 
@@ -2192,9 +2295,62 @@ class ChatInput(Vertical):
             else:
                 self._skip_media_sync_events -= 1
             return
-        self._image_tracker.sync_to_text(
-            text, previous_text=previous_text, cursor_offset=cursor_offset
+        undo_stack = self._text_area.history.undo_stack if self._text_area else []
+        edit_token = ChatTextArea._media_edit_token(
+            undo_stack[-1] if undo_stack else None
         )
+        self._image_tracker.sync_to_text(
+            text,
+            previous_text=previous_text,
+            cursor_offset=cursor_offset,
+            edit_token=edit_token,
+        )
+
+    def _notify_stranded_media(self, text: str) -> None:
+        """Warn when an undo restored a placeholder that has lost its media.
+
+        The detached pool is capped, so a delete/undo cycle past the cap can
+        restore a token whose payload is gone. It would otherwise look attached
+        and ship to the model as bare `[image N]` text.
+
+        Args:
+            text: Draft text produced by the undo, used to keep the warning to
+                tokens actually present in the draft.
+        """
+        if self._image_tracker is None:
+            return
+        # `take_stranded_placeholders` drains, so this is the only chance to
+        # record the loss. Log before filtering or notifying: losing an image is
+        # exactly the failure this warning exists to make visible, and a warning
+        # that vanishes because delivery failed would recreate it.
+        stranded = self._image_tracker.take_stranded_placeholders()
+        if not stranded:
+            return
+        logger.warning(
+            "Undo restored %s without media; the payload was evicted from the "
+            "detached pool and the token will reach the model as plain text.",
+            ", ".join(stranded),
+        )
+        present = [token for token in stranded if token in text]
+        if missing := [token for token in stranded if token not in text]:
+            # Not reachable today: stranded tokens come from regex matches over
+            # this same text. Logged rather than dropped so a future caller that
+            # breaks the assumption is not silently swallowing the warning.
+            logger.warning(
+                "Stranded media tokens %s absent from the draft; not reported.",
+                ", ".join(missing),
+            )
+        if not present:
+            return
+        verb = "have" if len(present) > 1 else "has"
+        message = (
+            f"{', '.join(present)} no longer {verb} media attached — "
+            "too many deletions to undo. Re-add the file to attach it again."
+        )
+        try:
+            self.app.notify(message, severity="warning", timeout=10, markup=False)
+        except NoActiveAppError:
+            logger.warning("Could not surface stranded-media warning: no active app")
 
     def on_chat_text_area_typing(
         self,

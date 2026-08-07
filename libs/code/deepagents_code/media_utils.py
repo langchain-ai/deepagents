@@ -183,7 +183,15 @@ class ImageData:
 
     base64_data: str
     format: str  # "png", "jpeg", etc.
-    placeholder: str  # Display text like "[image 1]"
+    placeholder: str = ""
+    """Display token like `[image 1]`, empty until bound.
+
+    Loaders here return unbound payloads: only `MediaTracker.add_media` assigns
+    a token, because only it knows which IDs the draft and the undo pool already
+    reserve. Empty rather than a token-shaped `[image]` sentinel, so an unbound
+    payload cannot be mistaken for a numbered one.
+    """
+
     placeholder_span: tuple[int, int] | None = None
 
     def to_message_content(self) -> dict:
@@ -204,7 +212,12 @@ class VideoData:
 
     base64_data: str
     format: str  # "mp4", "quicktime", etc.
-    placeholder: str  # Display text like "[video 1]"
+    placeholder: str = ""
+    """Display token like `[video 1]`, empty until bound.
+
+    See `ImageData.placeholder`: only `MediaTracker.add_media` assigns a token.
+    """
+
     placeholder_span: tuple[int, int] | None = None
 
     def to_message_content(self) -> "VideoContentBlock":
@@ -283,7 +296,6 @@ def get_image_from_path(path: pathlib.Path) -> ImageData | None:
         return ImageData(
             base64_data=encode_to_base64(image_bytes),
             format=image_format,
-            placeholder="[image]",
         )
     except (UnidentifiedImageError, OSError) as e:
         logger.debug("Failed to load image from %s: %s", path, e, exc_info=True)
@@ -367,7 +379,6 @@ def get_video_from_path(path: pathlib.Path) -> VideoData | None:
         return VideoData(
             base64_data=encode_to_base64(video_bytes),
             format=detected_format,
-            placeholder="[video]",
         )
     except OSError as e:
         logger.warning("Failed to load video from %s: %s", path, e, exc_info=True)
@@ -441,7 +452,6 @@ def _get_macos_clipboard_image() -> ImageData | None:
                     return ImageData(
                         base64_data=base64_data,
                         format="png",  # 'pngpaste -' always outputs PNG
-                        placeholder="[image]",
                     )
                 except (
                     # UnidentifiedImageError: corrupted or non-image data
@@ -551,7 +561,6 @@ def _get_clipboard_via_osascript() -> ImageData | None:
             return ImageData(
                 base64_data=base64_data,
                 format="png",
-                placeholder="[image]",
             )
         except (
             # UnidentifiedImageError: corrupted or non-image data

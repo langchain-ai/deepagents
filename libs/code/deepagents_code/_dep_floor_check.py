@@ -79,9 +79,10 @@ def _find_floor_violations(entries: list[str]) -> list[_FloorViolation]:
 
     Returns:
         One `_FloorViolation` per requirement whose installed version parses
-        below its declared `>=`/`~=` floor. Requirements that fail to parse,
-        whose marker does not apply to this environment, or whose
-        distribution is not installed are skipped.
+        below its declared `>=`/`~=`/`==` floor. Requirements that fail to
+        parse, whose marker does not apply to this environment, whose only
+        equality specifier is a `==X.*` wildcard, or whose distribution is
+        not installed are skipped.
     """
     violations: list[_FloorViolation] = []
     for entry in entries:
@@ -102,8 +103,16 @@ def _find_floor_violations(entries: list[str]) -> list[_FloorViolation]:
                     "Could not evaluate marker for %r; skipping", entry, exc_info=True
                 )
                 continue
+        # `==` pins act as floors here too: a hard pin (e.g. the SDK's
+        # `deepagents==X.Y.Z`) still means "this version or drift" in an
+        # editable venv, and an older-than-pinned install is exactly the
+        # staleness this check exists to surface. `==X.*` wildcard equality
+        # has no parseable single version, so it stays out.
         floors = [
-            spec.version for spec in req.specifier if spec.operator in {">=", "~="}
+            spec.version
+            for spec in req.specifier
+            if spec.operator in {">=", "~="}
+            or (spec.operator == "==" and not spec.version.endswith(".*"))
         ]
         if not floors:
             continue

@@ -138,6 +138,40 @@ class TestWarnAndContinue:
         assert console_output.read_text(encoding="utf-8") == ""
 
 
+class TestExactPins:
+    """`==` pins participate in the floor comparison; wildcards do not."""
+
+    def test_older_than_exact_pin_warns(
+        self, monkeypatch: pytest.MonkeyPatch, console_output: Path
+    ) -> None:
+        """An install older than a hard pin (e.g. the SDK's) is stale."""
+        monkeypatch.setattr(
+            dep_floor_check, "_load_cli_requirements", lambda: ["deepagents==0.7.4"]
+        )
+        _patch_versions(monkeypatch, {"deepagents": "0.7.3"})
+
+        warn_if_editable_deps_stale()
+
+        text = console_output.read_text(encoding="utf-8")
+        assert "deepagents" in text
+        assert "0.7.3" in text
+        assert "0.7.4" in text
+
+    def test_exact_pin_satisfied_stays_silent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An install at the pinned version reports no violation."""
+        _patch_versions(monkeypatch, {"deepagents": "0.7.4"})
+        assert _find_floor_violations(["deepagents==0.7.4"]) == []
+
+    def test_wildcard_equality_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`==X.*` has no single parseable version, so it cannot be a floor."""
+        _patch_versions(monkeypatch, {"some-dep": "0.9"})
+        assert _find_floor_violations(["some-dep==1.0.*"]) == []
+
+
 class TestBestEffort:
     """Malformed or missing metadata degrades to a debug log, never a crash."""
 

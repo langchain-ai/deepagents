@@ -72,7 +72,7 @@ class PluginManifest:
     inline_mcp: JsonObject
     inline_hooks: JsonObject = field(default_factory=dict)
     display_name: str | None = None
-    auto_update: bool = True
+    auto_update: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -198,13 +198,13 @@ def _auto_update_from_extensions(raw: JsonObject, warnings: list[str]) -> bool:
     """
     extensions = raw.get("extensions")
     if extensions is None:
-        return True
+        return False
     if not isinstance(extensions, dict):
         warnings.append("ignoring extensions: expected object")
-        return True
+        return False
     settings = extensions.get(_DEEPAGENTS_EXTENSION_NAMESPACE)
     if settings is None:
-        return True
+        return False
     if not isinstance(settings, dict):
         warnings.append(
             "disabling auto-update: "
@@ -213,7 +213,7 @@ def _auto_update_from_extensions(raw: JsonObject, warnings: list[str]) -> bool:
         return False
     value = settings.get("autoUpdate")
     if value is None:
-        return True
+        return False
     if not isinstance(value, bool):
         warnings.append(
             "disabling auto-update: "

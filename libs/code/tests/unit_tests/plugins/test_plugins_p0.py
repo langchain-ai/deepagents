@@ -346,6 +346,7 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
         (False, False, False),
         (False, True, False),
         (None, True, True),
+        (True, None, False),
     ],
     ids=(
         "global-on-manifest-off",
@@ -353,13 +354,14 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
         "global-off-manifest-off",
         "global-off-manifest-on",
         "default-global-on",
+        "global-on-manifest-omitted",
     ),
 )
 def test_plugin_auto_update_requires_global_and_manifest_enablement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     global_enabled: bool | None,
-    manifest_enabled: bool,
+    manifest_enabled: bool | None,
     should_update: bool,
 ) -> None:
     marketplace_root, plugin_id = _install_remote_plugin(tmp_path, monkeypatch)
@@ -370,18 +372,18 @@ def test_plugin_auto_update_requires_global_and_manifest_enablement(
             "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1" if global_enabled else "0"
         )
     old_cache = Path(load_installed_plugins()[plugin_id].install_path)
+    manifest: dict[str, object] = {
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        "name": "quality-review-plugin",
+        "version": "2.0.0",
+    }
+    if manifest_enabled is not None:
+        manifest["extensions"] = {
+            "com.langchain.deepagents.code": {"autoUpdate": manifest_enabled}
+        }
     _write_json(
         marketplace_root / "plugins" / "quality-review-plugin" / "plugin.json",
-        {
-            "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-            "name": "quality-review-plugin",
-            "version": "2.0.0",
-            "extensions": {
-                "com.langchain.deepagents.code": {
-                    "autoUpdate": manifest_enabled,
-                }
-            },
-        },
+        manifest,
     )
 
     expected = (plugin_id,) if should_update else ()

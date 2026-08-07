@@ -13114,16 +13114,6 @@ class TestRubricCommand:
             assert app._status_bar.rubric_label == ""
 
 
-_SELECTOR_TAIL = (
-    " Recommended models favor lower latency and cost for repeated "
-    "reviews; a faster, cheaper model may review actions less carefully."
-    " Enter applies the pick to this session; Ctrl+S stores it as "
-    "`[models].auto_classifier` for future launches without applying it "
-    "now — press Ctrl+S again on the stored model to remove it."
-)
-"""The guidance `tail` the `/auto model` picker appends to its description."""
-
-
 class TestAutoClassifierModelCommand:
     """Tests for `/auto model`, which picks the Auto classifier model."""
 
@@ -13195,8 +13185,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-haiku-4-5."
-            + _SELECTOR_TAIL
-            + " Clear it with `/auto model clear`."
+            " Clear it with `/auto model clear`."
         )
 
     async def test_selector_description_marks_a_classifier_matching_the_main_model(
@@ -13213,8 +13202,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            + _SELECTOR_TAIL
-            + " Clear it with `/auto model clear`."
+            " Clear it with `/auto model clear`."
         )
 
     async def test_selector_description_does_not_parse_a_spec_as_markup(self) -> None:
@@ -13229,8 +13217,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-opus-5[dim]."
-            + _SELECTOR_TAIL
-            + " Clear it with `/auto model clear`."
+            " Clear it with `/auto model clear`."
         )
 
     async def test_selector_description_does_not_crash_on_a_closing_tag_spec(
@@ -13247,8 +13234,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-opus-5[/]."
-            + _SELECTOR_TAIL
-            + " Clear it with `/auto model clear`."
+            " Clear it with `/auto model clear`."
         )
 
     async def test_selector_description_renders_markup_safely_when_mounted(
@@ -13291,7 +13277,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            + _SELECTOR_TAIL
         )
 
     async def test_selector_description_never_shows_the_inherit_sentinel(self) -> None:
@@ -13306,7 +13291,6 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            + _SELECTOR_TAIL
         )
 
     async def test_selector_description_without_a_resolved_main_model(self) -> None:
@@ -13320,7 +13304,7 @@ class TestAutoClassifierModelCommand:
             await app._show_auto_classifier_model_selector()
 
         assert self._rendered_description(push) == (
-            "Auto currently reviews with the main agent model." + _SELECTOR_TAIL
+            "Auto currently reviews with the main agent model."
         )
 
     async def test_bare_auto_still_switches_approval_mode(self) -> None:

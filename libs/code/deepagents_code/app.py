@@ -19187,20 +19187,13 @@ class DeepAgentsApp(App):
             # removes the modal.
             self.call_after_refresh(start_selection_worker)
 
-        tail = (
-            " Recommended models favor lower latency and cost for repeated "
-            "reviews; a faster, cheaper model may review actions less carefully."
-            " Enter applies the pick to this session; Ctrl+S stores it as "
-            "`[models].auto_classifier` for future launches without applying it "
-            "now — press Ctrl+S again on the stored model to remove it."
-        )
-        clear_hint = ""
+        tail = ""
         if self._auto_classifier_display_spec() is not None:
             # The picker lists only recommended classifiers, so it offers no
             # entry that reverts to the main agent model. `_auto_usage_text`
             # carries the hint, but it is mounted only for an unrecognized
             # `/auto` subcommand, so no path that opens this modal shows it.
-            clear_hint = " Clear it with `/auto model clear`."
+            tail = " Clear it with `/auto model clear`."
 
         # Every branch hands the screen a `Content`: the description reaches a
         # `Static`, which parses a plain `str` as markup. The branches naming a
@@ -19210,29 +19203,26 @@ class DeepAgentsApp(App):
         # into a plain `str` instead,
         # a spec containing `[dim]` would render a truncated, dimmed name that is
         # not the model reviewing actions, and one containing `[/]` would raise
-        # `MarkupError` when the modal opens. `tail` cannot join the markup
-        # template either — its backticked `[models]` parses as a style tag,
-        # which silently deletes that literal text and styles the rest of the
-        # line, raising nothing — so it is appended to the built `Content`,
-        # whose `+ str` is literal, and the first branch (no spec) uses the
-        # plain `Content` constructor, which parses nothing.
+        # `MarkupError` when the modal opens. The first branch names no spec, so
+        # the plain `Content` constructor — which parses nothing — suffices.
         active = self._auto_classifier_review_model_spec()
         if active is None:
-            description = Content("Auto currently reviews with the main agent model.")
+            description = Content(
+                "Auto currently reviews with the main agent model." + tail
+            )
         elif not self._auto_classifier_is_distinct():
             # Not `display_spec() is None`: that asks where the spec came from,
             # but the sentence claims the spec *is* the main agent model. They
             # diverge when a configured classifier matches the main model, which
             # `_notify_auto_classifier_active` also treats as "not distinct".
             description = Content.from_markup(
-                "Auto currently reviews with $spec, the main agent model.",
+                "Auto currently reviews with $spec, the main agent model." + tail,
                 spec=active,
             )
         else:
             description = Content.from_markup(
-                "Auto currently reviews with $spec.", spec=active
+                "Auto currently reviews with $spec." + tail, spec=active
             )
-        description += tail + clear_hint
 
         screen = ModelSelectorScreen(
             current_model=current_model,

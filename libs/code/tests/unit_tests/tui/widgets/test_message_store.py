@@ -1,8 +1,15 @@
 """Tests for message store and serialization."""
 
+import logging
+
 import pytest
+from textual.app import App, ComposeResult
+from textual.content import Content
+from textual.widget import Widget
 from textual.widgets import Static
 
+from deepagents_code.diff_utils import DiffStats
+from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.message_store import (
     DEFAULT_HEIGHT_HINT,
     MIN_HEIGHT_HINT,
@@ -22,6 +29,12 @@ from deepagents_code.tui.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
+
+
+def _rendered_text(widget: Widget) -> str:
+    """Return a composed child's plain text, ignoring styles."""
+    rendered = widget.render()
+    return rendered.plain if isinstance(rendered, Content) else str(rendered)
 
 
 class TestMessageData:
@@ -122,6 +135,108 @@ class TestMessageData:
         assert restored._deferred_status == ToolStatus.SUCCESS
         assert restored._deferred_output == "File contents here"
         assert restored._deferred_expanded is True
+
+    def test_tool_diff_superseded_roundtrip(self) -> None:
+        """Test that a diff-superseded tool stays hidden after virtualization."""
+        original = ToolCallMessage("edit_file")
+        original._status = "success"
+        original.mark_superseded_by_diff()
+
+        data = MessageData.from_widget(original)
+        restored = data.to_widget()
+
+        assert data.tool_diff_superseded is True
+        assert isinstance(restored, ToolCallMessage)
+        assert restored._diff_superseded is True
+
+    def test_tool_diff_superseded_reaches_the_store_after_the_row_is_stored(
+        self,
+    ) -> None:
+        """A row is stored before its diff mounts, so the flag arrives late.
+
+        Supersession happens when the diff lands, well after `from_widget`
+        captured the row at mount time. If `update_message` cannot carry the
+        flag, the store keeps `False` and rehydration resurrects the row next
+        to the diff that replaced it.
+        """
+        store = MessageStore()
+        widget = ToolCallMessage("edit_file")
+        widget.id = "msg-superseded"
+        store.append(MessageData.from_widget(widget))
+
+        widget._status = "success"
+        widget.mark_superseded_by_diff()
+        fresh = MessageData.from_widget(widget)
+        assert store.update_message(
+            widget.id, tool_diff_superseded=fresh.tool_diff_superseded
+        )
+
+        stored = store.get_message(widget.id)
+        assert stored is not None
+        assert stored.tool_diff_superseded is True
+        rehydrated = stored.to_widget()
+        assert isinstance(rehydrated, ToolCallMessage)
+        assert rehydrated._diff_superseded is True
+
+    async def test_rehydrated_superseded_row_is_hidden_once_mounted(self) -> None:
+        """The flag only matters if it survives all the way to `display`.
+
+        Restoring deferred status does not itself apply visibility, so the row
+        depends on `on_mount` re-applying it. Without a mounted assertion, a
+        resurrected edit row sitting beside its own diff would pass every test.
+        """
+        original = ToolCallMessage("edit_file")
+        original._status = "success"
+        original.mark_superseded_by_diff()
+        restored = MessageData.from_widget(original).to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert restored.display is False
+
+    async def test_rehydrated_non_diff_tool_is_not_hidden(self) -> None:
+        """Only the superseded-by-diff tool may hide; nothing replaces the rest.
+
+        The store writes restored state straight onto the widget, so the
+        tool-name guard is the only thing standing between a stray stored flag
+        and a row that vanishes with no diff to stand in for it.
+        """
+        data = MessageData.from_widget(ToolCallMessage("shell"))
+        data.tool_status = ToolStatus.SUCCESS
+        data.tool_diff_superseded = True
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert restored.display is True
+
+    def test_rejected_supersession_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The guard protects an invariant, so tripping it must leave a trace.
+
+        Two name sources decide one outcome — the adapter gates on
+        `record.tool_name`, the widget on its own. A divergence mounts an
+        empty-bodied diff reading "no changes" *beside* a row that stayed visible,
+        and a silent return leaves nothing to debug that from.
+        """
+        widget = ToolCallMessage("shell")
+
+        with caplog.at_level(logging.WARNING):
+            widget.mark_superseded_by_diff()
+
+        assert widget._diff_superseded is False
+        assert any(
+            "may be superseded" in record.getMessage() for record in caplog.records
+        ), caplog.text
 
     def test_error_message_roundtrip(self):
         """Test ErrorMessage serialization and deserialization."""
@@ -355,6 +470,105 @@ class TestMessageData:
         assert restored._args == "find quantum"
         assert restored._deferred_expanded is True
         assert restored.id == "test-skill-1"
+
+    def test_diff_message_roundtrip_preserves_highlighting_inputs(self) -> None:
+        """Virtualized diffs retain only the needed lexer prefixes and true counts.
+
+        `shown` with real counts, because `untrusted_before` leaves `stats`
+        unset — `FileOperationRecord.diff_stats` documents that pairing as
+        impossible, and a test that builds it stops describing what the code
+        produces.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            before="a\nunused before\n",
+            after="b\nunused after\n",
+            stats=DiffStats(additions=200, deletions=200),
+            id="test-diff-highlight",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert (restored._before, restored._after) == ("a", "b")
+        assert restored._stats == DiffStats(additions=200, deletions=200)
+        assert restored._outcome == "shown"
+        # Not only the privates: a rehydration bug preserving all four while
+        # breaking composition would pass on the assertions above alone.
+        assert any("+200" in _rendered_text(child) for child in restored.compose())
+
+    def test_an_untrusted_diff_roundtrips_without_counts(self) -> None:
+        """The outcome and its suppressed body have to survive separately.
+
+        Split from the highlighting round-trip above so each asserts a state the
+        tracker can actually produce: this one carries no `stats`, because a
+        count taken against a stand-in pre-image would be fiction.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            before="a\n",
+            after="b\n",
+            outcome="untrusted_before",
+            id="test-diff-untrusted",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert restored._outcome == "untrusted_before"
+        assert restored._stats is None
+        assert any(
+            "prior contents could not be read" in _rendered_text(child)
+            for child in restored.compose()
+        )
+
+    def test_a_suppressed_caveat_stays_suppressed_after_rehydration(self) -> None:
+        """The decision depends on what else was mounted, which the store cannot see.
+
+        Without persisting it, a diff whose tool row carries the caveat comes
+        back printing the same sentence a second time.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            outcome="untrusted_before",
+            show_caveat=False,
+            id="test-diff-no-caveat",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert restored.renders_caveat is False
+        texts = [_rendered_text(child) for child in restored.compose()]
+        assert all("prior contents could not be read" not in text for text in texts)
+        # The body stays suppressed regardless — only the sentence was hidden.
+        assert all("+b" not in text for text in texts)
+
+    def test_highlight_prefixes_are_clamped_on_direct_construction(self) -> None:
+        """The store's premise is that thousands of messages cost little.
+
+        `from_widget` supplies already-trimmed values, so only a direct
+        constructor call could park an unbounded copy of a file here.
+        """
+        oversized = "x" * (diff_module.MAX_HIGHLIGHT_CHARS + 5000)
+
+        data = MessageData(
+            type=MessageType.DIFF,
+            content="@@ -1 +1 @@\n-a\n+b",
+            diff_before_content=oversized,
+            diff_after_content=oversized,
+        )
+
+        assert data.diff_before_content is not None
+        assert data.diff_after_content is not None
+        assert len(data.diff_before_content) == diff_module.MAX_HIGHLIGHT_CHARS
+        assert len(data.diff_after_content) == diff_module.MAX_HIGHLIGHT_CHARS
 
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""
@@ -1228,3 +1442,32 @@ class TestMessageStoreIndex:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_display_caveat_survives_the_store_roundtrip() -> None:
+    """A rehydrated caveated row must still refuse to fold.
+
+    The flag cannot be re-derived from `tool_output` without matching the
+    caveat's prose, so it is persisted. Losing it means a scrolled-away write
+    whose contents could not be read comes back folded into a summary that says
+    only `▸ Wrote 1 file`.
+    """
+    tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+    tool.set_success("could not be shown\n\nWrote file")
+    tool._mark_display_caveat()
+
+    restored = MessageData.from_widget(tool).to_widget()
+
+    assert isinstance(restored, ToolCallMessage)
+    assert restored.has_display_caveat is True
+
+
+def test_an_ordinary_row_roundtrips_without_the_caveat_flag() -> None:
+    """The default must stay `False`, or nothing would ever group again."""
+    tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+    tool.set_success("Wrote file")
+
+    restored = MessageData.from_widget(tool).to_widget()
+
+    assert isinstance(restored, ToolCallMessage)
+    assert restored.has_display_caveat is False

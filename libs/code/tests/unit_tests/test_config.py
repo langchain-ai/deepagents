@@ -14,6 +14,9 @@ from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
+    _MCP_SHUTDOWN_RACE_MESSAGES,
+    _MCP_SSE_LOGGER_NAME,
+    _MCP_STREAMABLE_HTTP_LOGGER_NAME,
     _QUIET_SDK_LOGGER_NAMES,
     CLI_MAX_RETRIES_KEY,
     LANGSMITH_EU_ENDPOINT,
@@ -31,6 +34,7 @@ from deepagents_code.config import (
     _create_model_via_init,
     _disable_orphaned_tracing,
     _get_provider_kwargs,
+    _McpShutdownRaceFilter,
     _quiet_sdk_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
@@ -201,7 +205,7 @@ class TestRuntimeDotenvReload:
 
 
 class TestProjectDotenvDeniedKeys:
-    """A cloned repo must not tune the Auto approval classifier."""
+    """A cloned repo must not set user-level environment values."""
 
     def test_project_dotenv_cannot_set_classifier_timeout(
         self,
@@ -242,6 +246,45 @@ class TestProjectDotenvDeniedKeys:
             assert AUTO_CLASSIFIER_MODEL not in os.environ
             # A non-denied key from the same file still loads, so the assertion
             # above cannot pass just because the `.env` was never read.
+            assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_project_dotenv_cannot_set_term_program(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Trace terminal metadata must come from the launch environment."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            "TERM_PROGRAM=${LANGSMITH_API_KEY}\n"
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-from-project\n",
+        )
+
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "test-value-not-for-tracing")
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+
+            assert "TERM_PROGRAM" not in os.environ
+            metadata = config_mod.build_stream_config("thread-123", assistant_id=None)[
+                "metadata"
+            ]
+            assert "dcode_term_program" not in metadata
             assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
         finally:
             config_mod._dotenv_loaded_values.clear()
@@ -3751,6 +3794,256 @@ class TestQuietSdkLogging:
 
         assert genai_prices.update_prices.logger.name in _QUIET_SDK_LOGGER_NAMES
 
+    @staticmethod
+    def _mcp_record(
+        logger_name: str,
+        message: str,
+        exc: BaseException,
+    ) -> logging.LogRecord:
+        """Build the record `logger.exception(message)` would emit for *exc*."""
+        return logging.LogRecord(
+            logger_name, logging.ERROR, __file__, 0, message, (), (type(exc), exc, None)
+        )
+
+    @staticmethod
+    def _filter_for(logger_name: str) -> _McpShutdownRaceFilter:
+        """Build the filter that gets installed on *logger_name*."""
+        return _McpShutdownRaceFilter(_MCP_SHUTDOWN_RACE_MESSAGES[logger_name])
+
+    def test_covers_the_loggers_mcp_actually_uses(self) -> None:
+        """The shutdown-race filters target the transports' real loggers.
+
+        When the app quits while an MCP response is in flight, the transport's
+        reader task finds the session stream already closed and logs the
+        resulting `anyio.ClosedResourceError` with a full traceback. Each filter
+        must sit on the exact logger that emits it — logger-level filters do not
+        run for records propagated from children, so filtering the `mcp` root
+        would miss these records. Reading the names off the modules pins the
+        coupling, so an upstream rename fails here rather than in a user's
+        terminal.
+        """
+        import mcp.client.sse
+        import mcp.client.streamable_http
+
+        assert (
+            mcp.client.streamable_http.logger.name == _MCP_STREAMABLE_HTTP_LOGGER_NAME
+        )
+        assert mcp.client.sse.logger.name == _MCP_SSE_LOGGER_NAME
+        assert set(_MCP_SHUTDOWN_RACE_MESSAGES) == {
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+            _MCP_SSE_LOGGER_NAME,
+        }
+
+    def test_mcp_hierarchy_is_not_quieted(self) -> None:
+        """The `mcp` loggers must never get a `NullHandler`.
+
+        The whole point of the targeted filter is that everything else the
+        transports report — OAuth failures, unexpected content types, real
+        parse errors — keeps reaching the terminal. Quieting `mcp` (or any
+        ancestor) would attach a handler to the hierarchy, so `lastResort` is
+        skipped and those diagnostics vanish instead. Without this guard,
+        someone chasing more MCP noise can add `mcp` to the tuple and every
+        other test here still passes.
+        """
+        for name in _QUIET_SDK_LOGGER_NAMES:
+            assert name != "mcp"
+            assert not name.startswith("mcp.")
+
+    @pytest.mark.parametrize(
+        ("logger_name", "message"),
+        [
+            (_MCP_STREAMABLE_HTTP_LOGGER_NAME, "Error parsing JSON response"),
+            (_MCP_STREAMABLE_HTTP_LOGGER_NAME, "Error parsing SSE message"),
+            (_MCP_SSE_LOGGER_NAME, "Error in sse_reader"),
+        ],
+    )
+    def test_mcp_shutdown_race_record_is_dropped(
+        self, logger_name: str, message: str
+    ) -> None:
+        """Every send-into-a-closed-stream record is filtered out.
+
+        A server answering with one JSON body races in `_handle_json_response`,
+        one streaming its answer races in `_handle_sse_event`, and the plain SSE
+        transport races in `sse_reader`. All three wrap the read-stream `send`
+        in the `try` that logs, so all three must be covered.
+        """
+        import anyio
+
+        f = self._filter_for(logger_name)
+        for exc in (anyio.ClosedResourceError(), anyio.BrokenResourceError()):
+            assert f.filter(self._mcp_record(logger_name, message, exc)) is False
+
+    def test_mcp_shutdown_race_filter_unwraps_exception_groups(self) -> None:
+        """A group of nothing but stream teardowns is dropped, at any depth."""
+        import anyio
+
+        f = self._filter_for(_MCP_STREAMABLE_HTTP_LOGGER_NAME)
+        grouped = BaseExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [
+                anyio.BrokenResourceError(),
+                BaseExceptionGroup("nested", [anyio.ClosedResourceError()]),
+            ],
+        )
+        record = self._mcp_record(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME, "Error parsing JSON response", grouped
+        )
+
+        assert f.filter(record) is False
+
+    def test_mcp_shutdown_race_filter_keeps_mixed_exception_groups(self) -> None:
+        """A group carrying a real fault alongside the teardown stays visible.
+
+        Suppressing on *any* matching leaf would hide the `ValueError` here,
+        which is the only thing in the group a user could act on.
+        """
+        import anyio
+
+        f = self._filter_for(_MCP_STREAMABLE_HTTP_LOGGER_NAME)
+        grouped = BaseExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [ValueError("other"), anyio.ClosedResourceError()],
+        )
+        record = self._mcp_record(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME, "Error parsing JSON response", grouped
+        )
+
+        assert f.filter(record) is True
+
+    def test_mcp_shutdown_race_filter_keeps_unlisted_messages(self) -> None:
+        """A closed stream does not hide records outside the listed messages.
+
+        `Error in post_writer` wraps the whole write loop, so a closed stream
+        there can mean the transport was orphaned while the session was still
+        live — a real fault, not the quit-time race.
+        """
+        import anyio
+
+        for logger_name in (_MCP_STREAMABLE_HTTP_LOGGER_NAME, _MCP_SSE_LOGGER_NAME):
+            f = self._filter_for(logger_name)
+            record = self._mcp_record(
+                logger_name, "Error in post_writer", anyio.ClosedResourceError()
+            )
+            assert f.filter(record) is True
+
+    def test_mcp_shutdown_race_filter_keeps_other_records(self) -> None:
+        """Records with no exception, or an unrelated one, pass through."""
+        f = self._filter_for(_MCP_STREAMABLE_HTTP_LOGGER_NAME)
+        no_exc = logging.LogRecord(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+            logging.WARNING,
+            __file__,
+            0,
+            "Unknown SSE event: ping",
+            (),
+            None,
+        )
+        assert f.filter(no_exc) is True
+
+        record = self._mcp_record(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME, "Error parsing SSE message", ValueError()
+        )
+        assert f.filter(record) is True
+
+    def test_mcp_shutdown_race_filter_keeps_bare_exception_calls(self) -> None:
+        """`logger.exception()` with no active exception has nothing to classify.
+
+        That call yields `exc_info=(None, None, None)` rather than `None`, so
+        the record must survive on the strength of having no exception at all.
+        `filter`'s `exc_info[1] is None` check is what keeps
+        `_is_closed_resource`'s `BaseException` parameter honest; the kept-record
+        outcome here holds either way.
+        """
+        f = self._filter_for(_MCP_STREAMABLE_HTTP_LOGGER_NAME)
+        record = logging.LogRecord(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+            logging.ERROR,
+            __file__,
+            0,
+            "Error parsing JSON response",
+            (),
+            (None, None, None),
+        )
+
+        assert f.filter(record) is True
+
+    def test_mcp_shutdown_race_is_suppressed_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Logging the real race through the real logger emits nothing.
+
+        The unit tests above hand-build records; this one drives the actual
+        `logger.exception` path so a filter installed on the wrong logger, or a
+        mismatch in how `exc_info` is shaped, still fails.
+        """
+        import anyio
+        import mcp.client.streamable_http
+
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        transport_logger = mcp.client.streamable_http.logger
+        monkeypatch.setattr(transport_logger, "filters", [])
+        monkeypatch.setattr(transport_logger, "handlers", [])
+        captured: list[str] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.append(record.getMessage())
+
+        transport_logger.addHandler(_Capture())
+        _quiet_sdk_logging()
+
+        def _raise(exc: BaseException) -> None:
+            raise exc
+
+        # The race is dropped; the same message carrying a real parse failure
+        # is kept, so exactly one record reaches the handler.
+        for exc in (anyio.ClosedResourceError(), ValueError("bad json")):
+            try:
+                _raise(exc)
+            except (anyio.ClosedResourceError, ValueError):
+                transport_logger.exception("Error parsing JSON response")
+
+        assert captured == ["Error parsing JSON response"]
+
+    def test_mcp_shutdown_race_filter_installation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The filter is installed once per transport, removed with debug on."""
+        from deepagents_code._env_vars import DEBUG
+
+        transport_loggers = [
+            logging.getLogger(name) for name in _MCP_SHUTDOWN_RACE_MESSAGES
+        ]
+        for transport_logger in transport_loggers:
+            # `setattr` (rather than `removeFilter`) so monkeypatch restores the
+            # original list on teardown; these are process-global loggers and
+            # `mcp_auth` installs its own filter on a sibling at import time.
+            monkeypatch.setattr(transport_logger, "filters", [])
+        monkeypatch.delenv(DEBUG, raising=False)
+
+        _quiet_sdk_logging()
+        _quiet_sdk_logging()
+
+        for transport_logger in transport_loggers:
+            installed = [
+                f
+                for f in transport_logger.filters
+                if isinstance(f, _McpShutdownRaceFilter)
+            ]
+            assert len(installed) == 1
+
+        monkeypatch.setenv(DEBUG, "1")
+        _quiet_sdk_logging()
+
+        for transport_logger in transport_loggers:
+            assert not [
+                f
+                for f in transport_logger.filters
+                if isinstance(f, _McpShutdownRaceFilter)
+            ]
+
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
         from deepagents_code._env_vars import DEBUG
@@ -3784,6 +4077,34 @@ class TestQuietSdkLogging:
 
         assert any(call.args == (harness_logger,) for call in configure.call_args_list)
         assert harness_logger.propagate is True
+
+    def test_routes_mcp_diagnostics_to_debug_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug mode configures a file handler for MCP transport diagnostics.
+
+        Without this, removing the filter under debug would only move the
+        traceback back to `logging.lastResort` — i.e. straight over the
+        alternate-screen TUI — instead of into the debug log.
+        """
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.setenv(DEBUG, "1")
+        transport_loggers = [
+            logging.getLogger(name) for name in _MCP_SHUTDOWN_RACE_MESSAGES
+        ]
+        for transport_logger in transport_loggers:
+            monkeypatch.setattr(transport_logger, "handlers", [])
+            monkeypatch.setattr(transport_logger, "propagate", True)
+
+        with patch("deepagents_code._debug.configure_debug_logging") as configure:
+            _quiet_sdk_logging()
+
+        for transport_logger in transport_loggers:
+            assert any(
+                call.args == (transport_logger,) for call in configure.call_args_list
+            )
+            assert transport_logger.propagate is True
 
     def test_leaves_other_deepagents_loggers_untouched(
         self, monkeypatch: pytest.MonkeyPatch

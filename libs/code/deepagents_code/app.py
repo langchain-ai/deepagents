@@ -220,13 +220,20 @@ deadlock detector when two threads cold-import overlapping modules.
 """
 
 _TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
-"""Tools that stay expanded instead of collapsing into step summaries.
+"""Tools kept out of the collapsing step summaries.
 
-Each surfaces user-facing content worth keeping visible on its own — an
-interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
-(`write_todos`) — so it renders standalone and acts as a boundary between
-adjacent tool groups. Add a tool here only when its collapsed one-line
-summary would hide something the user needs to see.
+Each named tool surfaces user-facing content worth keeping visible on its own —
+an interactive prompt (`ask_user`) or a todo list (`write_todos`) — so it renders
+standalone and acts as a boundary between adjacent tool groups. Add a tool here
+only when its collapsed one-line summary would hide something the user needs to
+see.
+
+`edit_file` is here because its successful row hides itself in favour of the
+`DiffMessage` that replaces it. The group-reveal paths do consult
+`has_own_hide_reason`, so a groupable superseded row would stay hidden — but the
+group summary would still count and phrase a row the user cannot see, and one
+`display` flag with two independent owners is a standing hazard even when both
+currently agree.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
@@ -352,6 +359,20 @@ def _coerce_provisional_cost_delta_usd(value: object) -> float | None:
         logger.warning("Discarding a provisional cost delta that is not finite.")
         return None
     return delta_usd
+
+
+def _persisted_context_tokens(state_values: dict[str, Any]) -> int:
+    """Read a checkpoint's `_context_tokens`, coercing absent or invalid to 0.
+
+    Args:
+        state_values: Thread state values from the checkpoint.
+
+    Returns:
+        The persisted context size, or 0 when it is missing or not a
+        non-negative `int`.
+    """
+    raw = state_values.get("_context_tokens")
+    return raw if isinstance(raw, int) and raw >= 0 else 0
 
 
 def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
@@ -3158,6 +3179,15 @@ class DeepAgentsApp(App):
         during background startup.
         """
         self._initial_resume_requested = resume_thread is not None
+        """Whether `-r` resume is still in play.
+
+        Gates the startup tip out of `compose`. Every fallback branch of
+        `_resolve_resume_thread` clears this, which is the signal
+        `_restore_startup_tip_after_resume_fallback` uses to mount the tip.
+        """
+
+        self._startup_tip_dismissed = False
+        """Whether the startup tip has been dismissed and must not be remounted."""
 
         self._resume_thread_resolved_event = asyncio.Event()
         """Set once `-r` resume resolution has completed or is unnecessary."""
@@ -4177,7 +4207,7 @@ class DeepAgentsApp(App):
             # until the first spawn event; sits at the top of the bottom
             # container, above the startup tip and input.
             yield SubagentPanel(id="subagent-panel")
-            if show_startup_tip():
+            if not self._initial_resume_requested and show_startup_tip():
                 yield StartupTip(id="startup-tip")
             yield GoalStatusPanel(id="goal-status-panel")
             yield ChatInput(
@@ -5303,7 +5333,15 @@ class DeepAgentsApp(App):
             # it constructs the state.
             if self._session_state:
                 self._session_state.thread_id = self._lc_thread_id
+            # Signal before restoring the tip: resolution is complete at this
+            # point, and the tip is cosmetic follow-up work. Awaiting it first
+            # would let a mount failure skip `set()` and strand every waiter
+            # (`_write_launch_name_memory`), hanging onboarding.
             self._resume_thread_resolved_event.set()
+            try:
+                await self._restore_startup_tip_after_resume_fallback()
+            except Exception:
+                logger.exception("Failed to restore startup tip after resume fallback")
 
     async def _start_server_background(self) -> None:
         """Background worker: resolve resume-thread intent, start server + MCP preload.
@@ -7976,6 +8014,7 @@ class DeepAgentsApp(App):
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
+                self._link_message_timestamp_footer(widget, footer)
                 nodes: list[Widget] = [widget]
                 if footer is not None:
                     nodes.append(footer)
@@ -8046,6 +8085,7 @@ class DeepAgentsApp(App):
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
+                self._link_message_timestamp_footer(widget, footer)
                 nodes = [widget]
                 if footer is not None:
                     nodes.append(footer)
@@ -9337,6 +9377,8 @@ class DeepAgentsApp(App):
                         ),
                     )
                     return
+                if start_cause is SessionStartCause.RESUME:
+                    await self._restore_resumed_context_tokens()
 
             if not await self._run_session_start_hook(start_cause):
                 self._initial_session_start_stopped = True
@@ -9348,6 +9390,9 @@ class DeepAgentsApp(App):
                 # One-shot: clear to avoid re-running on any subsequent server swap.
                 self._startup_cmd = None
                 await self._run_startup_command(cmd)
+
+            if start_cause is SessionStartCause.RESUME:
+                await self._maybe_compact_after_resume()
 
             if should_load_history:
                 await self._remount_pending_goal_rubric_review()
@@ -10173,6 +10218,7 @@ class DeepAgentsApp(App):
         from deepagents_code.command_registry import (
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
+            IMMEDIATE_UI_ARG_FORMS,
             SIDE_EFFECT_FREE,
             STARTUP_RECOVERY_COMMANDS,
         )
@@ -10200,11 +10246,16 @@ class DeepAgentsApp(App):
                 or self._modal_command_running()
             )
         if cmd in IMMEDIATE_UI:
-            # Only bare form (no args) bypasses — the selector-opening form is
-            # safe, but an argument form does a direct action that shouldn't
-            # race the agent (e.g. `/model <name>` switches models, `/threads
-            # -r <id>` resumes a thread).
-            return value == cmd
+            # Only UI-opening forms bypass: the bare command, or an argument
+            # form whitelisted in IMMEDIATE_UI_ARG_FORMS (e.g. `/auto model`,
+            # which opens the classifier picker). Other argument forms do a
+            # direct action that shouldn't race the agent (e.g. `/model <name>`
+            # switches models, `/threads -r <id>` resumes a thread,
+            # `/auto model <spec>` mutates classifier state). Whitespace is
+            # canonicalized for the whitelist check because `_handle_command`
+            # strips and reparses the same way — `/auto  model` (double space,
+            # tab) reaches the selector branch once processed.
+            return value == cmd or " ".join(value.split()) in IMMEDIATE_UI_ARG_FORMS
         return cmd in SIDE_EFFECT_FREE
 
     async def _submit_input(
@@ -10311,16 +10362,61 @@ class DeepAgentsApp(App):
 
         await self._submit_input(value, mode)
 
+    async def _restore_startup_tip_after_resume_fallback(self) -> None:
+        """Mount a startup tip when resume resolution starts a fresh session.
+
+        `compose` skips the tip whenever `-r` was passed, so a resume that falls
+        back to a fresh thread has to mount it after the fact. Every fallback
+        branch of `_resolve_resume_thread` clears `_initial_resume_requested`
+        before the `finally` block calls this, so a flag that is still set means
+        the resume succeeded and no tip is wanted.
+
+        An initial submission owns the fresh session's startup flow and
+        dismisses the tip before it is sent, so do not remount the tip while
+        that submission is pending.
+        """
+        if (
+            self._initial_resume_requested
+            or self._startup_tip_dismissed
+            or self._has_initial_submission()
+            or not show_startup_tip()
+            or self.query(StartupTip)
+        ):
+            return
+
+        # Only the lookups can raise `NoMatches`, and both widgets are composed
+        # unconditionally — a miss means the bottom chrome was restructured, not
+        # an expected transient state, so log it rather than vanishing silently.
+        try:
+            bottom = self.query_one("#bottom-app-container", _BottomChrome)
+            goal = self.query_one("#goal-status-panel", GoalStatusPanel)
+        except NoMatches:
+            logger.warning(
+                "Bottom chrome or goal panel missing; skipping startup tip restore"
+            )
+            return
+
+        # `mount` registers the widget synchronously before it suspends, so a
+        # dismissal landing during this await finds the tip and removes it
+        # itself — no post-mount re-check is needed.
+        await bottom.mount(StartupTip(id="startup-tip"), before=goal)
+
     async def _dismiss_startup_tip(self) -> None:
-        """Remove the startup tip once the first prompt is submitted.
+        """End the startup tip's lifetime: remove it, and block any remount.
 
         Called from both submission entry points: `_submit_input` (the shared
         interactive/external path) and `_submit_initial_submission` (the
         `-m`/`--skill`/`--goal` startup path, which submits without going
-        through `_submit_input`). Every submission path therefore dismisses
-        the tip. Subsequent calls are no-ops: the widget is already gone and
-        `query_one` raises `NoMatches`.
+        through `_submit_input`), plus `_show_initial_prompt_as_queued` when it
+        mounts the `-m` placeholder ahead of the real submission.
+
+        Latching `_startup_tip_dismissed` matters even when no tip is mounted:
+        under `-r` the tip is skipped in `compose`, and the flag is what stops
+        `_restore_startup_tip_after_resume_fallback` from mounting one after a
+        fallback. Repeat calls are idempotent — the flag is already set and
+        `query_one` raises `NoMatches` for the missing widget.
         """
+        self._startup_tip_dismissed = True
         with suppress(NoMatches):
             await self.query_one("#startup-tip", StartupTip).remove()
 
@@ -16502,10 +16598,7 @@ class DeepAgentsApp(App):
             context-token count, and the persisted model spec (if any).
         """
         state_values = await self._get_thread_state_values(thread_id)
-        raw_tokens = state_values.get("_context_tokens")
-        context_tokens = (
-            raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
-        )
+        context_tokens = _persisted_context_tokens(state_values)
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
         raw_params = state_values.get("_model_params")
@@ -16885,6 +16978,7 @@ class DeepAgentsApp(App):
                     msg_data, visible=self._message_timestamps_visible
                 )
                 if footer is not None:
+                    self._link_message_timestamp_footer(widget, footer)
                     nodes.append(footer)
             if nodes:
                 await self._mount_transcript_nodes(messages_container, nodes)
@@ -16972,6 +17066,16 @@ class DeepAgentsApp(App):
             id=_message_timestamp_footer_id(data.id),
             classes=classes,
         )
+
+    @staticmethod
+    def _link_message_timestamp_footer(widget: Widget, footer: Static | None) -> None:
+        """Make a tool footer follow its owning row's visibility.
+
+        A no-op when there is no footer or the row is not a `ToolCallMessage`,
+        which is why most call sites can invoke it unconditionally.
+        """
+        if footer is not None and isinstance(widget, ToolCallMessage):
+            widget._register_visibility_accessories(footer)
 
     def _sync_message_timestamps_display(self) -> None:
         """Apply the current visibility to every mounted timestamp footer.
@@ -17072,7 +17176,7 @@ class DeepAgentsApp(App):
     async def _mount_message(
         self,
         widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
-    ) -> None:
+    ) -> bool:
         """Mount a message widget to the messages area.
 
         This method also stores the message data and handles pruning
@@ -17084,17 +17188,23 @@ class DeepAgentsApp(App):
 
         Args:
             widget: The message widget to mount
+
+        Returns:
+            Whether the widget reached the screen. Callers that treat a mounted
+            widget as having delivered something the user must see — a display
+            caveat, in particular — have to distinguish this from the silent
+            teardown skips, or they credit a surface that never rendered.
         """
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
-            return
+            return False
 
         # During shutdown (e.g. Ctrl+D mid-stream) the container may still
         # be in the DOM tree but already detached, so mount() would raise
         # MountError. Bail out silently — the app is exiting anyway.
         if not messages.is_attached:
-            return
+            return False
 
         if isinstance(widget, QueuedUserMessage):
             # Queued placeholders mount at the bottom and stay out of the
@@ -17105,7 +17215,7 @@ class DeepAgentsApp(App):
                 input_container.scroll_visible()
             except NoMatches:
                 pass
-            return
+            return True
 
         await self._ensure_transcript_spacers(messages)
         await self._hydrate_all_messages_below()
@@ -17133,6 +17243,7 @@ class DeepAgentsApp(App):
         footer = self._build_message_timestamp_footer(
             message_data, visible=self._message_timestamps_visible
         )
+        self._link_message_timestamp_footer(widget, footer)
 
         # Coalesce the whole mount-and-fold sequence into a single repaint.
         # Otherwise mounting a groupable tool paints it at full height, then
@@ -17181,6 +17292,8 @@ class DeepAgentsApp(App):
             input_container.scroll_visible()
         except NoMatches:
             pass
+
+        return True
 
     async def _hydrate_all_messages_below(self) -> None:
         """Mount any hidden tail before appending fresh transcript output."""
@@ -17367,6 +17480,13 @@ class DeepAgentsApp(App):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
                         and child.is_success
+                        # A caveat is carried in the row's own output and the
+                        # summary line is built from tool names, so folding one
+                        # would summarize away the only statement that the
+                        # change could not be shown. The live path evicts these
+                        # (`_evict_unfoldable`); a rehydrated transcript has to
+                        # not fold them in the first place.
+                        and not child.has_display_caveat
                         and not child.has_class("-grouped")
                     )
                     if not groupable:
@@ -17487,6 +17607,14 @@ class DeepAgentsApp(App):
             tool_duration=data.tool_duration,
             tool_expanded=data.tool_expanded,
             tool_reject_reason=data.tool_reject_reason,
+            # Set after the row is first stored, when its diff mounts. Without
+            # it the store keeps the mount-time `False` and rehydration
+            # resurrects the row next to the diff that replaced it.
+            tool_diff_superseded=data.tool_diff_superseded,
+            # The display caveat can arrive after the initial mount when a
+            # file change cannot be rendered. Keep it through virtualization
+            # so hydration does not fold away the warning.
+            tool_display_caveat=data.tool_display_caveat,
         )
         if data.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING}:
             self._message_store.protect_message(widget.id)
@@ -19063,9 +19191,9 @@ class DeepAgentsApp(App):
             "  /auto model <provider:model>\n"
             "  /auto model clear          Reuse the main agent model\n\n"
             "Auto reviews gated actions with a classifier model. It currently "
-            f"uses {self._auto_classifier_model_label()}. A weaker model makes "
-            "that review weaker; actions it cannot review are denied, and "
-            "repeated review failures fall back to your approval.\n\n"
+            f"uses {self._auto_classifier_model_label()}. Actions it cannot "
+            "review are denied, and repeated review failures fall back to your "
+            "approval.\n\n"
             "Changes here apply to this session only. Set "
             "`[models].auto_classifier` in config.toml for a persistent choice."
         )
@@ -19156,6 +19284,43 @@ class DeepAgentsApp(App):
             # removes the modal.
             self.call_after_refresh(start_selection_worker)
 
+        tail = ""
+        if self._auto_classifier_display_spec() is not None:
+            # The picker lists only recommended classifiers, so it offers no
+            # entry that reverts to the main agent model. `_auto_usage_text`
+            # carries the hint, but it is mounted only for an unrecognized
+            # `/auto` subcommand, so no path that opens this modal shows it.
+            tail = " Clear it with `/auto model clear`."
+
+        # Every branch hands the screen a `Content`: the description reaches a
+        # `Static`, which parses a plain `str` as markup. The branches naming a
+        # spec use `from_markup` with `$spec` per `AGENTS.md`, because the spec
+        # is user-supplied: `/auto model <spec>` validates, but the startup seed
+        # from `--auto-classifier-model` / `config.toml` does not. Interpolated
+        # into a plain `str` instead,
+        # a spec containing `[dim]` would render a truncated, dimmed name that is
+        # not the model reviewing actions, and one containing `[/]` would raise
+        # `MarkupError` when the modal opens. The first branch names no spec, so
+        # the plain `Content` constructor — which parses nothing — suffices.
+        active = self._auto_classifier_review_model_spec()
+        if active is None:
+            description = Content(
+                "Auto currently reviews with the main agent model." + tail
+            )
+        elif not self._auto_classifier_is_distinct():
+            # Not `display_spec() is None`: that asks where the spec came from,
+            # but the sentence claims the spec *is* the main agent model. They
+            # diverge when a configured classifier matches the main model, which
+            # `_notify_auto_classifier_active` also treats as "not distinct".
+            description = Content.from_markup(
+                "Auto currently reviews with $spec, the main agent model." + tail,
+                spec=active,
+            )
+        else:
+            description = Content.from_markup(
+                "Auto currently reviews with $spec." + tail, spec=active
+            )
+
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
@@ -19163,12 +19328,7 @@ class DeepAgentsApp(App):
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
-            description=(
-                "Recommended models favor lower latency and cost for repeated "
-                "reviews. A faster, cheaper model may review actions less "
-                "carefully. Clear it with `/auto model clear` to reuse the main "
-                "agent model."
-            ),
+            description=description,
         )
         self.push_screen(screen, handle_result)
 
@@ -20936,6 +21096,9 @@ class DeepAgentsApp(App):
                     thread=previous_thread_id,
                 )
                 await self._mount_message(AppMessage(resume_hint))
+
+            if resume_thread_id is not None:
+                await self._maybe_compact_after_resume()
 
             # Drain any messages the user typed after we cleared the queue
             # but before the new server was ready.
@@ -24219,17 +24382,43 @@ class DeepAgentsApp(App):
         if target is None:
             return
 
-        active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
-        if target.agent_name == active_agent:
-            await self._resume_thread(target.thread_id)
-            return
-
         # This command runs inline on Textual's message pump. Detach before
-        # awaiting the confirmation modal so Enter/Esc can reach it.
+        # awaiting the cwd/compaction modals so Enter/Esc can reach them. Both
+        # continuations mount their own failure messages.
+        active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
         self._schedule_off_message_pump(
-            self._confirm_then_resume_cross_agent_thread(target),
+            self._resume_same_agent_thread(target.thread_id)
+            if target.agent_name == active_agent
+            else self._confirm_then_resume_cross_agent_thread(target),
             context=f"threads-resume:{target.thread_id}",
         )
+
+    async def _resume_same_agent_thread(self, thread_id: str) -> None:
+        """Resume a thread already owned by the active agent.
+
+        A thin reporting wrapper: `_resume_thread` handles its own failures once
+        the switch is under way, but its pre-switch phase (the cwd prompt, the
+        compaction prompt, and their modal setup) sits outside that boundary.
+        Detached continuations only get logged, so without this a `/threads -r`
+        would end with no visible outcome.
+
+        Args:
+            thread_id: The thread to resume on the current agent.
+
+        Raises:
+            asyncio.CancelledError: If app shutdown cancels the detached flow.
+        """
+        try:
+            await self._resume_thread(thread_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Same-agent resume failed for thread %s", thread_id)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Could not resume thread {thread_id}. Use /threads to try again."
+                )
+            )
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -24942,6 +25131,69 @@ class DeepAgentsApp(App):
             return False
         return bool(changes)
 
+    async def _restore_resumed_context_tokens(self) -> None:
+        """Seed `_context_tokens` from the checkpoint without loading history.
+
+        A launch that resumes *and* carries an initial prompt skips the history
+        load, so nothing would populate the context size — and that path is the
+        one where it matters most, since the prompt is submitted against the
+        full restored context moments later.
+        """
+        if not self._lc_thread_id or not self._agent:
+            return
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+        except Exception:
+            logger.warning(
+                "Could not read the context size for resumed thread %s; "
+                "skipping the compaction suggestion",
+                self._lc_thread_id,
+                exc_info=True,
+            )
+            return
+        tokens = _persisted_context_tokens(state_values)
+        if tokens > 0:
+            self._on_tokens_update(tokens)
+
+    async def _maybe_compact_after_resume(self) -> None:
+        """Offer to compact a just-resumed thread with an oversized context.
+
+        Resuming costs nothing on its own, so the prompt runs once the thread is
+        live and before the user's next turn pays for the restored context.
+        Declining is free: `/compact` remains available for the rest of the
+        session.
+        """
+        from deepagents_code.config_manifest import (
+            COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+            get_option,
+            load_config_toml,
+            resolve_scalar,
+        )
+
+        threshold = COMPACT_ON_RESUME_THRESHOLD_DEFAULT
+        option = get_option("threads.compact_on_resume_threshold")
+        if option is not None:
+            resolved, _ = resolve_scalar(option, toml_data=load_config_toml())
+            if isinstance(resolved, int):
+                threshold = resolved
+        if threshold <= 0 or self._context_tokens <= threshold:
+            return
+
+        from deepagents_code.tui.modals.resume_compact import ResumeCompactPromptScreen
+
+        try:
+            compact = await self._push_screen_wait(
+                ResumeCompactPromptScreen(
+                    context_tokens=self._context_tokens,
+                    threshold=threshold,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to show the compact-on-resume prompt")
+            return
+        if compact:
+            await self._handle_offload()
+
     async def _offer_thread_cwd_switch(
         self,
         thread_id: str,
@@ -25239,6 +25491,12 @@ class DeepAgentsApp(App):
             # or failed load leaves the hint under something else.
             await self._mount_previous_thread_hint(prev_session_thread)
 
+            # Landing on a new thread re-arms the same-thread toast, so stepping
+            # back to a thread and re-selecting it announces itself again.
+            self._last_thread_unchanged = None
+            if await self._run_session_start_hook(SessionStartCause.RESUME):
+                await self._maybe_compact_after_resume()
+
             # Deferred above so it lands last, keeping the interactive prompt
             # at the bottom of the transcript. Guarded because this runs inside
             # the rollback handler's `try`: failing to restore a review must
@@ -25247,12 +25505,6 @@ class DeepAgentsApp(App):
                 await self._remount_pending_goal_rubric_review()
             except Exception:
                 logger.exception("Failed to restore pending goal review")
-
-            # Landing on a new thread re-arms the same-thread toast, so stepping
-            # back to a thread and re-selecting it announces itself again.
-            self._last_thread_unchanged = None
-            if not await self._run_session_start_hook(SessionStartCause.RESUME):
-                return
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)

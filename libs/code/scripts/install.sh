@@ -1775,10 +1775,16 @@ UV_REPORTED_PACKAGE_CHANGES=false
 # Mirror uv's raw output to a persistent log under the XDG cache dir. A
 # same-version dependency bump prints only a one-line summary and a failed
 # install scrolls past, so the log preserves the full diff/errors for later.
-# Prefer $XDG_CACHE_HOME, falling back to ~/.cache. INSTALL_LOG is the real
-# path used for writes; INSTALL_LOG_DISPLAY is the tilde-collapsed form shown
-# to the user. Both stay empty when the dir can't be created, which every
-# consumer treats as "feature disabled" so messages degrade cleanly.
+# Prefer $XDG_CACHE_HOME, falling back to ~/.cache — XDG-style on every
+# platform (like the rustup and uv installers), since this is a portable
+# one-shot POSIX bootstrap. The installed app instead uses platform-native
+# cache dirs (e.g. ~/Library/Caches on macOS) for its update logs, so the two
+# intentionally land under different roots on macOS; see default_cache_dir()
+# in deepagents_code/model_config.py.
+# INSTALL_LOG is the real path used for writes; INSTALL_LOG_DISPLAY is the
+# tilde-collapsed form shown to the user. Both stay empty when the dir can't
+# be created, which every consumer treats as "feature disabled" so messages
+# degrade cleanly.
 INSTALL_LOG=""
 INSTALL_LOG_DISPLAY=""
 cache_root="${XDG_CACHE_HOME:-}"

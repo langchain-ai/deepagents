@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import builtins
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping, Sequence
     from pathlib import Path
+    from types import ModuleType
 
 import pytest
 from rich.console import Console
@@ -115,10 +117,14 @@ class TestWarnAndContinue:
         assert "quickjs-rs" in text
         assert "0.2.4" in text
         assert "0.2.5" in text
-        assert (
-            "uv pip install --python ~/.local/share/dcode-dev/bin/python "
-            "-e <repo>/libs/code --upgrade" in text
+        assert "Refresh the active environment:" in text
+        refresh = (
+            "uv pip install --python "
+            f"{dep_floor_check.sys.executable} -e "
+            f"{dep_floor_check.Path(dep_floor_check.__file__).resolve().parent.parent} "
+            "--upgrade"
         )
+        assert refresh in " ".join(text.split())
         # The satisfied floor is not listed as a violation.
         assert "packaging 26.2" not in text
 
@@ -225,4 +231,29 @@ class TestBestEffort:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(dep_floor_check, "_load_cli_requirements", _boom)
+        warn_if_editable_deps_stale()  # must not raise
+
+    def test_missing_packaging_does_not_break_the_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken optional check dependency never prevents CLI startup."""
+        monkeypatch.setattr(
+            dep_floor_check, "_load_cli_requirements", lambda: ["some-dep>=1.0"]
+        )
+        original_import = builtins.__import__
+
+        def _missing_packaging(
+            name: str,
+            globals_: Mapping[str, object] | None = None,
+            locals_: Mapping[str, object] | None = None,
+            fromlist: Sequence[str] | None = (),
+            level: int = 0,
+        ) -> ModuleType:
+            if name.startswith("packaging"):
+                msg = "simulated missing packaging"
+                raise ModuleNotFoundError(msg)
+            return original_import(name, globals_, locals_, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _missing_packaging)
+
         warn_if_editable_deps_stale()  # must not raise

@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import logging
+import shlex
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.version import InvalidVersion, Version
 
 from deepagents_code.config import _is_editable_install
 
@@ -84,6 +83,12 @@ def _find_floor_violations(entries: list[str]) -> list[_FloorViolation]:
         equality specifier is a `==X.*` wildcard, or whose distribution is
         not installed are skipped.
     """
+    # `packaging` is a runtime dependency, but this module must remain
+    # importable when an editable environment is stale enough to lack it.
+    # The caller treats failures in this best-effort check as non-fatal.
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion, Version
+
     violations: list[_FloorViolation] = []
     for entry in entries:
         try:
@@ -148,6 +153,8 @@ def _version_key(version: str) -> tuple[int, ...]:
         The release tuple when parseable, else an empty tuple so malformed
         floors sort lowest and a parseable floor always wins the `max`.
     """
+    from packaging.version import InvalidVersion, Version
+
     try:
         return Version(version).release
     except InvalidVersion:
@@ -187,11 +194,16 @@ def warn_if_editable_deps_stale() -> None:
             "is required"
             for v in violations
         )
+        source = Path(__file__).resolve().parent.parent
+        refresh = (
+            "uv pip install --python "
+            f"{shlex.quote(sys.executable)} -e {shlex.quote(str(source))} --upgrade"
+        )
+        from rich.markup import escape
+
         lines.append(
-            "Refresh the dev venv:\n"
-            "  [cyan]uv pip install --python "
-            "~/.local/share/dcode-dev/bin/python -e <repo>/libs/code "
-            "--upgrade[/cyan]\n"
+            "Refresh the active environment:\n"
+            f"  {escape(refresh)}\n"
             "Continuing anyway; behavior may be broken."
         )
         _get_console().print("\n".join(lines), highlight=False)

@@ -59,6 +59,16 @@ Set as `MCPServerInfo.error` by `app._apply_optimistic_disabled_state` (alongsid
 so the producer and the tests asserting the message share one literal.
 """
 
+FILE_NOT_FOUND: Final[str] = "file_not_found"
+"""Mirror of the SDK's `deepagents.backends.protocol.FILE_NOT_FOUND` sentinel.
+
+Hardcoded here rather than imported because `file_ops` is on the TUI import
+path and importing `deepagents` at module scope violates the
+startup-performance rule (see AGENTS.md); this module is dependency-free.
+`test_file_ops.py::test_file_not_found_matches_sdk` is the drift guard that
+fails if the SDK renames the sentinel.
+"""
+
 SYSTEM_MESSAGE_PREFIX: Final[str] = "[SYSTEM]"
 """Prefix for synthetic human messages (e.g. interrupt cancellation notices).
 

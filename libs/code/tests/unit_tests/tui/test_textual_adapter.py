@@ -16,8 +16,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
+from textual.widgets import Static
 
-from deepagents_code import config as config_module
+from deepagents_code import config as config_module, file_ops as file_ops_module
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
     ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
@@ -44,6 +45,7 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.diff_utils import DiffStats
 from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 from deepagents_code.hooks.manager import HooksManager, PromptOutcome
 from deepagents_code.hooks.models.domain import (
@@ -75,6 +77,7 @@ from deepagents_code.tui.textual_adapter import (
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
+    DiffMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -113,8 +116,16 @@ def _handlers_for(*events: HookEvent) -> "AbstractContextManager[object]":
     )
 
 
-async def _mock_mount(widget: object) -> None:
-    """Mock mount function for tests."""
+async def _mock_mount(_widget: object) -> bool:
+    """Mock mount function for tests.
+
+    Returns:
+        Always `True`; the real mount reports whether the widget reached the
+        screen, and callers that skip a fallback on a successful mount need
+        this fake to say it did.
+    """
+    await asyncio.sleep(0)
+    return True
 
 
 def _mock_approval() -> Future[object]:
@@ -300,9 +311,10 @@ class TestInterruptCleanup:
         """Tool-only interrupted turns should keep the stale-token marker."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             mounted.append(widget)
             await asyncio.sleep(0)
+            return True
 
         set_spinner = AsyncMock()
         set_active = MagicMock()
@@ -608,9 +620,10 @@ class TestInterruptCleanup:
         """Criteria cancellation cleans runtime UI without adding chat messages."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             mounted.append(widget)
             await asyncio.sleep(0)
+            return True
 
         tool_widget = MagicMock()
         tool_widget.tool_name = "docs_search"
@@ -656,9 +669,10 @@ class TestInterruptCleanup:
         """Ordinary chat cancellation still records and displays interruption."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             mounted.append(widget)
             await asyncio.sleep(0)
+            return True
 
         agent = SimpleNamespace(aupdate_state=AsyncMock())
         adapter = TextualUIAdapter(
@@ -2331,8 +2345,9 @@ class TestExecuteTaskTextualUsageStats:
     async def test_records_provider_from_settings(self) -> None:
         """A usage chunk records the configured provider on `turn_stats`."""
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         turn_stats = SessionStats()
         cost_updates: list[float] = []
@@ -2426,8 +2441,9 @@ class TestExecuteTaskTextualUsageStats:
         """Hidden calls count toward cost, but not the active context size."""
         from deepagents_code.app import DeepAgentsApp
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         turn_stats = SessionStats()
         cost_updates: list[float] = []
@@ -2631,8 +2647,9 @@ class TestSessionCostEvents:
     async def test_streamed_total_reaches_the_app(self) -> None:
         """A session-cost event is applied as the displayed lifetime total."""
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         totals: list[float] = []
         adapter = TextualUIAdapter(
@@ -2712,8 +2729,9 @@ class TestSessionCostEvents:
     async def test_failing_cost_callback_does_not_kill_the_stream(self) -> None:
         """A misbehaving display callback must not abort the user's turn."""
 
-        async def mount_message(_: object) -> None:
+        async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         adapter = TextualUIAdapter(
             mount_message=mount_message,
@@ -2812,9 +2830,10 @@ class TestExecuteTaskTextualAutoModeClassifier:
         mounted: list[object] = []
         statuses: list[str | None] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def record_spinner(status: str | None) -> None:
             await asyncio.sleep(0)
@@ -2876,9 +2895,10 @@ class TestExecuteTaskTextualAutoModeClassifier:
         """`with_structured_output` streams tool-call chunks; these stay hidden."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             # Realistic on-the-wire shape: structured output arrives as a
@@ -2935,9 +2955,10 @@ class TestExecuteTaskTextualAutoModeClassifier:
         mounted: list[object] = []
         statuses: list[str | None] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def record_spinner(status: str | None) -> None:
             await asyncio.sleep(0)
@@ -2993,6 +3014,710 @@ class TestExecuteTaskTextualAutoModeClassifier:
         assert statuses[-1] == "Thinking"
 
 
+_READS_PER_EDIT = 2
+"""How many times a tracked edit reads the file: pre-image, then read-back."""
+
+
+class _PhasedRead:
+    """Patch `_read_with_reason` so the two reads of an edit can differ.
+
+    Failing one phase and not the other is the only way to exercise a lost
+    pre-image separately from an unreadable result, and call order is what
+    distinguishes them. That makes the call count load-bearing: a third read
+    added anywhere in `file_ops` would shift every later call into the wrong
+    branch, and the test would keep passing while silently exercising a
+    different scenario. `assert_both_phases_ran` is what stops that.
+    """
+
+    def __init__(
+        self,
+        *,
+        pre_image: Callable[[Path], tuple[str | None, str | None]] | None = None,
+        read_back: Callable[[Path], tuple[str | None, str | None]] | None = None,
+    ) -> None:
+        """Override either phase; `None` leaves that phase reading for real."""
+        self._real = file_ops_module._read_with_reason
+        self._phases = (pre_image, read_back)
+        self.count = 0
+
+    def __call__(self, path: Path) -> tuple[str | None, str | None]:
+        """Dispatch to the override for this phase, or the real read.
+
+        Returns:
+            The content and `None`, or `None` and a reason.
+        """
+        self.count += 1
+        override = (
+            self._phases[self.count - 1] if self.count <= len(self._phases) else None
+        )
+        return self._real(path) if override is None else override(path)
+
+    def assert_both_phases_ran(self) -> None:
+        """Fail if the read count no longer matches what the phases assume."""
+        assert self.count == _READS_PER_EDIT, (
+            f"expected {_READS_PER_EDIT} reads, saw {self.count} — the phase "
+            "overrides no longer line up with the reads they target"
+        )
+
+
+def _strip_trailing_newline(
+    read: Callable[[Path], tuple[str | None, str | None]],
+) -> Callable[[Path], tuple[str | None, str | None]]:
+    """Wrap a read so its content loses the trailing newline.
+
+    Returns:
+        A read whose only difference from the real one is what `splitlines()`
+        discards.
+    """
+
+    def stripped(path: Path) -> tuple[str | None, str | None]:
+        content, reason = read(path)
+        return (content.rstrip("\n") if content is not None else None), reason
+
+    return stripped
+
+
+class TestExecuteTaskTextualFileOpDiffs:
+    """An `edit_file` row hides only after its diff takes over."""
+
+    @staticmethod
+    async def _run_delete(target: Path) -> list[object]:
+        """Run a tracked `delete` and return the widgets it mounted.
+
+        Returns:
+            Every widget mounted during the turn, in order.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        args = {"file_path": str(target)}
+        chunks = [
+            ((), "messages", (_tool_call_message("delete", args, "del-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Deleted file", tool_call_id="del-1"), {}),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="delete the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+        return mounted
+
+    @staticmethod
+    async def _run_edit(target: Path, new_string: str) -> list[object]:
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        args = {
+            "file_path": str(target),
+            "old_string": "value = 1",
+            "new_string": new_string,
+        }
+        chunks = [
+            ((), "messages", (_tool_call_message("edit_file", args, "tool-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Updated file", tool_call_id="tool-1"), {}),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="edit the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+        return mounted
+
+    @staticmethod
+    async def _run_write(target: Path, content: str) -> list[object]:
+        """Run a tracked `write_file` and return the widgets it mounted.
+
+        Returns:
+            Every widget mounted during the turn, in order.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        args = {"file_path": str(target), "content": content}
+        chunks = [
+            ((), "messages", (_tool_call_message("write_file", args, "w-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Wrote file", tool_call_id="w-1"), {}),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="write the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+        return mounted
+
+    async def test_a_displayable_edit_hides_its_row_behind_the_diff(
+        self, tmp_path: Path
+    ) -> None:
+        """The whole point of the feature, asserted positively.
+
+        Every other case here is a *negative* — a reason the row must stay. With
+        no test for the case that does hide, `replaces_row` could be hard-coded
+        to `False`, or any of its four conjuncts inverted, and the feature would
+        be silently dead while the suite stayed green: every edit rendering both
+        a row and a diff, which is exactly what this PR set out to stop.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # The fake agent does not touch the file, so the pre-image is overridden
+        # to differ from what the read-back finds — the same device the guard
+        # tests above use to produce a real diff.
+        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
+
+        diffs = [m for m in mounted if isinstance(m, DiffMessage)]
+        assert len(diffs) == 1
+        assert diffs[0]._outcome == "shown"
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is False, "the diff mounted but the row was not hidden"
+
+    async def test_the_diff_is_built_from_the_records_sources_and_counts(
+        self, tmp_path: Path
+    ) -> None:
+        """`before`/`after`/`stats` must actually travel from record to widget.
+
+        Nothing else asserts this: the widget-level highlighting tests hand
+        `before`/`after` in directly, so dropping either argument here would
+        remove syntax highlighting from every diff in the real transcript
+        without failing a test. Dropping `stats` is quieter still — a truncated
+        edit's header silently becomes "change counts unavailable".
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 2\nkeep = 2\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: ("value = 1\nkeep = 2\n", None))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
+
+        diff = next(m for m in mounted if isinstance(m, DiffMessage))
+        assert "value = 1" in diff._before, "the pre-image never reached the widget"
+        assert "value = 2" in diff._after, "the post-image never reached the widget"
+        assert diff._stats == DiffStats(additions=1, deletions=1)
+
+        # The stated risk is highlighting silently disappearing from every real
+        # diff, and the private attributes above stop one layer short of that.
+        # Compose the widget and compare against the same diff built without
+        # sources: the extra spans are the lexer's, so this fails if `before`/
+        # `after` arrive but are never used. Counting spans rather than naming
+        # a style keeps it from breaking on a theme change.
+        def spans_for(widget: DiffMessage) -> int:
+            """Total spans across the widget's rendered source rows."""
+            return sum(
+                len(child.render().spans)  # ty: ignore
+                for child in widget.compose()
+                if isinstance(child, Static) and "value =" in str(child.render())
+            )
+
+        plain = DiffMessage(diff._diff_content, diff._file_path, tool_name="edit_file")
+        assert spans_for(diff) > spans_for(plain), (
+            "the sources reached the widget but nothing was highlighted from them"
+        )
+
+    async def test_a_write_file_diff_never_hides_its_row(self, tmp_path: Path) -> None:
+        """Only `edit_file` may be superseded, and a diff alone is not enough.
+
+        `write_file` mounts a `DiffMessage` on the same path, so the guard that
+        keeps its row visible is exercised only here — the store-level test for
+        the same rule uses `shell`, which mounts no diff at all.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 2\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: ("value = 1\n", None))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_write(target, "value = 2\n")
+        read.assert_both_phases_ran()
+
+        assert any(isinstance(m, DiffMessage) for m in mounted)
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True, "a write_file row was hidden behind its diff"
+
+    async def test_a_write_file_caveat_is_kept_out_of_its_group(
+        self, tmp_path: Path
+    ) -> None:
+        """A groupable tool's caveat must not be foldable.
+
+        `write_file` and `delete` are not in `_TOOL_GROUP_EXCLUSIONS`, so their
+        rows fold into a summary built from tool names alone. Without this flag
+        the only statement that the change could not be shown is summarized away
+        as `▸ Wrote 1 file`.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_write(target, "value = 2\n")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert "prior contents could not be read" in (tool._output or "")
+        assert tool.has_display_caveat is True
+
+    async def test_a_displayable_edit_carries_no_caveat_flag(
+        self, tmp_path: Path
+    ) -> None:
+        """The flag is not set for ordinary work, or nothing would ever fold."""
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.has_display_caveat is False
+
+    async def test_delete_with_a_lost_pre_image_says_so(self, tmp_path: Path) -> None:
+        """Destroying a large file must not render like destroying an empty one.
+
+        A `delete` mounts no `DiffMessage` — its post-image is a synthesized
+        empty string, so there is no diff — which means a caveat routed only
+        through that widget never reaches the user. With the pre-image also
+        lost, nothing at all would distinguish this from deleting an empty file,
+        on the one operation where losing the record matters most.
+        """
+        target = tmp_path / "big.py"
+        target.write_text("value = 1\n" * 5000, encoding="utf-8")
+
+        with patch(
+            "deepagents_code.file_ops._read_with_reason",
+            return_value=(None, "Permission denied"),
+        ):
+            mounted = await self._run_delete(target)
+
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert "prior contents could not be read" in tool._output
+        assert "Deleted file" in tool._output, "the tool's own output was discarded"
+
+    async def test_a_failed_diff_mount_does_not_abort_the_turn(
+        self, tmp_path: Path
+    ) -> None:
+        """Rendering a diff is cosmetic; the turn's remaining hooks are not.
+
+        The tool row's own update is already guarded for this reason. Letting
+        the mount below it raise would drop the terminal hooks of every tool
+        still in flight for a purely visual failure.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # The pre-image has to differ from what is on disk, or there is no diff
+        # to mount and the guard is never reached.
+        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
+        boom = RuntimeError("mount exploded")
+        with (
+            patch("deepagents_code.file_ops._read_with_reason", side_effect=read),
+            patch(
+                "deepagents_code.tui.textual_adapter.DiffMessage", side_effect=boom
+            ) as diff_message,
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        assert diff_message.call_count == 1, "the guarded path was never reached"
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True, "row hidden with no diff mounted in its place"
+        # Surviving the failure is not enough: the diff was expected and never
+        # appeared, and under a `shown` outcome there is no caveat to fall back
+        # on, so a silent absence reads as "nothing changed". Without this the
+        # note could be deleted and only the guard above would still pass.
+        notes = [m for m in mounted if isinstance(m, AppMessage)]
+        assert any("could not be rendered" in str(n._content) for n in notes), (
+            "the turn survived but nothing told the user the diff was missing"
+        )
+
+    async def test_a_failure_hiding_the_row_is_not_reported_as_a_missing_diff(
+        self, tmp_path: Path
+    ) -> None:
+        """Supersession failing must not claim the diff on screen is absent.
+
+        Hiding the row runs after the diff has mounted. Reporting "could not be
+        rendered" for its failure would contradict what the user can plainly
+        see, and send them looking for a diff that is right there.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
+        with (
+            patch("deepagents_code.file_ops._read_with_reason", side_effect=read),
+            patch.object(
+                ToolCallMessage,
+                "mark_superseded_by_diff",
+                side_effect=RuntimeError("hide exploded"),
+            ),
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        assert any(isinstance(m, DiffMessage) for m in mounted), (
+            "the diff never mounted, so the supersession step was not reached"
+        )
+        notes = [m for m in mounted if isinstance(m, AppMessage)]
+        assert not any("could not be rendered" in str(n._content) for n in notes), (
+            "a hide failure was reported as a rendering failure"
+        )
+
+    async def test_a_caveat_no_surface_carried_lands_in_the_transcript(
+        self, tmp_path: Path
+    ) -> None:
+        """The last-resort note is the only thing left when the row is gone.
+
+        A torn-down row leaves `_current_tool_messages` without the tool id, so
+        nothing calls `set_success_with_caveat` and no widget carries the
+        sentence. Every other test here keeps the row alive, so this fallback —
+        including its warning — could be deleted with the suite green, and a
+        destructive change whose contents could not be read would look routine.
+        """
+        target = tmp_path / "big.py"
+        target.write_text("value = 1\n" * 5000, encoding="utf-8")
+
+        mounted: list[object] = []
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,  # replaced below, once `mounted` exists
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        adapter._mount_message = mount_message
+        args = {"file_path": str(target)}
+
+        class _TearDownTheRowMidTurn(_FakeAgent):
+            """Drop the row registry between the tool call and its result.
+
+            The registry is populated *after* the row mounts, so a mount-time
+            hook is too early to model this. Clearing here is what a screen
+            swap or a Ctrl+D mid-stream leaves behind: the result arrives, its
+            tool id resolves to no widget, and nothing calls
+            `set_success_with_caveat`.
+            """
+
+            async def astream(
+                self, *_: Any, **__: Any
+            ) -> AsyncIterator[tuple[Any, ...]]:
+                """Yield the call, tear the registry down, then the result."""
+                for index, chunk in enumerate(self._chunks):
+                    yield chunk
+                    if index == 0:
+                        adapter._current_tool_messages.clear()
+
+        chunks = [
+            ((), "messages", (_tool_call_message("delete", args, "del-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Deleted file", tool_call_id="del-1"), {}),
+            ),
+        ]
+        with patch(
+            "deepagents_code.file_ops._read_with_reason",
+            return_value=(None, "Permission denied"),
+        ):
+            await execute_task_textual(
+                user_input="delete the file",
+                agent=_TearDownTheRowMidTurn(chunks),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=True),
+                adapter=adapter,
+            )
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.has_display_caveat is False, (
+            "the row was still reachable, so the fallback was not exercised"
+        )
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+        notes = [m for m in mounted if isinstance(m, AppMessage)]
+        assert any(
+            "prior contents could not be read" in str(n._content) for n in notes
+        ), "no surface carried the caveat for a lost pre-image delete"
+
+    async def test_noop_edit_keeps_the_tool_row_instead_of_claiming_no_changes(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty diff must never be what replaces the tool's own output.
+
+        Hiding the row makes the diff the sole account of the edit, so a widget
+        with nothing in it would render a confident "no changes" over whatever
+        actually happened — and any inaccuracy in the read-back would have
+        nothing left to contradict it.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        mounted = await self._run_edit(target, "value = 1")
+
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.display is True
+
+    async def test_edit_without_tracker_record_keeps_tool_row_visible(
+        self, tmp_path: Path
+    ) -> None:
+        """A successful edit stays visible when no diff can be mounted."""
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        with patch(
+            "deepagents_code.file_ops.FileOpTracker.complete_with_message",
+            return_value=None,
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+
+    async def test_line_invisible_change_keeps_the_tool_row_visible(
+        self, tmp_path: Path
+    ) -> None:
+        """Claiming "no changes" over a real change is worse than showing none.
+
+        A trailing-newline-only edit has no line diff to render, so an empty
+        `DiffMessage` would head it "no changes" — while hiding the tool row
+        that correctly reports the file was updated.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(
+            pre_image=_strip_trailing_newline(file_ops_module._read_with_reason)
+        )
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 1")
+        read.assert_both_phases_ran()
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+
+    async def test_unreadable_read_back_keeps_the_row_successful(
+        self, tmp_path: Path
+    ) -> None:
+        """A display problem is not a tool failure.
+
+        The write landed; only reading it back to build a diff did not. Marking
+        the row "Error" makes a completed edit count toward every failure surface
+        and invites a retry of something that already applied — and routing the
+        caveat through `set_error` also overwrote the tool's own output with it.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(read_back=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert "Updated file" in tool._output, "the tool's own output was discarded"
+        assert "could not be displayed" in tool._output
+        assert "Permission denied" in tool._output, (
+            "the caveat restates the problem instead of explaining it"
+        )
+
+    async def test_line_invisible_change_names_what_it_cannot_show(
+        self, tmp_path: Path
+    ) -> None:
+        """A terminator-only change is the one edit no other view will reveal.
+
+        Suppressing the misleading "no changes" diff is only half the fix: with
+        nothing in its place the user is never told the file was rewritten, and
+        finds out later from `git`.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(
+            pre_image=_strip_trailing_newline(file_ops_module._read_with_reason)
+        )
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 1")
+        read.assert_both_phases_ran()
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert "line terminators" in tool._output
+
+    async def test_unreadable_pre_image_keeps_the_tool_row_visible(
+        self, tmp_path: Path
+    ) -> None:
+        """Hiding the row would leave an untrustworthy diff as the only record.
+
+        With no pre-image the diff cannot be believed, so the tool's own
+        output — the one thing that does report what happened — must stay.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # Fail only the pre-image read; the read-back must still succeed so
+        # this exercises the before-side failure in isolation.
+        read = _PhasedRead(pre_image=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+        read.assert_both_phases_ran()
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True, "row hidden behind a diff that cannot be trusted"
+
+        diffs = [m for m in mounted if isinstance(m, DiffMessage)]
+        assert len(diffs) == 1
+        assert diffs[0]._outcome == "untrusted_before"
+
+    async def test_the_caveat_is_not_printed_twice_when_the_row_survives(
+        self, tmp_path: Path
+    ) -> None:
+        """An `edit_file` row can never be folded, so both surfaces are visible.
+
+        The diff mounts with a non-`shown` outcome and the row keeps its own
+        copy of the same sentence, so without suppressing one the reader sees
+        the identical caveat twice, adjacent.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: (None, "Permission denied"))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        diff = next(m for m in mounted if isinstance(m, DiffMessage))
+
+        assert "prior contents could not be read" in (tool._output or "")
+        assert diff.renders_caveat is False, "the row already states this"
+        # The untrusted body must still be suppressed — `show_caveat` hides the
+        # sentence, never the reason for it.
+        assert diff._outcome == "untrusted_before"
+
+    async def test_unreadable_read_back_reports_success_with_a_caveat(
+        self, tmp_path: Path
+    ) -> None:
+        """The edit landed but its result could not be read; say exactly that."""
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # Leaves `after_content` at None, which is how a failed read-back looks.
+        with patch(
+            "deepagents_code.file_ops.FileOpTracker._populate_after_content",
+            return_value=None,
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.display is True
+        assert "succeeded, but its changes could not be displayed" in (
+            tool._output or ""
+        )
+
+    async def test_tool_reported_error_is_not_called_a_success(
+        self, tmp_path: Path
+    ) -> None:
+        """A tool whose own output reports failure must not be told it worked.
+
+        `record.status` is `"error"` for both this and an unreadable read-back,
+        so gating the "succeeded, but…" message on status alone would state
+        that an edit landed when it did not.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> bool:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+            return True
+
+        args = {
+            "file_path": str(target),
+            "old_string": "value = 1",
+            "new_string": "value = 2",
+        }
+        chunks = [
+            ((), "messages", (_tool_call_message("edit_file", args, "tool-1"), {})),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="Error: string not found", tool_call_id="tool-1"
+                    ),
+                    {},
+                ),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="edit the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert "succeeded" not in (tool._output or "")
+
+
 class TestExecuteTaskTextualToolCallStreaming:
     """Tests for incremental tool-call argument accumulation."""
 
@@ -3004,9 +3729,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # Split a JSON object across fragments; only the last one closes it.
         chunks = [
@@ -3038,9 +3764,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """A tool row stays unmounted while its JSON args are still partial."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # JSON never closes — the row must not mount with partial args.
         chunks = [
@@ -3073,9 +3800,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # A JSON string split so the first fragment is not yet valid JSON.
         chunks = [
@@ -3105,9 +3833,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """A complete `tool_call` block mounts with its dict args verbatim."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             (
@@ -3143,9 +3872,10 @@ class TestExecuteTaskTextualToolCallStreaming:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # Two tools (index 0 and 1) with interleaved argument fragments.
         chunks = [
@@ -3188,8 +3918,9 @@ class TestExecuteTaskTextualSummarizationFeedback:
             await asyncio.sleep(0)
             statuses.append(status)
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         chunks = [
             (
@@ -3228,9 +3959,10 @@ class TestExecuteTaskTextualSummarizationFeedback:
             await asyncio.sleep(0)
             statuses.append(status)
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted_widgets.append(widget)
+            return True
 
         chunks = [
             (
@@ -3268,9 +4000,10 @@ class TestExecuteTaskTextualSummarizationFeedback:
         async def record_spinner(_status: str | None) -> None:
             await asyncio.sleep(0)
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted_widgets.append(widget)
+            return True
 
         # Only summarization chunks, no regular chunks follow.
         chunks = [
@@ -3532,7 +4265,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
         """A tool call that never reaches the transcript does not count."""
         user_visible_output_started = MagicMock()
 
-        async def fail_mount(_widget: object) -> None:
+        async def fail_mount(_widget: object) -> bool:
             await asyncio.sleep(0)
             msg = "mount failed"
             raise RuntimeError(msg)
@@ -3574,8 +4307,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
             await asyncio.sleep(0)
             statuses.append(status)
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
+            return True
 
         chunks = [
             (
@@ -3801,10 +4535,11 @@ class TestExecuteTaskTextualParallelToolSpinner:
         # so read the mounted row directly rather than the post-turn tracking.
         mounted_tools: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted_tools.append(widget)
+            return True
 
         adapter = TextualUIAdapter(
             mount_message=capture_mount,
@@ -3854,10 +4589,11 @@ class TestExecuteTaskTextualParallelToolSpinner:
         # so read the mounted row directly rather than the post-turn tracking.
         mounted_tools: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted_tools.append(widget)
+            return True
 
         adapter = TextualUIAdapter(
             mount_message=capture_mount,
@@ -4166,9 +4902,10 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         """A rubric-injected human turn must separate assistant attempts."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         class FakeAssistantMessage:
             def __init__(self, content: str = "", **kwargs: str | None) -> None:
@@ -4293,9 +5030,10 @@ class TestExecuteTaskTextualHITLShellSuppression:
         mounted: list[object] = []
         snapshots: dict[str, tuple[bool, bool, str]] = {}
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         future: asyncio.Future[object] = asyncio.Future()
 
@@ -4443,9 +5181,10 @@ class TestExecuteTaskTextualHITLShellSuppression:
         """`finally` must restore the widget even if approval raises."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -4746,10 +5485,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
 
         execute_row_holder: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 execute_row_holder.append(widget)
+            return True
 
         agent = _SequencedAgent(
             streams_by_call=[
@@ -4808,10 +5548,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         snapshot: dict[str, tuple[str, float | None]] = {}
         rows: dict[str, ToolCallMessage] = {}
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 rows[widget.tool_name] = widget
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -4891,10 +5632,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         snapshot: dict[str, tuple[str, float | None]] = {}
         rows: dict[str, ToolCallMessage] = {}
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 rows[widget.tool_name] = widget
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -4999,10 +5741,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         """
         task_row_holder: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 task_row_holder.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5080,10 +5823,11 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
         """
         task_row_holder: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 task_row_holder.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5136,9 +5880,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5218,9 +5963,10 @@ class TestExecuteTaskTextualAskUser:
             }
         )
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5288,10 +6034,11 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_mount_failure_does_not_register_tool_id(self) -> None:
         """Mount failure should not poison `displayed_tool_ids` on the adapter."""
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
             msg = "mount failed"
             raise RuntimeError(msg)
+            return True
 
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
@@ -5341,9 +6088,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5400,9 +6148,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "cancelled"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5463,9 +6212,10 @@ class TestExecuteTaskTextualAskUser:
         """
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5539,9 +6289,10 @@ class TestExecuteTaskTextualAskUser:
         approval: asyncio.Future[object] = asyncio.Future()
         approval.set_result({"type": "reject"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5617,9 +6368,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "reject"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5678,9 +6430,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "reject", "message": "use a safer command"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5743,9 +6496,10 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "reject"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         async def request_approval(
             _action_requests: list[dict[str, Any]],
@@ -5816,7 +6570,7 @@ class TestExecuteTaskTextualAskUser:
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "answered", "answers": "not-a-list"})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 original = widget.set_error
@@ -5827,6 +6581,7 @@ class TestExecuteTaskTextualAskUser:
 
                 widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -5880,7 +6635,7 @@ class TestExecuteTaskTextualAskUser:
         mounted: list[ToolCallMessage] = []
         error_calls: list[str] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 original = widget.set_error
@@ -5891,6 +6646,7 @@ class TestExecuteTaskTextualAskUser:
 
                 widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
+            return True
 
         agent = _SequencedAgent(
             streams_by_call=[
@@ -6565,9 +7321,10 @@ class TestToolHooksTextual:
         """tool.use fires (with name, id, args) before the ToolCallMessage mounts."""
         events: list[str] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             events.append(f"mount:{type(widget).__name__}")
+            return True
 
         def record_dispatch(event: str, _payload: dict[str, Any]) -> None:
             events.append(f"dispatch:{event}")
@@ -6616,9 +7373,10 @@ class TestToolHooksTextual:
         mounted: list[object] = []
         output = "x" * 5000
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             (
@@ -6742,13 +7500,14 @@ class TestToolHooksTextual:
         by a synthetic UI-mount error.
         """
 
-        async def failing_mount(widget: object) -> None:
+        async def failing_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             # Simulate a mount failure only for the tool row (assistant/other
             # widgets still mount), so the guard under test is exercised.
             if isinstance(widget, ToolCallMessage):
                 msg = "mount boom"
                 raise RuntimeError(msg)  # noqa: TRY004  # simulated failure, not a type guard
+            return True
 
         chunks = [
             (
@@ -7083,10 +7842,11 @@ class TestToolHooksTextual:
         error event — a pairing the rest of this module maintains everywhere else.
         """
 
-        async def mount_message(_widget: object) -> None:
+        async def mount_message(_widget: object) -> bool:
             await asyncio.sleep(0)
             msg = "mount failed"
             raise RuntimeError(msg)
+            return True
 
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
@@ -7200,7 +7960,7 @@ class TestToolHooksTextual:
             await asyncio.sleep(0)
             return future
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             if isinstance(widget, ToolCallMessage) and widget.tool_name == "ask_user":
 
                 def fail_success(_output: str) -> None:
@@ -7209,6 +7969,7 @@ class TestToolHooksTextual:
 
                 widget.set_success = fail_success  # ty: ignore
             await asyncio.sleep(0)
+            return True
 
         questions: list[Question] = [{"question": "Name?", "type": "text"}]
         agent = _SequencedAgent(
@@ -7349,9 +8110,10 @@ class TestToolHooksTextual:
         """tool.result fires with tool_status='error' and tool.error also fires."""
         mounted: list[object] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         chunks = [
             (
@@ -7649,10 +8411,11 @@ class TestToolHooksTextual:
         """
         mounted: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
         agent = _SequencedAgent(
@@ -7730,10 +8493,11 @@ class TestToolHooksTextual:
         """The model gets framed rejection text; the row keeps the raw reason."""
         mounted: list[ToolCallMessage] = []
 
-        async def capture_mount(widget: object) -> None:
+        async def capture_mount(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
         agent = _SequencedAgent(
@@ -8575,12 +9339,13 @@ class TestToolHooksTextual:
         mounted: list[ToolCallMessage] = []
         app_messages: list[AppMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
             elif isinstance(widget, AppMessage):
                 app_messages.append(widget)
+            return True
 
         results: list[AskUserWidgetResult] = [
             {"type": "answered", "answers": ["Alice"]},
@@ -8716,10 +9481,11 @@ class TestToolHooksTextual:
         """
         mounted: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         questions: list[Question] = [{"question": "Name?", "type": "text"}]
         ask_interrupt = SimpleNamespace(
@@ -8821,10 +9587,11 @@ class TestToolHooksTextual:
         """
         mounted: list[ToolCallMessage] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
@@ -9043,10 +9810,11 @@ class TestToolHooksTextual:
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": answers})
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             if isinstance(widget, ToolCallMessage):
                 mounted.append(widget)
+            return True
 
         async def request_ask_user(
             _questions: list[Question],
@@ -9866,9 +10634,10 @@ class TestExecuteTaskTextualRubricEvents:
         mounted: list[object] = []
         evaluations: list[tuple[str, str]] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # (namespace, stream_mode, data); empty namespace == main agent.
         chunks = [
@@ -9913,9 +10682,10 @@ class TestExecuteTaskTextualRubricEvents:
         mounted: list[object] = []
         evaluations: list[tuple[str, str]] = []
 
-        async def mount_message(widget: object) -> None:
+        async def mount_message(widget: object) -> bool:
             await asyncio.sleep(0)
             mounted.append(widget)
+            return True
 
         # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
         chunks = [

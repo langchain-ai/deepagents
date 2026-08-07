@@ -104,8 +104,9 @@ async def _run_auto_approve_write(
         decision.set_result({"type": "reject"})
         return decision
 
-    async def mount_message(_: object) -> None:
+    async def mount_message(_: object) -> bool:
         await asyncio.sleep(0)
+        return True
 
     def update_status(_: str) -> None:
         return None

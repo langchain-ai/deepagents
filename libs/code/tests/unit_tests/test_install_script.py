@@ -1759,17 +1759,16 @@ def test_install_script_upgrade_footer_says_upgraded(tmp_path: Path) -> None:
     assert "Setup complete" not in proc.stdout
 
 
-def test_install_script_custom_index_move_is_reported_as_intended_upgrade(
+def test_install_script_custom_index_downgrade_footer_is_neutral(
     tmp_path: Path,
 ) -> None:
-    """A custom-index resolution the script intended is reported as an upgrade.
+    """A custom index that resolves older than the PyPI latest is not an upgrade.
 
-    The footer keys on intent, not on re-validating the resolution direction
-    (a shell installer can't compare PEP 440 versions, and uv reads the custom
-    index at install time, not when the script probed PyPI). A custom index
-    that serves an older version than the PyPI latest the script targeted is
-    indistinguishable from a real upgrade, so the footer says "Upgraded."; the
-    comment above the footer documents this trade-off.
+    The script targeted the PyPI latest (0.1.20) and intended an upgrade, but
+    uv honored UV_INDEX_URL and installed an older version (0.1.18) than was
+    already present (0.1.19). Because the footer keys on the *installed*
+    version matching the probed latest — not on intent — this concretely
+    downward move gets the neutral "Version changed." rather than "Upgraded."
     """
     proc, _ = _invoke(
         tmp_path,
@@ -1783,7 +1782,8 @@ def test_install_script_custom_index_move_is_reported_as_intended_upgrade(
     )
 
     assert proc.returncode == 0
-    assert "✔ Upgraded. Run: dcode" in proc.stdout
+    assert "✔ Version changed. Run: dcode" in proc.stdout
+    assert "Upgraded." not in proc.stdout
 
 
 def test_install_script_pinned_downgrade_footer_is_not_upgrade(tmp_path: Path) -> None:

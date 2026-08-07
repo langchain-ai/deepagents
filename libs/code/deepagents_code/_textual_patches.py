@@ -55,8 +55,8 @@ upstream.
     highlight from the geometry stored in `Screen.selections`, so excluding
     a diff row's decorative gutter (line number, `+`/`-` marker) only in
     `Widget.get_selection` would copy the right text while still highlighting
-    the gutter. The patch rewrites each selection after Textual computes it,
-    shifting any endpoint inside a row's gutter past it via
+    the gutter. The patch rewrites each selection whenever that reactive
+    changes, shifting any endpoint inside a row's gutter past it via
     `diff.clamp_selection`. No upstream issue tracks per-widget selection
     masking; it stays until Textual grows one.
 
@@ -77,7 +77,7 @@ from textual.geometry import Offset
 from textual.selection import Selection
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Iterable
 
     from textual.events import Click, Event
     from textual.screen import Screen
@@ -488,7 +488,7 @@ try:
 
     from deepagents_code.tui.widgets.diff import clamp_selection
 
-    _original_watch_select_state_for_clamp = _ClampScreen._watch__select_state
+    _original_watch_selections_for_clamp = _ClampScreen._watch_selections
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
     logger.warning(
         "Textual gutter-selection patch skipped (textual %s): %s",
@@ -497,36 +497,28 @@ except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
     )
 else:
 
-    async def _watch_select_state_with_gutter_clamp(
+    def _watch_selections_with_gutter_clamp(
         self: Screen,
-        select_state: SelectState | None,
-    ) -> None:
-        result = _original_watch_select_state_for_clamp(self, select_state)
-        # Same isawaitable tolerance as the word-select wrapper: the pinned
-        # watcher is synchronous, but a future Textual could make it a
-        # coroutine, and clamping must run after the selections it writes.
-        if isawaitable(result):
-            await result
-
-        selections = dict(self.selections)
-        changed = False
-        # Iterate over a list snapshot: dropping an entry below mutates the
-        # dict being walked, which raises `RuntimeError: dictionary changed
-        # size during iteration` as soon as the loop advances.
+        old_selections: dict[Widget, Selection],
+        selections: dict[Widget, Selection],
+    ) -> Awaitable[None] | None:
+        # Textual stores the new dict before invoking this watcher. Clamp that
+        # object synchronously before returning the original watcher's awaitable;
+        # assigning `self.selections` here would schedule this watcher again.
         for widget, selection in list(selections.items()):
             clamped = clamp_selection(widget, selection)
             if clamped is None:
                 del selections[widget]
-                changed = True
             elif clamped != selection:
                 selections[widget] = clamped
-                changed = True
 
-        if changed:
-            self.selections = selections
+        result = _original_watch_selections_for_clamp(self, old_selections, selections)
+        # `_watch_selections` is async in the pinned Textual; the isawaitable
+        # guard tolerates a future synchronous implementation.
+        return result if isawaitable(result) else None
 
     try:
-        _ClampScreen._watch__select_state = _watch_select_state_with_gutter_clamp  # ty: ignore[invalid-assignment]
+        _ClampScreen._watch_selections = _watch_selections_with_gutter_clamp  # ty: ignore[invalid-assignment]
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual gutter-selection patch assignment rejected (textual %s): %s",

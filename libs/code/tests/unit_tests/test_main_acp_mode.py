@@ -15,11 +15,11 @@ import pytest
 from deepagents_code.main import _preload_session_mcp_server_info, cli_main
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Generator
 
 
 @pytest.fixture(autouse=True)
-def test_acp_checkpointer() -> AsyncIterator[SimpleNamespace]:
+def test_acp_checkpointer() -> Generator[SimpleNamespace]:
     checkpointer = SimpleNamespace(setup=AsyncMock(return_value=None))
 
     @asynccontextmanager

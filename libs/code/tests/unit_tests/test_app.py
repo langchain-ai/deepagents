@@ -3822,7 +3822,10 @@ class TestModalScreenCtrlDHandling:
         self,
     ) -> None:
         """Ctrl+D should not be swallowed or ignored in the model selector."""
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -3831,6 +3834,7 @@ class TestModalScreenCtrlDHandling:
             screen = ModelSelectorScreen(
                 current_model="claude-sonnet-4-5",
                 current_provider="anthropic",
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -4127,7 +4131,10 @@ class TestModalScreenCtrlCHandling:
         self,
     ) -> None:
         """Ctrl+C should not be swallowed by the model filter input."""
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -4136,6 +4143,7 @@ class TestModalScreenCtrlCHandling:
             screen = ModelSelectorScreen(
                 current_model="claude-sonnet-4-5",
                 current_provider="anthropic",
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -9535,6 +9543,46 @@ class TestGoalCommand:
             assert "rubric" not in screen._title.lower()
             assert "/rubric" not in screen._description
 
+    async def test_grader_model_selector_disables_ctrl_s(self) -> None:
+        """Ctrl+S must not persist the agent's model from a grader picker.
+
+        Grader models have no config key of their own yet, so the picker opts out
+        of persistence entirely rather than inheriting the main-model scope and
+        rewriting `[models].default`.
+        """
+        for source in ("goal", "rubric"):
+            app = DeepAgentsApp(agent=MagicMock())
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with patch.object(app, "push_screen") as push_screen:
+                    await app._show_rubric_model_selector(source=source)
+                    await pilot.pause()
+
+                screen = push_screen.call_args.args[0]
+                assert screen._default_scope is None
+
+    async def test_onboarding_selector_disables_ctrl_s_but_model_keeps_it(self) -> None:
+        """Onboarding advertises no Ctrl+S, so it must not have a scope either.
+
+        `_help_text` omits the hint in curated mode, but the binding is
+        unconditional and `action_set_default` has no curated guard — so a scope
+        here would let Ctrl+S write `[models].default` with nothing on screen
+        saying it did. `/model` (the same builder, uncurated) must keep it.
+        """
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app._build_model_selector_screen(curated=True)._default_scope is None
+            assert (
+                app._build_model_selector_screen(curated=False)._default_scope
+                is MAIN_MODEL_DEFAULT_SCOPE
+            )
+
     async def test_grader_model_selector_bare_default_without_startup_model(
         self,
     ) -> None:
@@ -13294,6 +13342,21 @@ class TestAutoClassifierModelCommand:
         screen = push.call_args.args[0]
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
         assert screen._include_recent_models is False
+
+    async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
+        """Ctrl+S in the classifier picker must not retarget the agent's model."""
+        from deepagents_code.model_config import save_auto_classifier_model
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            await app._show_auto_classifier_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._default_scope is AUTO_CLASSIFIER_DEFAULT_SCOPE
+        assert screen._default_scope.save is save_auto_classifier_model
 
     @staticmethod
     def _rendered_description(push: MagicMock) -> str:
@@ -24974,7 +25037,10 @@ class TestNotificationCenterIntegration:
     ) -> None:
         """The model selector handles ctrl+n instead of the notification center."""
         from deepagents_code.tui.widgets import model_selector
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
         from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
@@ -24992,7 +25058,7 @@ class TestNotificationCenterIntegration:
         # prove the model selector suppressed it, rather than passing only
         # because an empty registry never opens the center anyway.
         app._notice_registry.add(_missing_dep_entry())
-        screen = ModelSelectorScreen()
+        screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
 
         async with app.run_test() as pilot:
             await pilot.pause()

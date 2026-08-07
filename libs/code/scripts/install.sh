@@ -1841,6 +1841,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
         # detach before `prompt_yn` can read from it. As with no TTY at all,
         # nobody declined the update, so warn and complete the install.
         log_warn "Could not ask — continuing with the update."
+        UPGRADE_INTENDED=true
       else
         log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
         exit 0

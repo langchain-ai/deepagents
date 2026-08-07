@@ -38,7 +38,11 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
-from deepagents_code.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
+from deepagents_code.model_config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_STATE_DIR,
+    default_cache_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,8 +186,15 @@ _TERMINATE_WAIT_TIMEOUT = 5  # seconds
 INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 """Promoted public install command for Deep Agents Code."""
 
-UPDATE_LOG_DIR: Path = DEFAULT_STATE_DIR / "update_logs"
-"""Directory for persisted update command logs."""
+UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
+"""Directory for persisted update command logs.
+
+Lives under the OS cache directory (`default_cache_dir()`), since these are
+ephemeral `uv`/`pip` diagnostics rather than app state. Note the install
+script's `<cache>/deepagents-code/install.log` follows
+`${XDG_CACHE_HOME:-~/.cache}` unconditionally, so on macOS the two logs land
+under different roots.
+"""
 
 UPDATE_LOG_RETENTION_DAYS = 14
 """Delete update logs older than this many days."""

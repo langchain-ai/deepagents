@@ -68,11 +68,11 @@ on:
         type: string
         default: ""
       switchyard_config:
-        description: "Optional Switchyard route arm: glm, opus, nano, escalation, glm-nano, or opus-nano. Requires models=openai:switchyard. A supplied image runs as a sidecar with sandbox_env=docker; no image keeps the experimental in-process library on sandbox_env=langsmith."
+        description: "Optional Switchyard route arm: glm, opus, nano, escalation, glm-nano, or opus-nano. Requires models=openai:switchyard, sandbox_env=docker, and switchyard_image."
         type: string
         default: ""
       switchyard_image:
-        description: "Optional public digest-pinned image for the native Harbor Docker sidecar. Leave empty to use the experimental in-process Switchyard library."
+        description: "Public digest-pinned image for the native Harbor Docker sidecar. Required when switchyard_config is set."
         type: string
         default: ""
 

@@ -3,6 +3,12 @@
 > Preserved experiment, not the active Harbor topology. After the library path
 > exposed structured-content conversion failures, the active plan moved to a
 > native Harbor Docker sidecar; see `BRANCH_PLAN.md`.
+>
+> The runtime-build job was removed from the active reusable workflow after
+> GitHub rejected `SocketDev/action` and `PyO3/maturin-action` under LangChain's
+> enterprise action allowlist, even when the job was skipped. The source,
+> patches, adapter, tests, and resume steps remain here. Resuming CI requires an
+> allowlisted internal build action or an official prebuilt Switchyard wheel.
 
 This is the recovery note for the primary Harbor approach: run Switchyard's
 `libsy` routing engine inside the Deep Agent process instead of as a Docker
@@ -99,13 +105,13 @@ Add `deepagents_harbor/langgraph_project/switchyard_library.py` to:
 5. Return the weak/baseline model and `SwitchyardRoutingMiddleware` for
    `create_deep_agent`.
 
-Start with `agent_impl=bare` only. The environment switch should be:
+The preserved design used this environment switch:
 
 - `HARBOR_SWITCHYARD_CONFIG` set and no image: in-process library mode
-- config and `switchyard_image` both set: preserved Compose sidecar mode
+- config and `switchyard_image` both set: Compose sidecar mode
 - neither set: ordinary Harbor mode
 
-Library mode uses Harbor's normal `--env langsmith --agent langgraph` path. It
+Library mode used Harbor's normal `--env langsmith --agent langgraph` path. It
 does not set a router `base_url` or add Compose flags.
 
 ## Runtime packaging plan

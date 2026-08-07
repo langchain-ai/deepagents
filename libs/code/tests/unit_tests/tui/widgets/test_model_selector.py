@@ -2669,6 +2669,7 @@ class TestGetModelDisplayName:
             ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
+            ("openrouter:meta/muse-spark-1.2", "Muse Spark 1.2"),
             ("xai:grok-4.5", "Grok 4.5"),
         ],
     )

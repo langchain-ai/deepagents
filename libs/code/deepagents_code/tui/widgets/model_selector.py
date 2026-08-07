@@ -101,6 +101,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
     "openrouter:google/gemini-3.6-flash": "Gemini 3.6 Flash",
+    "openrouter:meta/muse-spark-1.2": "Muse Spark 1.2",
     "openrouter:moonshotai/kimi-k3": "Kimi K3",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
     "openrouter:openrouter/fusion": "OpenRouter Fusion",

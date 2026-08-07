@@ -4,18 +4,16 @@
 
 ## [0.1.54](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.53...deepagents-code==0.1.54) (2026-08-07)
 
-
 ### Features
 
-* **code:** add Meta `muse-spark-1.2` to model switcher ([#5389](https://github.com/langchain-ai/deepagents/issues/5389)) ([922b285](https://github.com/langchain-ai/deepagents/commit/922b285598be3b2ca6b3ec01e7362e31ad2014b2))
-* **code:** quieter diff hunks with word-level highlights ([#5106](https://github.com/langchain-ai/deepagents/issues/5106)) ([529f7e8](https://github.com/langchain-ai/deepagents/commit/529f7e8a16c7441873a305a9fa36c2721fa7a5b7))
-
+- Added Meta `muse-spark-1.2` to the model switcher ([#5389](https://github.com/langchain-ai/deepagents/issues/5389)).
+- Improved diff readability with quieter hunks and word-level highlights ([#5106](https://github.com/langchain-ai/deepagents/issues/5106)).
 
 ### Bug Fixes
 
-* **code:** hide startup tips when resuming threads ([#5349](https://github.com/langchain-ai/deepagents/issues/5349)) ([ff421f2](https://github.com/langchain-ai/deepagents/commit/ff421f2f316f3819d8ac92225ea032dabfbcefe9))
-* **code:** prevent post-tool hook replay ([#5376](https://github.com/langchain-ai/deepagents/issues/5376)) ([d37b54f](https://github.com/langchain-ai/deepagents/commit/d37b54f6bfb03f41fc7ff6b05436ad49db688d19))
-* **code:** store update logs under the OS cache dir ([#5363](https://github.com/langchain-ai/deepagents/issues/5363)) ([f69804b](https://github.com/langchain-ai/deepagents/commit/f69804bfce2673de4f2171664ac5b91c1c248ea0))
+- Hid startup tips when resuming threads ([#5349](https://github.com/langchain-ai/deepagents/issues/5349)).
+- Prevented post-tool hook replay ([#5376](https://github.com/langchain-ai/deepagents/issues/5376)).
+- Stored update logs under the OS cache directory ([#5363](https://github.com/langchain-ai/deepagents/issues/5363)).
 
 ## [0.1.53](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.52...deepagents-code==0.1.53) (2026-08-06)
 

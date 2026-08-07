@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import json
+import logging
 from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -21,6 +22,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.errors import GraphBubbleUp
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
@@ -29,8 +31,25 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
 
+logger = logging.getLogger(__name__)
+
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
+
+_TASK_CONTROL_FLOW_EXCEPTIONS: tuple[type[BaseException], ...] = (GraphBubbleUp,)
+"""LangGraph control-flow exceptions that must never be converted into a
+task-tool error result.
+
+`GraphBubbleUp` covers graph interrupts and parent commands. Process-level
+signals (`KeyboardInterrupt`, `SystemExit`) and `asyncio.CancelledError` derive
+from `BaseException` rather than `Exception`, so an `except Exception` guard
+already lets them propagate.
+
+`NodeCancelledError` is deliberately absent: it marks a node body that raised
+`asyncio.CancelledError` itself, which LangGraph treats as an ordinary node
+failure. Isolating it keeps a self-cancelled subagent from aborting its
+parallel siblings.
+"""
 
 
 class SubAgent(TypedDict):
@@ -511,6 +530,46 @@ def _build_task_tool(  # noqa: C901, PLR0915
             }
         )
 
+    def _build_failed_task_result(
+        subagent_type: str,
+        exc: Exception,
+        tool_call_id: str,
+    ) -> Command:
+        """Build an error result for a subagent that raised during execution.
+
+        Each `task` call is an isolated supervisor boundary: a single failing
+        subagent must not discard sibling results in the same parallel batch.
+        This returns a real error `ToolMessage` (not a plain string, which
+        LangGraph would normalize as a successful result) so the parent receives
+        exactly one result for the failing tool call and can retry just that
+        task.
+
+        The content is deterministic and names only the subagent and the
+        exception type; the raw traceback and exception text are kept out of the
+        model-visible message and logged separately for diagnostics.
+
+        Args:
+            subagent_type: Name of the subagent that failed.
+            exc: The caught execution exception.
+            tool_call_id: The originating assistant tool-call ID.
+
+        Returns:
+            A `Command` whose message update carries the error `ToolMessage`.
+        """
+        content = f"Subagent '{subagent_type}' failed with {type(exc).__name__}. This error was isolated to this task; you may retry it."
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=tool_call_id,
+                        name="task",
+                        status="error",
+                    )
+                ]
+            }
+        )
+
     def _select_subagent(
         subagent_type: str,
         runtime: ToolRuntime,
@@ -563,8 +622,16 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # Forwarding those keys explicitly would double-count under the merge
         # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = subagent.invoke(subagent_state, subagent_config)
+        try:
+            with _subagent_tracing_context():
+                result = subagent.invoke(subagent_state, subagent_config)
+        except _TASK_CONTROL_FLOW_EXCEPTIONS:
+            # Interrupts, parent commands, and cancellation are control flow, not
+            # subagent failures. Let them bubble up so the graph handles them.
+            raise
+        except Exception as exc:
+            logger.exception("Subagent '%s' raised during task execution", subagent_type)
+            return _build_failed_task_result(subagent_type, exc, runtime.tool_call_id)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -591,8 +658,16 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # Forwarding those keys explicitly would double-count under the merge
         # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = await subagent.ainvoke(subagent_state, subagent_config)
+        try:
+            with _subagent_tracing_context():
+                result = await subagent.ainvoke(subagent_state, subagent_config)
+        except _TASK_CONTROL_FLOW_EXCEPTIONS:
+            # Interrupts and parent commands are control flow, not subagent
+            # failures. Let them bubble up so the graph handles them.
+            raise
+        except Exception as exc:
+            logger.exception("Subagent '%s' raised during task execution", subagent_type)
+            return _build_failed_task_result(subagent_type, exc, runtime.tool_call_id)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(

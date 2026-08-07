@@ -5,6 +5,7 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import asyncio
 import dataclasses
 import json
 import uuid
@@ -26,8 +27,9 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt, NodeCancelledError
 from langgraph.graph import END, START, MessagesState, StateGraph
-from langgraph.types import Command
+from langgraph.types import Command, Interrupt
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
@@ -35,7 +37,11 @@ from pydantic import BaseModel, Field
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import (
+    CompiledSubAgent,
+    SubAgent,
+    _build_task_tool,
+)
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -3116,3 +3122,316 @@ class TestSubAgents:
             f"Got tracer metadatas: "
             f"{[p.get('extra', {}).get('metadata', {}) for p in posts]}"
         )
+
+
+def _make_tool_runtime(tool_call_id: str) -> ToolRuntime:
+    """Build a minimal `ToolRuntime` for directly exercising the `task` tool.
+
+    The task tool only reads `state` and `tool_call_id`, so the remaining
+    runtime fields are stubbed with inert values.
+    """
+    return ToolRuntime(
+        state={"messages": []},
+        context=None,
+        config={},
+        stream_writer=lambda *_args, **_kwargs: None,
+        tool_call_id=tool_call_id,
+        store=None,
+    )
+
+
+class TestSubAgentFailureIsolation:
+    """Each `task` call is an isolated supervisor boundary.
+
+    An ordinary execution exception in one subagent must become a real error
+    `ToolMessage` for that tool call, while control-flow signals still
+    propagate and sibling task calls keep their results.
+    """
+
+    def test_sync_execution_failure_returns_error_tool_message(self) -> None:
+        """A raising subagent yields an error `ToolMessage`, not an exception."""
+
+        def boom(_state: dict) -> dict:
+            msg = "sync subagent blew up"
+            raise RuntimeError(msg)
+
+        task_tool = _build_task_tool(
+            [
+                CompiledSubAgent(
+                    name="boomer",
+                    description="Always fails.",
+                    runnable=RunnableLambda(boom),
+                )
+            ]
+        )
+
+        result = task_tool.func(
+            description="do work",
+            subagent_type="boomer",
+            runtime=_make_tool_runtime("call_sync_fail"),
+        )
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert len(messages) == 1
+        tool_message = messages[0]
+        assert isinstance(tool_message, ToolMessage)
+        assert tool_message.name == "task"
+        assert tool_message.status == "error"
+        assert tool_message.tool_call_id == "call_sync_fail"
+        # Deterministic content: names the subagent and the exception type, and
+        # never leaks the raw exception message or traceback.
+        assert "boomer" in tool_message.content
+        assert "RuntimeError" in tool_message.content
+        assert "retry" in tool_message.content.lower()
+        assert "sync subagent blew up" not in tool_message.content
+
+    async def test_async_execution_failure_returns_error_tool_message(self) -> None:
+        """The async `atask` path mirrors the sync failure behavior."""
+
+        async def boom(_state: dict) -> dict:
+            msg = "async subagent blew up"
+            raise RuntimeError(msg)
+
+        task_tool = _build_task_tool(
+            [
+                CompiledSubAgent(
+                    name="boomer",
+                    description="Always fails.",
+                    runnable=RunnableLambda(boom),
+                )
+            ]
+        )
+
+        result = await task_tool.coroutine(
+            description="do work",
+            subagent_type="boomer",
+            runtime=_make_tool_runtime("call_async_fail"),
+        )
+
+        assert isinstance(result, Command)
+        tool_message = result.update["messages"][0]
+        assert isinstance(tool_message, ToolMessage)
+        assert tool_message.name == "task"
+        assert tool_message.status == "error"
+        assert tool_message.tool_call_id == "call_async_fail"
+        assert "boomer" in tool_message.content
+        assert "RuntimeError" in tool_message.content
+        assert "async subagent blew up" not in tool_message.content
+
+    def test_successful_task_state_update_behavior_unchanged(self) -> None:
+        """A successful subagent still returns its content and state updates."""
+
+        def succeed(_state: dict) -> dict:
+            return {
+                "messages": [AIMessage(content="all good")],
+                "custom_field": "propagated",
+            }
+
+        task_tool = _build_task_tool(
+            [
+                CompiledSubAgent(
+                    name="worker",
+                    description="Succeeds.",
+                    runnable=RunnableLambda(succeed),
+                )
+            ]
+        )
+
+        result = task_tool.func(
+            description="do work",
+            subagent_type="worker",
+            runtime=_make_tool_runtime("call_ok"),
+        )
+
+        assert isinstance(result, Command)
+        assert result.update["custom_field"] == "propagated"
+        tool_message = result.update["messages"][0]
+        assert isinstance(tool_message, ToolMessage)
+        assert tool_message.content == "all good"
+        assert tool_message.tool_call_id == "call_ok"
+        # A successful result is a normal (non-error) ToolMessage.
+        assert tool_message.status != "error"
+
+    def test_graph_interrupt_propagates_sync(self) -> None:
+        """Graph interrupts are control flow and must not become tool results."""
+
+        def interrupt_run(_state: dict) -> dict:
+            raise GraphInterrupt((Interrupt(value="needs human input"),))
+
+        task_tool = _build_task_tool(
+            [
+                CompiledSubAgent(
+                    name="interrupter",
+                    description="Interrupts.",
+                    runnable=RunnableLambda(interrupt_run),
+                )
+            ]
+        )
+
+        with pytest.raises(GraphInterrupt):
+            task_tool.func(
+                description="do work",
+                subagent_type="interrupter",
+                runtime=_make_tool_runtime("call_interrupt"),
+            )
+
+    async def test_cancellation_propagates_async(self) -> None:
+        """Explicit cancellation must propagate rather than be swallowed."""
+
+        async def cancel_run(_state: dict) -> dict:
+            raise asyncio.CancelledError
+
+        task_tool = _build_task_tool(
+            [
+                CompiledSubAgent(
+                    name="canceller",
+                    description="Cancels.",
+                    runnable=RunnableLambda(cancel_run),
+                )
+            ]
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await task_tool.coroutine(
+                description="do work",
+                subagent_type="canceller",
+                runtime=_make_tool_runtime("call_cancel"),
+            )
+
+    def test_self_cancelled_node_is_isolated_as_failure(self) -> None:
+        """`NodeCancelledError` is a node failure, not framework control flow.
+
+        LangGraph wraps a node body that raises `asyncio.CancelledError` itself
+        in `NodeCancelledError` so the run reports an error; real
+        framework-initiated cancellation stays a raw `CancelledError`. The
+        wrapper must therefore take the isolation path like any other execution
+        exception, so a self-cancelled subagent cannot abort its parallel
+        siblings.
+        """
+
+        def self_cancel(_state: dict) -> dict:
+            node = "self_canceller"
+            raise NodeCancelledError(node)
+
+        task_tool = _build_task_tool(
+            [
+                CompiledSubAgent(
+                    name="self_canceller",
+                    description="Cancels itself.",
+                    runnable=RunnableLambda(self_cancel),
+                )
+            ]
+        )
+
+        result = task_tool.func(
+            description="do work",
+            subagent_type="self_canceller",
+            runtime=_make_tool_runtime("call_self_cancel"),
+        )
+
+        assert isinstance(result, Command)
+        tool_message = result.update["messages"][0]
+        assert isinstance(tool_message, ToolMessage)
+        assert tool_message.status == "error"
+        assert tool_message.tool_call_id == "call_self_cancel"
+        assert "self_canceller" in tool_message.content
+        assert "NodeCancelledError" in tool_message.content
+
+    async def test_parallel_batch_isolates_single_failure(self) -> None:
+        """A failing subagent must not discard sibling results in the batch.
+
+        Runs three concurrent `task` calls where one subagent is still in flight
+        when another raises. Asserts the in-flight subagent finishes, successful
+        outputs are retained, the failed call gets an error result, every
+        original tool-call ID has exactly one result, and the parent proceeds to
+        its next model call.
+        """
+        succ_a_started = asyncio.Event()
+        failure_reached = asyncio.Event()
+
+        async def succ_a(_state: dict) -> dict:
+            # Announce we are in flight, then stay in flight until the failure
+            # has actually occurred in a sibling task.
+            succ_a_started.set()
+            await asyncio.wait_for(failure_reached.wait(), timeout=5)
+            return {"messages": [AIMessage(content="A finished")]}
+
+        async def boom(_state: dict) -> dict:
+            # Only fail once a successful sibling is confirmed in flight, so the
+            # failure genuinely races against unfinished work.
+            await asyncio.wait_for(succ_a_started.wait(), timeout=5)
+            failure_reached.set()
+            msg = "parallel subagent blew up"
+            raise RuntimeError(msg)
+
+        async def succ_b(_state: dict) -> dict:
+            return {"messages": [AIMessage(content="B finished")]}
+
+        parent_model = _ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {"description": "a", "subagent_type": "succ-a"},
+                            "id": "call_a",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "task",
+                            "args": {"description": "boom", "subagent_type": "boomer"},
+                            "id": "call_boom",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "task",
+                            "args": {"description": "b", "subagent_type": "succ-b"},
+                            "id": "call_b",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="all subagents accounted for"),
+            ]
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(name="succ-a", description="A", runnable=RunnableLambda(succ_a)),
+                CompiledSubAgent(name="boomer", description="B", runnable=RunnableLambda(boom)),
+                CompiledSubAgent(name="succ-b", description="C", runnable=RunnableLambda(succ_b)),
+            ],
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content="run three subagents")]},
+            config={"configurable": {"thread_id": "test_parallel_isolation"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        by_id = {msg.tool_call_id: msg for msg in tool_messages}
+
+        # Exactly one result per original tool-call ID.
+        assert len(tool_messages) == 3
+        assert set(by_id) == {"call_a", "call_boom", "call_b"}
+
+        # Successful siblings retained their outputs, including the one that was
+        # still in flight when the failure occurred.
+        assert by_id["call_a"].content == "A finished"
+        assert by_id["call_a"].status != "error"
+        assert by_id["call_b"].content == "B finished"
+        assert by_id["call_b"].status != "error"
+
+        # The failed call carries an isolated error result.
+        assert by_id["call_boom"].status == "error"
+        assert by_id["call_boom"].name == "task"
+        assert "boomer" in by_id["call_boom"].content
+        assert "parallel subagent blew up" not in by_id["call_boom"].content
+
+        # The parent proceeded to its next model call after the mixed batch.
+        assert isinstance(result["messages"][-1], AIMessage)
+        assert result["messages"][-1].content == "all subagents accounted for"

@@ -1670,6 +1670,45 @@ class TestAgentResolutionScope:
         valid_recent.assert_not_called()
 
 
+class TestThreadsPruneDispatch:
+    """Tests for `threads prune` CLI dispatch."""
+
+    def test_dispatches_retention_and_dry_run(self) -> None:
+        """The parsed prune options reach the async command handler."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "threads",
+                    "prune",
+                    "--older-than",
+                    "30",
+                    "--dry-run",
+                    "--json",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.sessions.prune_threads_command",
+                new_callable=AsyncMock,
+            ) as prune,
+        ):
+            cli_main()
+
+        prune.assert_awaited_once_with(
+            older_than_days=30,
+            dry_run=True,
+            output_format="json",
+        )
+
+
 class TestThreadsListCwdFilter:
     """Tests for `deepagents threads list --cwd` path normalization."""
 

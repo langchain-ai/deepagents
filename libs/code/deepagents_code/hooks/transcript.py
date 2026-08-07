@@ -17,6 +17,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import unicodedata
@@ -598,6 +599,67 @@ def _safe_component(identifier: str) -> str:
     prefix = _SAFE_PREFIX_RE.sub("-", readable).strip("-")[:_SAFE_PREFIX_LENGTH]
     digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
     return f"{prefix or 'id'}--{digest}"
+
+
+def delete_thread_transcripts(root: Path, thread_id: str) -> bool:
+    """Remove every materialized transcript artifact owned by a thread.
+
+    Args:
+        root: Transcript store root.
+        thread_id: Conversation thread identifier.
+
+    Returns:
+        `True` if at least one file or directory was removed.
+    """
+    if not thread_id:
+        return False
+
+    component = _safe_component(thread_id)
+    transcript = root / f"{component}.jsonl"
+    files = [transcript, transcript.with_suffix(".jsonl.lock")]
+    try:
+        files.extend(root.glob(f"{transcript.name}.bak-*"))
+    except OSError:
+        logger.warning(
+            "Could not enumerate transcript backups for thread %s",
+            thread_id,
+            exc_info=True,
+        )
+
+    removed = False
+    for path in files:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            logger.warning(
+                "Failed to delete transcript artifact %s for thread %s",
+                path,
+                thread_id,
+                exc_info=True,
+            )
+        else:
+            removed = True
+
+    agent_dir = root / component
+    try:
+        if agent_dir.is_symlink():
+            agent_dir.unlink()
+        else:
+            shutil.rmtree(agent_dir)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning(
+            "Failed to delete subagent transcripts at %s for thread %s",
+            agent_dir,
+            thread_id,
+            exc_info=True,
+        )
+    else:
+        removed = True
+    return removed
 
 
 def _ensure_private_directories(root: Path, target: Path) -> None:

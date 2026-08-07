@@ -114,6 +114,12 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 Zero or negative disables the suggestion.
 """
 
+SESSION_RETENTION_DAYS_DEFAULT = 14
+"""Days inactive local sessions are retained before automatic pruning."""
+
+SESSION_AUTO_PRUNE_DEFAULT = True
+"""Whether old local sessions are pruned automatically at app startup."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -1503,7 +1509,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("interpreter", "ptc_acknowledge_unsafe"),
         settings_field="interpreter_ptc_acknowledge_unsafe",
     ),
-    # --- Threads (config.toml-only; structured column table excepted) ---
+    # --- Threads -------------------------------------------------------
+    ConfigOption(
+        key="threads.auto_prune",
+        group="Threads",
+        summary="Prune expired local sessions automatically at app startup.",
+        kind=OptionKind.BOOL,
+        default=SESSION_AUTO_PRUNE_DEFAULT,
+        env_var=_env_vars.AUTO_PRUNE,
+        toml_keys=("threads", "auto_prune"),
+    ),
     ConfigOption(
         key="threads.compact_on_resume_threshold",
         group="Threads",
@@ -1513,6 +1528,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.INT,
         default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
         toml_keys=("threads", "compact_on_resume_threshold"),
+    ),
+    ConfigOption(
+        key="threads.session_retention_days",
+        group="Threads",
+        summary="Days to retain inactive local sessions before pruning.",
+        kind=OptionKind.INT,
+        default=SESSION_RETENTION_DAYS_DEFAULT,
+        env_var=_env_vars.SESSION_RETENTION_DAYS,
+        toml_keys=("threads", "session_retention_days"),
     ),
     ConfigOption(
         key="threads.relative_time",

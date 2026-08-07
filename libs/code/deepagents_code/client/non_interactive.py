@@ -77,7 +77,7 @@ from deepagents_code.hooks import (
     drain_pending_hooks,
 )
 from deepagents_code.model_config import ModelConfigError
-from deepagents_code.sessions import generate_thread_id
+from deepagents_code.sessions import generate_thread_id, start_auto_prune
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
     check_url_safety,
@@ -2057,6 +2057,7 @@ async def run_non_interactive(
     result.apply_to_settings()
 
     thread_id = generate_thread_id()
+    start_auto_prune(thread_id)
 
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:

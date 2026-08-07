@@ -5346,6 +5346,10 @@ class DeepAgentsApp(App):
         if self._resume_thread_intent:
             await self._resolve_resume_thread()
 
+        from deepagents_code.sessions import start_auto_prune
+
+        start_auto_prune(self._lc_thread_id)
+
         # Run deferred model creation. settings.model_name / model_provider
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them

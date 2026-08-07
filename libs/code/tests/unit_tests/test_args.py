@@ -9,7 +9,11 @@ import pytest
 from rich.console import Console
 
 from deepagents_code.main import parse_args
-from deepagents_code.ui import show_help, show_threads_list_help
+from deepagents_code.ui import (
+    show_help,
+    show_threads_list_help,
+    show_threads_prune_help,
+)
 
 
 class TestInitialPromptArg:
@@ -372,6 +376,27 @@ class TestSubcommandHelpFlags:
             must_contain="delete",
             must_not_contain="--sandbox",
         )
+
+    def test_threads_prune_help(self) -> None:
+        """Running `deepagents threads prune -h` should show prune help."""
+        self._run_help(
+            ["deepagents", "threads", "prune", "-h"],
+            must_contain="--older-than",
+            must_not_contain="--sandbox",
+        )
+
+
+def test_threads_prune_arguments() -> None:
+    """The prune subcommand parses its retention override and dry-run flag."""
+    with patch.object(
+        sys,
+        "argv",
+        ["deepagents", "threads", "prune", "--older-than", "30", "--dry-run"],
+    ):
+        args = parse_args()
+    assert args.threads_command == "prune"
+    assert args.older_than == 30
+    assert args.dry_run is True
 
 
 class TestShortFlags:
@@ -872,6 +897,32 @@ class TestHelpScreenDrift:
             f"Flags in argparse but missing from show_threads_list_help(): {missing}\n"
             "Add them to the Options section in ui.show_threads_list_help()."
         )
+
+    def test_threads_prune_flags_appear_in_help(self) -> None:
+        """Every `threads prune` flag appears in its hand-maintained help."""
+        stdout_buf = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["deepagents", "threads", "prune", "-h"]),
+            patch("sys.stdout", stdout_buf),
+            patch("deepagents_code.ui.console", Console(file=io.StringIO())),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+        raw = stdout_buf.getvalue()
+        options_section = raw.split("options:")[-1] if "options:" in raw else raw
+        parser_flags = set(re.findall(r"--[\w][\w-]*", options_section))
+        parser_flags.discard("--help")
+
+        help_buf = io.StringIO()
+        with patch(
+            "deepagents_code.ui.console",
+            Console(file=help_buf, highlight=False, width=200),
+        ):
+            show_threads_prune_help()
+        help_flags = set(re.findall(r"--[\w][\w-]*", help_buf.getvalue()))
+
+        missing = parser_flags - help_flags
+        assert not missing
 
 
 class TestJsonArg:

@@ -66,6 +66,10 @@ Like `AUTO_CLASSIFIER_MODEL`, a committed *project* `.env` cannot set it (see
 `config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
 """
 
+AUTO_PRUNE = "DEEPAGENTS_CODE_AUTO_PRUNE"
+"""Toggle automatic session pruning. Enabled by default; set to a falsy value
+(`0`, `false`, `no`, `off`, or empty) to opt out."""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
@@ -408,6 +412,9 @@ reused under either setting. Unrecognized values fall back to `managed`. See
 
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
+
+SESSION_RETENTION_DAYS = "DEEPAGENTS_CODE_SESSION_RETENTION_DAYS"
+"""Days to retain inactive local sessions before pruning them automatically."""
 
 SHELL_ALLOW_LIST = "DEEPAGENTS_CODE_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""

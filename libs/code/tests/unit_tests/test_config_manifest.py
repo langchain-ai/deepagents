@@ -87,6 +87,54 @@ def test_option_keys_unique() -> None:
     assert len(keys) == len(set(keys))
 
 
+def test_session_retention_manifest_defaults() -> None:
+    """Session retention options are documented with safe defaults."""
+    retention = get_option("threads.session_retention_days")
+    auto_prune = get_option("threads.auto_prune")
+    assert retention is not None
+    assert retention.default == 14
+    assert retention.env_var == _env_vars.SESSION_RETENTION_DAYS
+    assert auto_prune is not None
+    assert auto_prune.default is True
+    assert auto_prune.env_var == _env_vars.AUTO_PRUNE
+
+
+def test_session_retention_loaders_resolve_toml_and_env(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Runtime loaders honor TOML and environment precedence."""
+    from deepagents_code.model_config import (
+        load_session_auto_prune,
+        load_session_retention_days,
+    )
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[threads]\nsession_retention_days = 30\nauto_prune = false\n"
+    )
+    monkeypatch.delenv(_env_vars.SESSION_RETENTION_DAYS, raising=False)
+    monkeypatch.delenv(_env_vars.AUTO_PRUNE, raising=False)
+    assert load_session_retention_days(config_path) == 30
+    assert load_session_auto_prune(config_path) is False
+
+    monkeypatch.setenv(_env_vars.SESSION_RETENTION_DAYS, "7")
+    monkeypatch.setenv(_env_vars.AUTO_PRUNE, "true")
+    assert load_session_retention_days(config_path) == 7
+    assert load_session_auto_prune(config_path) is True
+
+
+def test_non_positive_session_retention_falls_back(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-positive window cannot trigger unsafe immediate deletion."""
+    from deepagents_code.model_config import load_session_retention_days
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[threads]\nsession_retention_days = 0\n")
+    monkeypatch.delenv(_env_vars.SESSION_RETENTION_DAYS, raising=False)
+    assert load_session_retention_days(config_path) == 14
+
+
 def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
     """`memory.auto_save` resolves to enabled when nothing overrides it."""
     option = get_option("memory.auto_save")

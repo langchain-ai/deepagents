@@ -1847,6 +1847,8 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
 
+    from deepagents_code.ui import non_negative_int, positive_int
+
     threads_parser = subparsers.add_parser(
         "threads",
         help="Manage conversation threads",
@@ -1918,6 +1920,26 @@ def parse_args() -> argparse.Namespace:
     add_json_output_arg(threads_delete)
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
     threads_delete.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes",
+    )
+
+    threads_prune = threads_sub.add_parser(
+        "prune",
+        help="Delete expired threads",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_threads_prune_help")),
+    )
+    add_json_output_arg(threads_prune)
+    threads_prune.add_argument(
+        "--older-than",
+        type=positive_int,
+        default=None,
+        metavar="DAYS",
+        help="Delete threads older than DAYS (default: from config, or 14)",
+    )
+    threads_prune.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would happen without making changes",
@@ -2040,8 +2062,6 @@ def parse_args() -> argparse.Namespace:
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
         "These take priority, overriding config file values.",
     )
-
-    from deepagents_code.ui import non_negative_int, positive_int
 
     parser.add_argument(
         "--max-retries",
@@ -4650,6 +4670,7 @@ def cli_main() -> None:
             from deepagents_code.sessions import (
                 delete_thread_command,
                 list_threads_command,
+                prune_threads_command,
             )
             from deepagents_code.ui import show_threads_help
 
@@ -4690,6 +4711,14 @@ def cli_main() -> None:
                 asyncio.run(
                     delete_thread_command(
                         args.thread_id,
+                        dry_run=args.dry_run,
+                        output_format=output_format,
+                    )
+                )
+            elif args.threads_command == "prune":
+                asyncio.run(
+                    prune_threads_command(
+                        older_than_days=args.older_than,
                         dry_run=args.dry_run,
                         output_format=output_format,
                     )

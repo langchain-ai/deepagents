@@ -1,5 +1,9 @@
 # Switchyard sidecar fallback
 
+> Historical LangSmith-sandbox topology. The active sidecar plan now uses
+> Harbor's native Docker environment; see `BRANCH_PLAN.md`. Keep this document
+> for the nested-Docker findings and recovery work already completed.
+
 This preserves the Docker Compose / LangSmith sandbox approach while the
 in-process `libsy` middleware path is evaluated. Do not delete the sidecar code;
 it remains a viable fallback for server-only Switchyard features.

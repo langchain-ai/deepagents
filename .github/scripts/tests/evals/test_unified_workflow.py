@@ -191,6 +191,9 @@ def test_unified_dispatch_wires_switchyard_library_and_sidecar_modes() -> None:
     aggregate_stats = _indented_block(
         harbor, '      - name: "📈 Aggregate Switchyard stats"'
     )
+    validate_trials = _indented_block(
+        harbor, '      - name: "✅ Validate Switchyard trial health"'
+    )
 
     for name in ("switchyard_config", "switchyard_image"):
         dispatch_input = _indented_block(dispatch, f"      {name}:")
@@ -200,11 +203,12 @@ def test_unified_dispatch_wires_switchyard_library_and_sidecar_modes() -> None:
         assert f"{name}: ${{{{ inputs.{name} }}}}" in eval_job
 
     assert "sandbox_env=langsmith" in dispatch
+    assert "sandbox_env=docker" in dispatch
     assert "models=openai:switchyard" in dispatch
     assert 'if [ "$HARBOR_MODEL" != "openai:switchyard" ]; then' in credentials
     assert "switchyard_image must be a public digest-pinned image reference" in credentials
     assert "switchyard_keys=(ANTHROPIC_API_KEY BASETEN_API_KEY GOOGLE_API_KEY)" in credentials
-    assert 'elif [ "$HARBOR_AGENT_IMPL" != "bare" ]; then' in credentials
+    assert 'if [ "$HARBOR_AGENT_IMPL" != "bare" ]; then' in credentials
     assert "Switchyard library runs currently require agent_impl=bare" in credentials
 
     # Primary in-process mode: build the patched native wheel once, assemble the
@@ -235,15 +239,20 @@ def test_unified_dispatch_wires_switchyard_library_and_sidecar_modes() -> None:
     ):
         assert f"--agent-env '{key}=${{{key}}}'" in run_harbor
 
-    # Preserved fallback: supplying an immutable image keeps the Compose path.
-    assert "deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment" in run_harbor
+    # Supplying an immutable image runs the sidecar in Harbor's native Docker
+    # environment, with the router sharing main's network namespace.
+    assert "deepagents_harbor.switchyard_environment:SwitchyardDockerEnvironment" in run_harbor
     assert "deepagents_harbor.switchyard_agent:SwitchyardLangGraph" in run_harbor
+    assert "switchyard-docker.yaml" in run_harbor
     assert '--extra-docker-compose "$switchyard_compose"' in run_harbor
     assert '--environment-kwarg "switchyard_config=$switchyard_config"' in run_harbor
     assert 'SY_STRONG_BASE_URL="https://api.anthropic.com"' in run_harbor
-    assert '"base_url":"http://switchyard:4000/v1"' in run_harbor
+    assert '"base_url":"http://127.0.0.1:4000/v1"' in run_harbor
     assert '"api_key":"switchyard"' in run_harbor
     assert '"use_responses_api":false' in run_harbor
+    assert "Switchyard sidecar runs require sandbox_env=docker" in credentials
+    assert "n_errored_trials" in validate_trials
+    assert "n_cancelled_trials" in validate_trials
     assert "inputs.switchyard_image != ''" in aggregate_stats
     assert "continue-on-error" not in aggregate_stats
     assert 'collect_stats.py validate "$HARBOR_JOB_DIR"' in aggregate_stats
@@ -258,18 +267,31 @@ def test_switchyard_secrets_are_granted_only_when_router_is_enabled() -> None:
     )
     run_harbor = _indented_block(harbor, '      - name: "⚓ Run Harbor"')
 
-    for step in (credentials, run_harbor):
-        for provider, key in (
-            ("anthropic", "ANTHROPIC_API_KEY"),
-            ("baseten", "BASETEN_API_KEY"),
-            ("google_genai", "GOOGLE_API_KEY"),
-            ("nvidia", "NVIDIA_API_KEY"),
-        ):
-            expected = (
-                "${{ (inputs.switchyard_config != '' || "
-                f"startsWith(matrix.model, '{provider}:')) && secrets.{key} || '' }}}}"
-            )
-            assert expected in step
+    for provider, key in (
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("baseten", "BASETEN_API_KEY"),
+        ("google_genai", "GOOGLE_API_KEY"),
+        ("nvidia", "NVIDIA_API_KEY"),
+    ):
+        credential_value = (
+            "${{ (inputs.switchyard_config != '' || "
+            f"startsWith(matrix.model, '{provider}:')) && secrets.{key} || '' }}}}"
+        )
+        assert credential_value in credentials
+
+        agent_or_library_value = (
+            "${{ ((inputs.switchyard_config != '' && inputs.switchyard_image == '') || "
+            f"startsWith(matrix.model, '{provider}:')) && secrets.{key} || '' }}}}"
+        )
+        sidecar_value = (
+            "${{ (inputs.switchyard_config != '' && inputs.switchyard_image != '') "
+            f"&& secrets.{key} || '' }}}}"
+        )
+        assert agent_or_library_value in run_harbor
+        assert f"SWITCHYARD_{key}: {sidecar_value}" in run_harbor
+
+    assert "VERIFIER_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in run_harbor
+    assert "--verifier-env 'OPENAI_API_KEY=${VERIFIER_OPENAI_API_KEY}'" in run_harbor
 
 
 def test_switchyard_smoke_publishes_pinned_image_and_dispatches_unified_eval() -> None:
@@ -291,7 +313,9 @@ def test_switchyard_smoke_publishes_pinned_image_and_dispatches_unified_eval() -
     assert "-f categories=autonomous" in workflow
     assert "-f profile=lite" in workflow
     assert "-f rollouts=1" in workflow
-    assert "-f switchyard_config=nano" in workflow
+    assert "-f sandbox_env=docker" in workflow
+    assert "-f switchyard_config=opus" in workflow
+    assert "harbor-index/labbench-read-asap2f-step-response" in workflow
     assert '-f switchyard_image="$SWITCHYARD_IMAGE"' in workflow
 
 

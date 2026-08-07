@@ -22,8 +22,10 @@ rate for comparability with NVIDIA's OpenRouter runs.
 
 ## Unified evals through Harbor
 
-The unified workflow runs Switchyard as a Docker Compose sidecar inside each
-LangSmith sandbox. The agent reaches it at `http://switchyard:4000/v1`.
+The unified workflow runs Switchyard as a sibling of the native Harbor task
+container on the GitHub runner. Both processes share a network namespace, and
+the agent reaches the router at `http://127.0.0.1:4000/v1`. LangSmith is used
+for tracing only, not as the sandbox provider.
 
 Prerequisite: publish a **public, digest-pinned** Switchyard image. NVIDIA does
 not currently publish one. Build their Rust server Dockerfile at the Switchyard
@@ -38,28 +40,22 @@ models: openai:switchyard
 categories: autonomous
 profile: lite
 rollouts: 1
-sandbox_env: langsmith
+sandbox_env: docker
 switchyard_config: glm-nano
 switchyard_image: registry.example/owner/switchyard@sha256:<64 hex chars>
 ```
 
 Run each arm as a separate dispatch so its task rewards and router statistics
-remain attributable. The workflow stages the selected TOML, safely forwards the
-route's provider variables, attaches the trial id as the router session id, and
-captures `/v1/stats` before teardown. Each shard artifact contains the per-trial
-snapshots plus `switchyard-stats-summary.json`.
+remain attributable. The workflow mounts the selected TOML, forwards the
+route's provider variables only to the sidecar, attaches the trial id as the
+router session id, captures `/v1/stats`, and stops the sidecar before
+verification. Each shard artifact contains the per-trial snapshots plus
+`switchyard-stats-summary.json`.
 
-For a one-task proof before dispatching CI:
-
-```bash
-cd libs/evals/switchyard
-./run_harbor_arms.sh \
-  --image 'registry.example/owner/switchyard@sha256:<64 hex chars>' \
-  --n-tasks 1 --rollouts 1 glm-nano
-```
-
-The smoke is successful only when Harbor records a completed trial and reward,
-and the job directory contains `switchyard-stats.json`.
+The branch smoke workflow builds the pinned image and dispatches one Opus
+LabBench task before any larger run. The smoke is successful only when Harbor
+records no trial exception and the job directory contains
+`switchyard-stats.json` with at least one routed request.
 
 Price a merged shard snapshot with the selected uncached methodology:
 

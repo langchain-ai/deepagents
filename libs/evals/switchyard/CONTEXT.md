@@ -131,7 +131,8 @@ The Harbor integration lives on `srimanth/evals/switchyard-harbor`.
 **Then, in priority order:**
 
 1. Publish a public, digest-pinned Switchyard image from the agreed upstream SHA.
-2. Run the one-task `nano` smoke through the LangSmith compose sidecar.
+2. Run the one-task `opus` smoke through Harbor's native Docker sidecar; do not
+   use a LangSmith sandbox.
 3. Dispatch the autonomous lite baselines and GLM↑Nano/Opus↑Nano arms at n=1,
    then raise rollouts after measuring spend and variance. See `BRANCH_PLAN.md`.
 4. Write up the pytest results and the cache sensitivity honestly.

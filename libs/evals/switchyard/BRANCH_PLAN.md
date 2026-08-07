@@ -4,30 +4,30 @@ Branch: `srimanth/evals/switchyard-harbor`
 
 ## Architecture
 
-Each Harbor trial uses the LangSmith environment in Docker Compose mode.
-Switchyard is a private sidecar on that compose network, and the agent calls
-`http://switchyard:4000/v1`. There is no public router endpoint or tunnel.
+Each Harbor trial uses its normal task image in Harbor's native Docker
+environment on the GitHub runner. Switchyard is a Compose sidecar sharing
+`main`'s network namespace, and the agent calls `http://127.0.0.1:4000/v1`.
+There is no LangSmith sandbox, nested Docker daemon, public router, or tunnel.
 
 The implementation uses
-`deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment`
-because Harbor's `--agent-env` reaches the agent process but not compose
-services. The adapter:
+`deepagents_harbor.switchyard_environment:SwitchyardDockerEnvironment`. The
+adapter mounts the selected route TOML, verifies the loopback health endpoint,
+captures `/v1/stats`, and stops Switchyard before Harbor starts verification.
+Provider variables use sidecar-only aliases in the GitHub step and are mapped
+to their standard names only inside the Switchyard service. The stock LangGraph
+launcher therefore never sees an upstream provider variable to copy into
+`main`; the OpenAI judge key is likewise kept under a verifier-only alias.
 
-- copies only an allowlist of provider variables from the runner environment
-  into Docker Compose;
-- stages the selected rendered route TOML inside the LangSmith sandbox;
-- waits for the sidecar health endpoint before Harbor installs/runs the agent;
-- captures `/v1/stats` into the trial artifacts before compose teardown.
-
-This also handles separate no-network verifier environments correctly. Harbor
-clears extra compose overlays for the verifier, so the verifier remains isolated
-and does not receive the Switchyard sidecar or its provider credentials.
+Because the sidecar uses `network_mode: service:main`, Harbor's phase network
+policy governs both processes. This preserves no-network verifier enforcement
+even for tasks that verify in the shared environment. LangSmith remains only as
+the tracing/results plugin.
 
 ## Implemented on this branch
 
-1. Compose overlay at `switchyard/compose/switchyard.yaml`.
-2. Custom LangSmith environment with safe secret forwarding, TOML staging,
-   health checking, and stats capture.
+1. Native Docker overlay at `switchyard/compose/switchyard-docker.yaml`.
+2. Custom Docker environment with TOML mounting, health checking, stats
+   capture, and pre-verifier sidecar shutdown.
 3. Reusable Harbor workflow inputs:
    - `switchyard_config`: `glm`, `opus`, `nano`, `escalation`, `glm-nano`, or
      `opus-nano`
@@ -36,7 +36,8 @@ and does not receive the Switchyard sidecar or its provider credentials.
 5. Router model kwargs force `/v1/chat/completions` and use the internal sidecar
    URL; the Harbor session header is stable for every turn of a trial.
 6. Per-shard aggregation into `switchyard-stats-summary.json`.
-7. A one-task LangSmith smoke runner in `run_harbor_arms.sh`.
+7. A one-task GitHub smoke that runs the previously failing LabBench path with
+   Opus and rejects any Harbor trial exception.
 
 ## Remaining external prerequisite
 
@@ -53,13 +54,14 @@ Docker build arguments and verify the image history before publishing.
 
 ## First proof
 
-Run one autonomous lite task, one rollout, with the Nano passthrough arm. It
+Run one autonomous lite task, one rollout, with the Opus passthrough arm. It
 must prove all of the following before increasing scope:
 
-- the LangSmith sandbox pulls the image;
-- `main` resolves `switchyard` and the health check passes;
+- the GitHub runner pulls the task and Switchyard images;
+- `main` reaches Switchyard on loopback and the health check passes;
 - the agent completes and the verifier writes a reward;
 - the trial artifacts contain `switchyard-stats.json` with `total_requests > 0`;
+- Harbor records zero errored or cancelled trials;
 - the LangSmith experiment contains the trace and `harbor_reward` feedback.
 
 Then run the three passthrough baselines and the two Nano escalation arms as

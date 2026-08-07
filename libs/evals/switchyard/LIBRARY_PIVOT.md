@@ -1,5 +1,9 @@
 # Switchyard in-process library pivot
 
+> Preserved experiment, not the active Harbor topology. After the library path
+> exposed structured-content conversion failures, the active plan moved to a
+> native Harbor Docker sidecar; see `BRANCH_PLAN.md`.
+
 This is the recovery note for the primary Harbor approach: run Switchyard's
 `libsy` routing engine inside the Deep Agent process instead of as a Docker
 Compose sidecar. Keep `SIDECAR_FALLBACK.md` and its implementation intact until

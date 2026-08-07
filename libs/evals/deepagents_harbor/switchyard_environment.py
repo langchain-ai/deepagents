@@ -1,4 +1,4 @@
-"""LangSmith Harbor environment for an in-sandbox Switchyard sidecar."""
+"""Harbor environments for running Switchyard beside the evaluated agent."""
 
 from __future__ import annotations
 
@@ -11,15 +11,18 @@ import tarfile
 import tempfile
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 from harbor.environments.docker import COMPOSE_NO_NETWORK_PATH
+from harbor.environments.docker.docker import DockerEnvironment
 from harbor.environments.langsmith import LangSmithEnvironment
 
 if TYPE_CHECKING:
+    import logging
     from collections.abc import Mapping
 
-    from harbor.environments.base import ExecResult
+    from harbor.environments.base import BaseEnvironment, ExecResult
+    from harbor.models.trial.paths import TrialPaths
 
 _COMPOSE_ENV_NAMES = (
     "ANTHROPIC_API_KEY",
@@ -30,6 +33,7 @@ _COMPOSE_ENV_NAMES = (
 )
 _REMOTE_CONFIG_PATH = "/harbor/compose/switchyard-routes.toml"
 _SWITCHYARD_BASE_URL = "http://switchyard:4000"
+_SWITCHYARD_DOCKER_BASE_URL = "http://127.0.0.1:4000"
 _AGENT_PYTHON = "/opt/harbor-langgraph-venv/bin/python"
 _HEALTH_TIMEOUT_SECONDS = 60
 # The largest lite task allows 1,800 seconds for its full environment startup;
@@ -61,12 +65,37 @@ def _forwarded_compose_env(environ: Mapping[str, str]) -> dict[str, str]:
     return {name: environ[name] for name in _COMPOSE_ENV_NAMES if environ.get(name)}
 
 
-def _python_http_command(path: str, *, parse_json: bool) -> str:
+def _switchyard_config_path(config: str | Path) -> Path:
+    """Resolve an existing Switchyard route TOML.
+
+    Args:
+        config: Candidate route configuration path.
+
+    Returns:
+        Absolute path to the validated TOML.
+
+    Raises:
+        ValueError: If the path does not identify an existing TOML file.
+    """
+    path = Path(config).expanduser()
+    if not path.is_file() or path.suffix != ".toml":
+        msg = f"Switchyard route config must be an existing TOML file: {path}"
+        raise ValueError(msg)
+    return path.resolve()
+
+
+def _python_http_command(
+    path: str,
+    *,
+    parse_json: bool,
+    base_url: str = _SWITCHYARD_BASE_URL,
+) -> str:
     """Build a fixed-origin Python command that reads one HTTP response.
 
     Args:
         path: Absolute Switchyard HTTP path.
         parse_json: Whether to parse and print the response as JSON.
+        base_url: Trusted Switchyard origin reachable from Harbor's main service.
 
     Returns:
         Shell-safe command for Harbor's main service.
@@ -74,13 +103,13 @@ def _python_http_command(path: str, *, parse_json: bool) -> str:
     read = "print(json.dumps(json.load(response)))" if parse_json else "response.read()"
     script = (
         "import json, urllib.request; "
-        f"response = urllib.request.urlopen('{_SWITCHYARD_BASE_URL}{path}', timeout=10); "
+        f"response = urllib.request.urlopen('{base_url}{path}', timeout=10); "
         f"{read}"
     )
     return shlex.join([_AGENT_PYTHON, "-c", script])
 
 
-def _bash_health_command() -> str:
+def _bash_health_command(host: str = "switchyard") -> str:
     """Build a dependency-free HTTP health probe for the main container.
 
     Harbor task images do not necessarily include Python, curl, wget, or netcat
@@ -91,8 +120,8 @@ def _bash_health_command() -> str:
         Shell-safe command that succeeds only for an HTTP 200 response.
     """
     script = (
-        "exec 3<>/dev/tcp/switchyard/4000; "
-        "printf 'GET /health HTTP/1.0\\r\\nHost: switchyard\\r\\n\\r\\n' >&3; "
+        f"exec 3<>/dev/tcp/{host}/4000; "
+        f"printf 'GET /health HTTP/1.0\\r\\nHost: {host}\\r\\n\\r\\n' >&3; "
         "IFS= read -r status <&3; "
         "[[ $status == HTTP/*' 200 '* ]]"
     )
@@ -157,7 +186,128 @@ class DeepAgentsLangSmithEnvironment(LangSmithEnvironment):
             raise RuntimeError(msg)
 
 
-class SwitchyardLangSmithEnvironment(DeepAgentsLangSmithEnvironment):
+class _SwitchyardStatsMixin:
+    """Capture a sidecar's final counters into the Harbor trial artifacts."""
+
+    _switchyard_config: Path
+    if TYPE_CHECKING:
+        logger: logging.Logger
+        trial_paths: TrialPaths
+
+    async def _snapshot_switchyard_stats(
+        self,
+        *,
+        base_url: str = _SWITCHYARD_BASE_URL,
+    ) -> bool:
+        result = await cast("BaseEnvironment", self).exec(
+            _python_http_command("/v1/stats", parse_json=True, base_url=base_url),
+            cwd="/",
+            timeout_sec=30,
+        )
+        if result.return_code != 0 or not result.stdout:
+            self.logger.warning("Could not capture Switchyard stats before teardown")
+            return False
+        try:
+            stats = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            self.logger.warning("Switchyard returned invalid JSON from /v1/stats")
+            return False
+        if not isinstance(stats, dict):
+            self.logger.warning("Switchyard returned a non-object /v1/stats payload")
+            return False
+
+        stats["switchyard_config"] = self._switchyard_config.name
+        path = self.trial_paths.artifacts_dir / "switchyard-stats.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+        return True
+
+
+class SwitchyardDockerEnvironment(_SwitchyardStatsMixin, DockerEnvironment):
+    """Run Switchyard in the task container's network namespace on Docker.
+
+    The Compose overlay makes Switchyard share `main`'s network namespace, so
+    the agent reaches it through loopback while Harbor's phase network policy
+    still governs all outbound traffic. Provider keys enter only the sidecar at
+    container start. The custom agent snapshots stats and stops the sidecar
+    before verification begins.
+
+    Args:
+        switchyard_config: Rendered Switchyard route TOML mounted into the sidecar.
+        args: Positional arguments accepted by `DockerEnvironment`.
+        kwargs: Keyword arguments accepted by `DockerEnvironment`.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        switchyard_config: str | Path,
+        **kwargs: Any,
+    ) -> None:
+        """Validate the route config before initializing Docker."""
+        self._switchyard_config = _switchyard_config_path(switchyard_config)
+        self._switchyard_stopped = False
+        super().__init__(*args, **kwargs)
+
+    @override
+    def _compose_env_vars(self, include_os_env: bool = True) -> dict[str, str]:
+        """Expose the non-secret route path needed by the Compose overlay."""
+        env = super()._compose_env_vars(include_os_env=include_os_env)
+        env["SWITCHYARD_CONFIG_PATH"] = str(self._switchyard_config)
+        return env
+
+    @override
+    async def start(self, force_build: bool) -> None:
+        """Start the native task Compose project and verify the router endpoint."""
+        await super().start(force_build)
+        await self._wait_for_switchyard()
+
+    async def _wait_for_switchyard(self) -> None:
+        command = _bash_health_command("127.0.0.1")
+        last_failure = ""
+        for _ in range(_HEALTH_TIMEOUT_SECONDS // 2):
+            result = await self.exec(command, cwd="/", timeout_sec=15)
+            if result.return_code == 0:
+                return
+            last_failure = (result.stderr or result.stdout or "").strip()[-500:]
+            await asyncio.sleep(2)
+
+        logs = await self._run_docker_compose_command(
+            ["logs", "--no-color", "--tail", "50", "switchyard"],
+            check=False,
+            timeout_sec=15,
+        )
+        detail = (logs.stderr or logs.stdout or "")[-1000:]
+        probe = f" Probe failure: {last_failure}." if last_failure else ""
+        msg = f"Switchyard sidecar did not become healthy.{probe} Logs: {detail}"
+        raise RuntimeError(msg)
+
+    async def capture_and_stop_switchyard(self) -> None:
+        """Persist router stats and remove provider access before verification."""
+        if self._switchyard_stopped:
+            return
+        try:
+            await self._snapshot_switchyard_stats(base_url=_SWITCHYARD_DOCKER_BASE_URL)
+        finally:
+            await self.stop_service("switchyard")
+            self._switchyard_stopped = True
+
+    @override
+    async def stop(self, delete: bool) -> None:
+        """Best-effort capture if agent execution ended before its cleanup hook."""
+        try:
+            try:
+                await self.capture_and_stop_switchyard()
+            except Exception as exc:  # noqa: BLE001  # teardown must still remove containers
+                self.logger.warning("Switchyard cleanup before Docker teardown failed: %s", exc)
+        finally:
+            await super().stop(delete)
+
+
+class SwitchyardLangSmithEnvironment(
+    _SwitchyardStatsMixin,
+    DeepAgentsLangSmithEnvironment,
+):
     """Run Switchyard beside Harbor's main service in a LangSmith sandbox.
 
     Harbor's `--agent-env` reaches only the agent process, not Docker Compose.
@@ -179,11 +329,7 @@ class SwitchyardLangSmithEnvironment(DeepAgentsLangSmithEnvironment):
         **kwargs: Any,
     ) -> None:
         """Validate the route config before initializing the sandbox provider."""
-        config = Path(switchyard_config).expanduser()
-        if not config.is_file() or config.suffix != ".toml":
-            msg = f"Switchyard route config must be an existing TOML file: {config}"
-            raise ValueError(msg)
-        self._switchyard_config = config.resolve()
+        self._switchyard_config = _switchyard_config_path(switchyard_config)
         super().__init__(*args, **kwargs)
 
     @override
@@ -362,34 +508,10 @@ class SwitchyardLangSmithEnvironment(DeepAgentsLangSmithEnvironment):
             msg = f"Harbor main lost Switchyard access after isolation: {detail}"
             raise RuntimeError(msg)
 
-    async def _snapshot_switchyard_stats(self) -> None:
-        if not self._compose_mode:
-            return
-        result = await self.exec(
-            _python_http_command("/v1/stats", parse_json=True),
-            cwd="/",
-            timeout_sec=30,
-        )
-        if result.return_code != 0 or not result.stdout:
-            self.logger.warning("Could not capture Switchyard stats before teardown")
-            return
-        try:
-            stats = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            self.logger.warning("Switchyard returned invalid JSON from /v1/stats")
-            return
-        if not isinstance(stats, dict):
-            self.logger.warning("Switchyard returned a non-object /v1/stats payload")
-            return
-
-        stats["switchyard_config"] = self._switchyard_config.name
-        path = self.trial_paths.artifacts_dir / "switchyard-stats.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-
     @override
     async def stop(self, delete: bool) -> None:
         try:
-            await self._snapshot_switchyard_stats()
+            if self._compose_mode:
+                await self._snapshot_switchyard_stats()
         finally:
             await super().stop(delete)

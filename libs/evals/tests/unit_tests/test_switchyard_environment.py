@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from harbor.environments.docker.docker import DockerEnvironment
 from harbor.environments.langsmith import LangSmithEnvironment
 
 from deepagents_harbor import switchyard_environment
@@ -51,6 +52,18 @@ def test_bash_health_command_does_not_require_http_client() -> None:
     assert " 200 " in command
     assert "python" not in command
     assert "curl" not in command
+
+
+def test_docker_health_and_stats_use_loopback() -> None:
+    health = switchyard_environment._bash_health_command("127.0.0.1")
+    stats = switchyard_environment._python_http_command(
+        "/v1/stats",
+        parse_json=True,
+        base_url="http://127.0.0.1:4000",
+    )
+
+    assert "/dev/tcp/127.0.0.1/4000" in health
+    assert "http://127.0.0.1:4000/v1/stats" in stats
 
 
 async def test_docker_daemon_start_detaches_from_langsmith_command() -> None:
@@ -246,6 +259,73 @@ def test_compose_network_gives_main_temporary_setup_egress() -> None:
         "switchyard-egress",
     ]
     assert compose["networks"]["switchyard-internal"]["internal"] is True
+
+
+def test_docker_compose_sidecar_shares_main_network_namespace() -> None:
+    compose_path = Path(__file__).parents[2] / "switchyard/compose/switchyard-docker.yaml"
+    compose = yaml.safe_load(compose_path.read_text())
+    sidecar = compose["services"]["switchyard"]
+
+    assert sidecar["network_mode"] == "service:main"
+    assert "127.0.0.1" in sidecar["command"]
+    assert sidecar["volumes"][0]["source"].startswith("${SWITCHYARD_CONFIG_PATH:")
+    assert sidecar["environment"] == {
+        "ANTHROPIC_API_KEY": "${SWITCHYARD_ANTHROPIC_API_KEY:-}",
+        "BASETEN_API_KEY": "${SWITCHYARD_BASETEN_API_KEY:-}",
+        "GOOGLE_API_KEY": "${SWITCHYARD_GOOGLE_API_KEY:-}",
+        "NVIDIA_API_KEY": "${SWITCHYARD_NVIDIA_API_KEY:-}",
+    }
+
+
+def test_docker_compose_env_includes_validated_route_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "routes-opus.toml"
+    config.write_text("schema_version = 1")
+    environment = object.__new__(switchyard_environment.SwitchyardDockerEnvironment)
+    environment._switchyard_config = config
+    monkeypatch.setattr(
+        DockerEnvironment,
+        "_compose_env_vars",
+        lambda _self, include_os_env=True: {"BASE": str(include_os_env)},
+    )
+
+    env = environment._compose_env_vars(include_os_env=False)
+
+    assert env == {"BASE": "False", "SWITCHYARD_CONFIG_PATH": str(config)}
+
+
+async def test_docker_capture_writes_stats_and_stops_sidecar(tmp_path: Path) -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardDockerEnvironment)
+    environment._switchyard_config = tmp_path / "routes-opus.toml"
+    environment._switchyard_stopped = False
+    environment.trial_paths = SimpleNamespace(artifacts_dir=tmp_path / "artifacts")
+    environment.logger = SimpleNamespace(warning=lambda *_args: None)
+    commands: list[str] = []
+    stopped: list[str] = []
+
+    async def fake_exec(command: str, **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(
+            return_code=0,
+            stdout=json.dumps({"total_requests": 2, "models": {}}),
+            stderr="",
+        )
+
+    async def fake_stop(service: str) -> None:
+        stopped.append(service)
+
+    environment.exec = fake_exec
+    environment.stop_service = fake_stop
+
+    await environment.capture_and_stop_switchyard()
+    await environment.capture_and_stop_switchyard()
+
+    written = json.loads((tmp_path / "artifacts/switchyard-stats.json").read_text())
+    assert written["total_requests"] == 2
+    assert "http://127.0.0.1:4000/v1/stats" in commands[0]
+    assert stopped == ["switchyard"]
 
 
 async def test_isolate_main_after_setup_disconnects_and_verifies_topology() -> None:

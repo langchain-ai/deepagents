@@ -1,0 +1,24 @@
+services:
+  switchyard:
+    image: "${SWITCHYARD_IMAGE:?set SWITCHYARD_IMAGE to a digest-pinned public image}"
+    # Share the task container's namespace so Harbor's phase network policy
+    # governs both processes. The agent reaches the router on loopback, while
+    # no-network verifier phases also cut off the router's provider egress.
+    network_mode: service:main
+    command:
+      - --config
+      - /etc/switchyard/routes.toml
+      - --host
+      - 127.0.0.1
+      - --port
+      - "4000"
+    environment:
+      ANTHROPIC_API_KEY: "${SWITCHYARD_ANTHROPIC_API_KEY:-}"
+      BASETEN_API_KEY: "${SWITCHYARD_BASETEN_API_KEY:-}"
+      GOOGLE_API_KEY: "${SWITCHYARD_GOOGLE_API_KEY:-}"
+      NVIDIA_API_KEY: "${SWITCHYARD_NVIDIA_API_KEY:-}"
+    volumes:
+      - type: bind
+        source: "${SWITCHYARD_CONFIG_PATH:?set by SwitchyardDockerEnvironment}"
+        target: /etc/switchyard/routes.toml
+        read_only: true

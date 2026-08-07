@@ -67,8 +67,14 @@
 #   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
 #     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
 #     into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
-#     keeps the interactive package-manager install (brew/apt/cargo/...). Set
-#     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
+#     keeps the interactive package-manager install (brew/apt/cargo/...),
+#     which only counts as success when the resulting `rg` meets the minimum
+#     supported version. Set DEEPAGENTS_CODE_OFFLINE=1 to skip the managed
+#     download entirely.
+#
+# Before execution, the downloaded uv bootstrap script is checked for a shell
+# shebang and valid shell syntax. These structural checks help catch error
+# pages and some truncated downloads, but do not verify its integrity.
 #   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
 #     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_NO_MODIFY_PATH — set to 1 to skip PATH setup entirely
@@ -461,10 +467,18 @@ fi
 # ---------------------------------------------------------------------------
 # Prompt helper — reads from /dev/tty when stdin is piped
 # ---------------------------------------------------------------------------
+# prompt_yn QUESTION — three outcomes, so callers can tell a declined prompt
+# apart from one that could never be shown:
+#   0 — answered yes
+#   1 — answered no (or empty)
+#   2 — no terminal exists to ask on (non-interactive, or /dev/tty unusable)
+# Plain `if prompt_yn ...` keeps working unchanged: 0 is yes, anything else is
+# not-yes. Only callers that act differently on "no terminal" vs "no" check
+# for 2 explicitly.
 prompt_yn() {
   local question="$1"
   if [ "$IS_INTERACTIVE" = false ]; then
-    return 1
+    return 2
   fi
   local reply=""
   if [ -t 0 ]; then
@@ -1296,6 +1310,14 @@ install_uv() {
     exit "$uv_install_rc"
   fi
 
+  # Astral does not publish a checksum that covers uv-installer.sh itself:
+  # the per-release sha256.sum and dist-manifest.json only list the platform
+  # archives, and the archives' digests are embedded in this script (which
+  # pins APP_VERSION and verifies them after download). The meaningful checks
+  # for the script fetch are therefore the shebang and parse checks below:
+  # they catch a captive-portal HTML page and a truncated body, which are the
+  # realistic failure modes for this URL.
+  #
   # Verify the downloaded script starts with a shell shebang before executing
   # it. This catches a non-shell response — an HTML error page or JSON from a
   # proxy or captive portal that returned 200 — that would otherwise fail
@@ -2692,7 +2714,12 @@ ensure_path_setup() {
     done
   fi
   if [ "$IS_INTERACTIVE" = true ] && can_prompt; then
-    if ! prompt_yn "Add ~/.local/bin to your PATH in ${prompt_targets}?"; then
+    # Only an explicit "no" (rc=1) declines; rc=2 (no usable terminal) leaves
+    # the auto-add default in place, matching the non-interactive behavior.
+    # `|| prompt_rc=$?` keeps "no" from tripping `set -e`.
+    prompt_rc=0
+    prompt_yn "Add ~/.local/bin to your PATH in ${prompt_targets}?" || prompt_rc=$?
+    if [ "$prompt_rc" -eq 1 ]; then
       should_add=false
     fi
   fi
@@ -2957,6 +2984,46 @@ fi
 # ---------------------------------------------------------------------------
 # Optional tools — ripgrep
 # ---------------------------------------------------------------------------
+# Oldest ripgrep the agent's grep tool is expected to work with. The managed
+# installer pins a newer upstream release; this floor only guards the system
+# path (brew/apt/...) so an ancient distro package doesn't install
+# "successfully" and then behave differently at runtime.
+MIN_RIPGREP_VERSION="12.0.0"
+
+# version_at_least HAVE WANT — dotted numeric compare (12.0.0 >= 11.0.0). The
+# installer runs before Python exists, so this stays in pure shell.
+version_at_least() {
+  local have="$1" want="$2" IFS_save="$IFS"
+  case "$have" in ''|*[!0-9.]*) return 1 ;; esac
+  IFS=.
+  # shellcheck disable=SC2086  # word-splitting on '.' is the point
+  set -- $have
+  IFS="$IFS_save"
+  local have_major="${1:-0}" have_minor="${2:-0}" have_patch="${3:-0}"
+  IFS=.
+  # shellcheck disable=SC2086
+  set -- $want
+  IFS="$IFS_save"
+  local want_major="${1:-0}" want_minor="${2:-0}" want_patch="${3:-0}"
+  [ "$have_major" -gt "$want_major" ] && return 0
+  [ "$have_major" -lt "$want_major" ] && return 1
+  [ "$have_minor" -gt "$want_minor" ] && return 0
+  [ "$have_minor" -lt "$want_minor" ] && return 1
+  [ "$have_patch" -ge "$want_patch" ]
+}
+
+# version_older_than_have IS MIN — true when IS is present but below MIN.
+version_too_old() {
+  local is="$1" min="$2"
+  [ -n "$is" ] || return 1
+  ! version_at_least "$is" "$min"
+}
+
+# Print the version of `rg` on PATH, or nothing when it can't be determined.
+installed_rg_version() {
+  rg --version 2>/dev/null | head -1 | awk '{print $2}'
+}
+
 
 # Pre-check: verify sudo is usable before running sudo commands.
 # Returns 0 if sudo is available (cached or passwordless), 1 otherwise.
@@ -2976,19 +3043,36 @@ check_sudo() {
   return 1
 }
 
+# True when the `rg` on PATH is present and at least MIN_RIPGREP_VERSION.
+# An install that produced a too-old binary does not count as success: an
+# ancient distro package would otherwise satisfy `command -v rg` while behaving
+# differently from what the grep tool expects.
+installed_rg_is_acceptable() {
+  local ver
+  command -v rg >/dev/null 2>&1 || return 1
+  if ! ver=$(installed_rg_version) || [ -z "$ver" ]; then
+    return 1
+  fi
+  if version_too_old "$ver" "$MIN_RIPGREP_VERSION"; then
+    log_warn "ripgrep ${ver} is older than the supported minimum (${MIN_RIPGREP_VERSION})."
+    return 1
+  fi
+  return 0
+}
+
 install_ripgrep_via_pkg() {
   case "$OS" in
     macos)
       if command -v brew >/dev/null 2>&1; then
         log_info "Installing ripgrep via Homebrew (this may take a moment)..."
         if HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       fi
       if command -v port >/dev/null 2>&1 && check_sudo; then
         log_info "Installing ripgrep via MacPorts..."
         if sudo port install ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       fi
       ;;
@@ -2996,32 +3080,32 @@ install_ripgrep_via_pkg() {
       if command -v apt-get >/dev/null 2>&1 && check_sudo; then
         log_info "Installing ripgrep via apt-get..."
         if sudo apt-get install -y ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       elif command -v dnf >/dev/null 2>&1 && check_sudo; then
         log_info "Installing ripgrep via dnf..."
         if sudo dnf install -y ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       elif command -v pacman >/dev/null 2>&1 && check_sudo; then
         log_info "Installing ripgrep via pacman..."
         if sudo pacman -S --noconfirm ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       elif command -v zypper >/dev/null 2>&1 && check_sudo; then
         log_info "Installing ripgrep via zypper..."
         if sudo zypper install -y ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       elif command -v apk >/dev/null 2>&1 && check_sudo; then
         log_info "Installing ripgrep via apk..."
         if sudo apk add ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       elif command -v nix-env >/dev/null 2>&1; then
         log_info "Installing ripgrep via nix..."
         if nix-env -iA nixpkgs.ripgrep; then
-          command -v rg >/dev/null 2>&1 && return 0
+          installed_rg_is_acceptable && return 0
         fi
       fi
       ;;
@@ -3034,8 +3118,8 @@ install_ripgrep_via_cargo() {
     log_info "Installing ripgrep via cargo (no sudo needed)..."
     if cargo install ripgrep; then
       fix_owner "${HOME}/.cargo"
-      command -v rg >/dev/null 2>&1 && return 0
-      log_warn "cargo install succeeded but rg not found in PATH."
+      installed_rg_is_acceptable && return 0
+      log_warn "cargo install succeeded but rg not found in PATH or too old."
     fi
   fi
   return 1
@@ -3090,10 +3174,17 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       fi
     fi
   elif command -v rg >/dev/null 2>&1; then
-    if [ "$VERBOSE" = "1" ]; then
+    if ! rg_version=$(installed_rg_version) || [ -z "$rg_version" ]; then
+      echo ""
+      log_warn "Could not determine the version of ripgrep on PATH."
+      ripgrep_manual_hint
+    elif version_too_old "$rg_version" "$MIN_RIPGREP_VERSION"; then
+      echo ""
+      log_warn "ripgrep ${rg_version} found, but the minimum supported is ${MIN_RIPGREP_VERSION} — the grep tool may misbehave."
+      ripgrep_manual_hint
+    elif [ "$VERBOSE" = "1" ]; then
       echo ""
       log_info "Checking optional tools..."
-      rg_version=$(rg --version 2>/dev/null | head -1 | awk '{print $2}') || rg_version="(version unknown)"
       log_success "ripgrep ${rg_version} found"
     fi
   else

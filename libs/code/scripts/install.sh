@@ -577,6 +577,27 @@ prepare_install_log_dir() {
   printf '%s\n' "$dir"
 }
 
+# Print the live-follow command for the install log when this run streams
+# uv's output to it (UV_LIVE_LOG). Root and log-disabled runs have no live
+# file, so they keep the post-install "Full log:" pointer instead.
+log_update_tail_hint() {
+  [ "${UV_LIVE_LOG:-false}" = true ] && [ -n "${INSTALL_LOG_DISPLAY:-}" ] || return 0
+  # Keep the leading `~` unquoted so a pasted command expands it, while
+  # quoting the remainder to preserve paths below a home directory containing
+  # spaces or shell metacharacters. Other paths must be quoted as a whole.
+  local quoted
+  case "$INSTALL_LOG_DISPLAY" in
+    \~/*)
+      quoted=$(printf '%s' "${INSTALL_LOG_DISPLAY#\~/}" | sed "s/'/'\\\\''/g")
+      log_info "  Update log: tail -f ~/'${quoted}'"
+      ;;
+    *)
+      quoted=$(printf '%s' "$INSTALL_LOG_DISPLAY" | sed "s/'/'\\\\''/g")
+      log_info "  Update log: tail -f '${quoted}'"
+      ;;
+  esac
+}
+
 fix_install_log_owner() {
   [ -n "${INSTALL_LOG:-}" ] || return 0
   [ "$(id -u)" -eq 0 ] || return 0
@@ -601,6 +622,10 @@ fix_install_log_owner() {
 }
 
 copy_install_log() {
+  # An unprivileged run that streamed uv's output straight to INSTALL_LOG has
+  # nothing to publish: the log is already in place. Staging a copy of the
+  # file onto itself would be a no-op at best.
+  [ "${UV_LIVE_LOG:-false}" != true ] || return 0
   [ -n "${INSTALL_LOG:-}" ] || return 1
   [ -n "${install_log_dir:-}" ] || return 1
   [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 1
@@ -1673,105 +1698,6 @@ if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ]; then
   fi
 fi
 
-if [ "$IS_EDITABLE" = true ]; then
-  pre_label="${PRE_VERSION:-(version unknown)}"
-  if [ -n "$EDITABLE_SRC" ]; then
-    log_info "deepagents-code ${pre_label} found (editable install from ${EDITABLE_SRC})."
-  else
-    log_info "deepagents-code ${pre_label} found (editable install from local source)."
-  fi
-  log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
-elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ]; then
-  # Default path with an existing install: probe PyPI and prompt before
-  # upgrading, rather than silently pulling the latest version every run.
-  # A pinned version or pre-release strategy (handled by the branches above and
-  # below) expresses explicit intent, so those install directly.
-  #
-  # The up-to-date check below is plain string equality, so it relies on
-  # PRE_VERSION (the raw `dcode -v` literal) and LATEST_VERSION (PyPI's
-  # PEP 440-normalized `info.version`) being identically canonical. release-please
-  # keeps `_version.py` to clean `X.Y.Z`, so they match today; a non-canonical
-  # release literal would merely re-prompt an up-to-date user, never silently
-  # skip a real upgrade. A shell installer can't import `packaging` to compare
-  # semantically the way `update_check.py` does.
-  log_info "dcode ${PRE_VERSION} found — checking for updates..."
-  LATEST_VERSION=$(fetch_latest_version)
-  if [ -z "$LATEST_VERSION" ]; then
-    log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
-  elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
-    if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-      log_info "deepagents-code is already up to date — rebuilding with requested options."
-    else
-      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
-    fi
-  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_ON_PATH" = true ]; then
-    log_success "Already up to date!"
-    exit 0
-  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_IS_TOOL" = true ]; then
-    log_info "deepagents-code ${PRE_VERSION} is current but is not selected on PATH — repairing its install."
-  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-    log_info "deepagents-code ${PRE_VERSION} is current but is outside uv's configured tool bin — installing it there."
-  elif [ "$ASSUME_YES" = "1" ]; then
-    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
-    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
-    log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
-  elif can_prompt; then
-    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
-    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
-    if prompt_yn "Install update?"; then
-      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
-    else
-      update_prompt_rc=$?
-      if [ "$update_prompt_rc" -eq 2 ]; then
-        # `can_prompt` proved the terminal could be opened, but it may still
-        # detach before `prompt_yn` can read from it. As with no TTY at all,
-        # nobody declined the update, so warn and complete the install.
-        log_warn "Could not ask — continuing with the update."
-      else
-        log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
-        exit 0
-      fi
-    fi
-  else
-    # No TTY to prompt (cron, CI, Dockerfile RUN, systemd): there is no human to
-    # ask, and an installer's job is to make the current version present, so
-    # complete the upgrade rather than silently no-op. Callers that want a fixed
-    # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
-    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} — updating (no TTY to prompt)."
-  fi
-elif [ -n "$PRE_VERSION" ]; then
-  log_info "dcode ${PRE_VERSION} found — checking for updates..."
-else
-  log_info "Installing ${PACKAGE}..."
-fi
-
-# Capture uv stderr so we can:
-#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
-#      plain English. uv emits that line when it rebuilds the tool venv
-#      instead of upgrading in place (e.g., Python interpreter mismatch, or
-#      editable↔regular install swap).
-#   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
-#      download/build progress, and the trailing "Installed N executables:" line
-#      — we already show a concise install/update summary.
-#   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
-#      "pkg  X → Y" table under a single header.
-#   4. Detect whether uv actually moved any packages (those same
-#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
-#      bumps dependencies must report differently from a true no-op, so a
-#      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
-#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
-#      same-version dependency bump — or a failed install — can point the
-#      user at the full details after the terminal scrolls away.
-# Using a tempfile (vs. process substitution) ensures we see uv's full exit
-# status, don't race the warning past later log lines, and can re-scan the
-# raw output for (4) after the awk pass above has already reformatted it.
-uv_stderr=$(mktemp 2>/dev/null) || {
-  log_error "mktemp is required to create a secure temp file."
-  exit 1
-}
-register_temp "$uv_stderr"
-uv_rc=0
-UV_REPORTED_PACKAGE_CHANGES=false
 # Mirror uv's raw output to a persistent log under the XDG cache dir. A
 # same-version dependency bump prints only a one-line summary and a failed
 # install scrolls past, so the log preserves the full diff/errors for later.
@@ -1804,6 +1730,157 @@ if [ -n "$cache_root" ]; then
     fi
   fi
 fi
+
+# Decide where uv's stderr streams *during* the install. Unprivileged runs
+# write straight to INSTALL_LOG so `tail -f` shows live output (the built-in
+# updater does the same); copy_install_log then sees the log already in place
+# and skips the staged publish. Root keeps the mktemp + stage-publish path:
+# copy_install_log never resolves a user-writable parent as root, and
+# streaming straight to INSTALL_LOG would follow a planted symlink there.
+UV_LIVE_LOG=false
+# File descriptor that carries the live install log when UV_LIVE_LOG is on.
+# Picked from the user range (9+) so it cannot collide with the script's own
+# redirections, which all use the standard 0-2.
+UV_LIVE_LOG_FD=9
+setup_live_install_log() {
+  [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ] || return 0
+  # A planted symlink at the log path disables live logging, matching
+  # copy_install_log's refusal: never delete or follow it. Noclobber then
+  # refuses to create over any surviving file, so uv's output can never land
+  # somewhere the user did not intend. A regular file from a prior run is
+  # removed so this run's log starts empty.
+  if [ -L "$INSTALL_LOG" ]; then
+    INSTALL_LOG=""
+    INSTALL_LOG_DISPLAY=""
+  else
+    [ ! -e "$INSTALL_LOG" ] || rm -f "$INSTALL_LOG" 2>/dev/null || true
+    # Create the log and retain it as an open fd in one noclobber-protected
+    # operation. A path-based `2>"$INSTALL_LOG"` would re-resolve the name at
+    # uv's launch, so a process able to write the cache dir could swap
+    # install.log for a symlink after this check and redirect uv's output. The
+    # inherited fd pins the inode created here, so the later redirect never
+    # touches the path again. `uv_stderr` keeps the real path so the
+    # post-install readers (awk/cat/grep/cp) operate on a file; the fd is only
+    # the write target.
+    set -o noclobber
+    if eval "exec $UV_LIVE_LOG_FD>\"\$INSTALL_LOG\"" 2>/dev/null; then
+      set +o noclobber
+      uv_stderr="$INSTALL_LOG"
+      UV_LIVE_LOG=true
+    else
+      set +o noclobber
+      eval "exec $UV_LIVE_LOG_FD>&-" 2>/dev/null || true
+      rm -f "$INSTALL_LOG" 2>/dev/null || true
+    fi
+  fi
+}
+
+uv_rc=0
+UV_REPORTED_PACKAGE_CHANGES=false
+
+if [ "$IS_EDITABLE" = true ]; then
+  pre_label="${PRE_VERSION:-(version unknown)}"
+  if [ -n "$EDITABLE_SRC" ]; then
+    log_info "deepagents-code ${pre_label} found (editable install from ${EDITABLE_SRC})."
+  else
+    log_info "deepagents-code ${pre_label} found (editable install from local source)."
+  fi
+  log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
+elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ]; then
+  # Default path with an existing install: probe PyPI and prompt before
+  # upgrading, rather than silently pulling the latest version every run.
+  # A pinned version or pre-release strategy (handled by the branches above and
+  # below) expresses explicit intent, so those install directly.
+  #
+  # The up-to-date check below is plain string equality, so it relies on
+  # PRE_VERSION (the raw `dcode -v` literal) and LATEST_VERSION (PyPI's
+  # PEP 440-normalized `info.version`) being identically canonical. release-please
+  # keeps `_version.py` to clean `X.Y.Z`, so they match today; a non-canonical
+  # release literal would merely re-prompt an up-to-date user, never silently
+  # skip a real upgrade. A shell installer can't import `packaging` to compare
+  # semantically the way `update_check.py` does.
+  log_info "dcode ${PRE_VERSION} found — checking for updates..."
+  # Set on the branches that deliberately move to the PyPI latest the script
+  # just fetched and confirmed differs from the installed version. That is the
+  # one path where the run can honestly call the version move an "upgrade" in
+  # the footer — every other version move (custom index resolving older, a
+  # pinned downgrade) stays neutral. See the footer far below.
+  UPGRADE_INTENDED=false
+  LATEST_VERSION=$(fetch_latest_version)
+  if [ -z "$LATEST_VERSION" ]; then
+    log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
+  elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
+    if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+      log_info "deepagents-code is already up to date — rebuilding with requested options."
+    else
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
+      UPGRADE_INTENDED=true
+    fi
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_ON_PATH" = true ]; then
+    log_success "Already up to date!"
+    exit 0
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_IS_TOOL" = true ]; then
+    log_info "deepagents-code ${PRE_VERSION} is current but is not selected on PATH — repairing its install."
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+    log_info "deepagents-code ${PRE_VERSION} is current but is outside uv's configured tool bin — installing it there."
+  elif [ "$ASSUME_YES" = "1" ]; then
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
+    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
+    log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+    UPGRADE_INTENDED=true
+  elif can_prompt; then
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
+    log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
+    if prompt_yn "Install update?"; then
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+      UPGRADE_INTENDED=true
+    else
+      update_prompt_rc=$?
+      if [ "$update_prompt_rc" -eq 2 ]; then
+        # `can_prompt` proved the terminal could be opened, but it may still
+        # detach before `prompt_yn` can read from it. As with no TTY at all,
+        # nobody declined the update, so warn and complete the install.
+        log_warn "Could not ask — continuing with the update."
+        UPGRADE_INTENDED=true
+      else
+        log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
+        exit 0
+      fi
+    fi
+  else
+    # No TTY to prompt (cron, CI, Dockerfile RUN, systemd): there is no human to
+    # ask, and an installer's job is to make the current version present, so
+    # complete the upgrade rather than silently no-op. Callers that want a fixed
+    # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
+    log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} — updating (no TTY to prompt)."
+    UPGRADE_INTENDED=true
+  fi
+elif [ -n "$PRE_VERSION" ]; then
+  log_info "dcode ${PRE_VERSION} found — checking for updates..."
+else
+  log_info "Installing ${PACKAGE}..."
+fi
+
+# Capture uv stderr so we can:
+#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
+#      plain English. uv emits that line when it rebuilds the tool venv
+#      instead of upgrading in place (e.g., Python interpreter mismatch, or
+#      editable↔regular install swap).
+#   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
+#      download/build progress, and the trailing "Installed N executables:" line
+#      — we already show a concise install/update summary.
+#   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
+#      "pkg  X → Y" table under a single header.
+#   4. Detect whether uv actually moved any packages (those same
+#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
+#      bumps dependencies must report differently from a true no-op, so a
+#      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
+#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
+#      same-version dependency bump — or a failed install — can point the
+#      user at the full details after the terminal scrolls away.
+# Using a tempfile (vs. process substitution) ensures we see uv's full exit
+# status, don't race the warning past later log lines, and can re-scan the
+# raw output for (4) after the awk pass above has already reformatted it.
 # Warn (and offer to back out) before *this* block would take the lock: it only
 # prints a warning and asks a question - the receipt itself was read far above,
 # also outside the lock - so holding the install lock across an unbounded human
@@ -1861,10 +1938,34 @@ elif [ -n "$INSTALLED_EXTRAS" ]; then
     fi
   fi
 fi
+# Take the install lock before replacing the prior diagnostic log. Once this
+# succeeds, the run is committed to starting `uv`; no no-op, declined update,
+# or lock-acquisition failure can erase the previous log.
 if [ -z "$INSTALL_LOCK_KIND" ]; then
   acquire_install_lock
 fi
-if [[ -z "$VERSION" ]]; then
+setup_live_install_log
+if [ "$UV_LIVE_LOG" = false ]; then
+  uv_stderr=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
+  register_temp "$uv_stderr"
+else
+  log_update_tail_hint
+fi
+# In live-log mode, uv's stderr goes to the open UV_LIVE_LOG_FD descriptor
+# (the noclobber-validated install log), not to a re-opened pathname — see
+# the fd setup far above. Otherwise it goes to the mktemp scratch file.
+if [ "$UV_LIVE_LOG" = true ]; then
+  if [[ -z "$VERSION" ]]; then
+    "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
+      --prerelease "$PRERELEASE" "$PACKAGE" 2>&$UV_LIVE_LOG_FD || uv_rc=$?
+  else
+    "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" \
+      2>&$UV_LIVE_LOG_FD || uv_rc=$?
+  fi
+elif [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
 else
@@ -1967,7 +2068,9 @@ if [ -n "$INSTALL_LOG" ]; then
     INSTALL_LOG_DISPLAY=""
   fi
 fi
-rm -f "$uv_stderr"
+# Live-log runs left uv's output in INSTALL_LOG, which must survive; only a
+# mktemp scratch file is removed here.
+[ "$UV_LIVE_LOG" = true ] || rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
   restore_terminal_after_signal "$uv_rc"
   log_signal_failure_hint "$uv_rc"
@@ -2991,10 +3094,13 @@ fi
 MIN_RIPGREP_VERSION="12.0.0"
 
 # version_at_least HAVE WANT — dotted numeric compare (12.0.0 >= 11.0.0). The
-# installer runs before Python exists, so this stays in pure shell.
+# installer runs before Python exists, so this stays in pure shell. It is not
+# a PEP 440 comparator, so callers with package versions must only use it for
+# numeric versions.
 version_at_least() {
   local have="$1" want="$2" IFS_save="$IFS"
   case "$have" in ''|*[!0-9.]*) return 1 ;; esac
+  case "$want" in ''|*[!0-9.]*) return 1 ;; esac
   IFS=.
   # shellcheck disable=SC2086  # word-splitting on '.' is the point
   set -- $have
@@ -3212,19 +3318,24 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done — footer wording depends on what changed. All three named branches also
+# Done — footer wording depends on what changed. All named branches also
 # require a non-editable install (an editable one always falls through to the
 # catch-all, even when its reinstall moved dependencies):
 #   - same app version + dependency changes → "Dependencies updated."
 #   - already up to date                    → "Already installed."
-#   - unpinned, default-prerelease run that moved version → "Version changed."
+#   - deliberate move to the PyPI latest    → "Upgraded."
+#   - any other unpinned version move       → "Version changed."
 #   - everything else                       → "Setup complete."
 #
 # The last branch is a catch-all, not an enumerated set. It covers a fresh
-# install and an editable→PyPI swap. The version-move branch stays neutral
-# because uv honors custom indexes and configuration whose newest available
-# package can be older than the installed version. Two other known downgrade
-# paths remain in the catch-all branch:
+# install and an editable→PyPI swap. The version-move branches split on
+# UPGRADE_INTENDED (set far above): the script can only claim "Upgraded." when
+# it deliberately moved to the PyPI latest it had just fetched, confirmed
+# differed from the installed version, and installed a numerically newer
+# version. Any other move stays neutral because uv honors custom indexes and
+# configuration whose newest available package can be older than the installed
+# version. Two other known downgrade paths remain
+# in the catch-all branch:
 #   - a *pinned* version (VERSION set): `bash -s -- 0.1.0` over an installed
 #     0.2.0 is a downgrade.
 #   - an explicit DEEPAGENTS_CODE_PRERELEASE (PRERELEASE_REQUESTED set): with
@@ -3240,6 +3351,11 @@ if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] 
 elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
+elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
+  && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ] \
+  && [ "$UPGRADE_INTENDED" = true ] && [ -n "${LATEST_VERSION:-}" ] \
+  && [ "$NEW_VERSION" = "$LATEST_VERSION" ] && version_at_least "$NEW_VERSION" "$PRE_VERSION"; then
+  footer_msg="Upgraded."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then
   footer_msg="Version changed."

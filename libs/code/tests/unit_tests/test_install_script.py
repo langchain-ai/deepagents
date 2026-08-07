@@ -120,7 +120,7 @@ def _write_fake_tools(
     home = tmp_path / "home"
     tools = tmp_path / "tools"
     bin_dir.mkdir()
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     # exist_ok: a test may stage a uv tool receipt under `tools/deepagents-code`
     # before invoking, which creates `tools` as a side effect.
     tools.mkdir(exist_ok=True)
@@ -743,6 +743,21 @@ def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
     assert not (tmp_path / "home/.deepagents").exists()
 
 
+def test_install_script_already_up_to_date_preserves_prior_log(tmp_path: Path) -> None:
+    """A no-op version check leaves the previous install diagnostics intact."""
+    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("previous install failure\n")
+
+    proc, args_path = _invoke(
+        tmp_path, {}, installed_version="0.1.0", latest_version="0.1.0"
+    )
+
+    assert proc.returncode == 0
+    assert not args_path.exists()
+    assert log_path.read_text() == "previous install failure\n"
+
+
 def test_install_script_latest_version_with_extras_installs_requested_extra(
     tmp_path: Path,
 ) -> None:
@@ -893,28 +908,40 @@ def test_install_script_retries_transient_pypi_failure(tmp_path: Path) -> None:
     assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
-def test_install_script_requires_secure_temp_file_for_uv_output(
+def test_install_script_uv_output_uses_cache_log_not_predictable_tmp(
     tmp_path: Path,
 ) -> None:
-    """The main install fails closed instead of using a predictable `/tmp` file."""
-    proc, args_path = _invoke(
+    """Non-root installs stream uv output to the cache log, not a `/tmp` file.
+
+    The live-log path means an unprivileged run never calls `mktemp` for uv's
+    output, so a broken `mktemp` no longer aborts it. The property the original
+    test protected — never fall back to a predictable `/tmp` name — still
+    holds; the fallback is now the per-user cache log.
+    """
+    proc, _ = _invoke(
         tmp_path,
-        {},
+        {"FAKE_UV_INSTALL_STDERR": "live log output"},
         installed_version="0.1.0",
         latest_version="0.2.0",
         mktemp_fails=True,
     )
 
-    assert proc.returncode != 0
-    assert "mktemp is required to create a secure temp file" in proc.stderr
-    assert not args_path.exists()
+    assert proc.returncode == 0
+    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
+        "live log output\n"
+    )
     script = SCRIPT.read_text(encoding="utf-8")
+    assert 'eval "exec $UV_LIVE_LOG_FD>\\"\\$INSTALL_LOG\\""' in script
+    assert ': > "$INSTALL_LOG"' not in script
     assert "/tmp/deepagents-install.$$" not in script
     assert "/tmp/deepagents-ripgrep-setup.$$" not in script
 
 
 def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> None:
     """Answering 'n' to the update prompt keeps the current version (no uv)."""
+    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("previous install failure\n")
     code, output, args_path = _invoke_interactive(
         tmp_path, {}, answer="n", installed_version="0.1.0", latest_version="0.2.0"
     )
@@ -934,6 +961,7 @@ def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> Non
         "deepagents-code%3D%3D0.2.0" in output
     )
     assert "Keeping deepagents-code 0.1.0" in output
+    assert log_path.read_text() == "previous install failure\n"
 
 
 def test_install_script_prompt_read_failure_continues_update(
@@ -1725,8 +1753,13 @@ def _write_uv_receipt(
     return receipt
 
 
-def test_install_script_upgrade_footer_says_version_changed(tmp_path: Path) -> None:
-    """A version move gets a useful footer without assuming its direction."""
+def test_install_script_upgrade_footer_says_upgraded(tmp_path: Path) -> None:
+    """A deliberate move to the PyPI latest claims the upgrade in the footer.
+
+    The script fetched the latest version, confirmed it differed from the
+    installed one, and proceeded — the one path where the move's direction is
+    known, so the footer can say "Upgraded." instead of the neutral "changed."
+    """
     proc, _ = _invoke(
         tmp_path,
         {
@@ -1741,15 +1774,40 @@ def test_install_script_upgrade_footer_says_version_changed(tmp_path: Path) -> N
     )
 
     assert proc.returncode == 0
-    assert "✔ Version changed. Run: dcode" in proc.stdout
-    assert "Upgrade complete" not in proc.stdout
+    assert "✔ Upgraded. Run: dcode" in proc.stdout
+    assert "Version changed" not in proc.stdout
     assert "Setup complete" not in proc.stdout
+
+
+def test_install_script_prerelease_upgrade_footer_is_neutral(tmp_path: Path) -> None:
+    """A PEP 440 prerelease move avoids the numeric-only footer comparator."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.0",
+        },
+        installed_version="0.1.0rc1",
+        latest_version="0.1.0",
+    )
+
+    assert proc.returncode == 0
+    assert "✔ Version changed. Run: dcode" in proc.stdout
+    assert "Upgraded." not in proc.stdout
+    assert "integer expression expected" not in proc.stderr
 
 
 def test_install_script_custom_index_downgrade_footer_is_neutral(
     tmp_path: Path,
 ) -> None:
-    """An unpinned custom index can resolve an older available version."""
+    """A custom index that resolves older than the PyPI latest is not an upgrade.
+
+    The script targeted the PyPI latest (0.1.20) and intended an upgrade, but
+    uv honored UV_INDEX_URL and installed an older version (0.1.18) than was
+    already present (0.1.19). Because the footer keys on the *installed*
+    version matching the probed latest — not on intent — this concretely
+    downward move gets the neutral "Version changed." rather than "Upgraded."
+    """
     proc, _ = _invoke(
         tmp_path,
         {
@@ -1763,7 +1821,28 @@ def test_install_script_custom_index_downgrade_footer_is_neutral(
 
     assert proc.returncode == 0
     assert "✔ Version changed. Run: dcode" in proc.stdout
-    assert "Upgrade complete" not in proc.stdout
+    assert "Upgraded." not in proc.stdout
+
+
+def test_install_script_pypi_downgrade_footer_is_neutral(tmp_path: Path) -> None:
+    """A PyPI version below the installed version is not an upgrade.
+
+    The unpinned path targets PyPI's latest and does install that exact version,
+    but a previously installed pinned or custom build can still be newer.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.20",
+        },
+        installed_version="0.2.0",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert "✔ Version changed. Run: dcode" in proc.stdout
+    assert "Upgraded." not in proc.stdout
 
 
 def test_install_script_pinned_downgrade_footer_is_not_upgrade(tmp_path: Path) -> None:
@@ -1856,6 +1935,7 @@ def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
 
     assert proc.returncode == 0
     assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
+    assert "Update log: tail -f ~/'.cache/deepagents-code/install.log'" in proc.stdout
 
 
 def test_install_script_dependency_bump_prints_log_pointer_once(
@@ -1875,7 +1955,9 @@ def test_install_script_dependency_bump_prints_log_pointer_once(
     # The success line used to carry its own `Details:` copy of the same path,
     # printing it twice on consecutive lines.
     assert "Details:" not in proc.stdout
-    assert proc.stdout.count("~/.cache/deepagents-code/install.log") == 1
+    # The path appears twice: the pre-install `Update log: tail -f ...` hint
+    # (live output) and the post-install `Full log:` pointer.
+    assert proc.stdout.count("~/.cache/deepagents-code/install.log") == 2
 
 
 def test_install_script_omits_log_pointer_when_uv_wrote_nothing(

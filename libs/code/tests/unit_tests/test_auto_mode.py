@@ -377,6 +377,8 @@ def _request(
     store: _Store | None = None,
     raw_user_text: str = "perform the requested task",
     expanded_text: str = "expanded file content must not authorize anything",
+    turn_id: str = "turn-1",
+    referenced_paths: list[Path] | None = None,
     classifier_model: str | None = None,
 ) -> tuple[ModelRequest[Any], _Store, str]:
     _ = args
@@ -387,7 +389,7 @@ def _request(
     runtime = SimpleNamespace(
         context={
             "thread_id": thread_id,
-            "turn_id": "turn-1",
+            "turn_id": turn_id,
             "approval_mode_key": key,
             "approval_mode": "auto",
             "classifier_model": classifier_model,
@@ -396,11 +398,16 @@ def _request(
         store=active_store,
         stream_writer=lambda _event: None,
     )
+    mentions = (
+        referenced_paths
+        if referenced_paths is not None
+        else [tmp_path / "mentioned.py"]
+    )
     message = HumanMessage(
         content=expanded_text,
         additional_kwargs={
             USER_PROMPT_METADATA_KEY: user_prompt_metadata(
-                raw_user_text, [tmp_path / "mentioned.py"], turn_id="turn-1"
+                raw_user_text, mentions, turn_id=turn_id
             )
         },
     )
@@ -5106,3 +5113,507 @@ async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert not executed
+
+
+def _outside_draft(tmp_path: Path) -> tuple[Path, Path]:
+    """Return a worktree root and an existing outside-worktree draft file."""
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    draft = tmp_path / "drafts" / "dcode-scratch-plan.md"
+    draft.parent.mkdir()
+    draft.write_text("draft body\n", encoding="utf-8")
+    return worktree, draft
+
+
+def _trust_boundary_deny(call_id: str = "call-1") -> AutoDecisionBatch:
+    return AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id=call_id,
+                decision="deny",
+                category=AutoDecisionCategory.TRUST_BOUNDARY,
+                reason="The target crosses the repository trust boundary.",
+            )
+        ]
+    )
+
+
+def _rewrite_command(path: Path) -> str:
+    return f"python3 - <<'PY'\nopen({str(path)!r}, 'w').write('rewritten')\nPY"
+
+
+def _seed_counters(store: _Store, key: str, *, turn_id: str = "turn-1") -> None:
+    """Persist counters so the turn-change path performs no extra Store write."""
+    counters = dict(_default_counters(ApprovalMode.AUTO))
+    counters["last_turn_id"] = turn_id
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+
+
+async def test_denied_mutation_target_cannot_be_rewritten_through_shell(
+    tmp_path: Path,
+) -> None:
+    """A path denied for edit_file stays denied when shell repeats it verbatim."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, store, _key = _request(
+        worktree, model=model, tool_name="edit_file", args=edit_args
+    )
+
+    denied = await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    assert denied["decisions"][0]["disposition"] == "policy_deny"
+
+    shell_args: dict[str, object] = {"command": _rewrite_command(draft)}
+    shell_request, _store, _shell_key = _request(
+        worktree,
+        model=model,
+        tool_name="execute",
+        args=shell_args,
+        store=store,
+    )
+
+    shell_plan = await _plan(
+        middleware,
+        shell_request,
+        tool_name="execute",
+        args=shell_args,
+        call_id="call-2",
+    )
+
+    decision = shell_plan["decisions"][0]
+    assert decision["disposition"] == "policy_deny"
+    assert decision["category"] == AutoDecisionCategory.TRUST_BOUNDARY.value
+    assert "already denied this turn" in decision["reason"]
+    # The lock is deterministic: the shell retry never reached the classifier.
+    assert len(model.calls) == 1
+    assert draft.read_text(encoding="utf-8") == "draft body\n"
+
+
+async def test_deny_lock_survives_a_tool_free_model_step(tmp_path: Path) -> None:
+    """The lock outlives steps that produce no tool calls at all."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, store, _key = _request(
+        worktree, model=model, tool_name="edit_file", args=edit_args
+    )
+    await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    prose_request, _store, _prose_key = _request(
+        worktree,
+        model=model,
+        tool_name="execute",
+        args={"command": "true"},
+        store=store,
+    )
+
+    async def prose_handler(_request: ModelRequest) -> ModelResponse:
+        await asyncio.sleep(0)
+        return ModelResponse(result=[AIMessage(content="I cannot edit that file.")])
+
+    prose_response = await middleware.awrap_model_call(prose_request, prose_handler)
+    assert isinstance(prose_response, ExtendedModelResponse)
+
+    shell_args: dict[str, object] = {"command": _rewrite_command(draft)}
+    shell_request, _store, _shell_key = _request(
+        worktree,
+        model=model,
+        tool_name="execute",
+        args=shell_args,
+        store=store,
+    )
+
+    shell_plan = await _plan(
+        middleware,
+        shell_request,
+        tool_name="execute",
+        args=shell_args,
+        call_id="call-3",
+    )
+
+    assert shell_plan["decisions"][0]["disposition"] == "policy_deny"
+    assert "already denied this turn" in shell_plan["decisions"][0]["reason"]
+
+
+async def test_same_batch_shell_sibling_cannot_bypass_denied_edit(
+    tmp_path: Path,
+) -> None:
+    """A sibling proposed in the same batch is denied, not judged independently."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(
+        AutoDecisionBatch(
+            decisions=[
+                AutoDecision(
+                    tool_call_id="call-1",
+                    decision="deny",
+                    category=AutoDecisionCategory.TRUST_BOUNDARY,
+                    reason="The target crosses the repository trust boundary.",
+                ),
+                AutoDecision(
+                    tool_call_id="call-2",
+                    decision="allow",
+                    category=AutoDecisionCategory.OTHER_POLICY,
+                    reason="",
+                ),
+            ]
+        )
+    )
+    middleware = _middleware(worktree)
+    request, _store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="edit_file",
+        args={},
+        tools=[_tool("edit_file"), _tool("execute")],
+    )
+
+    plan = await _plan_calls(
+        middleware,
+        request,
+        [
+            {
+                "name": "edit_file",
+                "args": {
+                    "file_path": str(draft),
+                    "old_string": "draft",
+                    "new_string": "final",
+                },
+                "id": "call-1",
+                "type": "tool_call",
+            },
+            {
+                "name": "execute",
+                "args": {"command": _rewrite_command(draft)},
+                "id": "call-2",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    by_id = {decision["tool_call_id"]: decision for decision in plan["decisions"]}
+    assert by_id["call-1"]["disposition"] == "policy_deny"
+    assert by_id["call-2"]["disposition"] == "policy_deny"
+    assert "already denied this turn" in by_id["call-2"]["reason"]
+    assert plan["pending_result_ids"] == []
+
+
+async def test_hardlink_alias_cannot_bypass_deny_lock(tmp_path: Path) -> None:
+    """Device/inode identity catches a second name for a locked file."""
+    worktree, draft = _outside_draft(tmp_path)
+    alias = draft.parent / "alias.md"
+    os.link(draft, alias)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, store, _key = _request(
+        worktree, model=model, tool_name="edit_file", args=edit_args
+    )
+    await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    alias_args: dict[str, object] = {"command": _rewrite_command(alias)}
+    alias_request, _store, _alias_key = _request(
+        worktree,
+        model=model,
+        tool_name="execute",
+        args=alias_args,
+        store=store,
+    )
+
+    alias_plan = await _plan(
+        middleware,
+        alias_request,
+        tool_name="execute",
+        args=alias_args,
+        call_id="call-2",
+    )
+
+    assert alias_plan["decisions"][0]["disposition"] == "policy_deny"
+    assert len(model.calls) == 1
+
+
+async def test_deny_lock_clears_when_a_new_user_turn_starts(tmp_path: Path) -> None:
+    """A new user message restarts consent, so the lock stops applying."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, store, _key = _request(
+        worktree, model=model, tool_name="edit_file", args=edit_args
+    )
+    await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    next_turn_model = _StructuredModel(_trust_boundary_deny(call_id="call-2"))
+    shell_args: dict[str, object] = {"command": _rewrite_command(draft)}
+    next_turn_request, _store, _next_key = _request(
+        worktree,
+        model=next_turn_model,
+        tool_name="execute",
+        args=shell_args,
+        store=store,
+        turn_id="turn-2",
+    )
+
+    next_plan = await _plan(
+        middleware,
+        next_turn_request,
+        tool_name="execute",
+        args=shell_args,
+        call_id="call-2",
+    )
+
+    # Still denied, but by the classifier rather than the previous turn's lock.
+    assert next_plan["decisions"][0]["disposition"] == "policy_deny"
+    assert "already denied this turn" not in next_plan["decisions"][0]["reason"]
+    assert len(next_turn_model.calls) == 1
+
+
+async def test_unpersistable_deny_lock_routes_the_batch_to_human(
+    tmp_path: Path,
+) -> None:
+    """Nothing in the batch stays allowed when the lock cannot be recorded."""
+    worktree, draft = _outside_draft(tmp_path)
+    inside = worktree / "module.py"
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    store = _FailingCounterStore()
+    request, _store, key = _request(
+        worktree,
+        model=model,
+        tool_name="edit_file",
+        args={},
+        tools=[_tool("edit_file"), _tool("write_file")],
+        store=store,
+    )
+    _seed_counters(store, key)
+    store.fail_counter_writes = True
+
+    plan = await _plan_calls(
+        middleware,
+        request,
+        [
+            {
+                "name": "edit_file",
+                "args": {
+                    "file_path": str(draft),
+                    "old_string": "draft",
+                    "new_string": "final",
+                },
+                "id": "call-1",
+                "type": "tool_call",
+            },
+            {
+                "name": "write_file",
+                "args": {"file_path": str(inside), "content": "x = 1"},
+                "id": "call-2",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    dispositions = {
+        decision["tool_call_id"]: decision["disposition"]
+        for decision in plan["decisions"]
+    }
+    assert dispositions["call-1"] == "require_human"
+    # The routine in-worktree write was a deterministic allow before the failed
+    # lock write; it must not execute while the lock is unrecorded.
+    assert dispositions["call-2"] == "require_human"
+    assert plan["pending_result_ids"] == []
+    assert plan["fallback_reason"] == "control_state_unavailable"
+
+
+async def test_user_named_outside_path_asks_for_human_approval(
+    tmp_path: Path,
+) -> None:
+    """A path the user typed alongside edit intent becomes a prompt, not a refusal."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, store, key = _request(
+        worktree,
+        model=model,
+        tool_name="edit_file",
+        args=edit_args,
+        raw_user_text=f"please edit {draft} with the missing sections",
+    )
+
+    plan = await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    decision = plan["decisions"][0]
+    assert decision["disposition"] == "require_human"
+    assert str(draft) in decision["reason"]
+    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
+    # An approval request is not a denial: it must not push the turn toward the
+    # consecutive-denial fallback, and it must not lock the path.
+    assert counters["consecutive_denials"] == 0
+    assert counters["denied_targets"] == []
+
+
+async def test_at_mentioned_outside_path_is_not_write_consent(tmp_path: Path) -> None:
+    """`@` mentions embed contents for reading and never authorize an overwrite."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, _store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="edit_file",
+        args=edit_args,
+        raw_user_text="please edit the referenced draft",
+        referenced_paths=[draft],
+    )
+
+    plan = await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_pasted_path_without_mutation_intent_is_not_user_named(
+    tmp_path: Path,
+) -> None:
+    """A path mentioned as context does not become a write target."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, _store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="edit_file",
+        args=edit_args,
+        raw_user_text=f"for background, my notes live at {draft}",
+    )
+
+    plan = await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_shell_reads_of_outside_paths_still_reach_the_classifier(
+    tmp_path: Path,
+) -> None:
+    """Naming an outside path in a command is not itself a mutation."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(worktree)
+    args: dict[str, object] = {"command": f"diff {draft} docs/plan.md"}
+    request, _store, _key = _request(
+        worktree, model=model, tool_name="execute", args=args
+    )
+
+    plan = await _plan(middleware, request, tool_name="execute", args=args)
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 1
+
+
+async def test_classifier_payload_reports_user_named_path_provenance(
+    tmp_path: Path,
+) -> None:
+    """Pasted-with-intent and `@`-mentioned paths are tagged differently."""
+    worktree, draft = _outside_draft(tmp_path)
+    mention = tmp_path / "drafts" / "mentioned.md"
+    mention.write_text("mentioned\n", encoding="utf-8")
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    request, _store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="edit_file",
+        args=edit_args,
+        raw_user_text=f"please update {draft} now",
+        referenced_paths=[mention],
+    )
+
+    await _plan(middleware, request, tool_name="edit_file", args=edit_args)
+
+    payload = json.loads(cast("Any", model.calls[0][1]).content)
+    by_path = {
+        entry["path"]: entry["provenance"] for entry in payload["user_named_paths"]
+    }
+    assert by_path[os.path.normcase(str(draft.resolve()))] == "pasted_absolute"
+    assert by_path[os.path.normcase(str(mention.resolve()))] == "at_mention"
+
+
+async def test_user_named_consent_does_not_carry_into_a_later_turn(
+    tmp_path: Path,
+) -> None:
+    """A path named in an earlier turn is not this turn's approved target."""
+    worktree, draft = _outside_draft(tmp_path)
+    model = _StructuredModel(_trust_boundary_deny())
+    middleware = _middleware(worktree)
+    edit_args: dict[str, object] = {
+        "file_path": str(draft),
+        "old_string": "draft",
+        "new_string": "final",
+    }
+    first_turn, store, _key = _request(
+        worktree,
+        model=model,
+        tool_name="edit_file",
+        args=edit_args,
+        raw_user_text=f"please edit {draft} with the missing sections",
+    )
+    first_plan = await _plan(
+        middleware, first_turn, tool_name="edit_file", args=edit_args
+    )
+    assert first_plan["decisions"][0]["disposition"] == "require_human"
+
+    later_model = _StructuredModel(_trust_boundary_deny(call_id="call-2"))
+    later_turn, _store, _later_key = _request(
+        worktree,
+        model=later_model,
+        tool_name="edit_file",
+        args=edit_args,
+        store=store,
+        raw_user_text="now run the tests",
+        turn_id="turn-2",
+    )
+
+    later_plan = await _plan(
+        middleware,
+        later_turn,
+        tool_name="edit_file",
+        args=edit_args,
+        call_id="call-2",
+    )
+
+    assert later_plan["decisions"][0]["disposition"] == "policy_deny"

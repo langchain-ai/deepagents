@@ -52,6 +52,10 @@ on:
       concurrency:
         type: string
         default: "4"
+      max_parallel:
+        description: "Maximum concurrent Harbor task jobs per model/branch. 0 derives the pool automatically from concurrency."
+        type: string
+        default: "0"
       sandbox_env:
         type: string
         default: "langsmith"
@@ -211,6 +215,7 @@ jobs:
           UNIFIED_PROFILE: ${{ inputs.profile }}
           UNIFIED_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
+          UNIFIED_MAX_PARALLEL: ${{ inputs.max_parallel }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
           UNIFIED_N_RETRIES: ${{ inputs.n_retries }}
           UNIFIED_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}

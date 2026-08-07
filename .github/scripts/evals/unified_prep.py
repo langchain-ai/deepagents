@@ -5,8 +5,9 @@ maps each category to its Harbor dataset, and emits a per-model flat matrix
 (one entry per shard, spanning every category) to GITHUB_OUTPUT.
 
 Pool sizing is derived by `derive_pool`, not clamped after the fact: given
-`concurrency` (trials in flight per shard job), `max_parallel =
-MAX_TASKS_PER_MODEL // concurrency` is the per-model concurrent-shard budget.
+`concurrency` (trials in flight per shard job), the per-model concurrent-shard
+budget is `MAX_TASKS_PER_MODEL // concurrency`; an optional lower
+`parallelism_limit` can further constrain it.
 The inner parallelism divides that budget across compared branches, while
 the outer parallelism bounds concurrent `(model, branch)` jobs. Both invariants
 hold by construction:
@@ -261,6 +262,8 @@ def derive_pool(
     n_shards: int,
     n_groups: int,
     n_branches: int = 1,
+    *,
+    parallelism_limit: int | None = None,
 ) -> tuple[int, int]:
     """Derive (inner_max_parallel, outer_parallel).
 
@@ -271,12 +274,15 @@ def derive_pool(
     so per-model provider load is unchanged by the branch axis. outer_parallel
     bounds how many (model, branch) jobs run at once so total runners stay within
     MAX_RUNNERS. With n_branches == 1 and n_groups == n_models this is the
-    pre-branch behavior. `rollouts` stays in the signature for callers that supply
-    all run limits.
+    pre-branch behavior. `parallelism_limit` can reduce provider pressure without
+    changing Harbor's within-job trial concurrency. `rollouts` stays in the
+    signature for callers that supply all run limits.
     """
     del rollouts
     per_model = max(1, MAX_TASKS_PER_MODEL // max(1, concurrency))
     inner = max(1, min(per_model // n_branches, n_shards))
+    if parallelism_limit is not None:
+        inner = min(inner, parallelism_limit)
     outer = max(1, min(MAX_RUNNERS // inner, n_groups))
     return inner, outer
 
@@ -476,6 +482,12 @@ def main(argv: list[str] | None = None) -> int:
         minimum=1,
         maximum=MAX_TASKS_PER_MODEL,
     )
+    max_parallel = parse_int_input(
+        "UNIFIED_MAX_PARALLEL",
+        os.environ.get("UNIFIED_MAX_PARALLEL", "0"),
+        minimum=0,
+        maximum=MAX_TASKS_PER_MODEL,
+    )
     rollouts = parse_int_input(
         "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
@@ -583,7 +595,12 @@ def main(argv: list[str] | None = None) -> int:
             "can share the per-model budget."
         )
     max_parallel, model_parallel = derive_pool(
-        concurrency, rollouts, n_shards, n_models * n_branches, n_branches
+        concurrency,
+        rollouts,
+        n_shards,
+        n_models * n_branches,
+        n_branches,
+        parallelism_limit=max_parallel or None,
     )
     branch_shas = {
         branch: "" if branch == "current" else _resolve_branch_sha(branch) for branch in branches

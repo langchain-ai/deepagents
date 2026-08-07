@@ -17,6 +17,7 @@ Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default
 - **`concurrency`** *(default `4`)* — tasks in flight per model.
 - **`shard_parallel`** *(default `10`)* — parallel shards per `(model × category)`, auto-clamped to stay within the per-model and global concurrency caps.
 - **`n_shards_autonomous` · `n_shards_conversation` · `n_shards_context`** *(defaults `10` · `3` · `3`)* — how each category's tasks are split across parallel jobs, sized to fit GitHub's 6-hour per-job limit.
+- **`max_parallel`** *(default `0`, automatic)* — optionally cap concurrent Harbor task jobs per model/branch. Use a low value such as `2` when an upstream provider has a restrictive rate limit.
 - **`sandbox_env`** *(default `langsmith`)* — where tasks execute.
 - **`force_build`** *(default `false`)* — rebuild each task's environment image/snapshot; required the first time a new dataset runs on the LangSmith sandbox.
 - **`harbor_package_override`** *(optional)* — install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned release (`harbor[langsmith] 0.20.0`, `harbor-langsmith 0.3.0`), which forwards task-environment MCP servers to the LangGraph agent and so runs every category — including `conversation` (`tau3`) — out of the box. An override is no longer required for any category.

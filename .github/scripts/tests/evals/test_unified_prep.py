@@ -97,6 +97,15 @@ def test_derive_pool_from_concurrency_and_rollouts():
     # clamp inner to n_shards when few tasks; outer clamps to n_groups
     assert up.derive_pool(concurrency=1, rollouts=3, n_shards=8, n_groups=1) == (8, 1)
 
+def test_derive_pool_honors_lower_parallelism_limit():
+    assert up.derive_pool(
+        concurrency=4,
+        rollouts=1,
+        n_shards=36,
+        n_groups=1,
+        parallelism_limit=2,
+    ) == (2, 1)
+
 def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
     import pytest
 
@@ -184,6 +193,17 @@ def test_main_rejects_invalid_concurrency(tmp_path, monkeypatch):
     for raw in ("not-an-integer", "", "1.5", "-1", "0", "41"):
         monkeypatch.setenv("UNIFIED_CONCURRENCY", raw)
         with pytest.raises(SystemExit, match=r"UNIFIED_CONCURRENCY.*1\.\.40"):
+            up.main([])
+
+def test_main_rejects_invalid_max_parallel(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    import pytest
+
+    for raw in ("not-an-integer", "", "1.5", "-1", "41"):
+        monkeypatch.setenv("UNIFIED_MAX_PARALLEL", raw)
+        with pytest.raises(SystemExit, match=r"UNIFIED_MAX_PARALLEL.*0\.\.40"):
             up.main([])
 
 def test_main_rejects_bad_spec(tmp_path, monkeypatch):
@@ -392,6 +412,20 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     assert "model_slugs" not in lines
     assert "model_0_matrix" not in lines
     assert "openai_matrix" not in lines
+
+def test_main_limits_parallel_task_jobs(tmp_path, monkeypatch):
+    out = tmp_path / "o"
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,conversation,context")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_CONCURRENCY", "4")
+    monkeypatch.setenv("UNIFIED_MAX_PARALLEL", "2")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+
+    assert up.main([]) == 0
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert lines["max_parallel"] == "2"
+    assert lines["model_parallel"] == "1"
 
 def test_main_filters_lite_profile_to_exact_tasks(tmp_path, monkeypatch):
     import json as _j

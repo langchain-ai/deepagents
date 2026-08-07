@@ -92,6 +92,11 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     categories = _indented_block(dispatch, "      categories:")
     assert 'default: "autonomous,conversation,context"' in categories
 
+    max_parallel = _indented_block(dispatch, "      max_parallel:")
+    assert "type: string" in max_parallel
+    assert 'default: "0"' in max_parallel
+    assert "Maximum concurrent Harbor task jobs" in max_parallel
+
     # The deep-agents harness list for autonomous/context defaults to bare.
     agent_impls = _indented_block(dispatch, "      agent_impls:")
     assert "type: string" in agent_impls
@@ -317,6 +322,7 @@ def test_enumerate_step_gated_on_full_profile() -> None:
     assert "UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}" in p_env
     assert "UNIFIED_PROFILE: ${{ inputs.profile }}" in p_env
     assert "UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}" in p_env
+    assert "UNIFIED_MAX_PARALLEL: ${{ inputs.max_parallel }}" in p_env
     assert "UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}" in p_env
     assert "UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}" in p_env
     assert "UNIFIED_SHARD_PARALLEL" not in workflow

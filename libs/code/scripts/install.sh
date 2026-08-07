@@ -582,7 +582,14 @@ prepare_install_log_dir() {
 # file, so they keep the post-install "Full log:" pointer instead.
 log_update_tail_hint() {
   [ "${UV_LIVE_LOG:-false}" = true ] && [ -n "${INSTALL_LOG_DISPLAY:-}" ] || return 0
-  log_info "  Update log: tail -f ${INSTALL_LOG_DISPLAY}"
+  # Single-quote the path for display: XDG_CACHE_HOME can live somewhere
+  # with spaces or shell metacharacters (e.g. `/Volumes/User Cache`) outside
+  # the ~-collapsed case, where a bare interpolation would make tail read
+  # the words as separate paths. A single-quoted string reproduces the path
+  # literally; a literal single quote is escaped in the standard '\'' form.
+  local quoted
+  quoted=$(printf '%s' "$INSTALL_LOG_DISPLAY" | sed "s/'/'\\\\''/g")
+  log_info "  Update log: tail -f '${quoted}'"
 }
 
 fix_install_log_owner() {
@@ -1688,10 +1695,16 @@ fi
 # Mirror uv's raw output to a persistent log under the XDG cache dir. A
 # same-version dependency bump prints only a one-line summary and a failed
 # install scrolls past, so the log preserves the full diff/errors for later.
-# Prefer $XDG_CACHE_HOME, falling back to ~/.cache. INSTALL_LOG is the real
-# path used for writes; INSTALL_LOG_DISPLAY is the tilde-collapsed form shown
-# to the user. Both stay empty when the dir can't be created, which every
-# consumer treats as "feature disabled" so messages degrade cleanly.
+# Prefer $XDG_CACHE_HOME, falling back to ~/.cache — XDG-style on every
+# platform (like the rustup and uv installers), since this is a portable
+# one-shot POSIX bootstrap. The installed app instead uses platform-native
+# cache dirs (e.g. ~/Library/Caches on macOS) for its update logs, so the two
+# intentionally land under different roots on macOS; see default_cache_dir()
+# in deepagents_code/model_config.py.
+# INSTALL_LOG is the real path used for writes; INSTALL_LOG_DISPLAY is the
+# tilde-collapsed form shown to the user. Both stay empty when the dir can't
+# be created, which every consumer treats as "feature disabled" so messages
+# degrade cleanly.
 INSTALL_LOG=""
 INSTALL_LOG_DISPLAY=""
 cache_root="${XDG_CACHE_HOME:-}"
@@ -1719,6 +1732,10 @@ fi
 # copy_install_log never resolves a user-writable parent as root, and
 # streaming straight to INSTALL_LOG would follow a planted symlink there.
 UV_LIVE_LOG=false
+# File descriptor that carries the live install log when UV_LIVE_LOG is on.
+# Picked from the user range (9+) so it cannot collide with the script's own
+# redirections, which all use the standard 0-2.
+UV_LIVE_LOG_FD=9
 if [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ]; then
   # A planted symlink at the log path disables live logging, matching
   # copy_install_log's refusal: never delete or follow it. Noclobber then
@@ -1730,9 +1747,23 @@ if [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ]; then
     INSTALL_LOG_DISPLAY=""
   else
     [ ! -e "$INSTALL_LOG" ] || rm -f "$INSTALL_LOG" 2>/dev/null || true
-    if (set -o noclobber; : > "$INSTALL_LOG") 2>/dev/null; then
+    # Noclobber-create the log, then keep the validated file as an open fd
+    # (UV_LIVE_LOG_FD) and have uv write to *that* (`2>&$UV_LIVE_LOG_FD`) at
+    # the invocation instead of re-opening the pathname. A path-based
+    # `2>"$INSTALL_LOG"` would re-resolve the name with ordinary truncating
+    # semantics at uv's launch, so a process able to write the cache dir could
+    # swap install.log for a symlink after this check and have uv truncate the
+    # symlink's target. The inherited fd pins the inode the noclobber create
+    # verified, so the later redirect never touches the path again. `uv_stderr`
+    # keeps the real path so the post-install readers (awk/cat/grep/cp) operate
+    # on a file; the fd is only the write target.
+    if (set -o noclobber; : > "$INSTALL_LOG") 2>/dev/null \
+      && eval "exec $UV_LIVE_LOG_FD>>\"\$INSTALL_LOG\"" 2>/dev/null; then
       uv_stderr="$INSTALL_LOG"
       UV_LIVE_LOG=true
+    else
+      eval "exec $UV_LIVE_LOG_FD>&-" 2>/dev/null || true
+      rm -f "$INSTALL_LOG" 2>/dev/null || true
     fi
   fi
 fi
@@ -1912,7 +1943,18 @@ fi
 if [ -z "$INSTALL_LOCK_KIND" ]; then
   acquire_install_lock
 fi
-if [[ -z "$VERSION" ]]; then
+# In live-log mode, uv's stderr goes to the open UV_LIVE_LOG_FD descriptor
+# (the noclobber-validated install log), not to a re-opened pathname — see
+# the fd setup far above. Otherwise it goes to the mktemp scratch file.
+if [ "$UV_LIVE_LOG" = true ]; then
+  if [[ -z "$VERSION" ]]; then
+    "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
+      --prerelease "$PRERELEASE" "$PACKAGE" 2>&$UV_LIVE_LOG_FD || uv_rc=$?
+  else
+    "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" \
+      2>&$UV_LIVE_LOG_FD || uv_rc=$?
+  fi
+elif [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
 else
@@ -3296,7 +3338,8 @@ elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" 
   footer_msg="Already installed."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ] \
-  && [ "$UPGRADE_INTENDED" = true ]; then
+  && [ "$UPGRADE_INTENDED" = true ] && [ -n "${LATEST_VERSION:-}" ] \
+  && [ "$NEW_VERSION" = "$LATEST_VERSION" ]; then
   footer_msg="Upgraded."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then

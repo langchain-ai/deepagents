@@ -84,6 +84,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
     "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
     "meta:muse-spark-1.1": "Muse Spark 1.1",
+    "meta:muse-spark-1.2": "Muse Spark 1.2",
     "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
     "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
     "ollama:glm-5.2:cloud": "GLM 5.2",

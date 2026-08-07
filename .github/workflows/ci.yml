@@ -20,8 +20,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# `pull-requests: read` lets the called `_test.yml` reusable workflow read live
+# PR labels (re-runs replay the original event payload, so the API is the only
+# fresh source). A called workflow's token can only narrow the caller's grants.
+# The issues labels endpoint it uses accepts either `issues: read` or
+# `pull-requests: read`, so no `issues` grant is needed here.
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   UV_NO_SYNC: "true"

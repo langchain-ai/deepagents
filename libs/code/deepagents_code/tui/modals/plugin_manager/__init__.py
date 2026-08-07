@@ -18,7 +18,7 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from deepagents_code.tui.widgets.loading import Spinner
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence, Set as AbstractSet
+    from collections.abc import Callable, Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
     from textual.events import Key
@@ -116,6 +116,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
         loaded_plugin_ids: AbstractSet[str] | None = None,
+        on_auto_update_enabled: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the plugin manager.
 
@@ -127,12 +128,14 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 Plugins whose enabled state differs from this set (enabled but
                 not loaded, or disabled but still loaded) are shown as pending
                 reload.
+            on_auto_update_enabled: Called after the auto-update preference is enabled.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
         self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
         self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
+        self._on_auto_update_enabled = on_auto_update_enabled
         self._state = _ManagerState((), (), (), ())
         self._status: str | None = None
         self._error: str | None = None
@@ -866,6 +869,8 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._status = f"Plugin auto-updates {'enabled' if enabled else 'disabled'}."
         self._error = None
         self._refresh_view()
+        if enabled and self._on_auto_update_enabled is not None:
+            self._on_auto_update_enabled()
 
     async def _install_selected_plugin(self) -> None:
         row = self._selected_plugin

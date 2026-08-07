@@ -15379,6 +15379,14 @@ class DeepAgentsApp(App):
             return False
         return True
 
+    def _start_plugin_auto_update(self) -> None:
+        """Start the plugin auto-update worker."""
+        self.run_worker(
+            self._auto_update_plugins(),
+            exclusive=True,
+            group="plugin-auto-update",
+        )
+
     async def _auto_update_plugins(self) -> None:
         """Update plugins on disk and notify when `/reload` can apply them."""
         from deepagents_code.plugins.discovery import auto_update_plugins
@@ -15467,11 +15475,7 @@ class DeepAgentsApp(App):
         if self._agent and self._ui_adapter and self._session_state:
             if not self._plugin_auto_update_started:
                 self._plugin_auto_update_started = True
-                self.run_worker(
-                    self._auto_update_plugins(),
-                    exclusive=True,
-                    group="plugin-auto-update",
-                )
+                self._start_plugin_auto_update()
             self._set_agent_running(True)
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.
@@ -22467,6 +22471,11 @@ class DeepAgentsApp(App):
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
                 loaded_plugin_ids=self._session_plugin_ids,
+                on_auto_update_enabled=(
+                    self._start_plugin_auto_update
+                    if self._plugin_auto_update_started
+                    else None
+                ),
             ),
             on_close,
         )

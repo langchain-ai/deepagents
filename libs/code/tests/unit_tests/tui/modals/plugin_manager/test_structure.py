@@ -539,7 +539,8 @@ async def test_settings_tab_toggles_plugin_auto_updates(
         "deepagents_code.tui.modals.plugin_manager._save_toml_field", save
     )
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
+    on_enabled = MagicMock()
+    screen = PluginManagerScreen(on_auto_update_enabled=on_enabled)
 
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(screen)
@@ -549,6 +550,7 @@ async def test_settings_tab_toggles_plugin_auto_updates(
         await pilot.pause()
 
         save.assert_called_once_with("plugins", "auto_update", True)
+        on_enabled.assert_called_once_with()
         option = screen.query_one(
             "#plugin-manager-options", OptionList
         ).get_option_at_index(0)

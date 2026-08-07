@@ -16553,6 +16553,7 @@ class TestShellCommandInterrupt:
         app._session_state = MagicMock()
         app._session_state.hooks = HooksManager.inert()
         app._pending_shell_messages = [self._shell_context_message("echo hi", "hi")]
+        app._plugin_auto_update_started = True
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -26511,7 +26512,7 @@ class TestNotificationCenterIntegration:
             assert screen._tab == "discover"
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._tab == "errors"
+            assert screen._tab == "settings"
             await pilot.press("tab")
             await pilot.pause()
             assert screen._tab == "discover"

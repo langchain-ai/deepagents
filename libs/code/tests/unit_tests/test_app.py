@@ -14370,6 +14370,40 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
+    def test_checkpoint_edit_restores_diff(self) -> None:
+        """Checkpointed edit arguments rebuild the diff omitted from graph state."""
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        messages = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "name": "edit_file",
+                        "args": {
+                            "file_path": "a.py",
+                            "old_string": "old\n",
+                            "new_string": "new\n",
+                        },
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="Updated file",
+                tool_call_id="call-1",
+                status="success",
+            ),
+        ]
+
+        tool, diff = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert tool.tool_diff_superseded is True
+        assert diff.type == MessageType.DIFF
+        assert diff.diff_file_path == "a.py"
+        assert "-old" in diff.content
+        assert "+new" in diff.content
+
     async def test_restored_edit_without_diff_stays_visible(self) -> None:
         """A resumed edit row remains when checkpoint history has no diff."""
         app = DeepAgentsApp()

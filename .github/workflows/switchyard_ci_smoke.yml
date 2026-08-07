@@ -67,13 +67,22 @@ jobs:
       - name: "✅ Validate route configs"
         run: |
           tag="${UPSTREAM_SHA:0:8}"
+          server_routes="$RUNNER_TEMP/switchyard-server-routes"
+          mkdir -p "$server_routes"
           for route in glm opus escalation nano glm-nano opus-nano; do
+            # The in-process LangChain adapter accepts constructor-level
+            # model_kwargs. The Rust server exposes the same provider payload
+            # only as target extra_body, so translate the server-only copy.
+            server_config="$server_routes/routes-${route}.toml"
+            sed 's/^model_kwargs =/extra_body =/' \
+              "$GITHUB_WORKSPACE/libs/evals/switchyard/routes-${route}.toml" \
+              > "$server_config"
             docker run --rm --platform linux/amd64 \
               -e ANTHROPIC_API_KEY=dummy \
               -e BASETEN_API_KEY=dummy \
               -e GOOGLE_API_KEY=dummy \
               -e NVIDIA_API_KEY=dummy \
-              -v "$GITHUB_WORKSPACE/libs/evals/switchyard/routes-${route}.toml:/c.toml:ro" \
+              -v "$server_config:/c.toml:ro" \
               "$IMAGE:$tag" --config /c.toml --dry-run
           done
 

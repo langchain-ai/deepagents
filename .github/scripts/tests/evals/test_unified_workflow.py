@@ -247,6 +247,7 @@ def test_unified_dispatch_wires_switchyard_library_and_sidecar_modes() -> None:
     assert '--extra-docker-compose "$switchyard_compose"' in run_harbor
     assert '--environment-kwarg "switchyard_config=$switchyard_config"' in run_harbor
     assert 'SY_STRONG_BASE_URL="https://api.anthropic.com"' in run_harbor
+    assert "s/^model_kwargs =/extra_body =/" in run_harbor
     assert '"base_url":"http://127.0.0.1:4000/v1"' in run_harbor
     assert '"api_key":"switchyard"' in run_harbor
     assert '"use_responses_api":false' in run_harbor
@@ -306,6 +307,7 @@ def test_switchyard_smoke_publishes_pinned_image_and_dispatches_unified_eval() -
     assert "packages/container/switchyard/visibility" not in workflow
     assert "docker logout ghcr.io" in workflow
     assert 'docker pull "$image_ref"' in workflow
+    assert "s/^model_kwargs =/extra_body =/" in workflow
     assert "gh workflow run unified_evals.yml" in workflow
     assert "gh run watch \"$run_id\" --exit-status" in workflow
     assert "--ref \"$GITHUB_REF_NAME\"" in workflow

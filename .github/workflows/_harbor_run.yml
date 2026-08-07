@@ -949,6 +949,13 @@ jobs:
               exit 1
             fi
             if [ -n "$SWITCHYARD_IMAGE" ]; then
+              # Library configs express provider constructor overrides as
+              # model_kwargs. The Rust server's equivalent target field is
+              # extra_body, so mount a translated server-only copy.
+              server_config="$RUNNER_TEMP/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"
+              sed 's/^model_kwargs =/extra_body =/' \
+                "$switchyard_config" > "$server_config"
+              switchyard_config="$server_config"
               switchyard_compose="$switchyard_dir/compose/switchyard-docker.yaml"
               if [ ! -f "$switchyard_compose" ]; then
                 echo "::error::Switchyard compose overlay is missing"

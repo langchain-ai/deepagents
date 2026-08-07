@@ -13,6 +13,8 @@ The implementation uses
 `deepagents_harbor.switchyard_environment:SwitchyardDockerEnvironment`. The
 adapter mounts the selected route TOML, verifies the loopback health endpoint,
 captures `/v1/stats`, and stops Switchyard before Harbor starts verification.
+The Docker path translates library-only target `model_kwargs` to the Rust
+server's equivalent `extra_body` field in an ephemeral config copy.
 Provider variables use sidecar-only aliases in the GitHub step and are mapped
 to their standard names only inside the Switchyard service. The stock LangGraph
 launcher therefore never sees an upstream provider variable to copy into

@@ -213,6 +213,7 @@ def test_unified_dispatch_wires_switchyard_library_and_sidecar_modes() -> None:
     assert "759658ee7d281b603d923a5f333c6c9a91a6ffe7" in runtime
     assert "7d91bd6f706ec5745c69fcea00a39fd7c758e44c" in runtime
     assert "git -C .switchyard-source apply --unidiff-zero" in runtime
+    assert "langchain-provider-safe-tool-calls.patch" in runtime
     assert "SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f" in runtime
     assert "sfw cargo fetch --locked" in runtime
     assert "PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b" in runtime
@@ -221,7 +222,11 @@ def test_unified_dispatch_wires_switchyard_library_and_sidecar_modes() -> None:
     assert "callable(libsy.llm_escalation)" in runtime
     assert "switchyard-runtime-${{ github.run_id }}-${{ github.run_attempt }}" in runtime
     assert '"$runtime_dir/routes/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"' in run_harbor
+    assert "deepagents_harbor.switchyard_environment:DeepAgentsLangSmithEnvironment" in run_harbor
     assert '--agent-env "HARBOR_SWITCHYARD_CONFIG=$HARBOR_SWITCHYARD_CONFIG"' in run_harbor
+    assert "--retry-include SandboxConnectionError" in run_harbor
+    assert "--retry-include EnvironmentStartTimeoutError" in run_harbor
+    assert '"${retry_args[@]}"' in run_harbor
     for key in (
         "ANTHROPIC_API_KEY",
         "BASETEN_API_KEY",
@@ -364,8 +369,12 @@ def test_unified_dispatch_forwards_retry_and_timeout_controls() -> None:
 
     retries = _indented_block(dispatch, "      n_retries:")
     timeout = _indented_block(dispatch, "      agent_timeout_multiplier:")
+    build_timeout = _indented_block(dispatch, "      env_build_timeout_multiplier:")
+    storage = _indented_block(dispatch, "      override_storage_mb:")
     assert 'default: "0"' in retries
     assert 'default: "1.0"' in timeout
+    assert 'default: "1.0"' in build_timeout
+    assert 'default: "0"' in storage
     assert "UNIFIED_N_RETRIES: ${{ inputs.n_retries }}" in prep
     assert (
         "UNIFIED_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}"
@@ -375,14 +384,21 @@ def test_unified_dispatch_forwards_retry_and_timeout_controls() -> None:
     assert (
         "agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}" in eval_job
     )
+    assert (
+        "env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}"
+        in eval_job
+    )
+    assert "override_storage_mb: ${{ inputs.override_storage_mb }}" in eval_job
 
-    # Standard harbor retry (--max-retries on retryable exceptions); the fork-only
-    # reward-gated flag is gone so the eval stack runs on stock harbor.
+    # Stock Harbor retry controls remain available. Switchyard library runs
+    # narrow them to transient sandbox failures so agent/model errors do not
+    # consume another rollout's tokens.
     assert '--max-retries "$HARBOR_N_RETRIES"' in run_harbor
+    assert "--retry-include SandboxConnectionError" in run_harbor
+    assert "--retry-include EnvironmentStartTimeoutError" in run_harbor
     assert "--retry-if-reward-below" not in reusable
     assert "retry_include_exceptions" not in workflow
     assert "retry_exclude_exceptions" not in workflow
-    assert "--retry-include" not in reusable
     assert "--retry-exclude" not in reusable
     assert "actual_retries=" in latest_job
     assert "Configured retries per failed trial (--max-retries)" in summary

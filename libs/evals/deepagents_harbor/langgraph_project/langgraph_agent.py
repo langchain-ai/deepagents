@@ -20,9 +20,16 @@ from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from deepagents_harbor.langgraph_project.switchyard_library import (
-    build_switchyard_components,
-)
+if __package__:
+    from deepagents_harbor.langgraph_project.switchyard_library import (
+        build_switchyard_components,
+    )
+else:
+    # Harbor loads this file directly with `spec_from_file_location`, so it has
+    # no package context inside the task sandbox.
+    from switchyard_library import (  # ty: ignore[unresolved-import]
+        build_switchyard_components,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

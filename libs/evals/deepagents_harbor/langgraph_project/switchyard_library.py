@@ -103,11 +103,11 @@ def _activate_runtime(runtime_dir: Path) -> None:
 def _load_bindings(runtime_dir: Path) -> _Bindings:
     _activate_runtime(runtime_dir)
     try:
-        from langchain_nvidia_switchyard import (  # noqa: PLC0415  # artifact path activated above
+        from langchain_nvidia_switchyard import (  # noqa: PLC0415  # ty: ignore[unresolved-import]  # artifact path activated above
             LangChainLlmClient,
             SwitchyardRoutingMiddleware,
         )
-        from switchyard.libsy import (  # noqa: PLC0415  # artifact path activated above
+        from switchyard.libsy import (  # noqa: PLC0415  # ty: ignore[unresolved-import]  # artifact path activated above
             LlmTarget,
             algorithms,
         )
@@ -179,7 +179,7 @@ def _target_model(
         msg = f"Switchyard target {target_name!r} requires environment variable {key_env}"
         raise RuntimeError(msg)
 
-    kwargs: dict[str, object] = {"api_key": api_key, "base_url": base_url}
+    kwargs: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
     extra_body = target.get("extra_body")
     if extra_body is not None:
         kwargs["extra_body"] = dict(_table(extra_body, f"targets.{target_name}.extra_body"))
@@ -191,10 +191,7 @@ def _target_model(
     elif client_format == "anthropic_messages":
         model_spec = f"anthropic:{model_id}"
     else:
-        msg = (
-            f"Switchyard target {target_name!r} uses unsupported client format "
-            f"{client_format!r}"
-        )
+        msg = f"Switchyard target {target_name!r} uses unsupported client format {client_format!r}"
         raise ValueError(msg)
     return init_chat_model(model_spec, **kwargs)
 
@@ -294,8 +291,5 @@ def build_switchyard_components(
         return _passthrough_components(config, route, bindings, session_id)
     if route_type == "llm_classifier" and route.get("mode") == "escalation":
         return _escalation_components(config, route, bindings, session_id)
-    msg = (
-        "Switchyard library mode supports only passthrough and "
-        "llm_classifier escalation routes"
-    )
+    msg = "Switchyard library mode supports only passthrough and llm_classifier escalation routes"
     raise ValueError(msg)

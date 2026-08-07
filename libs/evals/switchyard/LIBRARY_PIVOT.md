@@ -22,7 +22,9 @@ No model or provider calls were made while validating this pivot.
   `7d91bd6f706ec5745c69fcea00a39fd7c758e44c`
 - Switchyard: `NVIDIA-NeMo/Switchyard` at
   `759658ee7d281b603d923a5f333c6c9a91a6ffe7`
-- Local patch: `patches/libsy-python-escalation.patch`
+- Local patches:
+  - `patches/libsy-python-escalation.patch`
+  - `patches/langchain-provider-safe-tool-calls.patch`
 
 The patch is stored with zero context to keep repository whitespace checks
 clean. Apply it from the pinned Switchyard checkout with
@@ -123,6 +125,47 @@ The run workflow needs to forward only variable references for
 `GOOGLE_API_KEY`, and `NVIDIA_API_KEY` into the agent environment. Never write
 their values to configs or artifacts.
 
+## First autonomous-lite attempt and fixes
+
+The first 15-task Opus attempt on August 6 was invalid and must not be used as
+benchmark data. All 15 trials recorded exceptions. Five agents reached Opus but
+failed on their second model turn because the pinned LangChain adapter placed a
+normalized `tool_call` block in `AIMessage.content`; Anthropic accepts
+provider-native `tool_use` blocks and rejected that neutral type. Other trials
+hit LangSmith connection, environment-start, or resource-ratio errors, and the
+last trials were canceled once the shared failure was confirmed.
+
+The adapter patch now keeps normalized tool calls only in
+`AIMessage.tool_calls`. An offline regression sends a Switchyard assistant/tool
+history through the real `langchain-anthropic` serializer and confirms that the
+outbound block is `tool_use`, not `tool_call`.
+
+`DeepAgentsLangSmithEnvironment` makes two local Harbor fixes reproducible:
+
+1. Directory archives add every nested path exactly once. Stock Harbor's
+   recursive `tar.add` behavior duplicated the staged runtime until the upload
+   grew to gigabytes.
+2. Requested CPU and memory are raised, never reduced, to satisfy LangSmith's
+   2-6 GiB-per-vCPU acceptance band.
+
+For the next canary, use one task and concurrency 1, route through
+`DeepAgentsLangSmithEnvironment`, set the environment-build timeout multiplier
+to 3, set the storage override to 65,536 MiB, and allow retries only for sandbox
+connection/start failures. Unified Evals now exposes both resource controls,
+and library-mode workflow retries are restricted to `SandboxConnectionError`
+and `EnvironmentStartTimeoutError`. Do not restart the 15-task slice until a
+tool-using canary completes with no trial exception.
+
+Offline verification after these fixes:
+
+- 15 pinned-adapter conversion tests passed.
+- The provider-format regression produced Anthropic `tool_use` content.
+- Opus resolves to `ChatAnthropic`, model `claude-opus-4-8`, a 1M-token input
+  profile, a 128K-token output limit, and tool calling enabled.
+- 351 eval-package unit tests and 98 workflow/runtime tests passed across
+  routing, agent construction, runtime assembly, workflow wiring, resource
+  normalization, archive staging, and fail-fast eval configuration.
+
 ## Known caveat
 
 The server path explicitly adds an Anthropic prompt-cache breakpoint. The
@@ -145,15 +188,18 @@ Completed locally:
    the old sidecar when an image is supplied.
 4. Library mode retains only the OpenAI and Anthropic provider integrations and
    forwards the fixed provider-key allowlist into the agent process.
-5. Hermetic routing, artifact-assembly, dependency-pruning, agent-construction,
-   and workflow tests pass locally (142 targeted tests), along with Ruff and
-   YAML parsing. These checks make no provider calls.
+5. Provider-safe tool-call conversion, archive staging, and LangSmith resource
+   normalization are covered by focused regressions.
+6. Hermetic routing, artifact-assembly, dependency-pruning, agent-construction,
+   and workflow tests pass locally. These checks make no provider calls.
 
 Still to do:
 
-1. Push the implementation checkpoint.
-2. Let GitHub build and import-smoke the real Linux native artifact.
-3. Dispatch one real Harbor task before autonomous-lite.
+1. Run one Opus Harbor canary that exercises a tool round-trip.
+2. Push the corrective checkpoint and let GitHub rebuild/import-smoke the Linux
+   runtime when Actions is reliable.
+3. Dispatch autonomous-lite only after the canary has no infrastructure or
+   adapter exception.
 
 The sidecar fallback, its diagnostic artifacts, and the possible prewarmed
 LangSmith snapshot are documented separately in `SIDECAR_FALLBACK.md`.

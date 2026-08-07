@@ -703,7 +703,10 @@ def test_make_bare_graph_uses_in_process_switchyard_when_configured(
 
     def fake_components(config: str, session_id: str) -> SwitchyardComponents:
         built.append((config, session_id))
-        return SwitchyardComponents(model=model, middleware=middleware)  # type: ignore[arg-type]
+        return SwitchyardComponents(
+            model=model,  # ty: ignore[invalid-argument-type]  # intentionally minimal test double
+            middleware=middleware,  # ty: ignore[invalid-argument-type]  # intentionally minimal test double
+        )
 
     monkeypatch.setenv("HARBOR_SWITCHYARD_CONFIG", "opus-nano")
     monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session__env")
@@ -726,9 +729,7 @@ def test_make_bare_graph_uses_in_process_switchyard_when_configured(
 
     assert result is graph
     assert built == [("opus-nano", "trial-session__env")]
-    assert created == [
-        {"model": model, "backend": backend, "middleware": [middleware]}
-    ]
+    assert created == [{"model": model, "backend": backend, "middleware": [middleware]}]
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

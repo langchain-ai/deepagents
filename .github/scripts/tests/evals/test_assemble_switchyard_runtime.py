@@ -26,11 +26,17 @@ def _load_script() -> ModuleType:
 assemble = _load_script()
 
 
-def _adapter(root: Path) -> Path:
+def _adapter(root: Path, *, provider_safe: bool = True) -> Path:
     adapter = root / "langchain_nvidia_switchyard"
     adapter.mkdir()
     (adapter / "__init__.py").write_text("adapter = True\n")
     (adapter / "middleware.py").write_text("middleware = True\n")
+    marker = "_ContentMapper.ai_message_from_switchyard(\n" if provider_safe else ""
+    (adapter / "content_mapper.py").write_text(
+        "def ai_message_from_switchyard(\n" if provider_safe else ""
+    )
+    (adapter / "request_mapper.py").write_text(marker)
+    (adapter / "response_mapper.py").write_text(marker)
     return adapter
 
 
@@ -77,5 +83,14 @@ def test_rejects_wheel_without_native_extension(tmp_path: Path) -> None:
         assemble.assemble_runtime(
             _wheel(tmp_path / "switchyard.whl", native=False),
             _adapter(tmp_path),
+            tmp_path / "runtime",
+        )
+
+
+def test_rejects_adapter_without_provider_safe_tool_calls(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="lacks provider-safe tool calls"):
+        assemble.assemble_runtime(
+            _wheel(tmp_path / "switchyard.whl"),
+            _adapter(tmp_path, provider_safe=False),
             tmp_path / "runtime",
         )

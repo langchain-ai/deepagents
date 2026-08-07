@@ -1,0 +1,134 @@
+diff --git a/libs/switchyard/langchain_nvidia_switchyard/content_mapper.py b/libs/switchyard/langchain_nvidia_switchyard/content_mapper.py
+index 0af1381..ba5b3d6 100644
+--- a/libs/switchyard/langchain_nvidia_switchyard/content_mapper.py
++++ b/libs/switchyard/langchain_nvidia_switchyard/content_mapper.py
+@@ -6 +6 @@ from collections.abc import Mapping
+-from typing import Any
++from typing import Any, cast
+@@ -143,0 +144,41 @@ class _ContentMapper:
++
++    @classmethod
++    def ai_message_from_switchyard(
++        cls,
++        content: object,
++        *,
++        path: str,
++        **message_fields: Any,
++    ) -> AIMessage:
++        """Build an `AIMessage` without leaking standard tool blocks to providers.
++
++        LangChain stores tool calls in the dedicated `AIMessage.tool_calls`
++        field. Keeping normalized `tool_call` blocks in `AIMessage.content`
++        causes provider serializers to pass that provider-neutral type through
++        verbatim; Anthropic, for example, accepts `tool_use` but rejects
++        `tool_call`. Non-tool blocks remain ordered in message content, while
++        tool calls stay available through `content_blocks` via LangChain's
++        standard projection.
++
++        Args:
++            content: Switchyard assistant content to translate.
++            path: Validation path used in error messages.
++            **message_fields: Additional fields forwarded to `AIMessage`.
++
++        Returns:
++            A provider-safe LangChain assistant message.
++        """
++        blocks = cls.from_switchyard(
++            content,
++            path=path,
++            allow_tool_calls=True,
++        )
++        message_content = [
++            block for block in blocks if block.get("type") != "tool_call"
++        ]
++        tool_calls = [block for block in blocks if block.get("type") == "tool_call"]
++        return AIMessage(
++            content=cast(Any, message_content),
++            tool_calls=cast(Any, tool_calls),
++            **message_fields,
++        )
+diff --git a/libs/switchyard/langchain_nvidia_switchyard/request_mapper.py b/libs/switchyard/langchain_nvidia_switchyard/request_mapper.py
+index 311dc32..53da46b 100644
+--- a/libs/switchyard/langchain_nvidia_switchyard/request_mapper.py
++++ b/libs/switchyard/langchain_nvidia_switchyard/request_mapper.py
+@@ -366,6 +366,6 @@ class SwitchyardRequestMapper:
+-            content = _ContentMapper.from_switchyard(
+-                turn.get("content"),
+-                path=f"{path}.content",
+-                allow_tool_calls=True,
+-            )
+-            return [AIMessage(content_blocks=cast(Any, content))]
++            return [
++                _ContentMapper.ai_message_from_switchyard(
++                    turn.get("content"),
++                    path=f"{path}.content",
++                )
++            ]
+diff --git a/libs/switchyard/langchain_nvidia_switchyard/response_mapper.py b/libs/switchyard/langchain_nvidia_switchyard/response_mapper.py
+index 38a8409..4d924e4 100644
+--- a/libs/switchyard/langchain_nvidia_switchyard/response_mapper.py
++++ b/libs/switchyard/langchain_nvidia_switchyard/response_mapper.py
+@@ -6 +6 @@ from collections.abc import Mapping, Sequence
+-from typing import Any, ClassVar, cast
++from typing import Any, ClassVar
+@@ -83 +83,2 @@ class SwitchyardResponseMapper:
+-        content = _ContentMapper.from_switchyard(
++        message_id = response.get("id")
++        return _ContentMapper.ai_message_from_switchyard(
+@@ -86,5 +86,0 @@ class SwitchyardResponseMapper:
+-            allow_tool_calls=True,
+-        )
+-        message_id = response.get("id")
+-        return AIMessage(
+-            content_blocks=cast(Any, content),
+diff --git a/libs/switchyard/tests/unit_tests/test_conversion.py b/libs/switchyard/tests/unit_tests/test_conversion.py
+index a8406d9..b674814 100644
+--- a/libs/switchyard/tests/unit_tests/test_conversion.py
++++ b/libs/switchyard/tests/unit_tests/test_conversion.py
+@@ -266,0 +267 @@ def test_neutral_request_becomes_target_messages_tools_and_options() -> None:
++    assert messages[2].content == []
+@@ -433,0 +435,44 @@ def test_neutral_response_becomes_ai_message_with_decision_trace() -> None:
++def test_neutral_tool_response_keeps_tool_calls_out_of_message_content() -> None:
++    response: dict[str, Any] = {
++        "id": "response-tool",
++        "model": "provider-model",
++        "outputs": [
++            {
++                "role": "assistant",
++                "content": [
++                    {"type": "text", "text": "Checking."},
++                    {
++                        "type": "tool_call",
++                        "id": "call-tool",
++                        "name": "lookup",
++                        "arguments": {"query": "switchyard"},
++                    },
++                ],
++                "stop_reason": "tool_use",
++            }
++        ],
++        "usage": {},
++    }
++
++    message = ai_message_from_response(response, [])
++
++    assert message.content == [{"type": "text", "text": "Checking."}]
++    assert message.tool_calls == [
++        {
++            "id": "call-tool",
++            "name": "lookup",
++            "args": {"query": "switchyard"},
++            "type": "tool_call",
++        }
++    ]
++    assert message.content_blocks == [
++        {"type": "text", "text": "Checking."},
++        {
++            "type": "tool_call",
++            "id": "call-tool",
++            "name": "lookup",
++            "args": {"query": "switchyard"},
++        },
++    ]
++
++

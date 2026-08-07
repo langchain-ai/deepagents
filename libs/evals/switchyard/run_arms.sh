@@ -49,14 +49,46 @@ for arm in "${ARMS[@]}"; do
 
   python3 "$SW/collect_stats.py" reset
 
+  # Abort early on an unhealthy arm. Healthy runs sit at 0.2-0.7% upstream
+  # errors; two Nano-heavy arms have hit 9-35% from NVIDIA-side transport
+  # failures and produced plausible-looking but invalid accuracy (whole
+  # categories zeroed out). Without this the damage is only visible after a
+  # full run. Waits for 60 requests so a couple of early blips can't trip it.
+  ( while pgrep -f "pytest tests/evals" >/dev/null 2>&1; do
+      sleep 60
+      s=$(curl -sf http://localhost:4000/v1/stats 2>/dev/null) || continue
+      read -r tot err <<<"$(printf '%s' "$s" | python3 -c \
+        'import json,sys; d=json.load(sys.stdin); print(d.get("total_requests",0), d.get("total_errors",0))' 2>/dev/null)"
+      [ -z "${tot:-}" ] && continue
+      [ "$tot" -lt 60 ] && continue
+      if [ $(( err * 100 / tot )) -ge 5 ]; then
+        echo "!! ERROR RATE ${err}/${tot} >= 5% — killing arm ${arm}, results would be invalid"
+        pkill -f "pytest tests/evals"
+        break
+      fi
+    done ) &
+  guard_pid=$!
+
+  # Optional: apply a model's shipped harness profile to the routed run.
+  # Profiles resolve by model spec, and a routed run presents as the route id,
+  # so without this the model's accommodations are silently absent.
+  #
+  # The `${a[@]+"${a[@]}"}` form is required: macOS ships bash 3.2, where
+  # expanding an empty array under `set -u` is an unbound-variable error rather
+  # than an empty expansion.
+  profile_args=()
+  [ -n "${HARNESS_PROFILE:-}" ] && profile_args=(--harness-profile "$HARNESS_PROFILE")
+
   # Run from libs/evals so `tests.evals` imports resolve.
   ( cd "$EVALS" && LANGSMITH_TEST_SUITE="switchyard-${arm}" \
       uv run --group test pytest tests/evals \
         -v --tb=line \
         --model openai:switchyard \
         --base-url http://localhost:4000/v1 \
+        ${profile_args[@]+"${profile_args[@]}"} \
         --eval-category-exclude memory ) 2>&1 | tee "$RUNS/${arm}.log" | tail -20
 
+  kill "$guard_pid" 2>/dev/null
   python3 "$SW/collect_stats.py" snapshot "$RUNS/${arm}.json"
   echo "arm $arm done ($(date -u +%H:%M:%SZ))"
 done

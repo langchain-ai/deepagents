@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,20 +122,26 @@ def test_sandbox_payload_uses_compose_for_agent_network_isolation(
 
 
 @pytest.mark.parametrize(
-    ("memory", "expected"),
-    [(1024**3, 2 * 1024**3), (8 * 1024**3, 8 * 1024**3)],
+    ("vcpus", "memory", "expected_vcpus", "expected_memory"),
+    [
+        (1, 1024**3, 1, 2 * 1024**3),
+        (1, 4 * 1024**3, 1, 4 * 1024**3),
+        (1, 8 * 1024**3, 2, 8 * 1024**3),
+    ],
 )
-def test_sandbox_payload_clamps_only_memory_below_langsmith_minimum(
+def test_sandbox_payload_preserves_resources_with_valid_langsmith_ratio(
     monkeypatch: pytest.MonkeyPatch,
+    vcpus: int,
     memory: int,
-    expected: int,
+    expected_vcpus: int,
+    expected_memory: int,
 ) -> None:
-    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    environment = object.__new__(switchyard_environment.DeepAgentsLangSmithEnvironment)
     monkeypatch.setattr(
         LangSmithEnvironment,
         "_create_sandbox_payload",
         lambda _self, _snapshot: {
-            "vcpus": 1,
+            "vcpus": vcpus,
             "mem_bytes": memory,
             "proxy_config": {"access_control": {"deny_list": ["*"]}},
         },
@@ -142,7 +149,39 @@ def test_sandbox_payload_clamps_only_memory_below_langsmith_minimum(
 
     payload = environment._create_sandbox_payload(None)
 
-    assert payload == {"vcpus": 1, "mem_bytes": expected}
+    assert payload == {
+        "vcpus": expected_vcpus,
+        "mem_bytes": expected_memory,
+        "proxy_config": {"access_control": {"deny_list": ["*"]}},
+    }
+
+
+async def test_directory_upload_archives_each_nested_path_once(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    (source / "root.txt").write_text("root")
+    (nested / "child.txt").write_text("child")
+    environment = object.__new__(switchyard_environment.DeepAgentsLangSmithEnvironment)
+    archived: list[str] = []
+    commands: list[str] = []
+
+    async def fake_upload(source_path: Path, _target_path: str) -> None:
+        with tarfile.open(source_path, "r:gz") as archive:
+            archived.extend(member.name for member in archive.getmembers())
+
+    async def fake_exec(command: str, **_kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    environment._upload_file_to_sandbox = fake_upload
+    environment._exec_sandbox = fake_exec
+
+    await environment._upload_dir_to_sandbox(source, "/installed-agent")
+
+    assert sorted(archived) == ["nested", "nested/child.txt", "root.txt"]
+    assert len(archived) == len(set(archived))
+    assert "tar -xzf" in commands[0]
 
 
 async def test_compose_up_uses_extended_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

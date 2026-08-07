@@ -41,6 +41,14 @@ on:
         description: "Positive decimal multiplier for each task's agent execution timeout, such as 1.5 or 2.0."
         type: string
         default: "1.0"
+      env_build_timeout_multiplier:
+        description: "Positive decimal multiplier for each task's environment startup timeout. Use 3.0 for Switchyard canaries."
+        type: string
+        default: "1.0"
+      override_storage_mb:
+        description: "Optional sandbox storage override in MiB. Use 65536 for the full autonomous-lite Switchyard slice; 0 keeps task defaults."
+        type: string
+        default: "0"
       concurrency:
         type: string
         default: "4"
@@ -232,6 +240,8 @@ jobs:
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_N_RETRIES: ${{ inputs.n_retries }}
           IN_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          IN_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier }}
+          IN_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
           MODEL_PARALLEL: ${{ steps.p.outputs.model_parallel }}
@@ -278,6 +288,8 @@ jobs:
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| retries per failed trial (--max-retries) | \`${IN_N_RETRIES}\` |"
             echo "| agent timeout multiplier | \`${IN_AGENT_TIMEOUT_MULTIPLIER}\` |"
+            echo "| environment-build timeout multiplier | \`${IN_ENV_BUILD_TIMEOUT_MULTIPLIER}\` |"
+            echo "| sandbox storage override (MiB) | \`${IN_OVERRIDE_STORAGE_MB}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
             echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
@@ -317,6 +329,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       n_retries: ${{ inputs.n_retries }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
+      override_storage_mb: ${{ inputs.override_storage_mb }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}

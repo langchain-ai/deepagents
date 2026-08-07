@@ -287,6 +287,12 @@ jobs:
             "$GITHUB_WORKSPACE/libs/evals/switchyard/patches/libsy-python-escalation.patch"
           git -C .switchyard-source diff --check
 
+      - name: "🩹 Preserve provider-native tool calls"
+        run: |
+          git -C .langchain-nvidia-source apply --unidiff-zero \
+            "$GITHUB_WORKSPACE/libs/evals/switchyard/patches/langchain-provider-safe-tool-calls.patch"
+          git -C .langchain-nvidia-source diff --check
+
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
@@ -947,6 +953,9 @@ jobs:
                 --agent-kwarg 'model_kwargs={"base_url":"http://switchyard:4000/v1","api_key":"switchyard","use_responses_api":false}'
               )
             else
+              environment_args=(
+                --env deepagents_harbor.switchyard_environment:DeepAgentsLangSmithEnvironment
+              )
               runtime_dir="$local_deps_dir/switchyard-runtime"
               if [ ! -f "$runtime_dir/switchyard/libsy/algorithms.py" ] || \
                  [ ! -f "$runtime_dir/langchain_nvidia_switchyard/__init__.py" ]; then
@@ -1031,6 +1040,15 @@ jobs:
               --agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}'
             )
           fi
+          retry_args=(--max-retries "$HARBOR_N_RETRIES")
+          if [ -n "$HARBOR_SWITCHYARD_CONFIG" ] && [ -z "$SWITCHYARD_IMAGE" ]; then
+            # Retry transient LangSmith control-plane failures, but never spend
+            # more model tokens retrying an agent, adapter, or provider error.
+            retry_args+=(
+              --retry-include SandboxConnectionError
+              --retry-include EnvironmentStartTimeoutError
+            )
+          fi
 
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"
@@ -1046,7 +1064,7 @@ jobs:
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
-            --max-retries "$HARBOR_N_RETRIES" \
+            "${retry_args[@]}" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \

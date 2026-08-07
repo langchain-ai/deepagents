@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import shlex
+import tarfile
+import tempfile
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
@@ -32,6 +36,8 @@ _HEALTH_TIMEOUT_SECONDS = 60
 # reserve five minutes for sandbox boot, dockerd, and post-Compose health checks.
 _COMPOSE_UP_TIMEOUT_SECONDS = 1500
 _MIN_MEMORY_BYTES_PER_VCPU = 2 * 1024**3
+_MAX_MEMORY_BYTES_PER_VCPU = 6 * 1024**3
+_REMOTE_TMP_DIR = "/tmp"  # noqa: S108  # fixed path in the remote LangSmith sandbox
 _DOCKERD_START_TIMEOUT_SECONDS = 15
 _DOCKERD_STARTED_MARKER = "DOCKERD_STARTED"
 _DOCKERD_START_COMMAND = (
@@ -93,7 +99,65 @@ def _bash_health_command() -> str:
     return shlex.join(["bash", "-lc", script])
 
 
-class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
+def _create_upload_archive(source: Path, archive: Path) -> None:
+    """Archive every source entry exactly once for LangSmith directory uploads.
+
+    Args:
+        source: Directory whose children should be archived.
+        archive: Destination `.tar.gz` path.
+    """
+    with tarfile.open(archive, "w:gz") as tar:
+        for path in source.rglob("*"):
+            tar.add(path, arcname=path.relative_to(source), recursive=False)
+
+
+class DeepAgentsLangSmithEnvironment(LangSmithEnvironment):
+    """Apply Deep Agents compatibility fixes to Harbor's LangSmith provider."""
+
+    @override
+    def _create_sandbox_payload(self, snapshot_name: str | None) -> dict[str, Any]:
+        """Preserve requested resources while satisfying LangSmith's ratio limits."""
+        payload = super()._create_sandbox_payload(snapshot_name)
+        vcpus = payload.get("vcpus")
+        memory = payload.get("mem_bytes")
+        if type(vcpus) is not int or vcpus <= 0 or type(memory) is not int:
+            return payload
+
+        minimum = vcpus * _MIN_MEMORY_BYTES_PER_VCPU
+        maximum = vcpus * _MAX_MEMORY_BYTES_PER_VCPU
+        if memory < minimum:
+            payload["mem_bytes"] = minimum
+        elif memory > maximum:
+            payload["vcpus"] = math.ceil(memory / _MAX_MEMORY_BYTES_PER_VCPU)
+        return payload
+
+    @override
+    async def _upload_dir_to_sandbox(
+        self,
+        source_dir: Path | str,
+        target_dir: str,
+    ) -> None:
+        """Upload directories without recursively re-adding nested entries."""
+        source = Path(source_dir)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive = Path(temp_dir) / "upload.tar.gz"
+            await asyncio.to_thread(_create_upload_archive, source, archive)
+            remote_archive = f"{_REMOTE_TMP_DIR}/harbor-upload-{uuid.uuid4().hex}.tar.gz"
+            await self._upload_file_to_sandbox(archive, remote_archive)
+
+        target = shlex.quote(target_dir)
+        remote = shlex.quote(remote_archive)
+        result = await self._exec_sandbox(
+            f"mkdir -p {target} && tar -xzf {remote} -C {target} && rm -f {remote}",
+            cwd=_REMOTE_TMP_DIR,
+        )
+        if result.return_code != 0:
+            detail = result.stderr or result.stdout or ""
+            msg = f"upload_dir extraction failed: {detail}"
+            raise RuntimeError(msg)
+
+
+class SwitchyardLangSmithEnvironment(DeepAgentsLangSmithEnvironment):
     """Run Switchyard beside Harbor's main service in a LangSmith sandbox.
 
     Harbor's `--agent-env` reaches only the agent process, not Docker Compose.
@@ -164,10 +228,6 @@ class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
         """
         payload = super()._create_sandbox_payload(snapshot_name)
         payload.pop("proxy_config", None)
-        vcpus = payload.get("vcpus")
-        memory = payload.get("mem_bytes")
-        if type(vcpus) is int and vcpus > 0 and type(memory) is int:
-            payload["mem_bytes"] = max(memory, vcpus * _MIN_MEMORY_BYTES_PER_VCPU)
         return payload
 
     @override

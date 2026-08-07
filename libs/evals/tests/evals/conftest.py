@@ -47,6 +47,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "repl(*allowed): declare optional REPL backends allowed for a test/module; used with --repl quickjs",
     )
+    _apply_harness_profile_override(config)
 
     tracing_enabled = any(
         os.environ.get(var, "").lower() == "true"
@@ -73,6 +74,52 @@ def pytest_configure(config: pytest.Config) -> None:
             "e.g. `--model claude-sonnet-4-6`.",
             returncode=1,
         )
+
+
+def _apply_harness_profile_override(config: pytest.Config) -> None:
+    """Re-register a model's harness profile under the spec actually being run.
+
+    `create_deep_agent` resolves harness profiles by model spec. A run routed
+    through a proxy presents as the route id (`openai:switchyard`), which matches
+    no registered profile, so the model's shipped accommodations — prompt suffix,
+    tool-description overrides, extra middleware — are silently absent. That
+    understates any model that ships one, and the absence is invisible in the
+    results.
+
+    `--harness-profile <source-spec>` copies the profile registered for
+    `source-spec` onto `--model`'s spec. Built-in profiles register lazily, so
+    the bootstrap is forced first or the lookup finds an empty registry.
+
+    Raises:
+        pytest.UsageError: If no profile is registered for the source spec.
+    """
+    source = config.getoption("--harness-profile")
+    if not source:
+        return
+    target = config.getoption("--model")
+    if not target:
+        msg = "--harness-profile requires --model"
+        raise pytest.UsageError(msg)
+
+    # Avoid loading the profile registry during ordinary pytest startup.
+    from deepagents import register_harness_profile  # noqa: PLC0415
+    from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+        _ensure_builtin_profiles_loaded,
+    )
+    from deepagents.profiles.harness.harness_profiles import (  # noqa: PLC0415
+        _HARNESS_PROFILES,
+    )
+
+    _ensure_builtin_profiles_loaded()
+    profile = _HARNESS_PROFILES.get(source)
+    if profile is None:
+        known = ", ".join(sorted(_HARNESS_PROFILES)) or "(none registered)"
+        msg = f"no harness profile registered for {source!r}. Registered keys: {known}"
+        raise pytest.UsageError(msg)
+    register_harness_profile(target, profile)
+    print(  # noqa: T201  # visible attribution for benchmark configuration
+        f"\nharness profile: {source} -> applied to {target}"
+    )
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -134,6 +181,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "provider default, e.g. a local Switchyard server: "
             "--model openai:<route-id> --base-url http://localhost:4000/v1. "
             "Omit to leave every model on its provider default (the control)."
+        ),
+    )
+    parser.addoption(
+        "--harness-profile",
+        action="store",
+        default=None,
+        help=(
+            "Apply the harness profile registered for this model spec to the model "
+            "under test, e.g. --harness-profile baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B. "
+            "Needed with --base-url: profiles resolve by model spec, and a routed run "
+            "presents as the route id (openai:switchyard), which matches nothing — so "
+            "the model's shipped accommodations are silently disabled. Omit to run bare."
         ),
     )
     parser.addoption(

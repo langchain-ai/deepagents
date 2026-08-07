@@ -7,6 +7,12 @@ import shutil
 import zipfile
 from pathlib import Path, PurePosixPath
 
+_PROVIDER_SAFE_ADAPTER_MARKERS = {
+    "content_mapper.py": "def ai_message_from_switchyard(",
+    "request_mapper.py": "_ContentMapper.ai_message_from_switchyard(",
+    "response_mapper.py": "_ContentMapper.ai_message_from_switchyard(",
+}
+
 
 def _destination(root: Path, member: str) -> Path:
     path = PurePosixPath(member)
@@ -14,6 +20,29 @@ def _destination(root: Path, member: str) -> Path:
         msg = f"Unsafe wheel member path: {member!r}"
         raise ValueError(msg)
     return root.joinpath(*path.parts)
+
+
+def _validate_adapter(adapter: Path) -> None:
+    """Require the provider-safe tool-call conversion patch before packaging.
+
+    Args:
+        adapter: Patched `langchain_nvidia_switchyard` package directory.
+
+    Raises:
+        FileNotFoundError: If the adapter package is incomplete.
+        ValueError: If normalized tool calls can still leak into provider content.
+    """
+    if not (adapter / "__init__.py").is_file():
+        msg = f"LangChain Switchyard adapter package is missing: {adapter}"
+        raise FileNotFoundError(msg)
+    for relative, marker in _PROVIDER_SAFE_ADAPTER_MARKERS.items():
+        path = adapter / relative
+        if not path.is_file():
+            msg = f"LangChain Switchyard adapter file is missing: {path}"
+            raise FileNotFoundError(msg)
+        if marker not in path.read_text(encoding="utf-8"):
+            msg = f"LangChain Switchyard adapter lacks provider-safe tool calls: {path}"
+            raise ValueError(msg)
 
 
 def assemble_runtime(wheel: Path, adapter: Path, output: Path) -> None:
@@ -35,9 +64,7 @@ def assemble_runtime(wheel: Path, adapter: Path, output: Path) -> None:
     if not wheel.is_file():
         msg = f"Switchyard wheel is missing: {wheel}"
         raise FileNotFoundError(msg)
-    if not (adapter / "__init__.py").is_file():
-        msg = f"LangChain Switchyard adapter package is missing: {adapter}"
-        raise FileNotFoundError(msg)
+    _validate_adapter(adapter)
 
     output.mkdir(parents=True)
     with zipfile.ZipFile(wheel) as archive:

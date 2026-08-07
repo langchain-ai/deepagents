@@ -53,11 +53,12 @@ def test_acp_mode_rejects_auto_classifier_model(
     resolve_agent.assert_not_called()
 
 
-def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
-    """`--acp` should build the ACP agent with web tools and MCP tools."""
+def test_acp_mode_loads_tools_and_mcp_and_runs_server_in_yolo() -> None:
+    """`--acp --yolo` should build the ACP agent without approval prompts."""
     args = _make_acp_args(
         model_params='{"temperature": 0.2}',
         profile_override='{"max_input_tokens": 4096}',
+        yolo=True,
     )
     model_obj = object()
     model_result = SimpleNamespace(
@@ -107,7 +108,10 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     resolve_mcp_tools = AsyncMock(side_effect=_resolve_mcp_tools_with_bound_loop)
 
     with (
-        patch.object(sys, "argv", ["deepagents", "--acp"]),
+        patch.object(sys, "argv", ["deepagents", "--acp", "--yolo"]),
+        patch(
+            "deepagents_code.main._ensure_yolo_acknowledged", return_value=True
+        ) as ensure_yolo,
         patch(
             "deepagents_code.main.check_cli_dependencies",
             side_effect=AssertionError("check_cli_dependencies should be skipped"),
@@ -147,6 +151,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
         cli_main()
 
     assert exc_info.value.code == 0
+    ensure_yolo.assert_called_once()
     mock_create_model.assert_called_once_with(
         None,
         extra_kwargs={"temperature": 0.2},
@@ -168,6 +173,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     assert call_kwargs["tools"] == [fetch_tool, thread_tool, search_tool, mcp_tool]
     assert call_kwargs["mcp_server_info"] is mcp_server_info
     assert call_kwargs["checkpointer"] is not None
+    assert call_kwargs["auto_approve"] is True
     assert call_kwargs["memory_auto_save"] is False
     mock_memory_auto_save.assert_called_once_with()
     mock_server_cls.assert_called_once_with("graph")

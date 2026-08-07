@@ -16561,10 +16561,7 @@ class DeepAgentsApp(App):
                                         content=diff,
                                         diff_file_path=path,
                                         diff_tool_name="edit_file",
-                                        diff_before_content=before,
-                                        diff_after_content=after,
                                         diff_stats=stats,
-                                        diff_show_numbers=False,
                                     )
                                 )
                     else:

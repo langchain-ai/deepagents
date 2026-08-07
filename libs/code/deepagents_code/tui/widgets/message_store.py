@@ -225,9 +225,6 @@ class MessageData:
     whose row carries the caveat comes back printing the same sentence twice.
     """
 
-    diff_show_numbers: bool = True
-    """Whether DIFF line numbers refer to the full file rather than fragments."""
-
     # SKILL message fields - only populated for SKILL messages
     skill_name: str | None = None
     """Name of the skill that was invoked."""
@@ -416,7 +413,6 @@ class MessageData:
                     stats=self.diff_stats,
                     outcome=self.diff_outcome,
                     show_caveat=self.diff_show_caveat,
-                    show_numbers=self.diff_show_numbers,
                     id=self.id,
                 )
 
@@ -538,7 +534,6 @@ class MessageData:
                 diff_stats=widget._stats,
                 diff_outcome=widget._outcome,
                 diff_show_caveat=widget._show_caveat,
-                diff_show_numbers=widget._show_numbers,
             )
 
         if isinstance(widget, SummarizationMessage):

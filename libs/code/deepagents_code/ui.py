@@ -154,7 +154,7 @@ def show_help() -> None:
     )
     console.print(
         "  --yolo                     Run gated actions without review after "
-        "acknowledgement"
+        "acknowledgement (TUI or ACP)"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(

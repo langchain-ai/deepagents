@@ -2220,8 +2220,8 @@ def parse_args() -> argparse.Namespace:
         "--yolo",
         action="store_true",
         help=(
-            "Interactive mode only: run gated actions without review after the "
-            "one-time local risk acknowledgement."
+            "Run gated actions without review after the one-time local risk "
+            "acknowledgement (interactive TUI or ACP mode)."
         ),
     )
 
@@ -2815,6 +2815,7 @@ async def _run_acp_cli_async(
     trust_project_mcp: bool | None = None,
     allow_fs_tools: "list[FsToolName] | None" = None,
     recursion_limit: int | None = None,
+    yolo: bool = False,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2835,6 +2836,7 @@ async def _run_acp_cli_async(
             `None` leaves the SDK default (all tools).
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env/`config.toml`/default at agent-build time.
+        yolo: Disable approval prompts for this ACP server.
 
     Returns:
         Exit code for ACP mode.
@@ -2932,6 +2934,7 @@ async def _run_acp_cli_async(
             async_subagents=async_subagents,
             fs_tools=allow_fs_tools,
             recursion_limit=recursion_limit,
+            auto_approve=yolo,
             memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
@@ -4099,10 +4102,15 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
-                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+            if getattr(args, "auto_approve", False):
                 sys.stderr.write(
-                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
+                    "Error: --auto-approve is only supported by the interactive "
+                    "Textual TUI.\n"
+                )
+                sys.exit(2)
+            if getattr(args, "yolo", False) and not _ensure_yolo_acknowledged(console):
+                sys.stderr.write(
+                    "Error: YOLO acknowledgement is required for ACP mode.\n"
                 )
                 sys.exit(2)
             if getattr(args, "auto_classifier_model", None) is not None:
@@ -4149,6 +4157,7 @@ def cli_main() -> None:
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
                     recursion_limit=getattr(args, "recursion_limit", None),
+                    yolo=getattr(args, "yolo", False),
                 )
             )
             sys.exit(exit_code)

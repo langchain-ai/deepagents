@@ -15,19 +15,22 @@ from typing_extensions import override
 
 
 class GenericFakeChatModel(BaseChatModel):
-    """Generic fake chat model that can be used to test the chat model interface.
+    r"""Generic fake chat model that can be used to test the chat model interface.
+
     * Chat model should be usable in both sync and async tests
     * Invokes `on_llm_new_token` to allow for testing of callback related code for new
         tokens.
     * Includes configurable logic to break messages into chunks for streaming.
+
     Args:
         messages: An iterator over messages (use `iter()` to convert a list)
         stream_delimiter: How to chunk content when streaming. Options:
             - None (default): Return content in a single chunk (no streaming)
             - A string delimiter (e.g., " "): Split content on this delimiter,
-              preserving the delimiter as separate chunks
-            - A regex pattern (e.g., r"(\\s)"): Split using the pattern with a capture
-              group to preserve delimiters
+                preserving the delimiter as separate chunks
+            - A regex pattern (e.g., r"(\s)"): Split using the pattern with a capture
+                group to preserve delimiters
+
     Examples:
         # No streaming - single chunk
         model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello world")]))
@@ -47,14 +50,17 @@ class GenericFakeChatModel(BaseChatModel):
 
     messages: Iterator[AIMessage | str]
     """Get an iterator over messages.
+
     This can be expanded to accept other types like Callables / dicts / strings
     to make the interface more generic if needed.
+
     !!! note
         if you want to pass a list, you can use `iter` to convert it to an iterator.
     """
 
     stream_delimiter: str | None = None
     """Delimiter for chunking content during streaming.
+
     - None (default): No chunking, returns content in a single chunk
     - String: Split content on this exact string, preserving delimiter as chunks
     - Regex pattern: Use re.split() with the pattern (use capture groups to preserve delimiters)

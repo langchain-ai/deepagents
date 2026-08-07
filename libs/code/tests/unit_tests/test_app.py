@@ -14401,6 +14401,7 @@ class TestMessageTimestampFooters:
         assert tool.tool_diff_superseded is True
         assert diff.type == MessageType.DIFF
         assert diff.diff_file_path == "a.py"
+        assert diff.diff_show_numbers is False
         assert "-old" in diff.content
         assert "+new" in diff.content
 

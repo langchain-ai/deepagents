@@ -16564,6 +16564,7 @@ class DeepAgentsApp(App):
                                         diff_before_content=before,
                                         diff_after_content=after,
                                         diff_stats=stats,
+                                        diff_show_numbers=False,
                                     )
                                 )
                     else:

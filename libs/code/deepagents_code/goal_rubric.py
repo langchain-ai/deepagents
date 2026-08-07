@@ -221,6 +221,10 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
         try:
             return handler(request)
         except Exception as first_error:
+            from deepagents_code.model_retry import _contains_retryable_model_error
+
+            if _contains_retryable_model_error(first_error):
+                raise
             logger.warning(
                 "Criteria context model call failed; retrying from the goal alone",
                 exc_info=True,
@@ -253,6 +257,10 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
         try:
             return await handler(request)
         except Exception as first_error:
+            from deepagents_code.model_retry import _contains_retryable_model_error
+
+            if _contains_retryable_model_error(first_error):
+                raise
             logger.warning(
                 "Criteria context model call failed; retrying from the goal alone",
                 exc_info=True,
@@ -1250,8 +1258,10 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         child_input = self._input(request, state.get("messages", []))
         try:
             result = self._criteria_agent.invoke(child_input, context=runtime.context)
-        except _CRITERIA_FALLBACK_ERRORS:
-            if self._fallback_agent is None:
+        except _CRITERIA_FALLBACK_ERRORS as exc:
+            from deepagents_code.model_retry import _contains_retryable_model_error
+
+            if self._fallback_agent is None or _contains_retryable_model_error(exc):
                 raise
             logger.warning(
                 "Criteria context agent failed; drafting from the goal alone",
@@ -1292,8 +1302,10 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
             result = await self._criteria_agent.ainvoke(
                 child_input, context=runtime.context
             )
-        except _CRITERIA_FALLBACK_ERRORS:
-            if self._fallback_agent is None:
+        except _CRITERIA_FALLBACK_ERRORS as exc:
+            from deepagents_code.model_retry import _contains_retryable_model_error
+
+            if self._fallback_agent is None or _contains_retryable_model_error(exc):
                 raise
             logger.warning(
                 "Criteria context agent failed; drafting from the goal alone",
@@ -1317,12 +1329,45 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         return self._update(request, result)
 
 
+def _resolve_criteria_model(
+    model: str | BaseChatModel,
+    retry_fallback: int | None,
+) -> BaseChatModel:
+    """Construct string models through dcode's retry config.
+
+    Args:
+        model: Model spec to construct, or an already-concrete model.
+        retry_fallback: Retry budget to attach when constructing. Authoritative
+            for a string spec (it overrides the config-resolved count); ignored
+            for an already-concrete model.
+
+    Returns:
+        The model unchanged when it is already concrete -- neither provider retries
+            nor retry metadata are touched, since the caller owns its configuration.
+            Otherwise a model built via `create_model`, with provider retries
+            disabled and `retry_fallback` attached when one was given.
+    """
+    if not isinstance(model, str):
+        return model
+    from deepagents_code.config import create_model, set_model_retry_metadata
+
+    resolved = create_model(model).model
+    if retry_fallback is not None:
+        set_model_retry_metadata(
+            resolved,
+            retries=retry_fallback,
+            cli_override=None,
+        )
+    return resolved
+
+
 def create_goal_criteria_agent(
     *,
     model: str | BaseChatModel,
     repository_backend: BackendProtocol | None,
     repository_root: str = "/",
     context_tools: Sequence[BaseTool | Callable[..., Any]],
+    retry_fallback: int | None = None,
 ) -> Any:  # noqa: ANN401
     """Create the ephemeral server-side criteria agent graph.
 
@@ -1332,6 +1377,9 @@ def create_goal_criteria_agent(
             sandbox, or `None` when repository context is unavailable.
         repository_root: Absolute path that bounds reads on `repository_backend`.
         context_tools: Loaded `fetch_url`, optional `web_search`, and MCP tools.
+        retry_fallback: Retry budget applied to the model. Authoritative for a
+            string spec -- it overrides the count `create_model` resolved from
+            config -- and the middleware fallback for an already-concrete model.
 
     Returns:
         Compiled criteria agent graph.
@@ -1345,6 +1393,7 @@ def create_goal_criteria_agent(
         repository_root=repository_root,
         context_tools=context_tools,
         auto_mode_enabled=True,
+        retry_fallback=retry_fallback,
     )
 
 
@@ -1355,6 +1404,7 @@ def _create_goal_criteria_agent(
     repository_root: str,
     context_tools: Sequence[BaseTool | Callable[..., Any]],
     auto_mode_enabled: bool,
+    retry_fallback: int | None = None,
     fs_tools: list[FsToolName] | None = None,
 ) -> Any:  # noqa: ANN401
     """Build a criteria agent with the parent runtime's Auto eligibility.
@@ -1365,6 +1415,9 @@ def _create_goal_criteria_agent(
         repository_root: Absolute path that bounds repository reads.
         context_tools: External context tools available to the criteria agent.
         auto_mode_enabled: Whether Auto may bypass delegated context approval.
+        retry_fallback: Retry budget applied to the model. Authoritative for a
+            string spec -- it overrides the count `create_model` resolved from
+            config -- and the middleware fallback for an already-concrete model.
         fs_tools: Parent filesystem-tool allowlist.
 
             The criteria agent exposes only the allowed subset of its read-only
@@ -1384,6 +1437,7 @@ def _create_goal_criteria_agent(
     from deepagents_code._cli_context import CLIContextSchema
     from deepagents_code.agent import AsyncApprovalHITLMiddleware
     from deepagents_code.configurable_model import ConfigurableModelMiddleware
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
 
     normalized_context_tools: list[BaseTool] = []
     for tool in context_tools:
@@ -1406,8 +1460,14 @@ def _create_goal_criteria_agent(
         names = ", ".join(conflicting_names)
         msg = f"Context tool names conflict with criteria-agent tools: {names}."
         raise ValueError(msg)
+    retry_middleware = (
+        CodeModelRetryMiddleware(max_retries=retry_fallback)
+        if retry_fallback is not None
+        else CodeModelRetryMiddleware()
+    )
     middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(persist_model_state=False),
+        retry_middleware,
         _GoalContextFallbackMiddleware(),
         _WebSearchBudgetMiddleware(),
         _CriteriaContextBudgetMiddleware(),
@@ -1440,8 +1500,9 @@ def _create_goal_criteria_agent(
             )
         )
     )
+    resolved_model = _resolve_criteria_model(model, retry_fallback)
     return create_agent(
-        model=model,
+        model=resolved_model,
         tools=normalized_context_tools,
         middleware=middleware,
         system_prompt=GOAL_RUBRIC_SYSTEM_PROMPT.replace(
@@ -1464,6 +1525,7 @@ def _create_goal_criteria_agent(
 def create_goal_criteria_fallback_agent(
     *,
     model: str | BaseChatModel,
+    retry_fallback: int | None = None,
 ) -> Any:  # noqa: ANN401
     """Create the goal-only fallback agent for criteria generation.
 
@@ -1476,6 +1538,9 @@ def create_goal_criteria_fallback_agent(
 
     Args:
         model: Chat model or model identifier used by the server graph.
+        retry_fallback: Retry budget applied to the model. Authoritative for a
+            string spec -- it overrides the count `create_model` resolved from
+            config -- and the middleware fallback for an already-concrete model.
 
     Returns:
         Compiled goal-only criteria agent graph.
@@ -1485,12 +1550,20 @@ def create_goal_criteria_fallback_agent(
 
     from deepagents_code._cli_context import CLIContextSchema
     from deepagents_code.configurable_model import ConfigurableModelMiddleware
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
 
+    retry_middleware = (
+        CodeModelRetryMiddleware(max_retries=retry_fallback)
+        if retry_fallback is not None
+        else CodeModelRetryMiddleware()
+    )
     middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(persist_model_state=False)
+        ConfigurableModelMiddleware(persist_model_state=False),
+        retry_middleware,
     ]
+    resolved_model = _resolve_criteria_model(model, retry_fallback)
     return create_agent(
-        model=model,
+        model=resolved_model,
         tools=[],
         middleware=middleware,
         system_prompt=GOAL_RUBRIC_SYSTEM_PROMPT,

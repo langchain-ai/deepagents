@@ -64,6 +64,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
         model=model_obj,
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     server = object()
@@ -168,6 +169,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     assert call_kwargs["tools"] == [fetch_tool, thread_tool, search_tool, mcp_tool]
     assert call_kwargs["mcp_server_info"] is mcp_server_info
     assert call_kwargs["checkpointer"] is not None
+    assert call_kwargs["model_retries"] == 5
     assert call_kwargs["memory_auto_save"] is False
     mock_memory_auto_save.assert_called_once_with()
     mock_server_cls.assert_called_once_with("graph")
@@ -183,6 +185,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
         model=model_obj,
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     server = object()
@@ -225,6 +228,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     assert call_kwargs["tools"] == [fetch_tool, thread_tool]
     assert call_kwargs["mcp_server_info"] == []
     assert call_kwargs["checkpointer"] is not None
+    assert call_kwargs["model_retries"] == 5
 
 
 def test_acp_mode_forwards_allow_fs_tools() -> None:
@@ -235,6 +239,7 @@ def test_acp_mode_forwards_allow_fs_tools() -> None:
         model=model_obj,
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     server = object()
@@ -278,6 +283,7 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
         model=object(),
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     run_agent = AsyncMock(return_value=None)
@@ -321,6 +327,7 @@ def test_acp_mode_forwards_recursion_limit() -> None:
         model=object(),
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     run_agent = AsyncMock(return_value=None)

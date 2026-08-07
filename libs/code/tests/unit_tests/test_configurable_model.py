@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
+from deepagents_code.config import CLI_MAX_RETRIES_KEY, MODEL_RETRY_OVERRIDE_ATTR
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
     _get_context,
@@ -109,6 +110,43 @@ class TestCheckpointPersistence:
         result = middleware.wrap_model_call(request, lambda _request: _make_response())
 
         assert isinstance(result, ModelResponse)
+
+    def test_retry_override_is_private_but_persisted_for_resume(self) -> None:
+        model = _make_model("gpt-5.5")
+        request = _make_request(
+            model,
+            context=CLIContextSchema(
+                model_params={CLI_MAX_RETRIES_KEY: 3, "temperature": 0.2}
+            ),
+        )
+        captured: list[ModelRequest] = []
+
+        result = _mw.wrap_model_call(
+            request, lambda selected: (captured.append(selected), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"temperature": 0.2}
+        assert _checkpoint_update(result)["_model_params"] == {
+            CLI_MAX_RETRIES_KEY: 3,
+            "temperature": 0.2,
+        }
+
+    def test_effective_launch_override_replaces_stale_checkpoint_value(self) -> None:
+        model = _make_model("gpt-5.5")
+        setattr(model, MODEL_RETRY_OVERRIDE_ATTR, 5)
+        request = _make_request(
+            model,
+            context=CLIContextSchema(
+                model_params={CLI_MAX_RETRIES_KEY: 3, "temperature": 0.2}
+            ),
+        )
+
+        result = _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert _checkpoint_update(result)["_model_params"] == {
+            CLI_MAX_RETRIES_KEY: 5,
+            "temperature": 0.2,
+        }
 
 
 class TestNoOverride:
@@ -325,6 +363,47 @@ class TestModelSwap:
         create.assert_called_once_with(
             "openai:gpt-5.5",
             profile_overrides=profile_overrides,
+        )
+
+    def test_current_cli_retry_override_wins_over_checkpoint_carrier(self) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        setattr(original, MODEL_RETRY_OVERRIDE_ATTR, 5)
+        override = _make_model("gpt-5.5")
+        setattr(override, MODEL_RETRY_OVERRIDE_ATTR, 5)
+        request = _make_request(
+            original,
+            context=CLIContextSchema(
+                model="openai:gpt-5.5",
+                model_params={CLI_MAX_RETRIES_KEY: 3},
+            ),
+        )
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            result = _mw.wrap_model_call(request, lambda _: _make_response())
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: 5},
+        )
+        assert _checkpoint_update(result)["_model_params"] == {CLI_MAX_RETRIES_KEY: 5}
+
+    def test_checkpoint_retry_carrier_is_used_without_current_override(self) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        override = _make_model("gpt-5.5")
+        request = _make_request(
+            original,
+            context=CLIContextSchema(
+                model="openai:gpt-5.5",
+                model_params={CLI_MAX_RETRIES_KEY: 3},
+            ),
+        )
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            _mw.wrap_model_call(request, lambda _: _make_response())
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: 3},
         )
 
     async def test_async_model_swapped(self) -> None:
@@ -1328,6 +1407,23 @@ class TestModelParams:
             "_model_params": {"temperature": 0.7},
         }
 
+    def test_max_retries_is_not_forwarded_to_invocation(self) -> None:
+        """Retry configuration stays in the checkpoint, not provider settings."""
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model_params={"max_retries": 2, "temperature": 0.7}),
+        )
+        captured: list[ModelRequest] = []
+        result = _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"temperature": 0.7}
+        assert _checkpoint_update(result)["_model_params"] == {
+            "max_retries": 2,
+            "temperature": 0.7,
+        }
+
     def test_reasoning_effort_reaches_model_settings(self) -> None:
         """`reasoning_effort` from `/effort` must survive intact to the model.
 
@@ -1543,3 +1639,106 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class TestFailedSwitchRetryPersistence:
+    """Failed model switches must keep the checkpoint CLI retry carrier."""
+
+    def test_failed_switch_preserves_checkpoint_retry_override(self) -> None:
+        from deepagents_code.model_config import ModelConfigError
+
+        original = _make_model("claude-sonnet-4-6")
+        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        request = _make_request(
+            original,
+            context=CLIContextSchema(
+                model="unknown:bad-model",
+                model_params={CLI_MAX_RETRIES_KEY: 3, "temperature": 0.7},
+            ),
+        )
+        with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
+            result = _mw.wrap_model_call(request, lambda _r: _make_response())
+
+        # Failed target temperature must not be persisted; retry carrier must.
+        assert _checkpoint_update(result) == {
+            "_model_spec": "anthropic:claude-sonnet-4-6",
+            "_model_params": {CLI_MAX_RETRIES_KEY: 3},
+        }
+
+    async def test_async_failed_switch_preserves_checkpoint_retry_override(
+        self,
+    ) -> None:
+        from deepagents_code.model_config import ModelConfigError
+
+        original = _make_model("claude-sonnet-4-6")
+        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        request = _make_request(
+            original,
+            context=CLIContextSchema(
+                model="unknown:bad-model",
+                model_params={CLI_MAX_RETRIES_KEY: 4, "temperature": 0.9},
+            ),
+        )
+
+        async def handler(_r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            return _make_response()
+
+        async def fake_to_thread(
+            _func: object, /, *_args: object, **_kwargs: object
+        ) -> object:
+            await asyncio.sleep(0)
+            msg = "no such provider"
+            raise ModelConfigError(msg)
+
+        with patch(
+            "deepagents_code.configurable_model.asyncio.to_thread",
+            fake_to_thread,
+        ):
+            result = await _mw.awrap_model_call(request, handler)
+
+        assert _checkpoint_update(result) == {
+            "_model_spec": "anthropic:claude-sonnet-4-6",
+            "_model_params": {CLI_MAX_RETRIES_KEY: 4},
+        }
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_retry_override_reaches_create_model_sync_and_async(
+        self, use_async: bool
+    ) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        setattr(original, MODEL_RETRY_OVERRIDE_ATTR, 2)
+        override = _make_model("gpt-5.5")
+        setattr(override, MODEL_RETRY_OVERRIDE_ATTR, 2)
+        request = _make_request(
+            original,
+            context=CLIContextSchema(model="openai:gpt-5.5"),
+        )
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            if use_async:
+
+                async def handler(_r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+                    return _make_response()
+
+                async def fake_to_thread(
+                    func: Callable[..., object],
+                    /,
+                    *args: object,
+                    **kwargs: object,
+                ) -> object:
+                    await asyncio.sleep(0)
+                    return func(*args, **kwargs)
+
+                with patch(
+                    "deepagents_code.configurable_model.asyncio.to_thread",
+                    fake_to_thread,
+                ):
+                    result = await _mw.awrap_model_call(request, handler)
+            else:
+                result = _mw.wrap_model_call(request, lambda _r: _make_response())
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: 2},
+        )
+        assert _checkpoint_update(result)["_model_params"] == {CLI_MAX_RETRIES_KEY: 2}

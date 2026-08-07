@@ -1756,8 +1756,8 @@ class TestCreateCliAgentInteractiveForwarding:
                 "deepagents_code.agent.create_deep_agent", side_effect=create_agent
             ) as mock_create_deep_agent,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             patch("deepagents_code.agent.get_system_prompt") as mock_get_prompt,
         ):
@@ -1817,8 +1817,8 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             patch("deepagents_code.agent.get_system_prompt") as mock_get_prompt,
         ):
@@ -2141,8 +2141,8 @@ class TestCreateCliAgentSkillsSources:
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -2246,8 +2246,8 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -2312,8 +2312,8 @@ class TestCreateCliAgentMemorySources:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -2383,8 +2383,8 @@ class TestCreateCliAgentMemoryAutoSave:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -2487,7 +2487,10 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.list_subagents", return_value=[]) as mock_list,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2566,7 +2569,10 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2643,7 +2649,10 @@ class TestCreateCliAgentProjectContext:
                 "deepagents_code.agent.LocalShellBackend", return_value=mock_backend
             ) as mock_shell,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
+            ),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2768,7 +2777,10 @@ class TestCreateCliAgentProjectContext:
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
+            ),
         ):
             _, composite_backend = create_cli_agent(
                 model="fake-model",
@@ -2837,8 +2849,8 @@ class TestMiddlewareStackConformance:
                 side_effect=capture_create_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -2925,8 +2937,8 @@ class TestEnableAskUser:
                 side_effect=capture,
             ),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3261,8 +3273,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3300,8 +3312,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3350,8 +3362,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3408,8 +3420,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3461,8 +3473,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3514,8 +3526,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3543,24 +3555,48 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
-    def test_subagent_middleware_combines_shell_configurable_model_and_cost(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("model_retries", "retry_override", "pinned_retries"),
+        [(0, None, 7), (3, 3, 3)],
+    )
+    def test_subagent_middleware_combines_model_retry_and_shell(
+        self,
+        tmp_path: Path,
+        model_retries: int,
+        retry_override: int | None,
+        pinned_retries: int,
     ) -> None:
-        """Restrictive shell + implicit model should yield shell, model, and cost.
+        """Every subagent gets retries while model inheritance stays intact.
 
         Explicitly pinned subagents keep shell restriction and cost tracking but
         must not gain `ConfigurableModelMiddleware`, which would let a runtime
         `/model` switch clobber the pinned model.
         """
         from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.config import (
+            CLI_MAX_RETRIES_KEY,
+            MODEL_RETRY_OVERRIDE_ATTR,
+        )
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+        from deepagents_code.offload_middleware import (
+            RetryingSummarizationMiddleware,
+        )
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
         fake_model = _make_fake_chat_model()
+        if retry_override is not None:
+            object.__setattr__(  # noqa: PLC2801  # Pydantic rejects unknown fields through normal setattr
+                fake_model, MODEL_RETRY_OVERRIDE_ATTR, retry_override
+            )
+        pinned_model = _make_fake_chat_model()
+        pinned_result = SimpleNamespace(
+            model=pinned_model, model_retries=pinned_retries
+        )
 
         subagent_metas = [
             {
@@ -3590,34 +3626,46 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
-            ),
+                "deepagents_code.config.create_model",
+                return_value=pinned_result,
+            ) as create_pinned_model,
         ):
             create_cli_agent(
-                model="fake-model",
+                model=fake_model,
                 assistant_id="test",
                 interrupt_shell_only=True,
                 enable_memory=False,
                 enable_skills=False,
                 enable_shell=True,
+                model_retries=model_retries,
             )
 
         _, kwargs = mock_create.call_args
+        main_retry = next(
+            middleware
+            for middleware in kwargs["middleware"]
+            if isinstance(middleware, CodeModelRetryMiddleware)
+        )
+        assert main_retry.max_retries == model_retries
         subagents_by_name = {
             subagent["name"]: subagent for subagent in kwargs["subagents"]
         }
 
+        # Implicit-model subagents (and the general-purpose fallback) resolve the
+        # runtime model before retrying it, then apply the shell restriction.
         for name in ("researcher", "general-purpose"):
             middleware_types = [
                 type(mw) for mw in subagents_by_name[name]["middleware"]
             ]
             assert middleware_types == [
                 ConfigurableModelMiddleware,
+                CodeModelRetryMiddleware,
+                RetryingSummarizationMiddleware,
                 CostTrackingMiddleware,
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
+            assert subagents_by_name[name]["middleware"][1].max_retries == model_retries
             assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
             # Nested spend is priced once by the main agent, so a subagent's
             # instance must not also write the shared cost channel.
@@ -3627,9 +3675,25 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 if isinstance(mw, CostTrackingMiddleware)
             ), f"Subagent {name!r} must install cost tracking in nested mode"
 
+        # The pinned subagent retries its fixed model without allowing runtime
+        # model switches to replace it.
         pinned = subagents_by_name["pinned"]
-        assert pinned["model"] == "anthropic:claude-haiku-4-5"
+        assert pinned["model"] is pinned_model
+        # Explicit create_cli_agent(model_retries=...) stamps the CLI override
+        # carrier onto the main model, so pinned subagents inherit it even when
+        # the incoming model object initially had no override attr.
+        expected_override = (
+            retry_override if retry_override is not None else model_retries
+        )
+        create_pinned_model.assert_called_once_with(
+            "anthropic:claude-haiku-4-5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: expected_override},
+        )
         pinned_middleware = pinned["middleware"]
+        retry_middleware = next(
+            mw for mw in pinned_middleware if isinstance(mw, CodeModelRetryMiddleware)
+        )
+        assert retry_middleware.max_retries == pinned_retries
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"
@@ -3679,8 +3743,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3732,8 +3796,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3782,8 +3846,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3814,7 +3878,6 @@ class TestCreateCliAgentShellMiddlewareWiring:
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
-        fake_model = _make_fake_chat_model()
 
         subagent_meta = {
             "name": "researcher",
@@ -3822,6 +3885,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             "system_prompt": "Investigate the task thoroughly.",
             "model": "anthropic:claude-haiku-4-5",
         }
+        pinned_model = _make_fake_chat_model()
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
@@ -3836,8 +3900,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=pinned_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -3852,7 +3916,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
         subagents = kwargs["subagents"]
         subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
         researcher = subagents_by_name["researcher"]
-        assert researcher["model"] == "anthropic:claude-haiku-4-5"
+        # The pinned model spec is resolved through dcode's `create_model`, so
+        # the subagent carries the resolved instance, not the raw spec.
+        assert researcher["model"] is pinned_model
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware)
             for mw in researcher.get("middleware", [])
@@ -3974,8 +4040,8 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -4016,8 +4082,8 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -4054,6 +4120,8 @@ class TestCreateCliAgentFsToolsWiring:
         """Allowlisting retains model-specific filesystem tool guidance."""
         from deepagents.middleware.filesystem import FilesystemMiddleware
 
+        from deepagents_code.agent import _get_harness_tool_descriptions
+
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -4068,8 +4136,14 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
+            ),
+            patch(
+                "deepagents_code.agent._get_harness_tool_descriptions",
+                side_effect=lambda _model: _get_harness_tool_descriptions(
+                    "nvidia:nvidia/nemotron-3-ultra-550b-a55b"
+                ),
             ),
         ):
             create_cli_agent(
@@ -4136,8 +4210,8 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -4200,8 +4274,8 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -4280,8 +4354,8 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -4330,11 +4404,19 @@ class TestCreateCliAgentFsToolsWiring:
         from deepagents.middleware.filesystem import FilesystemMiddleware
 
         researcher_model = "anthropic:claude-haiku-4-5-20251001"
+        researcher_model_instance = _make_fake_chat_model()
 
         def fake_descriptions(model: object) -> dict[str, str]:
-            if model == researcher_model:
+            if model is researcher_model_instance:
                 return {"read_file": "RESEARCHER-MODEL-GUIDANCE"}
             return {"read_file": "MAIN-MODEL-GUIDANCE"}
+
+        def fake_create_model(
+            model_spec: str | None = None, **_kwargs: object
+        ) -> SimpleNamespace:
+            if model_spec == researcher_model:
+                return SimpleNamespace(model=researcher_model_instance, model_retries=0)
+            return SimpleNamespace(model=fake_model, model_retries=0)
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -4363,8 +4445,8 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                side_effect=fake_create_model,
             ),
         ):
             create_cli_agent(
@@ -4446,8 +4528,8 @@ class TestCreateCliAgentFsToolsWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -4546,8 +4628,8 @@ class TestAutoModeSubagentHITLWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -4836,8 +4918,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -5150,8 +5232,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -5190,6 +5272,140 @@ class TestCreateCliAgentInterpreterWiring:
             for middleware in rubrics[0]._grader_middleware
         )
 
+    def test_model_retries_zero_honored_for_string_model(self, tmp_path: Path) -> None:
+        """Explicit model_retries=0 must disable main and rubric retries for specs."""
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY, set_model_retry_metadata
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        result = SimpleNamespace(model=fake_model, model_retries=0)
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=result,
+            ) as mock_create_model,
+        ):
+            set_model_retry_metadata(fake_model, retries=0, cli_override=0)
+            create_cli_agent(
+                model="openai:gpt-5.5",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                model_retries=0,
+            )
+
+        mock_create_model.assert_called_once()
+        _, create_kwargs = mock_create_model.call_args
+        assert create_kwargs.get("extra_kwargs") == {CLI_MAX_RETRIES_KEY: 0}
+        _, kwargs = mock_create.call_args
+        main_retry = next(
+            mw
+            for mw in kwargs["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        )
+        assert main_retry.max_retries == 0
+        rubrics = [
+            mw for mw in kwargs["middleware"] if isinstance(mw, RubricMiddleware)
+        ]
+        assert rubrics[0]._model_retry_override == 0
+        assert rubrics[0]._model_retry_fallback == 0
+
+    def test_model_retries_zero_honored_for_prebuilt_model(
+        self, tmp_path: Path
+    ) -> None:
+        """Explicit model_retries=0 on a prebuilt model forces zero end-to-end."""
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        from deepagents_code.config import MODEL_RETRIES_ATTR, MODEL_RETRY_OVERRIDE_ATTR
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+        ):
+            create_cli_agent(
+                model=fake_model,
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                model_retries=0,
+            )
+
+        assert getattr(fake_model, MODEL_RETRIES_ATTR) == 0
+        assert getattr(fake_model, MODEL_RETRY_OVERRIDE_ATTR) == 0
+        _, kwargs = mock_create.call_args
+        main_retry = next(
+            mw
+            for mw in kwargs["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        )
+        assert main_retry.max_retries == 0
+        rubrics = [
+            mw for mw in kwargs["middleware"] if isinstance(mw, RubricMiddleware)
+        ]
+        assert rubrics[0]._model_retry_override == 0
+        assert rubrics[0]._model_retry_fallback == 0
+
+    def test_prebuilt_model_disables_provider_sdk_retries(self, tmp_path: Path) -> None:
+        """A prebuilt provider model must not multiply dcode's retry budget."""
+        from langchain_openai import ChatOpenAI
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        prebuilt_model = ChatOpenAI(
+            model="gpt-5.5",
+            api_key="test-key",
+            max_retries=2,
+        )
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+        ):
+            create_cli_agent(
+                model=prebuilt_model,
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        normalized_model = mock_create.call_args.kwargs["model"]
+        assert normalized_model is not prebuilt_model
+        assert normalized_model.max_retries == 0
+        assert normalized_model.root_client.max_retries == 0
+
     def test_auto_approve_disables_rubric_context_hitl(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool
@@ -5214,8 +5430,10 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=_make_fake_chat_model(),
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(
+                    model=_make_fake_chat_model(), model_retries=0
+                ),
             ),
         ):
             create_cli_agent(
@@ -5263,8 +5481,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -5312,8 +5530,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             patch(
                 "deepagents.backends.filesystem._resolve_ripgrep_path",
@@ -5364,8 +5582,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -5419,8 +5637,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -5460,8 +5678,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -5868,8 +6086,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             _ignore_interpreter_beta_warning(),
         ):
@@ -5902,8 +6120,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
         ):
             create_cli_agent(
@@ -5928,8 +6146,8 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             pytest.raises(ValueError, match="remote sandbox"),
         ):
@@ -5974,8 +6192,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             _ignore_interpreter_beta_warning(),
         ):
@@ -6014,8 +6232,8 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             pytest.raises(ValueError, match="acknowledge_unsafe"),
         ):
@@ -6067,8 +6285,8 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=mock_agent,
             ) as mock_create,
             patch(
-                "deepagents._models.init_chat_model",
-                return_value=fake_model,
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=fake_model, model_retries=0),
             ),
             _ignore_interpreter_beta_warning(),
         ):

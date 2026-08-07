@@ -22,16 +22,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SpinnerStatus = (
-    Literal[
-        "Thinking",
-        "Offloading",
-        "Loading thread",
-        "Drafting acceptance criteria",
-    ]
-    | None
-)
-"""Valid spinner display states, or `None` to hide."""
+SpinnerState = Literal[
+    "Thinking",
+    "Offloading",
+    "Loading thread",
+    "Drafting acceptance criteria",
+]
+"""The named spinner states, for producers that display one of the fixed set."""
+
+SpinnerStatus = SpinnerState | str | None
+"""Text the spinner can display, or `None` to hide.
+
+`LoadingWidget` renders arbitrary text, and some producers need it -- retry
+progress (`"model call failed, retrying 2/5..."`) is generated per attempt and
+cannot be enumerated. `str` is therefore part of the contract rather than
+something callers `cast` their way past; `SpinnerState` remains available for the
+fixed states so those stay spelled consistently.
+"""
 
 UsageKind = Literal["assistant", "subagent", "offload", "auto"]
 """Billing/display class for a model request."""

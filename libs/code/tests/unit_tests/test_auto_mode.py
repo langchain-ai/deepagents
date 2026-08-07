@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast, get_type_hints
 from unittest.mock import patch
 
+import httpx
 import pytest
 from langchain.agents.middleware.types import (
     ExtendedModelResponse,
@@ -77,6 +78,7 @@ from deepagents_code.auto_mode import (
     sanitize_auto_reason,
     user_prompt_metadata,
 )
+from deepagents_code.config import MODEL_RETRIES_ATTR
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
@@ -193,6 +195,19 @@ class _StructuredModel:
         self.call_kwargs.append(kwargs)
         if self.error is not None:
             raise self.error
+        return self.result
+
+
+class _FlakyStructuredModel(_StructuredModel):
+    def __init__(self, result: object, errors: list[Exception]) -> None:
+        super().__init__(result)
+        self.errors = errors
+
+    async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+        self.calls.append(messages)
+        self.call_kwargs.append(kwargs)
+        if self.errors:
+            raise self.errors.pop(0)
         return self.result
 
 
@@ -2017,6 +2032,127 @@ async def test_sensitive_write_requires_classifier(
     assert len(model.calls) == 1
 
 
+async def test_classifier_retries_transient_model_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The direct classifier call uses the same bounded retry policy."""
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+        lambda _self, _attempt: 0,
+    )
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    model = _FlakyStructuredModel(result, [ConnectionError("dropped")])
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 2
+
+
+async def test_classifier_honors_zero_retry_fallback(tmp_path: Path) -> None:
+    """An object model without metadata inherits the agent's zero budget."""
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    model = _FlakyStructuredModel(result, [ConnectionError("dropped")])
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"delete": config},
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=1,
+        model_retry_fallback=0,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(model.calls) == 1
+
+
+async def test_distinct_classifier_uses_its_own_retry_budget(tmp_path: Path) -> None:
+    """A separate classifier does not inherit the primary model's retries."""
+    result = AutoDecisionBatch(
+        decisions=[
+            AutoDecision(
+                tool_call_id="call-1",
+                decision="allow",
+                category=AutoDecisionCategory.OTHER_POLICY,
+                reason="",
+            )
+        ]
+    )
+    classifier = _FlakyStructuredModel(result, [ConnectionError("dropped")])
+    setattr(classifier, MODEL_RETRIES_ATTR, 0)
+    primary = _StructuredModel(result)
+    setattr(primary, MODEL_RETRIES_ATTR, 3)
+    middleware = _middleware(tmp_path, classifier_model=cast("Any", classifier))
+    request, _store, _key = _request(
+        tmp_path,
+        model=primary,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(classifier.calls) == 1
+
+
+def test_classifier_construction_deadline_is_not_retryable() -> None:
+    """A local construction expiry cannot extend its own wait through retries."""
+    assert (
+        _ClassifierConstructionDeadlineExceededError(
+            "openai:slow", 1
+        ).dcode_model_retryable
+        is False
+    )
+
+
 async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> None:
     result = AutoDecisionBatch(
         decisions=[
@@ -3097,8 +3233,16 @@ def test_unusable_classifier_budget_is_rejected_at_construction(
 
 
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
+    # Provider TimeoutError is retryable; set fallback 0 so this stays a unit
+    # test of classifier_unavailable_reason wording rather than the retry budget.
     model = _StructuredModel(error=TimeoutError("socket timed out"))
-    middleware = _middleware(tmp_path)
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"delete": config},
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=1,
+        model_retry_fallback=0,
+    )
     request, _store, _key = _request(
         tmp_path,
         model=model,
@@ -5106,3 +5250,123 @@ async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert not executed
+
+
+def test_classifier_local_deadline_is_not_model_retryable() -> None:
+    from deepagents_code.model_retry import _should_retry_after_failure
+
+    exc = _ClassifierDeadlineExceededError(20.0)
+    assert exc.dcode_model_retryable is False
+    assert _should_retry_after_failure(exc) is False
+
+
+async def test_classifier_local_deadline_does_not_retry_or_sleep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pure local wait-budget expiry must not enter model-retry backoff."""
+    delay_calls: list[int] = []
+
+    def _no_delay(self, attempt: int) -> float:  # noqa: ARG001
+        delay_calls.append(attempt)
+        return 0.0
+
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+        _no_delay,
+    )
+
+    class _SlowModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            await asyncio.sleep(5)
+            return self.result
+
+    model = _SlowModel()
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {
+            "delete": config,
+        },
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=0.05,
+        model_retry_fallback=5,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(model.calls) == 1
+    assert delay_calls == []
+
+
+@pytest.mark.asyncio
+async def test_classifier_retries_share_one_inference_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retried classifier attempts must not each restart the wait budget.
+
+    A transient provider failure is retryable, so the retry loop re-enters
+    inference. With a per-attempt timeout that gave Auto `(retries + 1) x timeout`
+    to decide; the deadline is absolute so the total stays bounded and Auto falls
+    back to asking the user promptly.
+    """
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+        lambda self, attempt: 0.0,  # noqa: ARG005
+    )
+
+    class _SlowFlakyModel(_StructuredModel):
+        """Burns most of the budget per attempt, then fails retryably.
+
+        This is the shape that distinguishes the two designs: the transport error
+        is retryable, so the loop re-enters inference, and only an absolute
+        deadline stops it from doing so `retries + 1` times.
+        """
+
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            await asyncio.sleep(0.04)
+            msg = "connection dropped"
+            raise httpx.ReadError(msg)
+
+    model = _SlowFlakyModel()
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"delete": config},
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=0.05,
+        model_retry_fallback=5,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    # The 0.05s budget is spent partway into the second attempt. A per-attempt
+    # timeout would instead allow all 6 (1 + 5 retries).
+    assert len(model.calls) <= 2

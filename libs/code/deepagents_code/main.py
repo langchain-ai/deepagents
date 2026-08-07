@@ -2038,7 +2038,9 @@ def parse_args() -> argparse.Namespace:
         metavar="JSON",
         help="Extra kwargs to pass to the model as a JSON string "
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
-        "These take priority, overriding config file values.",
+        "These take priority, overriding config file values. Exception: "
+        "`max_retries` is not sent to the provider; it sets dcode's own retry "
+        "budget and loses to --max-retries, which is the preferred flag.",
     )
 
     from deepagents_code.ui import non_negative_int, positive_int
@@ -2932,6 +2934,7 @@ async def _run_acp_cli_async(
             async_subagents=async_subagents,
             fs_tools=allow_fs_tools,
             recursion_limit=recursion_limit,
+            model_retries=model_result.model_retries,
             memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
@@ -4075,9 +4078,9 @@ def cli_main() -> None:
 
             if model_params is None:
                 model_params = {}
-            # Carry the flag value under an internal key; `create_model` folds it
-            # under the resolved provider's retry-param name (which may not be
-            # `max_retries` for custom providers) with top precedence.
+            # Carry the flag value under an internal key; `create_model` uses it
+            # as dcode's middleware budget while independently forcing the
+            # resolved provider's internal retry count to zero.
             model_params[CLI_MAX_RETRIES_KEY] = max_retries
 
         profile_override: dict[str, Any] | None = None

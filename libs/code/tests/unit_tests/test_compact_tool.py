@@ -11,6 +11,7 @@ from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
 from langchain.agents.middleware.types import ModelRequest
@@ -19,9 +20,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.config import CLI_MAX_RETRIES_KEY, MODEL_RETRIES_ATTR
 from deepagents_code.offload_middleware import (
     COMPACTION_FAILURE_PREFIX,
     CLICompactionMiddleware,
+    RetryingSummarizationMiddleware,
+    SummarizationFailedError,
     _ArchiveReadGuard,
     _runtime_model_config,
 )
@@ -129,7 +133,14 @@ class TestCLICompactionMiddleware:
             messages[:cutoff],
             messages[cutoff:],
         )
-        summarization._acreate_summary = AsyncMock(return_value="Summary")
+        summarization._lc_helper._trim_messages_for_summary.side_effect = (
+            lambda messages: messages
+        )
+        summarization._lc_helper.summary_prompt = "Summarize:\n{messages}"
+        model = MagicMock()
+        model.invoke.return_value = AIMessage(content="Summary")
+        model.ainvoke = AsyncMock(return_value=AIMessage(content="Summary"))
+        summarization.model = model
         summarization._aoffload_to_backend = AsyncMock(
             return_value="/conversation_history/thread.md"
         )
@@ -138,6 +149,96 @@ class TestCLICompactionMiddleware:
         ]
         summarization._compute_state_cutoff.return_value = 2
         return summarization
+
+    def test_automatic_summarization_retries_transient_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The automatic path retries before it can commit an error summary."""
+        monkeypatch.setattr(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            lambda _self, _attempt: 0,
+        )
+        model = MagicMock()
+        model.profile = {"max_input_tokens": 20_000}
+        model.invoke.side_effect = [
+            httpx.ReadError("dropped"),
+            AIMessage(content="Recovered summary"),
+        ]
+        middleware = RetryingSummarizationMiddleware(
+            model=model,
+            backend=MagicMock(),
+            trigger=("messages", 2),
+            keep=("messages", 1),
+            model_retry_fallback=1,
+        )
+
+        summary = middleware._create_summary([HumanMessage("one"), HumanMessage("two")])
+
+        assert summary == "Recovered summary"
+        assert model.invoke.call_count == 2
+        assert middleware.name == "SummarizationMiddleware"
+
+    def test_exhausted_summarization_reports_conversation_is_intact(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exhausted budget must say what failed and that nothing was lost.
+
+        Upstream returned `"Error generating summary: ..."` *as the summary*,
+        committing an error string into conversation history. Propagating the raw
+        provider error instead reads as though the user's own request failed, so
+        the failure is named and the original error kept as `__cause__`.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            lambda _self, _attempt: 0,
+        )
+        model = MagicMock()
+        model.profile = {"max_input_tokens": 20_000}
+        model.invoke.side_effect = httpx.ReadError("dropped")
+        middleware = RetryingSummarizationMiddleware(
+            model=model,
+            backend=MagicMock(),
+            trigger=("messages", 2),
+            keep=("messages", 1),
+            model_retry_fallback=1,
+        )
+
+        with pytest.raises(SummarizationFailedError) as caught:
+            middleware._create_summary([HumanMessage("one"), HumanMessage("two")])
+
+        assert "no messages were summarized or removed" in str(caught.value)
+        assert isinstance(caught.value.__cause__, httpx.ReadError)
+        assert model.invoke.call_count == 2
+
+    async def test_async_automatic_summarization_retries_transient_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            lambda _self, _attempt: 0,
+        )
+        model = MagicMock()
+        model.profile = {"max_input_tokens": 20_000}
+        model.ainvoke = AsyncMock(
+            side_effect=[
+                httpx.ReadError("dropped"),
+                AIMessage(content="Recovered summary"),
+            ]
+        )
+        middleware = RetryingSummarizationMiddleware(
+            model=model,
+            backend=MagicMock(),
+            trigger=("messages", 2),
+            keep=("messages", 1),
+            model_retry_fallback=1,
+        )
+
+        summary = await middleware._acreate_summary(
+            [HumanMessage("one"), HumanMessage("two")]
+        )
+
+        assert summary == "Recovered summary"
+        assert model.ainvoke.await_count == 2
 
     @pytest.mark.parametrize("overflow", [False, True])
     async def test_auto_compaction_runs_precompact_hook(self, overflow: bool) -> None:
@@ -201,7 +302,7 @@ class TestCLICompactionMiddleware:
         invoke.assert_called_once()
         handler.assert_awaited_once()
         summarization._aoffload_to_backend.assert_not_awaited()
-        summarization._acreate_summary.assert_not_awaited()
+        summarization.model.ainvoke.assert_not_awaited()
 
     async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
         """Forced compaction partitions directly even below the proactive gate."""
@@ -215,9 +316,81 @@ class TestCLICompactionMiddleware:
         result = await middleware._arun_forced_compact(runtime)
 
         summarization._is_eligible_for_compaction.assert_not_called()
-        summarization._acreate_summary.assert_awaited_once()
+        summarization.model.ainvoke.assert_awaited_once()
         assert result.update is not None
         assert result.update["_summarization_event"]["cutoff_index"] == 2
+
+    def test_ordinary_compaction_retries_summary_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The normal model-initiated path must retain transient retries."""
+        monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+        summarization = self._summarization()
+        setattr(summarization.model, MODEL_RETRIES_ATTR, 1)
+        summarization.model.invoke.side_effect = [
+            httpx.ReadError("dropped"),
+            AIMessage(content="Summary"),
+        ]
+        summarization._offload_to_backend.return_value = (
+            "/conversation_history/thread.md"
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        with patch.object(middleware, "_is_eligible_for_compaction", return_value=True):
+            result = middleware._run_compact(runtime)
+
+        assert summarization.model.invoke.call_count == 2
+        assert result.update is not None
+        assert result.update["_summarization_event"]["cutoff_index"] == 2
+
+    async def test_async_ordinary_compaction_retries_summary_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            lambda _self, _attempt: 0,
+        )
+        summarization = self._summarization()
+        setattr(summarization.model, MODEL_RETRIES_ATTR, 1)
+        summarization.model.ainvoke = AsyncMock(
+            side_effect=[
+                httpx.ReadError("dropped"),
+                AIMessage(content="Summary"),
+            ]
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        with patch.object(middleware, "_is_eligible_for_compaction", return_value=True):
+            result = await middleware._arun_compact(runtime)
+
+        assert summarization.model.ainvoke.await_count == 2
+        assert result.update is not None
+        assert result.update["_summarization_event"]["cutoff_index"] == 2
+
+    def test_ordinary_compaction_honors_request_retry_override(self) -> None:
+        summarization = self._summarization()
+        setattr(summarization.model, MODEL_RETRIES_ATTR, 3)
+        summarization.model.invoke.side_effect = httpx.ReadError("dropped")
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = {"model_params": {CLI_MAX_RETRIES_KEY: 0}}
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        with patch.object(middleware, "_is_eligible_for_compaction", return_value=True):
+            result = middleware._run_compact(runtime)
+
+        summarization.model.invoke.assert_called_once()
+        assert result.update is not None
+        assert "_summarization_event" not in result.update
 
     def test_runtime_model_builds_matching_summarizer(self) -> None:
         """A `/model` override selects the summarizer used by `/offload`."""
@@ -287,6 +460,21 @@ class TestCLICompactionMiddleware:
         assert active_model.profile["max_input_tokens"] == 24_000
         create_summarization.assert_called_once_with(active_model, startup._backend)
 
+    def test_runtime_summarizer_controls_compaction_eligibility(self) -> None:
+        startup = self._summarization()
+        selected = self._summarization()
+        middleware = CLICompactionMiddleware(startup)
+
+        with patch(
+            "deepagents_code.offload_middleware.SummarizationToolMiddleware._is_eligible_for_compaction",
+            autospec=True,
+            return_value=True,
+        ) as eligible:
+            assert middleware._is_runtime_compaction_eligible(selected, []) is True
+
+        runtime_tool = eligible.call_args.args[0]
+        assert runtime_tool._summarization is selected
+
     async def test_force_noops_when_nothing_old_enough(self) -> None:
         """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""
         summarization = self._summarization()
@@ -301,7 +489,7 @@ class TestCLICompactionMiddleware:
 
         assert result.update is not None
         assert "_summarization_event" not in result.update
-        summarization._acreate_summary.assert_not_awaited()
+        summarization.model.ainvoke.assert_not_awaited()
         assert "Nothing to compact" in result.update["messages"][0].content
 
     async def test_async_force_excludes_seed_from_retention_cutoff(self) -> None:
@@ -359,7 +547,7 @@ class TestCLICompactionMiddleware:
     async def test_forced_compact_error_when_summary_fails(self) -> None:
         """A summary failure returns the failure prefix and does not compact."""
         summarization = self._summarization()
-        summarization._acreate_summary = AsyncMock(side_effect=RuntimeError("boom"))
+        summarization.model.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
         middleware = CLICompactionMiddleware(summarization)
         runtime = MagicMock()
         runtime.context = None
@@ -376,10 +564,38 @@ class TestCLICompactionMiddleware:
         assert content.startswith(COMPACTION_FAILURE_PREFIX)
         assert "RuntimeError" in content
 
+    async def test_async_forced_summary_retries_transient_failure(self) -> None:
+        """Direct async summaries honor the selected model's retry metadata."""
+        summarization = self._summarization()
+        setattr(summarization.model, MODEL_RETRIES_ATTR, 2)
+        summarization.model.ainvoke = AsyncMock(
+            side_effect=[
+                httpx.ReadError("dropped"),
+                AIMessage(content="Summary"),
+            ]
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        events: list[dict[str, object]] = []
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+        runtime.stream_writer = events.append
+
+        with patch(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            return_value=0,
+        ):
+            result = await middleware._arun_forced_compact(runtime)
+
+        assert summarization.model.ainvoke.await_count == 2
+        assert [event["attempt"] for event in events] == [1]
+        assert result.update is not None
+        assert result.update["_summarization_event"]["cutoff_index"] == 2
+
     def test_sync_forced_compact_compacts(self) -> None:
         """The synchronous forced path mirrors the async one."""
         summarization = self._summarization()
-        summarization._create_summary.return_value = "Summary"
         summarization._offload_to_backend.return_value = (
             "/conversation_history/thread.md"
         )
@@ -391,7 +607,34 @@ class TestCLICompactionMiddleware:
 
         result = middleware._run_forced_compact(runtime)
 
-        summarization._create_summary.assert_called_once()
+        summarization.model.invoke.assert_called_once()
+        assert result.update is not None
+        assert result.update["_summarization_event"]["cutoff_index"] == 2
+
+    def test_sync_forced_summary_retries_transient_failure(self) -> None:
+        """Direct sync summaries honor the selected model's retry metadata."""
+        summarization = self._summarization()
+        setattr(summarization.model, MODEL_RETRIES_ATTR, 2)
+        summarization.model.invoke.side_effect = [
+            httpx.ReadError("dropped"),
+            AIMessage(content="Summary"),
+        ]
+        middleware = CLICompactionMiddleware(summarization)
+        events: list[dict[str, object]] = []
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+        runtime.stream_writer = events.append
+
+        with patch(
+            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+            return_value=0,
+        ):
+            result = middleware._run_forced_compact(runtime)
+
+        assert summarization.model.invoke.call_count == 2
+        assert [event["attempt"] for event in events] == [1]
         assert result.update is not None
         assert result.update["_summarization_event"]["cutoff_index"] == 2
 
@@ -571,13 +814,13 @@ class TestCLICompactionMiddleware:
 
         assert result.update is not None
         assert "_summarization_event" not in result.update
-        summarization._create_summary.assert_not_called()
+        summarization.model.invoke.assert_not_called()
         assert "Nothing to compact" in result.update["messages"][0].content
 
     def test_sync_forced_compact_error_when_summary_fails(self) -> None:
         """A sync summary failure returns the failure prefix and does not compact."""
         summarization = self._summarization()
-        summarization._create_summary = MagicMock(side_effect=RuntimeError("boom"))
+        summarization.model.invoke.side_effect = RuntimeError("boom")
         middleware = CLICompactionMiddleware(summarization)
         runtime = MagicMock()
         runtime.context = None
@@ -604,7 +847,7 @@ class TestCLICompactionMiddleware:
         assert "RuntimeError" in message.content
 
     def test_factory_builds_cli_middleware_threading_system_prompt(self) -> None:
-        """The factory returns a CLI middleware carrying the SDK's config."""
+        """The factory replaces the SDK summarizer with the retrying variant."""
         from deepagents_code import offload_middleware as om
 
         sdk = MagicMock()
@@ -615,13 +858,21 @@ class TestCLICompactionMiddleware:
         with patch.object(
             om, "create_summarization_tool_middleware", return_value=sdk
         ) as factory:
-            result = om._create_cli_compaction_middleware("provider:model", backend)
+            result = om._create_cli_compaction_middleware(
+                "provider:model",
+                backend,
+                model_retries=0,
+            )
 
-        factory.assert_called_once()
+        factory.assert_called_once_with("provider:model", backend)
         assert isinstance(result, om.CLICompactionMiddleware)
         assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
-        assert result._summarization is sdk._summarization
+        assert isinstance(result._summarization, om.RetryingSummarizationMiddleware)
+        assert result._summarization.model is sdk._summarization.model
+        assert result._summarization._backend is backend
+        assert result._summarization._retry.max_retries == 0
+        assert result._model_retry_fallback == 0
 
 
 class TestRuntimeModelConfig:
@@ -692,18 +943,24 @@ class TestSdkContractGuards:
             SummarizationMiddleware,
             SummarizationToolMiddleware,
         )
+        from langchain.agents.middleware.summarization import (
+            SummarizationMiddleware as LangChainSummarizationMiddleware,
+        )
 
         # Called on `self._summarization` (a SummarizationMiddleware).
         for name in (
             "_apply_event_to_messages",
             "_determine_cutoff_index",
             "_partition_messages",
-            "_create_summary",
-            "_acreate_summary",
             "_offload_to_backend",
             "_aoffload_to_backend",
         ):
             assert callable(getattr(SummarizationMiddleware, name, None)), name
+        assert callable(
+            getattr(
+                LangChainSummarizationMiddleware, "_trim_messages_for_summary", None
+            )
+        )
 
         # Inherited SDK helpers called on the tool-middleware subclass.
         for name in (

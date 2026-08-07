@@ -141,7 +141,14 @@ class _ClassifierDeadlineExceededError(TimeoutError):
 
     Distinct from a provider-raised `TimeoutError` so agent/UI text can name
     the app-imposed deadline without mislabeling socket-level failures.
+
+    Opted out of model-node retries via `dcode_model_retryable = False`: the
+    local budget has already elapsed, so spreading more attempts would only
+    multiply wall time under a misleading "model call failed, retrying…"
+    status.
     """
+
+    dcode_model_retryable = False
 
     def __init__(self, timeout_seconds: float) -> None:
         self.timeout_seconds = timeout_seconds
@@ -157,7 +164,12 @@ class _ClassifierConstructionDeadlineExceededError(TimeoutError):
     model could not be *built* in time rather than that it did not respond —
     the latter sends the user looking for a provider outage when the model was
     never constructed.
+
+    The construction deadline is local to dcode and has already expired when
+    this is raised, so retrying it would only multiply the elapsed wait.
     """
+
+    dcode_model_retryable = False
 
     def __init__(self, spec: str, timeout_seconds: float) -> None:
         self.spec = spec
@@ -1812,6 +1824,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             _CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS
         ),
         classifier_model: str | BaseChatModel | None = None,
+        model_retry_fallback: int | None = None,
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
@@ -1831,6 +1844,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 first review; a chat model instance is used as-is. `None`
                 inherits the main agent model, which is the default. A per-run
                 `classifier_model` on the runtime context wins over this value.
+            model_retry_fallback: Retry budget for models without metadata.
             trusted_ask_user_tool: Built-in tool allowed to create consent receipts.
             trusted_compaction_tool: Built-in tool that performs conversation
                 compaction.
@@ -1895,6 +1909,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._classifier_model_constructions: dict[
             str, asyncio.Task[BaseChatModel]
         ] = {}
+        self._model_retry_fallback = model_retry_fallback
         self._known_secrets = _known_credential_values()
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
@@ -2318,14 +2333,19 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         return await asyncio.shield(task), selected
 
-    async def _classify(
-        self,
-        request: ModelRequest,
-        calls: Sequence[ToolCall],
-        all_calls: Sequence[ToolCall],
-        dispositions: Mapping[str, str],
-        tools: Mapping[str, BaseTool],
-    ) -> AutoDecisionBatch:
+    async def _classifier_model_with_deadline(
+        self, request: ModelRequest
+    ) -> tuple[BaseChatModel, str | None]:
+        """Resolve a classifier without consuming its inference budget.
+
+        Returns:
+            Resolved classifier model and the label for a distinct model.
+
+        Raises:
+            _ClassifierConstructionDeadlineExceededError: If local construction
+                time expires.
+            TimeoutError: If model construction otherwise times out.
+        """
         # Construction and inference get separate budgets: a cold provider
         # import must not eat the time reserved for the verdict, and the two
         # failures need different reasons. Constructor threads cannot be
@@ -2343,7 +2363,44 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     self._classifier_construction_timeout_seconds,
                 ) from None
             raise
-        timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
+        return model, spec
+
+    async def _classify(
+        self,
+        request: ModelRequest,
+        calls: Sequence[ToolCall],
+        all_calls: Sequence[ToolCall],
+        dispositions: Mapping[str, str],
+        tools: Mapping[str, BaseTool],
+        *,
+        model: BaseChatModel,
+        spec: str | None,
+        deadline: float,
+    ) -> AutoDecisionBatch:
+        """Ask an already-resolved classifier for a decision batch.
+
+        Args:
+            request: Resolved primary-model request.
+            calls: Tool calls being reviewed.
+            all_calls: Every tool call in the batch, for context.
+            dispositions: Deterministic dispositions already decided.
+            tools: Tools available to the agent.
+            model: Already-resolved classifier model.
+            spec: Label for a distinct classifier model, or `None` when inherited.
+            deadline: Absolute event-loop time by which inference must finish.
+
+        Returns:
+            Parsed classifier decisions for the reviewed tool calls.
+
+        Raises:
+            _ClassifierDeadlineExceededError: If the local inference time expires.
+            TimeoutError: If inference otherwise times out.
+        """
+        # An *absolute* deadline, so retries share one wall-clock budget. A
+        # per-attempt timeout would restart on every retry and multiply the wait
+        # the budget exists to bound (5 retries x 20s = ~2 minutes before Auto
+        # falls back to asking the user).
+        timeout_cm = asyncio.timeout_at(deadline)
         try:
             async with timeout_cm:
                 structured = model.with_structured_output(AutoDecisionBatch)
@@ -2583,12 +2640,39 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         started = time.monotonic()
         try:
-            classified = await self._classify(
-                request,
-                review_calls,
-                calls,
-                deterministic_dispositions,
-                tools,
+            from deepagents_code.model_retry import (
+                CodeModelRetryMiddleware,
+                _runtime_model_retry_override,
+            )
+
+            retry = (
+                CodeModelRetryMiddleware(max_retries=self._model_retry_fallback)
+                if self._model_retry_fallback is not None
+                else CodeModelRetryMiddleware()
+            )
+            (
+                classifier_model,
+                classifier_spec,
+            ) = await self._classifier_model_with_deadline(request)
+            # Fixed once, before the retry loop, so every attempt plus its backoff
+            # draws from the same inference budget.
+            inference_deadline = (
+                asyncio.get_running_loop().time() + self._classifier_timeout_seconds
+            )
+            classified = await retry.arun_with_retry(
+                classifier_model,
+                lambda: self._classify(
+                    request,
+                    review_calls,
+                    calls,
+                    deterministic_dispositions,
+                    tools,
+                    model=classifier_model,
+                    spec=classifier_spec,
+                    deadline=inference_deadline,
+                ),
+                writer=getattr(request.runtime, "stream_writer", None),
+                max_retries=_runtime_model_retry_override(request.runtime),
             )
             expected_ids = {_tool_call_id(call) for call in review_calls}
             _validate_classifier_ids(classified, expected_ids)

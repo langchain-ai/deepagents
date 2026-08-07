@@ -61,7 +61,7 @@
 ### Highlights
 
 - Added project hooks workspace trust and expanded Hooks v2 support with client and server lifecycle events plus runtime feedback ([#5105](https://github.com/langchain-ai/deepagents/issues/5105), [#5104](https://github.com/langchain-ai/deepagents/issues/5104), [#4997](https://github.com/langchain-ai/deepagents/issues/4997), [#5045](https://github.com/langchain-ai/deepagents/issues/5045)).
-- Added an option to mute the “YOLO is active” toast ([#5103](https://github.com/langchain-ai/deepagents/issues/5103)).
+- Added an option to mute the "YOLO is active" toast ([#5103](https://github.com/langchain-ai/deepagents/issues/5103)).
 - Made the splash screen `thread` ID clickable to copy it ([#5173](https://github.com/langchain-ai/deepagents/issues/5173)).
 - Show `ask_user` answers directly on the answered tool row ([#5100](https://github.com/langchain-ai/deepagents/issues/5100)).
 - Show a toast when submitting an empty required `ask_user` answer ([#5095](https://github.com/langchain-ai/deepagents/issues/5095)).
@@ -231,7 +231,7 @@
 ### Features
 
 - Added plugin marketplace support ([#4554](https://github.com/langchain-ai/deepagents/issues/4554)).
-- Added an “always allow” option to the project MCP approval prompt ([#4562](https://github.com/langchain-ai/deepagents/issues/4562)).
+- Added an "always allow" option to the project MCP approval prompt ([#4562](https://github.com/langchain-ai/deepagents/issues/4562)).
 - Improved `/goal` workflows: criteria generation now runs server-side, YOLO mode auto-accepts criteria, goals complete after satisfied grading, and goal review editing now supports `Ctrl+X` ([#4754](https://github.com/langchain-ai/deepagents/issues/4754), [#4784](https://github.com/langchain-ai/deepagents/issues/4784), [#4781](https://github.com/langchain-ai/deepagents/issues/4781), [#4780](https://github.com/langchain-ai/deepagents/issues/4780)).
 - Reasoning effort now persists across restarts ([#4728](https://github.com/langchain-ai/deepagents/issues/4728)).
 - Added a toast prompting you to re-paste when a chat paste collapses ([#4742](https://github.com/langchain-ai/deepagents/issues/4742)).

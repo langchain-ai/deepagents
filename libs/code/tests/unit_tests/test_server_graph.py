@@ -186,6 +186,7 @@ class TestServerGraph:
 
         model_result = SimpleNamespace(
             model=model_obj,
+            model_retries=5,
             apply_to_settings=MagicMock(),
         )
         configure_redaction = MagicMock(side_effect=configure_redaction_side_effect)
@@ -324,6 +325,7 @@ class TestServerGraph:
             project_context=project_context,
             async_subagents=None,
             goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
+            model_retries=5,
             rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
         )
 
@@ -392,6 +394,7 @@ class TestServerGraph:
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,
+                    model_retries=5,
                     apply_to_settings=MagicMock(),
                 ),
             ),

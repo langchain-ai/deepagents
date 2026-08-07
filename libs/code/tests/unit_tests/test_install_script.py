@@ -1779,6 +1779,24 @@ def test_install_script_upgrade_footer_says_upgraded(tmp_path: Path) -> None:
     assert "Setup complete" not in proc.stdout
 
 
+def test_install_script_prerelease_upgrade_footer_is_neutral(tmp_path: Path) -> None:
+    """A PEP 440 prerelease move avoids the numeric-only footer comparator."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.0",
+        },
+        installed_version="0.1.0rc1",
+        latest_version="0.1.0",
+    )
+
+    assert proc.returncode == 0
+    assert "✔ Version changed. Run: dcode" in proc.stdout
+    assert "Upgraded." not in proc.stdout
+    assert "integer expression expected" not in proc.stderr
+
+
 def test_install_script_custom_index_downgrade_footer_is_neutral(
     tmp_path: Path,
 ) -> None:

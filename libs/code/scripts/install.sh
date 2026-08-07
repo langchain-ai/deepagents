@@ -3094,10 +3094,13 @@ fi
 MIN_RIPGREP_VERSION="12.0.0"
 
 # version_at_least HAVE WANT — dotted numeric compare (12.0.0 >= 11.0.0). The
-# installer runs before Python exists, so this stays in pure shell.
+# installer runs before Python exists, so this stays in pure shell. It is not
+# a PEP 440 comparator, so callers with package versions must only use it for
+# numeric versions.
 version_at_least() {
   local have="$1" want="$2" IFS_save="$IFS"
   case "$have" in ''|*[!0-9.]*) return 1 ;; esac
+  case "$want" in ''|*[!0-9.]*) return 1 ;; esac
   IFS=.
   # shellcheck disable=SC2086  # word-splitting on '.' is the point
   set -- $have

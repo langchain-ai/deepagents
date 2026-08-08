@@ -952,16 +952,28 @@ class _Registry:
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
+    max_active_threads: int = 128
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def get(self, thread_id: str) -> _ThreadREPL:
         with self._lock:
-            slot = self._slots.get(thread_id)
+            slot = self._slots.pop(thread_id, None)
             if slot is None:
+                self._evict_for_cap_locked()
                 slot = self._build_slot_locked(thread_id)
-                self._slots[thread_id] = slot
+            self._slots[thread_id] = slot
             return slot.repl
+
+    def _evict_for_cap_locked(self) -> None:
+        cap = self.max_active_threads
+        if cap is None or cap <= 0:
+            return
+        while len(self._slots) >= cap:
+            oldest_id, oldest_slot = next(iter(self._slots.items()))
+            del self._slots[oldest_id]
+            with contextlib.suppress(Exception):
+                self._close_slot(oldest_slot)
 
     def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
         """Return existing REPL for `thread_id` without creating a new slot."""

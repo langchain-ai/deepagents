@@ -7,12 +7,15 @@ import pytest
 from deepagents_code.input import (
     ParsedPastedPathPayload,
     dropped_payload_paths,
+    extract_leading_pasted_entry_path,
     extract_leading_pasted_file_path,
     normalize_pasted_path,
     parse_file_mentions,
+    parse_pasted_any_entry_paths,
     parse_pasted_file_paths,
     parse_pasted_path_payload,
     parse_single_pasted_file_path,
+    track_probe_failures,
 )
 
 
@@ -319,6 +322,152 @@ def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
     assert result == [img.resolve()]
 
 
+def test_parse_pasted_any_entry_paths_resolves_dropped_folder(tmp_path: Path) -> None:
+    """A dragged folder payload should resolve to the directory."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    assert parse_pasted_any_entry_paths(str(folder)) == [folder.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_resolves_quoted_folder(tmp_path: Path) -> None:
+    """Quoted folder payloads should resolve like quoted file payloads."""
+    folder = tmp_path / "my assets"
+    folder.mkdir()
+
+    assert parse_pasted_any_entry_paths(f"'{folder}'") == [folder.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_rejects_unquoted_folder_with_spaces(
+    tmp_path: Path,
+) -> None:
+    """Shell tokenization splits unquoted spaces; the leading extractor covers it."""
+    folder = tmp_path / "my assets" / "raw images"
+    folder.mkdir(parents=True)
+
+    assert parse_pasted_any_entry_paths(str(folder)) == []
+
+    result = extract_leading_pasted_entry_path(str(folder))
+    assert result is not None
+    assert result[0] == folder.resolve()
+
+
+def test_parse_pasted_any_entry_paths_resolves_file_url(tmp_path: Path) -> None:
+    """`file://` folder payloads should be URL-decoded and resolved."""
+    folder = tmp_path / "space name"
+    folder.mkdir()
+
+    payload = f"file://{str(folder).replace(' ', '%20')}"
+
+    assert parse_pasted_any_entry_paths(payload) == [folder.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_resolves_multiple_folders(tmp_path: Path) -> None:
+    """Dropping several folders at once should resolve every path."""
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+
+    result = parse_pasted_any_entry_paths(f"{first}\n{second}")
+
+    assert result == [first.resolve(), second.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_ignores_missing_folder(tmp_path: Path) -> None:
+    """Missing directories should fall back to regular text paste."""
+    assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
+
+
+@pytest.mark.parametrize("payload", ["", "   \n\t  ", "/help", "please inspect this"])
+def test_parse_pasted_any_entry_paths_ignores_non_path_payloads(payload: str) -> None:
+    """Prose and slash commands must not be read as dropped entries."""
+    assert parse_pasted_any_entry_paths(payload) == []
+
+
+def test_parse_pasted_any_entry_paths_resolves_mixed_folder_then_file(
+    tmp_path: Path,
+) -> None:
+    """A folder followed by a file resolves as a mixed drop."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+    note = tmp_path / "note.txt"
+    note.write_text("hi")
+
+    result = parse_pasted_any_entry_paths(f"{folder} {note}")
+
+    assert result == [folder.resolve(), note.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_resolves_mixed_file_then_folder(
+    tmp_path: Path,
+) -> None:
+    """A file followed by a folder resolves as a mixed drop."""
+    note = tmp_path / "note.txt"
+    note.write_text("hi")
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    result = parse_pasted_any_entry_paths(f"{note} {folder}")
+
+    assert result == [note.resolve(), folder.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_rejects_missing_token(tmp_path: Path) -> None:
+    """Any unresolvable token rejects the whole payload as ordinary text."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    assert parse_pasted_any_entry_paths(f"{folder} {tmp_path / 'missing'}") == []
+
+
+def test_extract_leading_pasted_entry_path_accepts_folder_then_prose(
+    tmp_path: Path,
+) -> None:
+    """A leading folder followed by a question resolves like a leading file."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    result = extract_leading_pasted_entry_path(f"{folder} what is in here")
+
+    assert result is not None
+    path, token_end = result
+    assert path == folder.resolve()
+    assert token_end == len(str(folder))
+
+
+def test_extract_leading_pasted_entry_path_accepts_file_then_prose(
+    tmp_path: Path,
+) -> None:
+    """The file case keeps working through the shared extractor."""
+    note = tmp_path / "note.txt"
+    note.write_text("hi")
+
+    result = extract_leading_pasted_entry_path(f"{note} explain this")
+
+    assert result is not None
+    assert result[0] == note.resolve()
+
+
+def test_extract_leading_pasted_entry_path_handles_unquoted_spaces(
+    tmp_path: Path,
+) -> None:
+    """A folder whose name contains spaces still splits from trailing prose."""
+    folder = tmp_path / "my assets"
+    folder.mkdir()
+
+    result = extract_leading_pasted_entry_path(f"{folder} what is in here")
+
+    assert result is not None
+    assert result[0] == folder.resolve()
+
+
+def test_extract_leading_pasted_entry_path_rejects_prose(tmp_path: Path) -> None:
+    """Text with no resolvable leading path stays ordinary prose."""
+    assert extract_leading_pasted_entry_path("please inspect this") is None
+    assert extract_leading_pasted_entry_path(f"{tmp_path / 'missing'} hi") is None
+
+
 def test_normalize_pasted_path_rejects_mixed_payload() -> None:
     """Single-path normalizer should reject path+prose mixed payloads."""
     assert normalize_pasted_path("'/tmp/a.png' what's this") is None
@@ -514,6 +663,62 @@ def test_dropped_payload_paths_accepts_windows_unc_shape(mocker) -> None:
     assert dropped_payload_paths(r"\\server\share\shot.png") == [resolved]
 
 
+def test_track_probe_failures_records_unreadable_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe that raises is recorded, not silently folded into 'not a path'."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    def _deny(self: Path, *args: object, **kwargs: object) -> object:  # noqa: ARG001  # Replaces the stat probe signature
+        msg = "permission denied"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(Path, "stat", _deny)
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(str(folder)) == []
+
+    # The Unicode-space fallback re-walks parent segments, so more than one
+    # probe can fail; what matters is that the caller learns at least one did.
+    assert failures
+    assert all("permission denied" in failure for failure in failures)
+
+
+def test_track_probe_failures_records_os_rejected_path() -> None:
+    """A path the OS refuses outright is a failure, not a clean miss.
+
+    Python 3.14 routes `Path.exists()` through `os.path.*`, which swallows
+    every `OSError` — including the `ENAMETOOLONG` from an overlong component —
+    and answers `False`. The probes must stat directly so such rejections
+    still reach the tracker instead of looking like "not a path".
+    """
+    overlong = "/" + "x" * 300
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(overlong) == []
+
+    assert failures
+    assert all("x" * 40 in failure for failure in failures)
+
+
+def test_track_probe_failures_empty_for_merely_missing_path(tmp_path: Path) -> None:
+    """A path that simply does not exist is a clean negative, not a failure."""
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
+
+    assert failures == []
+
+
+def test_track_probe_failures_nests_independently(tmp_path: Path) -> None:
+    """Each block sees only the failures raised inside it."""
+    with track_probe_failures() as outer:
+        with track_probe_failures() as inner:
+            assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
+        assert inner == []
+    assert outer == []
+
+
 def test_dropped_payload_paths_ignores_plain_text() -> None:
     """Ordinary typed text that is not an existing path yields nothing."""
     assert dropped_payload_paths("just some words") == []
@@ -639,7 +844,7 @@ def test_parse_pasted_path_payload_handles_overlong_component(
 def test_parse_pasted_file_paths_handles_oserror_on_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
 ) -> None:
-    """`OSError` raised by an `is_file` probe must be swallowed, not propagated.
+    """`OSError` raised by a stat probe must be swallowed, not propagated.
 
     Guards against platforms/filesystems that surface the limit at a different
     probe than `resolve`, ensuring the fix does not rely on a specific errno.
@@ -647,7 +852,7 @@ def test_parse_pasted_file_paths_handles_oserror_on_probe(
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "real.txt"
     target.write_text("hi")
-    mocker.patch("pathlib.Path.is_file", side_effect=OSError(63, "File name too long"))
+    mocker.patch("pathlib.Path.stat", side_effect=OSError(63, "File name too long"))
 
     assert parse_pasted_file_paths(str(target)) == []
 
@@ -659,14 +864,14 @@ def test_parse_pasted_file_paths_handles_oserror_in_unicode_variant(
 
     Exercises the `_resolve_with_unicode_space_variants` traversal: the on-disk
     name carries a narrow no-break space while the paste uses an ASCII space,
-    forcing the `iterdir`-match branch where component `is_file`/`is_dir` probes
-    run. The path is quoted so it stays a single token instead of being split.
+    forcing the `iterdir`-match branch where component stat probes run. The
+    path is quoted so it stays a single token instead of being split.
     """
     unicode_name = "Screenshot 2026-02-26 at 2.02.42 AM.png"
     img = tmp_path / unicode_name
     img.write_bytes(b"img")
     ascii_name = unicode_name.replace(chr(0x202F), " ")
     pasted = f"'{str(img).replace(unicode_name, ascii_name)}'"
-    mocker.patch("pathlib.Path.is_file", side_effect=OSError(63, "File name too long"))
+    mocker.patch("pathlib.Path.stat", side_effect=OSError(63, "File name too long"))
 
     assert parse_pasted_file_paths(pasted) == []

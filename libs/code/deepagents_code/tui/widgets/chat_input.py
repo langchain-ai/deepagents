@@ -1516,6 +1516,15 @@ class ChatInput(Vertical):
         # still detecting replacement edits that insert a full path payload.
         self._prev_text = ""
 
+        # The leading path token that filesystem detection already accepted as a
+        # dropped path -- the token only, never the prose typed after it, so
+        # editing that prose cannot invalidate the drop. Single-character edits
+        # deliberately skip the stat calls, so this remembered token stands in
+        # for them and keeps mode detection out of command mode. Also
+        # load-bearing at submission time via `_starts_with_dropped_path`, which
+        # keeps `_submit_value` from re-tagging the message as a command.
+        self._dropped_path_draft: str | None = None
+
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
@@ -1742,6 +1751,43 @@ class ChatInput(Vertical):
             text, previous_text=previous_text, cursor_offset=self._get_cursor_offset()
         )
         self._prev_text = text
+        # Decide whether the accepted draft survives this edit. Runs before the
+        # re-detection below (and before the history early-return) so a stale
+        # draft never outlives the text it described.
+        #
+        # Editing the path token keeps the draft. The intermediate value may no
+        # longer name an existing entry, so revalidating would clear the draft
+        # and hand the leading `/` straight to command mode, which strips it
+        # from the user's buffer mid-edit. This includes in-place edits, not
+        # only appending or backspacing.
+        draft = self._dropped_path_draft
+        if not text:
+            self._dropped_path_draft = None
+        elif draft is not None:
+            if text.startswith(draft) or draft.startswith(text):
+                # The buffer still extends the accepted token. Remember the
+                # current text prefix so a truncation that leaves the path
+                # missing from disk still submits as text. Skip the refresh
+                # when there is no shared prefix (e.g. history recall, where
+                # the previous text is empty) to avoid clearing the draft.
+                shared_prefix = self._longest_common_prefix(previous_text, text)
+                if shared_prefix:
+                    self._dropped_path_draft = shared_prefix
+            elif self._edit_preserves_dropped_path_context(previous_text, text, draft):
+                # An in-place edit made the remembered token stale, so
+                # `previous_text.startswith(draft)` no longer holds. Without
+                # this refresh the next keystroke would fail the helper, clear
+                # the draft, and hand the still-leading `/` to command mode.
+                # The updated prefix also lets `_starts_with_dropped_path`
+                # recognize the edited path at submission time even when it no
+                # longer exists on disk.
+                edited_prefix = self._longest_common_prefix(previous_text, text)
+                if len(edited_prefix) > 1 and edited_prefix.startswith("/"):
+                    self._dropped_path_draft = edited_prefix
+            else:
+                # The path context has genuinely been replaced, so re-run
+                # detection rather than assuming either answer.
+                self._dropped_path_draft = self._detect_dropped_path_draft(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -1768,9 +1814,18 @@ class ChatInput(Vertical):
         # Checked after the guards above so we skip the (potentially slow)
         # filesystem lookup when the text change came from history navigation
         # or prefix stripping, which never need path detection.
-        is_path_payload = should_check_path_payload and self._is_dropped_path_payload(
-            text
-        )
+        is_path_payload = False
+        if should_check_path_payload:
+            detected_draft = self._detect_dropped_path_draft(text)
+            if detected_draft is not None:
+                self._dropped_path_draft = detected_draft
+                is_path_payload = True
+        # The draft suppresses `/` mode detection for as long as the text still
+        # relates to the accepted payload. Single-character keystrokes are the
+        # motivating case -- typing a question after dropping a file or folder
+        # bypasses the stat calls in `_detect_dropped_path_draft` entirely --
+        # but the rule is the remembered token, not the edit size.
+        keeps_dropped_path = is_path_payload or self._dropped_path_draft is not None
 
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.
@@ -1779,7 +1834,7 @@ class ChatInput(Vertical):
         elif detected_prefix := detect_mode_prefix(text):
             prefix, raw_detected = detected_prefix
             detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
-            if prefix == "/" and is_path_payload:
+            if prefix == "/" and keeps_dropped_path:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
                     self.mode = "normal"
@@ -1810,10 +1865,66 @@ class ChatInput(Vertical):
                 self._completion_manager.reset()
             else:
                 vtext, vcursor = self._completion_text_and_cursor()
-                self._completion_manager.on_text_changed(vtext, vcursor)
+                # `SlashCommandController.can_handle` is a bare `startswith("/")`
+                # with no mode awareness, so a dropped path's leading `/` would
+                # open the command popup while the input sits in normal mode --
+                # and Enter would then accept a fuzzy-matched command instead of
+                # submitting the draft. Keep it out while the path stands; the
+                # file controller still runs so `@` mentions keep completing.
+                exclude = (
+                    (self._slash_controller,)
+                    if keeps_dropped_path and self._slash_controller is not None
+                    else ()
+                )
+                self._completion_manager.on_text_changed(
+                    vtext, vcursor, exclude=exclude
+                )
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
+
+    @staticmethod
+    def _longest_common_prefix(previous_text: str, text: str) -> str:
+        """Return the longest shared prefix between two strings."""
+        prefix_len = 0
+        max_prefix_len = min(len(previous_text), len(text))
+        while (
+            prefix_len < max_prefix_len
+            and previous_text[prefix_len] == text[prefix_len]
+        ):
+            prefix_len += 1
+        return previous_text[:prefix_len]
+
+    @staticmethod
+    def _edit_preserves_dropped_path_context(
+        previous_text: str, text: str, draft: str
+    ) -> bool:
+        """Return whether an edit still refers to a dropped path token.
+
+        A shared non-slash prefix or suffix means the user changed part of the
+        accepted token in place. A replacement such as `/help` shares only the
+        absolute-path slash and must be allowed to enter command mode.
+        """
+        if not previous_text.startswith(draft):
+            return False
+
+        prefix_len = 0
+        max_prefix_len = min(len(previous_text), len(text))
+        while (
+            prefix_len < max_prefix_len
+            and previous_text[prefix_len] == text[prefix_len]
+        ):
+            prefix_len += 1
+
+        suffix_len = 0
+        max_suffix_len = min(len(previous_text), len(text))
+        while (
+            suffix_len < max_suffix_len - prefix_len
+            and previous_text[-(suffix_len + 1)] == text[-(suffix_len + 1)]
+        ):
+            suffix_len += 1
+
+        return prefix_len > 1 or suffix_len > 0
 
     def _should_check_path_payload(self, text: str) -> bool:
         """Return whether a text change may contain a pasted path payload."""
@@ -1922,25 +2033,168 @@ class ChatInput(Vertical):
         self.mode = "normal"
         return prefixed, leading_match
 
-    @staticmethod
-    def _is_existing_path_payload(text: str) -> bool:
-        """Return whether text is a dropped-path payload for existing files."""
+    def _matches_known_command(self, text: str) -> bool:
+        """Return whether the payload's first token is a registered command.
+
+        A single root-level segment such as `/tmp` resolves as an existing
+        directory, so without this check a command whose name happens to exist
+        at the filesystem root -- `/docs` and `/tools` are registered, and both
+        are routine directories in container images -- would be silently
+        demoted to chat text. A real command always wins over a path.
+
+        Args:
+            text: Raw draft or payload text.
+
+        Returns:
+            `True` when the first whitespace-delimited token names a command.
+        """
+        controller = self._slash_controller
+        if controller is None:
+            return False
+        tokens = text.strip().split(maxsplit=1)
+        return bool(tokens) and controller.has_command(tokens[0])
+
+    def _resolve_dropped_path_prefix(self, text: str) -> str | None:
+        """Return the leading substring of `text` that resolves as a drop.
+
+        Two payload shapes are accepted, checked in order:
+
+        1. The whole payload resolves -- a single drop, a multi-drop, or a mixed
+           drop of files and folders. Requiring every token to share one shape
+           would reject mixed drops the terminal delivers identically.
+        2. A leading path token followed by typed prose, so dropping a folder
+           and asking a question about it stays one ordinary message.
+
+        Args:
+            text: Raw draft text to classify.
+
+        Returns:
+            The leading substring that resolved, or `None` when the payload is
+            ordinary text.
+        """
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
-            return False
-        from deepagents_code.input import parse_pasted_path_payload
+            return None
+        from deepagents_code.input import (
+            extract_leading_pasted_entry_path,
+            looks_like_dropped_payload,
+            parse_pasted_any_entry_paths,
+        )
 
-        return parse_pasted_path_payload(text, allow_leading_path=True) is not None
+        # "Exists" is a far weaker filter than "exists and is a file", so
+        # without the drop-shape guard a bare word matching a working-directory
+        # entry (`tests`, `docs`, `..`) would read as a dropped path. Terminals
+        # deliver drops in the shapes `looks_like_dropped_payload` accepts --
+        # absolute POSIX, Windows drive/UNC, `~/`, or `file://` -- so requiring
+        # one of them costs nothing real.
+        if not looks_like_dropped_payload(text):
+            return None
+        if self._matches_known_command(text):
+            return None
 
-    def _is_dropped_path_payload(self, text: str) -> bool:
-        """Return whether current text looks like a dropped file-path payload."""
+        if parse_pasted_any_entry_paths(text):
+            return text.strip()
+        leading = extract_leading_pasted_entry_path(text)
+        if leading is None:
+            return None
+        _, token_end = leading
+        return text[:token_end]
+
+    def _is_existing_path_payload(self, text: str) -> bool:
+        """Return whether text is a dropped-path payload for existing entries.
+
+        Args:
+            text: Raw draft or submission text.
+
+        Returns:
+            `True` when the text begins with -- or wholly is -- a resolved path.
+        """
+        return self._resolve_dropped_path_prefix(text) is not None
+
+    def _detect_dropped_path_draft(self, text: str) -> str | None:
+        """Return the draft token to remember for `text`, if it is a drop.
+
+        Files and folders both qualify -- a terminal emits the same absolute
+        path for a dragged directory as for a dragged file.
+
+        A probe that *raised* is treated as a drop rather than as ordinary
+        text. For a payload that already passed the drop-shape guard, an
+        unreadable path (a TCC-denied folder, a dead network mount) is far
+        better evidence of "a path we cannot stat" than of "a slash command",
+        and guessing the other way both strips the user's leading `/` and lets
+        Enter run a fuzzy-matched command they never typed.
+
+        Args:
+            text: Raw draft text to classify.
+
+        Returns:
+            Substring to store as the draft, or `None` for ordinary text.
+        """
         if not text:
-            return False
-        if self._is_existing_path_payload(text):
+            return None
+        from deepagents_code.input import (
+            looks_like_dropped_payload,
+            track_probe_failures,
+        )
+
+        with track_probe_failures() as failures:
+            prefix = self._resolve_dropped_path_prefix(text)
+            if prefix is None and self.mode == "command":
+                # Mode detection already stripped the leading `/`; rebuild it so
+                # a drop that arrived while in command mode still resolves.
+                candidate = f"/{text.lstrip('/')}"
+                if self._resolve_dropped_path_prefix(candidate) is not None:
+                    prefix = text
+        if prefix is not None:
+            return prefix
+        if failures and looks_like_dropped_payload(text):
+            self._warn_unreadable_dropped_path(failures[0])
+            return text.strip()
+        return None
+
+    def _warn_unreadable_dropped_path(self, detail: str) -> None:
+        """Tell the user why an unreadable path stayed plain text.
+
+        Args:
+            detail: Description of the first failed probe.
+        """
+        logger.debug("Dropped path could not be probed, keeping as text: %s", detail)
+        notify = getattr(self.app, "notify", None)
+        if notify is not None:
+            notify(
+                "Couldn't read that path; leaving it as plain text.",
+                severity="warning",
+            )
+
+    def _is_dropped_path_submission(self, value: str) -> bool:
+        """Return whether a submission begins with -- or wholly is -- a path.
+
+        The transient draft is authoritative when present: it records a token
+        that path detection already accepted, and trusting it means a folder
+        that was renamed or deleted since the drop still submits as text rather
+        than being re-tagged as a command. Revalidation covers the cases where
+        the draft is gone, such as a submission driven straight from history.
+
+        Args:
+            value: Text about to be submitted.
+
+        Returns:
+            `True` when the submission should stay ordinary text.
+        """
+        if self._starts_with_dropped_path(value):
             return True
-        if self.mode == "command":
-            candidate = f"/{text.lstrip('/')}"
-            return self._is_existing_path_payload(candidate)
-        return False
+        return self._is_existing_path_payload(value)
+
+    def _starts_with_dropped_path(self, value: str) -> bool:
+        """Return whether `value` still begins with the accepted drop token.
+
+        Args:
+            value: Text to test against the remembered draft.
+
+        Returns:
+            `True` when a draft is held and `value` starts with it.
+        """
+        draft = self._dropped_path_draft
+        return draft is not None and value.startswith(draft)
 
     def _resolve_prefix_mode(self, prefix: str, detected: str) -> tuple[str, int]:
         """Resolve target mode and strip length for a detected mode prefix.
@@ -2130,7 +2384,7 @@ class ChatInput(Vertical):
         mode = self.mode
         if mode == "normal":
             detected = detect_mode_prefix(value)
-            if detected is not None:
+            if detected is not None and not self._is_dropped_path_submission(value):
                 _, mode = detected
 
         # Prepend mode prefix so the app layer receives the original trigger
@@ -2165,6 +2419,11 @@ class ChatInput(Vertical):
         self._pasted_contents.clear()
         self._next_paste_id = 1
         self.mode = "normal"
+        # Explicit, not incidental: clearing the text area happens to re-enter
+        # `on_text_area_changed` and drop the draft today, but a stale draft
+        # would silently suppress `/` for the rest of the session, so the
+        # submit path owns the reset rather than relying on that side effect.
+        self._dropped_path_draft = None
 
     def _sync_media_tracker_to_text(
         self,
@@ -2504,9 +2763,19 @@ class ChatInput(Vertical):
             return replacement.strip()
         return value
 
-    @staticmethod
-    def _history_entry_mode_and_text(entry: str) -> tuple[str, str]:
+    def _history_entry_mode_and_text(self, entry: str) -> tuple[str, str]:
         """Return mode and stripped display text for a history entry.
+
+        A leading `/` is only treated as a mode trigger when the entry does not
+        resolve to an existing filesystem entry. Dropped paths are stored in
+        history verbatim, so without this disambiguation a recalled
+        `/tmp/assets` would re-enter command mode and lose its leading slash.
+
+        Recognizing the path is not enough on its own: the recall path returns
+        early from `on_text_area_changed` before draft detection runs, so this
+        also installs the draft. Otherwise the classification would survive
+        exactly until the user typed one more character, which is the whole
+        point of recalling the entry.
 
         Args:
             entry: Raw entry value read from history storage.
@@ -2517,7 +2786,14 @@ class ChatInput(Vertical):
         """
         if mode_match := detect_mode_prefix(entry):
             prefix, mode = mode_match
+            if prefix == "/":
+                draft = self._resolve_dropped_path_prefix(entry)
+                if draft is not None:
+                    self._dropped_path_draft = draft
+                    return "normal", entry
+            self._dropped_path_draft = None
             return mode, entry[len(prefix) :]
+        self._dropped_path_draft = None
         return "normal", entry
 
     async def on_key(self, event: events.Key) -> None:

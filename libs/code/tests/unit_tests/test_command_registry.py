@@ -140,6 +140,12 @@ class TestSlashCommands:
                     f"Alias {alias!r} should not appear in autocomplete"
                 )
 
+    def test_entries_preserve_aliases_for_command_lookup(self) -> None:
+        """Autocomplete entries retain aliases without displaying them."""
+        aliases_by_name = {entry.name: entry.aliases for entry in get_slash_commands()}
+        for command in COMMANDS:
+            assert aliases_by_name[command.name] == command.aliases
+
     def test_entries_come_from_commands(self) -> None:
         """Every public entry is derived from the command registry."""
         command_entries = {command.to_entry() for command in COMMANDS}

@@ -34,6 +34,8 @@ def _get_git_executable() -> str | None:
 
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from textual import events
 
     from deepagents_code.command_registry import CommandEntry
@@ -158,6 +160,22 @@ class SlashCommandController:
         """
         return text.startswith("/")
 
+    def has_command(self, name: str) -> bool:
+        """Return whether `name` is a registered command name.
+
+        Lets callers distinguish a real command from a same-looking absolute
+        path without reaching into the command list.
+
+        Args:
+            name: Candidate command name, including the leading `/`.
+
+        Returns:
+            `True` when a registered command has exactly this name.
+        """
+        return any(
+            entry.name == name or name in entry.aliases for entry in self._commands
+        )
+
     def reset(self) -> None:
         """Clear suggestions."""
         if self._suggestions:
@@ -275,7 +293,10 @@ class SlashCommandController:
             self.reset()
 
     def on_key(
-        self, event: events.Key, _text: str, cursor_index: int
+        self,
+        event: events.Key,
+        text: str,  # noqa: ARG002  # Required by CompletionController protocol
+        cursor_index: int,
     ) -> CompletionResult:
         """Handle key events for navigation and selection.
 
@@ -856,11 +877,31 @@ class MultiCompletionManager:
         self._controllers = controllers
         self._active: CompletionController | None = None
 
-    def on_text_changed(self, text: str, cursor_index: int) -> None:
-        """Handle text change, activating the appropriate controller."""
+    def on_text_changed(
+        self,
+        text: str,
+        cursor_index: int,
+        *,
+        exclude: Collection[CompletionController] = (),
+    ) -> None:
+        """Handle text change, activating the appropriate controller.
+
+        Args:
+            text: Completion-space text to dispatch on.
+            cursor_index: Cursor offset within `text`.
+            exclude: Controllers that must not activate for this change, even
+                when they report they can handle it. Matched by identity.
+                Callers use this when context they hold — and the controller
+                cannot see — makes the match wrong, such as a leading `/` that
+                belongs to a dropped path rather than to a slash command. An
+                excluded controller that is already active is reset and
+                deactivated, not merely skipped.
+        """
         # Find the first controller that can handle this input
         candidate = None
         for controller in self._controllers:
+            if any(controller is excluded for excluded in exclude):
+                continue
             if controller.can_handle(text, cursor_index):
                 candidate = controller
                 break

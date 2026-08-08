@@ -16,7 +16,7 @@ import time
 import uuid
 import webbrowser
 from collections import deque
-from contextlib import asynccontextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
@@ -797,6 +797,11 @@ state as the single app-wide progress indicator.
 
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
+
+_CONCURRENT_UPDATE_MESSAGE = (
+    "Another dcode session is already installing an update. Try again once it finishes."
+)
+"""Shown when the cross-process update lock is held by another dcode process."""
 
 _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 """Upper bound on awaiting a confirmation modal's dismissal.
@@ -6385,15 +6390,26 @@ class DeepAgentsApp(App):
         upgrade_include_prereleases: bool | None,
         pin_upgrade_version: str | None,
     ) -> None:
-        """Serialize an app upgrade against every other environment mutation."""
+        """Serialize an app upgrade against every other environment mutation.
+
+        `_environment_mutation_lock` only covers this process, so the
+        cross-process update lock is taken too: a concurrent terminal may
+        already be installing into the same tool environment.
+        """
+        from deepagents_code.update_check import update_install_lock
+
         async with self._environment_mutation_lock:
-            await self._perform_app_upgrade_unlocked(
-                current=current,
-                latest=latest,
-                include_prereleases=include_prereleases,
-                upgrade_include_prereleases=upgrade_include_prereleases,
-                pin_upgrade_version=pin_upgrade_version,
-            )
+            with update_install_lock() as holding_update_lock:
+                if not holding_update_lock:
+                    await self._mount_message(AppMessage(_CONCURRENT_UPDATE_MESSAGE))
+                    return
+                await self._perform_app_upgrade_unlocked(
+                    current=current,
+                    latest=latest,
+                    include_prereleases=include_prereleases,
+                    upgrade_include_prereleases=upgrade_include_prereleases,
+                    pin_upgrade_version=pin_upgrade_version,
+                )
 
     async def _perform_app_upgrade_unlocked(
         self,
@@ -21925,6 +21941,7 @@ class DeepAgentsApp(App):
             format_shadowed_dcode_warning,
             mark_update_notified,
             perform_upgrade,
+            update_install_lock,
         )
 
         if action_id == ActionId.INSTALL:
@@ -21941,25 +21958,37 @@ class DeepAgentsApp(App):
 
             from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
 
-            cmd = payload.upgrade_cmd
-            log_path = create_update_log_path()
-            screen = UpdateProgressScreen(
-                latest=payload.latest,
-                command=cmd,
-                log_path=log_path,
-            )
-            progress_modal_visible = not isinstance(self.screen, ModalScreen)
-            if progress_modal_visible:
-                await self.push_screen(screen)
-            else:
+            # Claimed before any progress UI is shown so a session that loses
+            # the race to another terminal never opens a modal it must abandon.
+            update_lock = ExitStack()
+            if not update_lock.enter_context(update_install_lock()):
                 self.notify(
-                    f"Updating to v{payload.latest}... Logs: {log_path}",
+                    _CONCURRENT_UPDATE_MESSAGE,
                     severity="information",
-                    timeout=8,
+                    timeout=6,
                     markup=False,
                 )
+                return
+
             self._update_install_running = True
             try:
+                cmd = payload.upgrade_cmd
+                log_path = create_update_log_path()
+                screen = UpdateProgressScreen(
+                    latest=payload.latest,
+                    command=cmd,
+                    log_path=log_path,
+                )
+                progress_modal_visible = not isinstance(self.screen, ModalScreen)
+                if progress_modal_visible:
+                    await self.push_screen(screen)
+                else:
+                    self.notify(
+                        f"Updating to v{payload.latest}... Logs: {log_path}",
+                        severity="information",
+                        timeout=8,
+                        markup=False,
+                    )
                 if os.environ.get(DEBUG_UPDATE):
                     await self._run_debug_update_install(
                         entry=entry,
@@ -22026,6 +22055,7 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
             finally:
+                update_lock.close()
                 self._update_install_running = False
             return
         if action_id == ActionId.SKIP_VERSION:

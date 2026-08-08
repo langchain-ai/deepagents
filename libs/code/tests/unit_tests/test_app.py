@@ -25649,6 +25649,71 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
 
+    async def test_install_defers_to_another_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A held update lock blocks the install before any progress UI opens.
+
+        The notification and the entry both survive, so the user can retry once
+        the other terminal's install finishes.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        monkeypatch.setattr(app, "notify", capture_notify)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new_callable=AsyncMock,
+                ) as upgrade_mock,
+                update_install_lock() as holding,
+            ):
+                assert holding is True
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert not isinstance(app.screen, UpdateProgressScreen)
+
+        upgrade_mock.assert_not_awaited()
+        assert app._notice_registry.get("update:available") is not None
+        assert any("Another dcode session is already installing" in m for m in notified)
+
+    async def test_install_releases_lock_for_a_later_retry(self) -> None:
+        """A finished install must not leave the update lock held."""
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=AsyncMock(return_value=(False, "resolver: conflict")),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+        with update_install_lock() as holding:
+            assert holding is True
+
     async def test_install_success_with_shadow_surfaces_warning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

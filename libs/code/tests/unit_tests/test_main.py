@@ -40,6 +40,7 @@ from deepagents_code.main import (
     run_textual_cli_async,
 )
 from deepagents_code.mcp_tools import ProjectServerSummary
+from deepagents_code.update_check import update_install_lock
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
@@ -294,6 +295,96 @@ class TestStartupAutoUpdate:
         # this session stays on the old version.
         assert "Continuing with v" not in printed
         assert "Launching..." in printed
+
+    def test_update_held_by_another_session_is_skipped(self) -> None:
+        """A terminal that loses the update race launches on the old version.
+
+        The install must not run, the process must not restart, and — because
+        nothing actually failed — no failure cooldown may be recorded, or the
+        winning session's upgrade would suppress this one's next few attempts.
+        """
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.update_check.mark_startup_auto_update_failed"
+            ) as mark_failed,
+            patch("deepagents_code.main._restart_current_process") as restart,
+            # A second dcode process already holds the lock.
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_awaited()
+        restart.assert_not_called()
+        mark_failed.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Another dcode session is updating to v9.9.9" in printed
+
+    def test_update_lock_is_released_before_restart(self) -> None:
+        """The lock must not survive the re-exec into the upgraded process.
+
+        `os.execv` replaces the image but keeps the process alive, so a lock
+        still held at that point could stay held for the whole session and
+        block every other terminal from ever updating.
+        """
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+        held_during_restart: list[bool] = []
+
+        def _record_lock_state() -> None:
+            with update_install_lock() as holding:
+                held_during_restart.append(holding)
+            raise SystemExit(0)
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=_record_lock_state,
+            ),
+            pytest.raises(SystemExit),
+        ):
+            _run_startup_auto_update(console)
+
+        assert held_during_restart == [True]
 
     def test_disabled_update_does_not_check_pypi(self) -> None:
         """Disabled auto-update should not perform network or install work."""

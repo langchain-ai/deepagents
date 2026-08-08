@@ -23,6 +23,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import uuid
@@ -52,6 +53,15 @@ CACHE_FILE: Path = DEFAULT_STATE_DIR / "latest_version.json"
 Populated by `get_latest_version`; reads short-circuit on the cached payload
 when it is younger than `CACHE_TTL`. SDK upload timestamps are stored under
 `_SDK_RELEASE_TIMES_KEY`.
+"""
+
+UPDATE_LOCK_FILE: Path = DEFAULT_STATE_DIR / "update.lock"
+"""Advisory lock file serializing dcode self-upgrades across processes.
+
+Held for the duration of an install by whichever process is upgrading, so
+several concurrently launched terminals do not each run their own
+`uv tool install -U` against the same tool environment. Carries no data — only
+the lock matters. See `update_install_lock`.
 """
 
 UPDATE_STATE_FILE: Path = DEFAULT_STATE_DIR / "update_state.json"
@@ -2102,6 +2112,90 @@ async def _run_install_subprocess(
         output,
     )
     return False, output
+
+
+_UPDATE_INSTALL_THREAD_LOCK = threading.Lock()
+"""Process-local half of `update_install_lock`.
+
+`update_install_lock` builds a fresh `FileLock(thread_local=False)` per call, so
+the cross-process lock alone would not stop two threads in one dcode process
+from both entering the install. This guarantees a single in-process holder,
+independent of the filelock backend's cross-thread behavior.
+"""
+
+
+@contextmanager
+def update_install_lock() -> Iterator[bool]:
+    """Try to claim the exclusive right to self-upgrade dcode.
+
+    Startup auto-update, `/update`, and the update notification all replace the
+    same installed package, so concurrently launched terminals would otherwise
+    each run their own install against one tool environment. Whichever process
+    wins the lock performs the upgrade; the rest keep running the version they
+    launched with and pick the new one up on their next launch.
+
+    Non-blocking by design: a loser returns immediately rather than stalling
+    startup behind an install it does not need.
+
+    Never raises. When the lock itself is unusable — an unwritable state
+    directory, or a filesystem whose locking the OS refuses — this yields
+    `True` and lets the caller proceed unsynchronized. That is the behavior
+    from before this lock existed, and it is the fail-open choice: yielding
+    `False` there would mean updates never run again on that machine. Only a
+    lock genuinely held elsewhere yields `False`.
+
+    Yields:
+        `True` while this process may install, `False` when another process or
+        thread is already installing. Callers must not upgrade unless they were
+        handed `True`.
+    """
+    # Deferred: `filelock` costs ~14ms to import, and this module is imported
+    # on every launch to decide whether an update is even due. Only a launch
+    # that reaches an actual install pays for it.
+    from filelock import FileLock, Timeout
+
+    if not _UPDATE_INSTALL_THREAD_LOCK.acquire(blocking=False):
+        logger.debug("Update already in progress in this process")
+        yield False
+        return
+    try:
+        try:
+            UPDATE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.name != "nt":
+                UPDATE_LOCK_FILE.parent.chmod(0o700)
+        except OSError:
+            logger.warning(
+                "Proceeding without the update lock; could not prepare %s",
+                UPDATE_LOCK_FILE.parent,
+                exc_info=True,
+            )
+            yield True
+            return
+        file_lock = FileLock(str(UPDATE_LOCK_FILE), timeout=0, thread_local=False)
+        try:
+            file_lock.acquire()
+        except Timeout:
+            logger.debug("Update lock held by another dcode process")
+            yield False
+            return
+        except OSError:
+            logger.warning(
+                "Proceeding without the update lock; could not acquire %s",
+                UPDATE_LOCK_FILE,
+                exc_info=True,
+            )
+            yield True
+            return
+        try:
+            yield True
+        finally:
+            # A failure to release would wedge every future update, so swallow
+            # it rather than masking the install's own outcome; the lock is
+            # released anyway when the process exits.
+            with suppress(OSError):
+                file_lock.release()
+    finally:
+        _UPDATE_INSTALL_THREAD_LOCK.release()
 
 
 async def perform_upgrade(

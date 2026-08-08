@@ -9,6 +9,7 @@ import os
 import shlex
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -101,6 +102,7 @@ from deepagents_code.update_check import (
     should_defer_startup_auto_update_for_resume,
     should_notify_update,
     should_skip_startup_auto_update_after_failure,
+    update_install_lock,
     upgrade_command,
     upgrade_install_command,
 )
@@ -3272,6 +3274,115 @@ class TestUpdateLogs:
         assert supported is False
         assert reason is not None
         assert "aren't supported for this install" in reason
+
+
+class TestUpdateInstallLock:
+    """Cross-process serialization of dcode self-upgrades."""
+
+    @pytest.fixture
+    def lock_file(self, tmp_path):
+        """Override UPDATE_LOCK_FILE to use a temporary path."""
+        path = tmp_path / "state" / "update.lock"
+        with patch("deepagents_code.update_check.UPDATE_LOCK_FILE", path):
+            yield path
+
+    @staticmethod
+    def _hold_lock_in_subprocess(path: Path) -> subprocess.Popen[str]:
+        """Start a process holding `path`, returning once it has the lock.
+
+        Exercises the real cross-process exclusion rather than asserting on a
+        patched filelock: the child takes a plain `FileLock` on the same path,
+        the way a second `dcode` install would.
+        """
+        script = (
+            "import sys\n"
+            "from filelock import FileLock\n"
+            "with FileLock(sys.argv[1], timeout=30):\n"
+            "    print('held', flush=True)\n"
+            "    sys.stdin.readline()\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script, str(path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdout is not None
+        ready = proc.stdout.readline()
+        assert ready.strip() == "held", "helper process never acquired the lock"
+        return proc
+
+    @staticmethod
+    def _release_subprocess(proc: subprocess.Popen[str]) -> None:
+        """Let the lock-holding helper exit and wait for its release."""
+        assert proc.stdin is not None
+        proc.stdin.write("\n")
+        proc.stdin.flush()
+        proc.stdin.close()
+        proc.wait(timeout=30)
+
+    def test_holder_is_granted_the_lock(self, lock_file) -> None:  # noqa: ARG002
+        with update_install_lock() as holding:
+            assert holding is True
+
+    def test_lock_is_released_on_exit(self, lock_file) -> None:  # noqa: ARG002
+        with update_install_lock() as first:
+            assert first is True
+        with update_install_lock() as second:
+            assert second is True
+
+    def test_lock_is_released_after_an_exception(self, lock_file) -> None:  # noqa: ARG002
+        """A failed install must not wedge every later update attempt."""
+        msg = "install blew up"
+
+        def _fail_while_holding() -> None:
+            with update_install_lock() as holding:
+                assert holding is True
+                raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match=msg):
+            _fail_while_holding()
+
+        with update_install_lock() as retried:
+            assert retried is True
+
+    def test_second_holder_in_same_process_is_refused(self, lock_file) -> None:  # noqa: ARG002
+        """Two threads in one dcode process must not both install."""
+        with update_install_lock() as outer:
+            assert outer is True
+            with update_install_lock() as inner:
+                assert inner is False
+
+    def test_other_process_is_refused_while_lock_is_held(self, lock_file) -> None:
+        proc = self._hold_lock_in_subprocess(lock_file)
+        try:
+            with update_install_lock() as holding:
+                assert holding is False
+        finally:
+            self._release_subprocess(proc)
+
+    def test_lock_is_available_once_other_process_exits(self, lock_file) -> None:
+        proc = self._hold_lock_in_subprocess(lock_file)
+        self._release_subprocess(proc)
+
+        with update_install_lock() as holding:
+            assert holding is True
+
+    def test_unusable_lock_directory_fails_open(self, tmp_path, caplog) -> None:
+        """An unwritable state dir must not disable updates permanently."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        with (
+            patch(
+                "deepagents_code.update_check.UPDATE_LOCK_FILE",
+                blocker / "update.lock",
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert "Proceeding without the update lock" in caplog.text
 
 
 class TestUpgradeInstallCommand:

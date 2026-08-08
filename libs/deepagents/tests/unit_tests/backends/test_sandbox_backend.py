@@ -1521,6 +1521,108 @@ def test_read_script_zero_limit_returns_empty_content(tmp_path: Path) -> None:
     assert result == {"encoding": "utf-8", "content": "", "no_lines_requested": True}
 
 
+def test_read_script_whitespace_only_file_has_no_pagination(tmp_path: Path) -> None:
+    """Whitespace-only text is classified as empty before applying a window."""
+    target = tmp_path / "blank.txt"
+    target.write_text(" \n\t\n\n")
+
+    result = _run_read_script(target, offset=1, limit=1)
+
+    assert result == {"encoding": "utf-8", "content": ""}
+
+
+@pytest.mark.parametrize(("limit", "offset"), [(0, 0), (-5, 0), (2000, 100)])
+def test_read_script_blank_file_precedes_limit_and_offset_checks(tmp_path: Path, limit: int, offset: int) -> None:
+    """A blank file reports blank even for a degenerate window.
+
+    Mirrors `slice_read_response`'s ordering, which checks blankness before
+    both the zero-limit branch and the offset-range error. Note the absence of
+    `no_lines_requested`: the middleware keys the "never inspected" warning off
+    that flag, and a blank file *was* inspected.
+    """
+    target = tmp_path / "blank.txt"
+    target.write_text(" \n\t\n\n")
+
+    result = _run_read_script(target, offset=offset, limit=limit)
+
+    assert result == {"encoding": "utf-8", "content": ""}
+
+
+def test_read_script_whitespace_only_file_spanning_multiple_chunks(tmp_path: Path) -> None:
+    """The blank scan must reach past its first 8192-byte chunk."""
+    target = tmp_path / "big_blank.txt"
+    target.write_bytes(b" \n" * 5000)
+
+    result = _run_read_script(target, offset=0, limit=5)
+
+    assert result == {"encoding": "utf-8", "content": ""}
+
+
+def test_read_script_content_after_first_chunk_is_not_blank(tmp_path: Path) -> None:
+    """Content past the first chunk must not be reported as a blank file.
+
+    The counterpart to the multi-chunk scan: stopping the scan early would
+    claim a file with real content is empty, which is #4955 inverted.
+    """
+    target = tmp_path / "late_content.txt"
+    target.write_bytes((b" \n" * 5000) + b"real content\n")
+
+    result = _run_read_script(target, offset=5000, limit=1)
+
+    assert result["content"] == "real content"
+    assert result["total_lines"] == 5001
+    assert result["start_line"] == 5001
+
+
+def test_read_script_oversized_single_line_blank_file_is_empty(tmp_path: Path) -> None:
+    """An oversized blank line stays on the bounded, chunked scan path.
+
+    Letting this file fall through to the paginated reader would make its
+    unbounded `readline()` allocate the entire line before applying the output
+    byte cap.
+    """
+    cap_match = re.search(r"MAX_LINE_COUNT_BYTES = (\d+) \* (\d+)", _READ_COMMAND_TEMPLATE)
+    assert cap_match is not None, "template no longer declares MAX_LINE_COUNT_BYTES"
+    cap = int(cap_match[1]) * int(cap_match[2])
+
+    target = tmp_path / "huge_blank.txt"
+    target.write_bytes(b" " * (cap + 8192))
+
+    result = _run_read_script(target, offset=0, limit=3)
+
+    assert result == {"encoding": "utf-8", "content": ""}
+
+
+def test_read_script_file_ending_mid_character_is_not_blank(tmp_path: Path) -> None:
+    """A truncated multibyte sequence at EOF must not read as a blank file.
+
+    The incremental decoder buffers the partial sequence rather than raising,
+    so only the `final=True` flush can tell that the trailing bytes are not
+    whitespace. Without it the file would be reported blank.
+    """
+    target = tmp_path / "truncated.txt"
+    target.write_bytes(b"   \n\xe4\xb8")
+
+    result = _run_read_script(target, offset=0, limit=5)
+
+    assert result == {"error": "invalid_utf8"}
+
+
+def test_read_script_invalid_utf8_past_sniff_prefix_reports_error(tmp_path: Path) -> None:
+    """Invalid UTF-8 beyond the 8192-byte sniff surfaces through the error contract.
+
+    The prefix sniff only proves the prefix decodes, so the strict text handle
+    can still raise mid-page. That must arrive as a structured error rather
+    than a raw Python traceback in the response body.
+    """
+    target = tmp_path / "late_binary.txt"
+    target.write_bytes((b" \n" * 5000) + b"\xff\xfe\x00\x01garbage")
+
+    result = _run_read_script(target, offset=4995, limit=5)
+
+    assert result == {"error": "invalid_utf8"}
+
+
 def test_build_read_cmd_clamps_negative_offset_to_first_line(tmp_path: Path) -> None:
     """A negative offset is clamped by the builder, which the script relies on.
 

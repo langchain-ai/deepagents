@@ -146,6 +146,13 @@ MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_COMPATIBILITY_LENGTH = 500
 
+SkillFailure = tuple[str, str]
+"""A `(path, error_message)` pair describing a skill that failed to load.
+
+`path` is the backend path of the `SKILL.md` file (or skill source root, for
+source-level failures) and `error_message` is a human-readable reason.
+"""
+
 SkillSource = str | tuple[str, str]
 """A skill source: either a bare path or a `(path, label)` pair.
 
@@ -368,12 +375,12 @@ def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
     return []
 
 
-def _parse_skill_metadata(
+def _parse_skill_metadata_or_error(
     content: str,
     skill_path: str,
     directory_name: str,
-) -> SkillMetadata | None:
-    """Parse YAML frontmatter from `SKILL.md` content.
+) -> tuple[SkillMetadata | None, str | None]:
+    """Parse YAML frontmatter from `SKILL.md` content, returning parse errors.
 
     Extracts metadata per Agent Skills specification from YAML frontmatter
     delimited by `---` markers at the start of the content.
@@ -384,20 +391,20 @@ def _parse_skill_metadata(
         directory_name: Name of the parent directory containing the skill
 
     Returns:
-        `SkillMetadata` if parsing succeeds, `None` if parsing fails or
-            validation errors occur
+        `(metadata, None)` on success, or `(None, error_message)` when
+            parsing fails or a hard validation error occurs. Recoverable
+            issues (over-limit `description`, spec-noncompliant `name`) still
+            produce metadata and return no error.
     """
     if len(content) > MAX_SKILL_FILE_SIZE:
-        logger.warning("Skipping %s: content too large (%d bytes)", skill_path, len(content))
-        return None
+        return None, f"content too large ({len(content)} bytes)"
 
     # Match YAML frontmatter between --- delimiters
     frontmatter_pattern = r"^---\s*\n(.*?)\n---\s*\n"
     match = re.match(frontmatter_pattern, content, re.DOTALL)
 
     if not match:
-        logger.warning("Skipping %s: no valid YAML frontmatter found", skill_path)
-        return None
+        return None, "no valid YAML frontmatter found"
 
     frontmatter_str = match.group(1)
 
@@ -405,18 +412,16 @@ def _parse_skill_metadata(
     try:
         frontmatter_data = yaml.safe_load(frontmatter_str)
     except yaml.YAMLError as e:
-        logger.warning("Invalid YAML in %s: %s", skill_path, e)
-        return None
+        return None, f"Invalid YAML in frontmatter: {e}"
 
     if not isinstance(frontmatter_data, dict):
-        logger.warning("Skipping %s: frontmatter is not a mapping", skill_path)
-        return None
+        return None, "frontmatter is not a mapping"
 
     name = str(frontmatter_data.get("name", "")).strip()
     description = str(frontmatter_data.get("description", "")).strip()
     if not name or not description:
-        logger.warning("Skipping %s: missing required 'name' or 'description'", skill_path)
-        return None
+        missing = "'name' and 'description'" if not name and not description else "'name'" if not name else "'description'"
+        return None, f"missing required {missing}"
 
     # Validate name format per spec (warn but continue loading for backwards compatibility)
     is_valid, error = _validate_skill_name(str(name), directory_name)
@@ -467,7 +472,32 @@ def _parse_skill_metadata(
         license=str(frontmatter_data.get("license", "")).strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
-    )
+    ), None
+
+
+def _parse_skill_metadata(
+    content: str,
+    skill_path: str,
+    directory_name: str,
+) -> SkillMetadata | None:
+    """Parse YAML frontmatter from `SKILL.md` content.
+
+    Extracts metadata per Agent Skills specification from YAML frontmatter
+    delimited by `---` markers at the start of the content.
+
+    Args:
+        content: Content of the `SKILL.md` file
+        skill_path: Path to the `SKILL.md` file (for error messages and metadata)
+        directory_name: Name of the parent directory containing the skill
+
+    Returns:
+        `SkillMetadata` if parsing succeeds, `None` if parsing fails or
+            validation errors occur
+    """
+    skill_metadata, error = _parse_skill_metadata_or_error(content, skill_path, directory_name)
+    if error is not None:
+        logger.warning("Skipping %s: %s", skill_path, error)
+    return skill_metadata
 
 
 def _validate_metadata(
@@ -523,6 +553,7 @@ def _skill_metadata_from_response(
     response: FileDownloadResponse,
     skill_dir_path: str,
     skill_md_path: str,
+    failures: list[SkillFailure] | None = None,
 ) -> SkillMetadata | None:
     """Decode a `SKILL.md` download response into `SkillMetadata` (or `None`).
 
@@ -536,6 +567,10 @@ def _skill_metadata_from_response(
             the expected `name` for validation).
         skill_md_path: Backend path of the `SKILL.md` file (used in log
             messages so operators can locate the offending skill).
+        failures: Optional list that receives a `(path, error_message)` entry
+            for each skill that fails to load, so callers can surface the
+            failure to users. Expected `file_not_found` misses (not every
+            subdirectory is a skill) are not recorded.
 
     Returns:
         Parsed `SkillMetadata` on success, or `None` when the response carries
@@ -550,34 +585,47 @@ def _skill_metadata_from_response(
         # directory, plus `permission_denied` / backend-specific errors --
         # indicates a malformed or inaccessible skill and must surface.
         if response.error != FILE_NOT_FOUND:
+            error = f"Cannot load SKILL.md: {response.error}"
             logger.warning(
                 "Cannot load SKILL.md at %s: %s; skipping",
                 skill_md_path,
                 response.error,
             )
+            if failures is not None:
+                failures.append((skill_md_path, error))
         return None
 
     if response.content is None:
+        error = "downloaded SKILL.md has no content"
         logger.warning("Downloaded skill file %s has no content", skill_md_path)
+        if failures is not None:
+            failures.append((skill_md_path, error))
         return None
 
     try:
         content = response.content.decode("utf-8")
     except UnicodeDecodeError as e:
+        error = f"SKILL.md is not valid UTF-8: {e}"
         logger.warning("Error decoding %s: %s", skill_md_path, e)
+        if failures is not None:
+            failures.append((skill_md_path, error))
         return None
 
     directory_name = PurePosixPath(to_posix_path(skill_dir_path)).name
-    skill_metadata = _parse_skill_metadata(
+    skill_metadata, parse_error = _parse_skill_metadata_or_error(
         content=content,
         skill_path=skill_md_path,
         directory_name=directory_name,
     )
     if skill_metadata is None:
+        error = parse_error or "failed metadata parse or name validation"
         logger.warning(
-            "Skill at %s failed metadata parse or name validation; skipping",
+            "Skill at %s failed metadata parse or name validation; skipping: %s",
             skill_md_path,
+            error,
         )
+        if failures is not None:
+            failures.append((skill_md_path, error))
     return skill_metadata
 
 
@@ -586,7 +634,11 @@ def _format_skills_source_error(source_path: str, error: str) -> str:
     return f"Cannot load skills from '{source_path}': {error}"
 
 
-def _list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tuple[list[SkillMetadata], str | None]:
+def _list_skills_with_errors(
+    backend: BackendProtocol,
+    source_path: str,
+    failures: list[SkillFailure] | None = None,
+) -> tuple[list[SkillMetadata], str | None]:
     """List all skills from a backend source.
 
     Scans backend for subdirectories containing `SKILL.md` files, downloads
@@ -604,6 +656,9 @@ def _list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tupl
     Args:
         backend: Backend instance to use for file operations
         source_path: Path to the skills directory in the backend
+        failures: Optional list that receives a `(SKILL.md path, error)`
+            entry for each skill that fails to load, so callers can surface
+            the failures to users.
 
     Returns:
         Tuple of skill metadata and an optional source-level loading error.
@@ -639,7 +694,7 @@ def _list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tupl
     responses = backend.download_files(paths_to_download)
 
     for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path)
+        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path, failures)
         if skill_metadata is not None:
             skills.append(skill_metadata)
 
@@ -652,7 +707,26 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     return skills
 
 
-async def _alist_skills_with_errors(backend: BackendProtocol, source_path: str) -> tuple[list[SkillMetadata], str | None]:
+def _list_skills_with_failures(
+    backend: BackendProtocol,
+    source_path: str,
+) -> tuple[list[SkillMetadata], list[SkillFailure], str | None]:
+    """List skills from a backend source along with any load failures.
+
+    Returns:
+        Tuple of `(skill metadata, per-skill load failures, source-level
+            loading error)`.
+    """
+    failures: list[SkillFailure] = []
+    skills, source_error = _list_skills_with_errors(backend, source_path, failures)
+    return skills, failures, source_error
+
+
+async def _alist_skills_with_errors(
+    backend: BackendProtocol,
+    source_path: str,
+    failures: list[SkillFailure] | None = None,
+) -> tuple[list[SkillMetadata], str | None]:
     """List all skills from a backend source (async version).
 
     Scans backend for subdirectories containing `SKILL.md` files, downloads
@@ -670,6 +744,9 @@ async def _alist_skills_with_errors(backend: BackendProtocol, source_path: str) 
     Args:
         backend: Backend instance to use for file operations
         source_path: Path to the skills directory in the backend
+        failures: Optional list that receives a `(SKILL.md path, error)`
+            entry for each skill that fails to load, so callers can surface
+            the failures to users.
 
     Returns:
         Tuple of skill metadata and an optional source-level loading error.
@@ -705,7 +782,7 @@ async def _alist_skills_with_errors(backend: BackendProtocol, source_path: str) 
     responses = await backend.adownload_files(paths_to_download)
 
     for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
-        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path)
+        skill_metadata = _skill_metadata_from_response(response, skill_dir_path, skill_md_path, failures)
         if skill_metadata is not None:
             skills.append(skill_metadata)
 

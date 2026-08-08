@@ -41,6 +41,7 @@ from deepagents.middleware.skills import (
     SkillsMiddleware,
     _format_skill_annotations,
     _list_skills,
+    _list_skills_with_failures,
     _parse_skill_metadata,
     _skill_metadata_from_response,
     _validate_metadata,
@@ -953,6 +954,128 @@ class TestSkillMetadataFromResponseLogging:
             )
         assert result is None
         assert any("permission_denied" in record.getMessage() for record in caplog.records)
+
+
+class TestSkillLoadFailureCollection:
+    """Per-skill parse/load failures are collected alongside warnings.
+
+    The TUI and CLI surface these to users, so they must carry the SKILL.md
+    path and a human-readable reason for every failure mode.
+    """
+
+    def test_invalid_yaml_recorded_as_failure(self) -> None:
+        content = b"---\nname: [unclosed\ndescription: x\n---\nbody\n"
+        response = FileDownloadResponse(
+            path="/skills/broken/SKILL.md",
+            content=content,
+            error=None,
+        )
+        failures: list[tuple[str, str]] = []
+        result = _skill_metadata_from_response(
+            response,
+            skill_dir_path="/skills/broken",
+            skill_md_path="/skills/broken/SKILL.md",
+            failures=failures,
+        )
+        assert result is None
+        assert len(failures) == 1
+        path, error = failures[0]
+        assert path == "/skills/broken/SKILL.md"
+        assert "Invalid YAML" in error
+
+    def test_missing_required_fields_recorded_as_failure(self) -> None:
+        content = b"---\nname: broken\n---\nbody\n"
+        response = FileDownloadResponse(
+            path="/skills/broken/SKILL.md",
+            content=content,
+            error=None,
+        )
+        failures: list[tuple[str, str]] = []
+        result = _skill_metadata_from_response(
+            response,
+            skill_dir_path="/skills/broken",
+            skill_md_path="/skills/broken/SKILL.md",
+            failures=failures,
+        )
+        assert result is None
+        assert failures == [("/skills/broken/SKILL.md", "missing required 'description'")]
+
+    def test_file_not_found_not_recorded(self) -> None:
+        """The expected miss for non-skill directories must not appear."""
+        response = FileDownloadResponse(
+            path="/skills/not-a-skill/SKILL.md",
+            content=None,
+            error="file_not_found",
+        )
+        failures: list[tuple[str, str]] = []
+        result = _skill_metadata_from_response(
+            response,
+            skill_dir_path="/skills/not-a-skill",
+            skill_md_path="/skills/not-a-skill/SKILL.md",
+            failures=failures,
+        )
+        assert result is None
+        assert failures == []
+
+    def test_backend_error_recorded_as_failure(self) -> None:
+        response = FileDownloadResponse(
+            path="/skills/locked/SKILL.md",
+            content=None,
+            error="permission_denied",
+        )
+        failures: list[tuple[str, str]] = []
+        result = _skill_metadata_from_response(
+            response,
+            skill_dir_path="/skills/locked",
+            skill_md_path="/skills/locked/SKILL.md",
+            failures=failures,
+        )
+        assert result is None
+        assert len(failures) == 1
+        assert "permission_denied" in failures[0][1]
+
+    def test_valid_skill_records_no_failure(self) -> None:
+        content = make_skill_content("my-skill", "A valid skill").encode()
+        response = FileDownloadResponse(
+            path="/skills/my-skill/SKILL.md",
+            content=content,
+            error=None,
+        )
+        failures: list[tuple[str, str]] = []
+        result = _skill_metadata_from_response(
+            response,
+            skill_dir_path="/skills/my-skill",
+            skill_md_path="/skills/my-skill/SKILL.md",
+            failures=failures,
+        )
+        assert result is not None
+        assert failures == []
+
+
+def test_list_skills_with_failures_collects_per_skill_errors(tmp_path: Path) -> None:
+    """`_list_skills_with_failures` returns failures for unparseable skills."""
+    skills_root = tmp_path / "skills"
+    good = skills_root / "good-skill"
+    good.mkdir(parents=True)
+    (good / "SKILL.md").write_text(make_skill_content("good-skill", "Works"))
+    bad = skills_root / "bad-skill"
+    bad.mkdir()
+    (bad / "SKILL.md").write_text("---\nname: [unclosed\n---\nbody\n")
+    missing = skills_root / "missing-frontmatter"
+    missing.mkdir()
+    (missing / "SKILL.md").write_text("# No frontmatter\n")
+
+    backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=False)
+    skills, failures, source_error = _list_skills_with_failures(backend, ".")
+
+    assert source_error is None
+    assert [skill["name"] for skill in skills] == ["good-skill"]
+    failure_by_path = dict(failures)
+    assert len(failures) == 2
+    bad_path = str(bad / "SKILL.md")
+    missing_path = str(missing / "SKILL.md")
+    assert "Invalid YAML" in failure_by_path[bad_path]
+    assert "frontmatter" in failure_by_path[missing_path]
 
 
 @pytest.mark.parametrize(

@@ -79,7 +79,7 @@ def _extract_text_from_message(message: BaseMessage) -> str:
     return "\n".join(texts)
 
 
-def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str | list[ContentBlock]:
+def _build_evicted_content(message: ToolMessage, replacement_text: str, *, drop_non_text: bool = False) -> str | list[ContentBlock]:
     """Build replacement content for an evicted message, preserving non-text blocks.
 
     For plain string content, returns the replacement text directly. For list content
@@ -89,17 +89,49 @@ def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str |
     Args:
         message: The original ToolMessage being evicted.
         replacement_text: The truncation notice and preview text.
+        drop_non_text: Discard non-text blocks instead of carrying them over.
+            The proactive eviction path keeps them (the model may still need the
+            image, and eviction is about the *text* being oversized). The
+            context-overflow fallback sets this: that path runs because the
+            request already exceeded the window, so re-sending an inline base64
+            payload would defeat the clip.
 
     Returns:
         Replacement content: a string or list of content blocks.
     """
     if isinstance(message.content, str):
         return replacement_text
-    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
-    if not media_blocks:
-        # All content is text, so a plain string replacement is sufficient.
+    non_text_blocks = [] if drop_non_text else [block for block in message.content_blocks if block["type"] != "text"]
+    if not non_text_blocks:
+        # All content is text (or non-text blocks are being dropped), so a plain string replacement is sufficient.
         return replacement_text
-    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
+    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *non_text_blocks]
+
+
+def _build_offload_replacement(
+    message: ToolMessage,
+    content_str: str,
+    large_tool_results_prefix: str,
+    *,
+    drop_non_text: bool = False,
+) -> tuple[ToolMessage, str]:
+    """Build an offload replacement and its target path *without* writing anything.
+
+    Split out from `_offload_tool_message_content` so a caller that may reject the
+    replacement can measure it before paying for the backend write. Returns
+    `(replacement, file_path)`; the caller is responsible for writing
+    `content_str` to `file_path` before using the replacement, since the
+    replacement's text tells the agent the content lives there.
+    """
+    sanitized_id = sanitize_tool_call_id(message.tool_call_id) if message.tool_call_id else "unknown"
+    file_path = f"{large_tool_results_prefix}/{sanitized_id}"
+    replacement_text = TOO_LARGE_TOOL_MSG.format(
+        tool_call_id=message.tool_call_id,
+        file_path=file_path,
+        content_sample=_create_content_preview(content_str),
+    )
+    replacement = _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text, drop_non_text=drop_non_text))
+    return replacement, file_path
 
 
 def _build_evicted_tool_message(message: ToolMessage, evicted_content: str | list[ContentBlock]) -> ToolMessage:
@@ -129,17 +161,11 @@ def _offload_tool_message_content(
     by tool_call_id. Returns `None` if the backend write fails — caller should
     keep the original message in that case.
     """
-    sanitized_id = sanitize_tool_call_id(message.tool_call_id) if message.tool_call_id else "unknown"
-    file_path = f"{large_tool_results_prefix}/{sanitized_id}"
+    replacement, file_path = _build_offload_replacement(message, content_str, large_tool_results_prefix)
     result = backend.write(file_path, content_str)
     if result is None or result.error:
         return None
-    replacement_text = TOO_LARGE_TOOL_MSG.format(
-        tool_call_id=message.tool_call_id,
-        file_path=file_path,
-        content_sample=_create_content_preview(content_str),
-    )
-    return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))
+    return replacement
 
 
 async def _aoffload_tool_message_content(
@@ -149,14 +175,8 @@ async def _aoffload_tool_message_content(
     large_tool_results_prefix: str,
 ) -> ToolMessage | None:
     """Async variant of `_offload_tool_message_content` using `backend.awrite`."""
-    sanitized_id = sanitize_tool_call_id(message.tool_call_id) if message.tool_call_id else "unknown"
-    file_path = f"{large_tool_results_prefix}/{sanitized_id}"
+    replacement, file_path = _build_offload_replacement(message, content_str, large_tool_results_prefix)
     result = await backend.awrite(file_path, content_str)
     if result is None or result.error:
         return None
-    replacement_text = TOO_LARGE_TOOL_MSG.format(
-        tool_call_id=message.tool_call_id,
-        file_path=file_path,
-        content_sample=_create_content_preview(content_str),
-    )
-    return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))
+    return replacement

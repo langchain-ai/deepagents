@@ -74,8 +74,8 @@ GoalStatus = Literal["active", "paused", "blocked", "complete"]
 
 `active` and `blocked` are unfinished working states, `paused` preserves the goal
 without driving work, and `complete` is terminal. A blocked goal is still
-considered actionable (`active=True`) by `get_goal`, whereas a paused goal is
-unfinished but reports `active=False`.
+considered actionable by the goal-state notice, whereas a paused goal is
+unfinished but not actionable.
 """
 
 GoalProposalKind = Literal["create", "amend"]
@@ -136,10 +136,15 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     string (or a non-string). Coercing to `None` rather than passing the raw
     value through keeps the `GoalStatus` `Literal` load-bearing on the read
     path, so an unknown status is treated as "no goal status" instead of a
-    silently active goal. Resume/restore callers should log the discard
-    separately so it is surfaced rather than dropped; the model-read path
-    (`_goal_snapshot`) intentionally treats an unknown status as `active`
-    without logging.
+    silently active goal. Resume/restore callers should log the discard separately
+    so it is surfaced rather than dropped.
+
+    The goal-state notice path does not use this helper: `project_goal_state`
+    inlines the same status vocabulary (to keep `goal_state_notice` off this
+    module's heavy import chain) and defaults an unrecognized status to `active`
+    without logging, so a corrupt status there renders as an actionable goal.
+    The two normalizers must be kept in sync by hand — adding a `GoalStatus`
+    member here without adding it there makes the new status silently actionable.
 
     Args:
         value: Raw value read from checkpoint state.

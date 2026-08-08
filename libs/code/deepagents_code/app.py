@@ -97,6 +97,7 @@ from deepagents_code.goal_state_notice import (
     is_internal_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
+    summarization_cutoff as _summarization_cutoff,
 )
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
@@ -459,23 +460,6 @@ A dangling `compact_conversation` tool call the model API later rejects would
 otherwise wedge the thread with only a log warning; surfacing this tells the
 user why an unrelated next turn might fail and how to recover.
 """
-
-
-def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
-    """Return the absolute cutoff index of a `_summarization_event`.
-
-    Args:
-        event: A `_summarization_event` mapping (as persisted in state), or
-            `None`.
-
-    Returns:
-        The `cutoff_index`, or `0` when the event is missing or malformed.
-    """
-    if isinstance(event, dict):
-        cutoff = event.get("cutoff_index")
-        if isinstance(cutoff, int):
-            return cutoff
-    return 0
 
 
 def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401

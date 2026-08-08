@@ -176,7 +176,45 @@ def test_404_for_missing_thread(client):
     assert resp.status_code == 404
 
 
+def test_create_run_for_missing_thread_returns_404(client):
+    resp = client.post(
+        "/threads/nonexistent/runs",
+        json={
+            "assistant_id": "researcher",
+            "input": {"messages": [{"role": "user", "content": "hello"}]},
+        },
+    )
+    assert resp.status_code == 404
+
+
+def test_cancel_run_for_missing_run_returns_404(client):
+    thread = client.post("/threads").json()
+    resp = client.post(f"/threads/{thread['thread_id']}/runs/nonexistent/cancel")
+    assert resp.status_code == 404
+
+
 def test_404_for_missing_run(client):
     thread = client.post("/threads").json()
     resp = client.get(f"/threads/{thread['thread_id']}/runs/nonexistent")
     assert resp.status_code == 404
+
+
+def test_malformed_json_returns_422(client):
+    thread = client.post("/threads").json()
+    resp = client.post(
+        f"/threads/{thread['thread_id']}/runs",
+        data='{"assistant_id":',
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Invalid JSON"
+
+
+def test_create_run_rejects_bad_payload(client):
+    thread = client.post("/threads").json()
+    resp = client.post(
+        f"/threads/{thread['thread_id']}/runs",
+        json={"assistant_id": "researcher", "input": {"messages": "not-a-list"}},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "messages must be a list"

@@ -244,7 +244,26 @@ async def create_run(thread_id: str, request: Request) -> dict[str, Any]:
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Invalid JSON") from exc
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object")
+
+    input_data = body.get("input")
+    if input_data is None:
+        input_data = {}
+    elif not isinstance(input_data, dict):
+        raise HTTPException(status_code=422, detail="input must be a JSON object")
+
+    messages = input_data.get("messages", [])
+    if messages is None:
+        messages = []
+    elif not isinstance(messages, list):
+        raise HTTPException(status_code=422, detail="messages must be a list")
+
     multitask_strategy = body.get("multitask_strategy")
 
     if multitask_strategy == "interrupt":
@@ -258,7 +277,6 @@ async def create_run(thread_id: str, request: Request) -> dict[str, Any]:
         )
         _conn.commit()
 
-    messages = (body.get("input") or {}).get("messages") or []
     user_message = next((m["content"] for m in messages if m.get("role") == "user"), "")
 
     if user_message:

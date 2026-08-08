@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import get_event_spec
+from deepagents_code.hooks.env import sanitize_hook_environ
 from deepagents_code.hooks.envelope import HookEnvelopeAdapter
+from deepagents_code.hooks.loading import PluginHooksSource
 from deepagents_code.hooks.models.domain import HookDiagnostic
 from deepagents_code.hooks.presenter import HookProgress
 from deepagents_code.hooks.runner import (
@@ -121,6 +123,9 @@ async def _run_handler(
     on_progress: Callable[[HookProgress], None] | None,
 ) -> HandlerResult:
     message = (handler.status_message or "").strip()
+    env = sanitize_hook_environ()
+    if isinstance(handler.source, PluginHooksSource):
+        env |= handler.source.env
     _report_progress(
         on_progress,
         HookProgress(
@@ -138,6 +143,7 @@ async def _run_handler(
             cwd=cwd,
             default_timeout=default_timeout,
             max_output_bytes=max_output_bytes,
+            env=env,
         )
     finally:
         _report_progress(

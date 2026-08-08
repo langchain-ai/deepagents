@@ -41,7 +41,8 @@ Screen {
 
 /*
  * Hide a footer whose owning row is hidden — folded into a collapsed tool
- * group, or replaced by an approval prompt.
+ * group, replaced by an approval prompt, or superseded by the diff that took
+ * the row's place.
  *
  * Must stay *below* the `-visible` rule above: both selectors are two classes,
  * so Textual breaks the specificity tie by source order and the later rule
@@ -49,11 +50,13 @@ Screen {
  *
  * These hide via a class rather than by assigning `display` so the footer keeps
  * its own `-visible` class and returns to the `/timestamps` preference once the
- * row comes back. Two classes, not one: a footer can be hidden for both reasons
- * at once, and releasing one must not reveal it while the other still applies.
+ * row comes back. One class per reason, never a shared one: a footer can be
+ * hidden for more than one reason at once, and releasing one must not reveal it
+ * while another still applies.
  */
 .message-timestamp-footer.-tool-group-collapsed-accessory,
-.message-timestamp-footer.-tool-awaiting-approval-accessory {
+.message-timestamp-footer.-tool-awaiting-approval-accessory,
+.message-timestamp-footer.-tool-superseded-accessory {
     display: none;
 }
 
@@ -156,34 +159,36 @@ Screen {
     color: $text-muted;
 }
 
-/* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
+/* Diff styling — used by EditFileApprovalWidget._render_string_lines
+   (fg + bg + padding) */
 .diff-removed {
     height: auto;
     color: $text-error;
-    background: $error-muted;
+    background: $error 10%;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
     color: $text-success;
-    background: $success-muted;
+    background: $success 10%;
     padding: 0 1;
 }
 
-.diff-context {
-    height: auto;
-    color: $text-muted;
-    padding: 0 1;
-}
-
-/* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content) */
+/* Diff row styling — used by compose_diff_lines.
+   Row backgrounds set bg only; fg comes from Content. */
 .diff-line-removed {
-    background: $error-muted;
+    background: $error 10%;
 }
 
 .diff-line-added {
-    background: $success-muted;
+    background: $success 10%;
+}
+
+/* Hunk separator: a centered glyph, not a tinted row — no background. */
+.diff-hunk-break {
+    width: 1fr;
+    text-align: center;
 }
 
 /* Mode-specific borders for UserMessage */

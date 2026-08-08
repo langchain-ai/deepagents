@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING
 
-from deepagents_code._env_vars import DEBUG_ONBOARDING, is_env_truthy
+from deepagents_code._env_vars import ONBOARDING, classify_env_bool
 from deepagents_code.model_config import DEFAULT_STATE_DIR
 
 if TYPE_CHECKING:
@@ -266,12 +267,24 @@ def strip_onboarding_name_markers(text: str) -> str:
 def should_run_onboarding(state_dir: Path | None = None) -> bool:
     """Return whether onboarding should open at interactive startup.
 
+    `DEEPAGENTS_CODE_ONBOARDING` overrides the marker in both directions: a
+    truthy value forces the flow open on every startup, and a falsy value keeps
+    it closed even on a fresh install. An unset or unrecognized value leaves the
+    marker in charge, so the override never has to be unset to get first-run
+    behavior back.
+
     Args:
         state_dir: Optional state directory override for tests.
 
     Returns:
-        `True` when the debug override is enabled or no completion marker exists.
+        `True` when the env override is truthy, or when it does not apply and no
+            completion marker exists.
     """
-    if is_env_truthy(DEBUG_ONBOARDING):
-        return True
+    raw = os.environ.get(ONBOARDING)
+    if raw is not None:
+        override = classify_env_bool(raw)
+        if override is None:
+            logger.warning("Ignoring %s=%r (expected bool)", ONBOARDING, raw)
+        else:
+            return override
     return not has_completed_onboarding(state_dir)

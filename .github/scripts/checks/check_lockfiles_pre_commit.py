@@ -12,7 +12,8 @@ LIBS_ROOT = REPO_ROOT / "libs"
 EXAMPLES_ROOT = REPO_ROOT / "examples"
 
 
-def _package_dirs() -> list[Path]:
+def package_dirs() -> list[Path]:
+    """Return every package directory that owns a `uv.lock`, in repo-path order."""
     libs = [path.parent for path in LIBS_ROOT.glob("*/Makefile")]
     partners = [path.parent for path in (LIBS_ROOT / "partners").glob("*/Makefile")]
     examples = [path.parent for path in EXAMPLES_ROOT.glob("*/pyproject.toml")]
@@ -23,7 +24,8 @@ def _repo_path(path: Path) -> str:
     return path.relative_to(REPO_ROOT).as_posix()
 
 
-def _python_version(package: Path) -> str:
+def python_version(package: Path) -> str:
+    """Return the interpreter version `package`'s lockfile must be resolved with."""
     if package == LIBS_ROOT / "acp":
         return "3.14"
     return "3.12"
@@ -42,7 +44,7 @@ def _touches_package(path: str, package: Path) -> bool:
 
 
 def _packages_for_paths(paths: list[str]) -> list[Path]:
-    packages = _package_dirs()
+    packages = package_dirs()
     if not paths:
         return packages
     return [
@@ -61,7 +63,7 @@ def _lock_command(package: Path, *, check: bool) -> list[str]:
         "--directory",
         package.relative_to(REPO_ROOT).as_posix(),
         "--python",
-        _python_version(package),
+        python_version(package),
     ]
 
 

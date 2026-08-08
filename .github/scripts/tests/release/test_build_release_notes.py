@@ -16,7 +16,7 @@ SCRIPT_DIR = REPO_ROOT / ".github" / "scripts" / "release"
 SCRIPT_PATH = SCRIPT_DIR / "build_release_notes.py"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-import build_release_notes as brn
+import build_release_notes as brn  # noqa: E402  # import requires the script path above
 
 PACKAGE_PATH = Path("libs/example")
 REPOSITORY = "langchain-ai/deepagents"
@@ -1181,7 +1181,7 @@ class TestUnreachablePredecessorWarnings:
         _init_repo(tmp_path)
         _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
         _git(tmp_path, "tag", "example==1.0.0")
-        head = _commit(
+        _commit(
             tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): a1"
         )
         _git(tmp_path, "tag", "example==1.1.0a1")

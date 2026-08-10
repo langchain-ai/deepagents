@@ -365,7 +365,7 @@ class TestCostDisplayCallbacks:
         assert len(notifications) == 1
         message, kwargs = notifications[0]
         assert "$1.01" in message
-        assert "/compact" in message
+        assert "/offload" in message
         assert "/clear" in message
         assert kwargs == {
             "title": "Session cost warning",

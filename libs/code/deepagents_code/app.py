@@ -7672,7 +7672,7 @@ class DeepAgentsApp(App):
         self._session_cost_warning_shown = True
         self.notify(
             f"Estimated session cost is {format_cost(self._session_cost_usd)}, above "
-            f"the configured {format_cost(threshold)} threshold. Consider /compact "
+            f"the configured {format_cost(threshold)} threshold. Consider /offload "
             "to reduce context usage or /clear to start fresh.",
             title="Session cost warning",
             severity="warning",

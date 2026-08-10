@@ -1046,12 +1046,18 @@ def classify_discovered_configs(
     Returns:
         Tuple of `(user_configs, project_configs)`.
     """
-    user_dir = Path.home() / ".deepagents"
+    # Use normpath (pure-string) instead of Path.resolve(), which calls
+    # os.path.realpath() -> os.getcwd(), blocked by blockbuster on the
+    # server event loop.  All config paths are already absolute.
+    import os as _os
+
+    user_dir_str = _os.path.normpath(str(Path.home() / ".deepagents"))
     user: list[Path] = []
     project: list[Path] = []
     for path in config_paths:
         try:
-            if path.resolve().is_relative_to(user_dir.resolve()):
+            path_str = _os.path.normpath(str(path))
+            if path_str == user_dir_str or path_str.startswith(user_dir_str + _os.sep):
                 user.append(path)
             else:
                 project.append(path)

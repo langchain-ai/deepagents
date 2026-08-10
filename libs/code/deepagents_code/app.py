@@ -14111,36 +14111,26 @@ class DeepAgentsApp(App):
                 markup=False,
             )
         elif cmd == "/context":
-            (
-                reported_tokens,
-                conversation_tokens,
-            ) = await self._get_context_usage_counts()
-            if reported_tokens is not None:
-                context_tokens = reported_tokens
-                approximate = False
-            elif self._context_tokens > 0 and not self._tokens_approximate:
-                context_tokens = self._context_tokens
-                approximate = False
-            elif conversation_tokens is not None or self._context_tokens > 0:
-                context_tokens = None
-                conversation_tokens = conversation_tokens or self._context_tokens
-                approximate = True
-            else:
-                context_tokens = 0
-                approximate = False
-            screen = ContextUsageScreen(
-                context_tokens=context_tokens,
-                conversation_tokens=conversation_tokens,
-                context_limit=settings.model_context_limit,
-                model_spec=self._effective_model_spec() or settings.model_name,
-                approximate=approximate,
+            context_tokens, conversation_tokens = await self._get_context_usage_counts()
+            if context_tokens is None and not self._tokens_approximate:
+                context_tokens = self._context_tokens or None
+            approximate = context_tokens is None and bool(
+                conversation_tokens or self._context_tokens
             )
-
-            def handle_result(_result: None) -> None:
-                if self._chat_input:
-                    self._chat_input.focus_input()
-
-            self.push_screen(screen, handle_result)
+            if approximate:
+                conversation_tokens = conversation_tokens or self._context_tokens
+            elif context_tokens is None:
+                context_tokens = 0
+            self.push_screen(
+                ContextUsageScreen(
+                    context_tokens=context_tokens,
+                    conversation_tokens=conversation_tokens,
+                    context_limit=settings.model_context_limit,
+                    model_spec=self._effective_model_spec() or settings.model_name,
+                    approximate=approximate,
+                ),
+                lambda _result: self._focus_chat_input_after_refresh(),
+            )
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -14843,18 +14833,12 @@ class DeepAgentsApp(App):
             Pair of provider-reported context tokens and approximate effective
                 conversation tokens. Either value is `None` when unavailable.
         """
-        if not self._agent:
+        if not self._agent or not self._lc_thread_id:
             return None, None
         try:
             from langchain_core.messages.utils import count_tokens_approximately
 
-            config: RunnableConfig = {
-                "configurable": {"thread_id": self._lc_thread_id},
-            }
-            state = await self._agent.aget_state(config)
-            if not state or not state.values:
-                return None, None
-            values = dict(state.values)
+            values = await self._get_thread_state_values(self._lc_thread_id)
             reported = _persisted_context_tokens(values) or None
             messages = values.get("messages", [])
             if not isinstance(messages, list) or not messages:

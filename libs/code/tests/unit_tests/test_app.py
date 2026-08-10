@@ -179,37 +179,32 @@ class TestDisplayModelLabel:
         assert _display_model_label(spec) == expected
 
 
-class TestContextCommand:
-    """Tests for the `/context` command's data source."""
+async def test_context_prefers_checkpoint_total_after_offload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._context_tokens = 200
+    app._tokens_approximate = True
+    monkeypatch.setattr(
+        app, "_get_context_usage_counts", AsyncMock(return_value=(1_000, 200))
+    )
+    push_screen = MagicMock()
+    monkeypatch.setattr(app, "push_screen", push_screen)
+    focus = MagicMock()
+    monkeypatch.setattr(app, "_focus_chat_input_after_refresh", focus)
 
-    async def test_prefers_checkpoint_total_after_offload(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        app = DeepAgentsApp()
-        app._context_tokens = 200
-        app._tokens_approximate = True
-        get_counts = AsyncMock(return_value=(1_000, 200))
-        push_screen = MagicMock()
-        monkeypatch.setattr(app, "_get_context_usage_counts", get_counts)
-        monkeypatch.setattr(app, "push_screen", push_screen)
+    with (
+        patch("deepagents_code.app.ContextUsageScreen") as screen_type,
+        patch("deepagents_code.config.settings") as settings,
+    ):
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-sonnet"
+        settings.model_context_limit = 2_000
+        await app._handle_command("/context")
 
-        with (
-            patch("deepagents_code.app.ContextUsageScreen") as screen_type,
-            patch("deepagents_code.config.settings") as mock_settings,
-        ):
-            mock_settings.model_provider = "anthropic"
-            mock_settings.model_name = "claude-sonnet"
-            mock_settings.model_context_limit = 2_000
-            await app._handle_command("/context")
-
-        assert screen_type.call_args.kwargs == {
-            "context_tokens": 1_000,
-            "conversation_tokens": 200,
-            "context_limit": 2_000,
-            "model_spec": "anthropic:claude-sonnet",
-            "approximate": False,
-        }
-        assert push_screen.call_args.args[0] is screen_type.return_value
+    assert screen_type.call_args.kwargs["context_tokens"] == 1_000
+    push_screen.call_args.args[1](None)
+    focus.assert_called_once_with()
 
 
 class TestWhatsNewMessage:

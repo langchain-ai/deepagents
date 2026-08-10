@@ -1546,7 +1546,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="warnings.session_cost_threshold_usd",
         group="Warnings",
-        summary="Warn above this estimated thread cost in USD (0 disables).",
+        summary=(
+            "Warn once when estimated thread cost exceeds this USD amount (0 disables)."
+        ),
         kind=OptionKind.FLOAT,
         default=SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
         toml_keys=("warnings", "session_cost_threshold_usd"),

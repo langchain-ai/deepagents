@@ -1390,6 +1390,37 @@ def _load_cursor_style_preference() -> CursorStyle:
     return cast("CursorStyle", value)
 
 
+def _load_session_cost_warning_threshold() -> float:
+    """Resolve the estimated-cost threshold for the one-time session warning.
+
+    Returns:
+        The configured threshold in US dollars. Zero or negative disables the
+            warning.
+    """
+    from deepagents_code.config_manifest import (
+        SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("warnings.session_cost_threshold_usd")
+    if option is None:
+        logger.warning(
+            "Unknown config option %r; using the default session cost threshold",
+            "warnings.session_cost_threshold_usd",
+        )
+        return SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    if not isinstance(value, float) or not math.isfinite(value):
+        logger.warning(
+            "Invalid session cost warning threshold %r; using the default",
+            value,
+        )
+        return SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
+    return value
+
+
 def _load_terminal_progress_preference() -> bool:
     """Load the `OSC 9;4` progress preference from `~/.deepagents/config.toml`.
 
@@ -3936,6 +3967,14 @@ class DeepAgentsApp(App):
         the streamed absolute total during a turn. The client never adds its own
         estimates here.
         """
+
+        self._session_cost_warning_threshold_usd = (
+            _load_session_cost_warning_threshold()
+        )
+        """Configured soft limit for the active thread's estimated cost."""
+
+        self._session_cost_warning_shown = False
+        """Whether the active thread has already crossed its cost soft limit."""
 
         self._provisional_cost_usd: float = 0.0
         """Streamed spend the graph has not reported a total for yet.
@@ -7619,6 +7658,27 @@ class DeepAgentsApp(App):
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._provisional_cost_usd = 0.0
         self._refresh_session_cost_display()
+        self._maybe_warn_session_cost()
+
+    def _maybe_warn_session_cost(self) -> None:
+        """Warn once when the active thread crosses its configured cost soft limit."""
+        threshold = self._session_cost_warning_threshold_usd
+        if (
+            self._session_cost_warning_shown
+            or threshold <= 0
+            or self._session_cost_usd <= threshold
+        ):
+            return
+        self._session_cost_warning_shown = True
+        self.notify(
+            f"Estimated session cost is {format_cost(self._session_cost_usd)}, above "
+            f"the configured {format_cost(threshold)} threshold. Consider /compact "
+            "to reduce context usage or /clear to start fresh.",
+            title="Session cost warning",
+            severity="warning",
+            timeout=12,
+            markup=False,
+        )
 
     @property
     def _displayed_cost_usd(self) -> float:
@@ -7648,6 +7708,7 @@ class DeepAgentsApp(App):
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
         self._thread_has_completed_turn = False
+        self._session_cost_warning_shown = False
         self._set_session_cost(self._thread_restored_cost_usd)
 
     def _mark_thread_turn_completed(self) -> None:

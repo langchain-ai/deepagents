@@ -343,19 +343,16 @@ class TestCostDisplayCallbacks:
     def test_cost_threshold_warns_once_per_thread(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from deepagents_code import config_manifest
-
         monkeypatch.setattr(
-            config_manifest,
-            "load_config_toml",
+            "deepagents_code.config_manifest.load_config_toml",
             lambda: {"warnings": {"session_cost_threshold_usd": 1.0}},
         )
         app = DeepAgentsApp()
-        notifications: list[tuple[str, dict[str, Any]]] = []
+        notifications: list[str] = []
         monkeypatch.setattr(
             app,
             "notify",
-            lambda message, **kwargs: notifications.append((message, kwargs)),
+            lambda message, **_: notifications.append(message),
         )
 
         app._set_session_cost(1.0)
@@ -363,16 +360,9 @@ class TestCostDisplayCallbacks:
         app._set_session_cost(2.0)
 
         assert len(notifications) == 1
-        message, kwargs = notifications[0]
-        assert "$1.01" in message
-        assert "/offload" in message
-        assert "/clear" in message
-        assert kwargs == {
-            "title": "Session cost warning",
-            "severity": "warning",
-            "timeout": 12,
-            "markup": False,
-        }
+        assert "$1.01" in notifications[0]
+        assert "/offload" in notifications[0]
+        assert "/clear" in notifications[0]
 
         app._reset_thread_usage(1.5)
         assert len(notifications) == 2

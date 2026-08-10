@@ -109,7 +109,7 @@ from deepagents_code.notifications import (
 )
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
-from deepagents_code.tui.widgets.context_usage import build_context_usage_markdown
+from deepagents_code.tui.widgets.context_usage import ContextUsageScreen
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.loading import LoadingWidget
 from deepagents_code.tui.widgets.message_store import (
@@ -14111,7 +14111,6 @@ class DeepAgentsApp(App):
                 markup=False,
             )
         elif cmd == "/context":
-            await self._mount_message(UserMessage(command))
             (
                 reported_tokens,
                 conversation_tokens,
@@ -14129,19 +14128,19 @@ class DeepAgentsApp(App):
             else:
                 context_tokens = 0
                 approximate = False
-            model_spec = self._effective_model_spec() or settings.model_name
-            await self._mount_message(
-                AppMessage(
-                    build_context_usage_markdown(
-                        context_tokens=context_tokens,
-                        conversation_tokens=conversation_tokens,
-                        context_limit=settings.model_context_limit,
-                        model_spec=model_spec,
-                        approximate=approximate,
-                    ),
-                    markdown=True,
-                )
+            screen = ContextUsageScreen(
+                context_tokens=context_tokens,
+                conversation_tokens=conversation_tokens,
+                context_limit=settings.model_context_limit,
+                model_spec=self._effective_model_spec() or settings.model_name,
+                approximate=approximate,
             )
+
+            def handle_result(_result: None) -> None:
+                if self._chat_input:
+                    self._chat_input.focus_input()
+
+            self.push_screen(screen, handle_result)
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:

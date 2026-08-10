@@ -14112,16 +14112,32 @@ class DeepAgentsApp(App):
             )
         elif cmd == "/context":
             await self._mount_message(UserMessage(command))
-            conversation_tokens = await self._get_conversation_token_count()
+            (
+                reported_tokens,
+                conversation_tokens,
+            ) = await self._get_context_usage_counts()
+            if reported_tokens is not None:
+                context_tokens = reported_tokens
+                approximate = False
+            elif self._context_tokens > 0 and not self._tokens_approximate:
+                context_tokens = self._context_tokens
+                approximate = False
+            elif conversation_tokens is not None or self._context_tokens > 0:
+                context_tokens = None
+                conversation_tokens = conversation_tokens or self._context_tokens
+                approximate = True
+            else:
+                context_tokens = 0
+                approximate = False
             model_spec = self._effective_model_spec() or settings.model_name
             await self._mount_message(
                 AppMessage(
                     build_context_usage_markdown(
-                        context_tokens=self._context_tokens,
+                        context_tokens=context_tokens,
                         conversation_tokens=conversation_tokens,
                         context_limit=settings.model_context_limit,
                         model_spec=model_spec,
-                        approximate=self._tokens_approximate,
+                        approximate=approximate,
                     ),
                     markdown=True,
                 )
@@ -14821,36 +14837,46 @@ class DeepAgentsApp(App):
             )
             return True
 
-    async def _get_conversation_token_count(self) -> int | None:
-        """Return the approximate conversation-only token count.
+    async def _get_context_usage_counts(self) -> tuple[int | None, int | None]:
+        """Read provider-reported total and estimated conversation usage together.
 
         Returns:
-            Token count as an integer, or `None` if state is unavailable.
+            Pair of provider-reported context tokens and approximate effective
+                conversation tokens. Either value is `None` when unavailable.
         """
         if not self._agent:
-            return None
+            return None, None
         try:
-            from langchain_core.messages.utils import (
-                count_tokens_approximately,
-            )
+            from langchain_core.messages.utils import count_tokens_approximately
 
             config: RunnableConfig = {
                 "configurable": {"thread_id": self._lc_thread_id},
             }
             state = await self._agent.aget_state(config)
             if not state or not state.values:
-                return None
-            messages = state.values.get("messages", [])
+                return None, None
+            values = dict(state.values)
+            reported = _persisted_context_tokens(values) or None
+            messages = values.get("messages", [])
             if not isinstance(messages, list) or not messages:
-                return None
+                return reported, None
             effective = _effective_conversation(
                 messages,
-                state.values.get("_summarization_event"),
+                values.get("_summarization_event"),
             )
-            return count_tokens_approximately(effective)
+            return reported, count_tokens_approximately(effective)
         except Exception:  # best-effort for context-usage displays
-            logger.debug("Failed to retrieve conversation token count", exc_info=True)
-            return None
+            logger.debug("Failed to retrieve context usage", exc_info=True)
+            return None, None
+
+    async def _get_conversation_token_count(self) -> int | None:
+        """Return the approximate conversation-only token count.
+
+        Returns:
+            Token count as an integer, or `None` if state is unavailable.
+        """
+        _, conversation = await self._get_context_usage_counts()
+        return conversation
 
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space.

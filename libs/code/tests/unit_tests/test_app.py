@@ -179,6 +179,32 @@ class TestDisplayModelLabel:
         assert _display_model_label(spec) == expected
 
 
+class TestContextCommand:
+    """Tests for the `/context` command's data source."""
+
+    async def test_prefers_checkpoint_total_after_offload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp()
+        app._context_tokens = 200
+        app._tokens_approximate = True
+        get_counts = AsyncMock(return_value=(1_000, 200))
+        mount_message = AsyncMock()
+        monkeypatch.setattr(app, "_get_context_usage_counts", get_counts)
+        monkeypatch.setattr(app, "_mount_message", mount_message)
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_provider = "anthropic"
+            mock_settings.model_name = "claude-sonnet"
+            mock_settings.model_context_limit = 2_000
+            await app._handle_command("/context")
+
+        report = mount_message.await_args_list[-1].args[0]
+        assert isinstance(report, AppMessage)
+        assert "**Current:** 1.0K / 2.0K tokens (50.0%)" in str(report._content)
+        assert "**System prompt + tools:** ~800 tokens (40.0%)" in str(report._content)
+
+
 class TestWhatsNewMessage:
     """Tests for the post-upgrade banner content."""
 

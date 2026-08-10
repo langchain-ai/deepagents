@@ -8,7 +8,7 @@ from deepagents_code._session_stats import format_token_count
 
 def build_context_usage_markdown(
     *,
-    context_tokens: int,
+    context_tokens: int | None,
     conversation_tokens: int | None,
     context_limit: int | None,
     model_spec: str | None,
@@ -17,7 +17,8 @@ def build_context_usage_markdown(
     """Build a context report that distinguishes measured and estimated usage.
 
     Args:
-        context_tokens: Latest total for the active model context.
+        context_tokens: Latest total for the active model context, or `None` when
+            no reliable total is available.
         conversation_tokens: Approximate tokens in the effective message history.
         context_limit: Active model's input-token limit, when known.
         model_spec: Active model identifier.
@@ -32,7 +33,12 @@ def build_context_usage_markdown(
     if model_spec:
         lines.append(escape_markdown(model_spec))
 
-    if context_tokens <= 0:
+    if context_tokens is None:
+        lines.extend(("", "Current total unavailable."))
+        if conversation_tokens is not None:
+            estimate = format_token_count(max(0, conversation_tokens))
+            lines.append(f"**Conversation estimate:** ~{estimate} tokens")
+    elif context_tokens <= 0:
         lines.extend(("", "No usage reported yet."))
         if context_limit is not None:
             lines.append(
@@ -80,7 +86,7 @@ def build_context_usage_markdown(
     lines.extend(
         ("", "**Automatic offload:** enabled; use `/offload` to compact sooner.")
     )
-    if context_tokens > 0:
+    if context_tokens is not None and context_tokens > 0:
         lines.append(
             "*Current total is approximate; composition is estimated.*"
             if approximate

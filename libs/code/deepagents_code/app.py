@@ -109,6 +109,7 @@ from deepagents_code.notifications import (
 )
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.context_usage import build_context_usage_markdown
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.loading import LoadingWidget
 from deepagents_code.tui.widgets.message_store import (
@@ -14109,6 +14110,22 @@ class DeepAgentsApp(App):
                 timeout=5,
                 markup=False,
             )
+        elif cmd == "/context":
+            await self._mount_message(UserMessage(command))
+            conversation_tokens = await self._get_conversation_token_count()
+            model_spec = self._effective_model_spec() or settings.model_name
+            await self._mount_message(
+                AppMessage(
+                    build_context_usage_markdown(
+                        context_tokens=self._context_tokens,
+                        conversation_tokens=conversation_tokens,
+                        context_limit=settings.model_context_limit,
+                        model_spec=model_spec,
+                        approximate=self._tokens_approximate,
+                    ),
+                    markdown=True,
+                )
+            )
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -14824,10 +14841,14 @@ class DeepAgentsApp(App):
             if not state or not state.values:
                 return None
             messages = state.values.get("messages", [])
-            if not messages:
+            if not isinstance(messages, list) or not messages:
                 return None
-            return count_tokens_approximately(messages)
-        except Exception:  # best-effort for /tokens display
+            effective = _effective_conversation(
+                messages,
+                state.values.get("_summarization_event"),
+            )
+            return count_tokens_approximately(effective)
+        except Exception:  # best-effort for context-usage displays
             logger.debug("Failed to retrieve conversation token count", exc_info=True)
             return None
 
@@ -15051,7 +15072,7 @@ class DeepAgentsApp(App):
                     )
                 )
 
-            self._on_tokens_update(tokens_after)
+            self._on_tokens_update(tokens_after, approximate=True)
 
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")

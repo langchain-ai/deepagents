@@ -20,6 +20,8 @@ from langchain_core.messages.content import ContentBlock
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -146,6 +148,24 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     ) -> ChatResult:
         self.captured_messages.append(messages)
         return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class MaskedChatOpenAI(ChatOpenAI):
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
+
+
+class MaskedAzureChatOpenAI(AzureChatOpenAI):
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
+
+
+class MaskedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
 
 
 class TestDeepAgentEndToEnd:
@@ -4657,11 +4677,7 @@ class TestMultimodalProfileScrubProfileGatedBlocks:
 
 
 class TestMultimodalProfileScrubNonPdfFileProviderGate:
-    """Non-PDF `file` blocks (`.docx`, ...) have no `ModelProfile` field yet.
-
-    Support is hard-coded per exact `_llm_type` regardless of whether
-    `profile` itself is present.
-    """
+    """Non-PDF `file` blocks (`.docx`, ...) have no `ModelProfile` field yet."""
 
     def test_docx_stripped_for_anthropic(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]), llm_type="anthropic-chat")
@@ -4670,31 +4686,34 @@ class TestMultimodalProfileScrubNonPdfFileProviderGate:
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
 
-    def test_docx_passes_for_openai(self) -> None:
-        model = FixedGenericFakeChatModel(messages=iter([]), llm_type="openai-chat")
-        _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
+    @pytest.mark.parametrize(
+        "model",
+        [
+            MaskedChatOpenAI.model_construct(),
+            MaskedAzureChatOpenAI.model_construct(),
+            MaskedChatGoogleGenerativeAI.model_construct(),
+        ],
+    )
+    def test_provider_class_tolerates_docx_when_llm_type_is_masked(self, model: ChatOpenAI | ChatGoogleGenerativeAI) -> None:
+        message = ToolMessage(
+            content_blocks=[
+                {
+                    "type": "file",
+                    "base64": _docx_base64(),
+                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }
+            ],
+            tool_call_id="docx-read-1",
+            additional_kwargs={"read_file_path": "/report.docx"},
+        )
 
-        tool_message = _second_call_tool_message(model)
-        blocks = tool_message.content_blocks
-        assert blocks[0]["type"] == "file"
-        assert blocks[0]["base64"] == _docx_base64()
+        assert model._llm_type == "langchain-chat"
+        scrubbed = filesystem_middleware._scrub_unsupported_multimodal_content([message], model)
+        assert scrubbed[0].content_blocks[0]["base64"] == _docx_base64()
 
-    def test_docx_passes_for_gemini(self) -> None:
-        model = FixedGenericFakeChatModel(messages=iter([]), llm_type="chat-google-generative-ai")
-        _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
-
-        tool_message = _second_call_tool_message(model)
-        assert tool_message.content_blocks[0]["type"] == "file"
-        assert tool_message.content_blocks[0]["base64"] == _docx_base64()
-
-    def test_openai_mantle_style_llm_type_is_not_treated_as_openai(self) -> None:
-        """Regression: a substring match on `_llm_type` would misclassify this.
-
-        A third-party `_llm_type` that merely *contains* `"openai"` (e.g. a
-        Bedrock-hosted model inheriting from `ChatOpenAI`) isn't genuine OpenAI
-        and shouldn't get the non-PDF-file pass.
-        """
-        model = FixedGenericFakeChatModel(messages=iter([]), llm_type="openai-mantle-chat")
+    @pytest.mark.parametrize("llm_type", ["openai-chat", "azure-openai-chat", "chat-google-generative-ai", "openai-mantle-chat"])
+    def test_llm_type_does_not_grant_docx_support(self, llm_type: str) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), llm_type=llm_type)
         _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
 
         tool_message = _second_call_tool_message(model)

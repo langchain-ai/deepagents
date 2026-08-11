@@ -250,6 +250,16 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_splash_tips_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep startup-tip assertions honest.
+
+    A developer with this set locally would make every `not app.query(
+    StartupTip)` assertion pass vacuously.
+    """
+    monkeypatch.delenv("DEEPAGENTS_CODE_HIDE_SPLASH_TIPS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     """Pin the launch command name echoed by resume hints.
 
@@ -293,6 +303,39 @@ def _disable_prices_auto_update(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_price_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Isolate the process-wide pricing-override state and redirect the user file.
+
+    Suite-wide for the same reason `_disable_prices_auto_update` is: every test
+    that prices a model the genai-prices catalog does not cover now reaches the
+    local override loader, which reads `prices.json` from the user config
+    directory. `test_session_stats.py` prices deliberately uncatalogued models
+    through the real `estimate_cost`, so without this those tests read the
+    developer's own `~/.deepagents/prices.json` — passing in CI and failing on
+    the machine of anyone who has written one.
+
+    The redirect goes through the `DEFAULT_CONFIG_DIR` constant the loader
+    imports, with `monkeypatch`'s default `raising=True`: if that name moves, the
+    production import fails and `_override_price` swallows it, so the tests must
+    fail loudly here rather than patch an attribute into existence and keep
+    passing. `tmp_path` starts empty, so the default state is "user has no
+    override file".
+    """
+    import deepagents_code.model_config
+    from deepagents_code import cost_tracking
+
+    monkeypatch.setattr(deepagents_code.model_config, "DEFAULT_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cost_tracking, "_PRICE_OVERRIDES", None)
+    monkeypatch.setattr(cost_tracking, "_USER_OVERRIDE_ENTRIES", 0)
+    monkeypatch.setattr(
+        cost_tracking,
+        "_USER_OVERRIDE_LABEL",
+        f"override file {cost_tracking._USER_OVERRIDES_FILENAME!r}",
+    )
+    monkeypatch.setattr(cost_tracking, "_OVERRIDE_REPORTED", set())
+
+
+@pytest.fixture(autouse=True)
 def _clear_update_env(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
@@ -317,6 +360,7 @@ def _clear_update_env(
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "0")
 
     if _self_manages_update_check(request):
         monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
@@ -498,6 +542,14 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         tmp_path / "config.toml",
     )
     monkeypatch.setattr("deepagents_code.onboarding.DEFAULT_STATE_DIR", state_dir)
+    # Resolved from `DEFAULT_STATE_DIR` at import time, so patching the module
+    # constant above doesn't move it. Left unpatched, any test reaching the
+    # upgrade path would create a lock file in the developer's real home and
+    # contend with a genuinely running dcode.
+    monkeypatch.setattr(
+        "deepagents_code.update_check.UPDATE_LOCK_FILE",
+        state_dir / "update.lock",
+    )
     # Keep ordinary create/amend goal tests free of the one-time preference
     # modal without writing files into `tmp_path` (that would pollute git and
     # empty-tree assertions). Dedicated prompt coverage clears this env var.

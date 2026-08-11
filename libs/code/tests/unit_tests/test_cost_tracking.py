@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import builtins
 import inspect
+import json
 import logging
 import subprocess
 import sys
 import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 from unittest.mock import MagicMock, create_autospec, patch
@@ -56,8 +58,10 @@ from deepagents_code.cost_tracking import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
+    from pathlib import Path
 
     from genai_prices import UpdatePrices
+    from genai_prices.types import Provider
     from langchain_core.callbacks import CallbackManagerForLLMRun
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
@@ -66,6 +70,18 @@ if TYPE_CHECKING:
 KNOWN_MODEL = "claude-sonnet-4-5"
 KNOWN_PROVIDER = "anthropic"
 THREAD_ID = "thread-under-test"
+
+_OVERRIDE_MODEL = "dcode-override-test-model"
+"""Model only the override fixtures catalog; absent from genai-prices itself."""
+
+_OVERRIDE_USER_MODEL = "dcode-override-user-model"
+"""Model only the user-file fixture catalogs."""
+
+_OVERRIDE_CONFLICT_MODEL = "dcode-override-conflict-model"
+"""Model both override fixtures catalog, at deliberately different rates."""
+
+_OVERRIDE_BUNDLED_MODEL = "dcode-override-bundled-model"
+"""Model only the bundled fixture when a user provider is also present."""
 
 
 @pytest.fixture(autouse=True)
@@ -831,6 +847,1019 @@ class TestEstimateCost:
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+def _override_catalog(
+    models: list[dict[str, Any]],
+    *,
+    provider_id: str = "dcode-test",
+    model_match: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build a one-provider override catalog in upstream's raw schema.
+
+    Args:
+        models: Raw model entries the provider carries.
+        provider_id: Provider id, so a fixture can build two providers.
+        model_match: Provider-level `model_match` claim. Omitted by default
+            because inference would otherwise claim every unpriced model for
+            this provider; leaving it out narrows most fixtures to the
+            provider-id and full-sweep paths.
+    """
+    provider: dict[str, Any] = {
+        "id": provider_id,
+        "name": f"{provider_id} overrides",
+        "api_pattern": f"https://api\\.{provider_id}\\.invalid",
+        "models": models,
+    }
+    if model_match is not None:
+        provider["model_match"] = model_match
+    return [provider]
+
+
+def _override_model(
+    model_id: str,
+    prices: dict[str, float],
+    *,
+    match_prefix: str | None = None,
+) -> dict[str, Any]:
+    """Build one override model entry, exact- or prefix-matched."""
+    match = {"starts_with": match_prefix} if match_prefix else {"equals": model_id}
+    return {"id": model_id, "match": match, "prices": prices}
+
+
+class TestPriceOverrides:
+    """Local pricing catalogs consulted after a primary `LookupError`."""
+
+    def _install_raw_built_ins(
+        self, monkeypatch: pytest.MonkeyPatch, raw: list[dict[str, Any]]
+    ) -> None:
+        """Point the built-in resource read at an arbitrary raw catalog.
+
+        The loader reads a real package resource, which cannot be swapped
+        cleanly per test, so its small read helper is what gets patched. The
+        user-source call delegates to the real helper so tests can combine
+        fixture built-ins with an on-disk user file.
+        """
+        real_read = cost_tracking._read_override_source
+
+        def read(path: Path | None) -> tuple[list[Any] | None, bool]:
+            return (raw, False) if path is None else real_read(path)
+
+        monkeypatch.setattr(cost_tracking, "_read_override_source", read)
+
+    def _install_built_ins(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        models: list[dict[str, Any]],
+        *,
+        model_match: dict[str, Any] | None = None,
+    ) -> None:
+        """Point the built-in resource read at a one-provider fixture catalog."""
+        self._install_raw_built_ins(
+            monkeypatch, _override_catalog(models, model_match=model_match)
+        )
+
+    def _install_user_file(self, tmp_path: Path, models: list[dict[str, Any]]) -> None:
+        """Drop a user `prices.json` into the isolated config directory."""
+        (tmp_path / "prices.json").write_text(
+            json.dumps(_override_catalog(models)), encoding="utf-8"
+        )
+
+    def test_built_in_override_prices_a_model_the_catalog_lacks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The decomposition is genai-prices', not naive input/output math.
+
+        Every published bucket bills at its own rate, so the expected total is
+        computed bucket by bucket: 100 uncached input + 800 cache reads + 100
+        cache writes + 60 ordinary output + 40 reasoning output.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL,
+                    {
+                        "input_mtok": 1.0,
+                        "output_mtok": 2.0,
+                        "cache_read_mtok": 0.1,
+                        "cache_write_mtok": 1.25,
+                        "output_reasoning_mtok": 0.5,
+                    },
+                )
+            ],
+        )
+        usage = _usage(cache_read=800, cache_write=100)
+        usage["output_token_details"] = {"reasoning": 40}
+
+        cost = estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        expected = (
+            100 * 1.0 + 800 * 0.1 + 100 * 1.25 + 60 * 2.0 + 40 * 0.5
+        ) / 1_000_000
+        assert cost == pytest.approx(expected)
+
+    def test_built_in_override_prices_without_a_provider_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty provider searches every override provider's models."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "") == pytest.approx(
+            (1_000 * 1.0 + 100 * 2.0) / 1_000_000
+        )
+
+    def test_an_unclaimed_provider_id_falls_through_to_the_full_sweep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider id nothing claims still reaches every override model.
+
+        The fixture provider declares no `provider_match` and no `model_match`,
+        so `find_provider_by_id` cannot claim it and inference finds nothing --
+        leaving the full sweep, which is the last-resort behavior that keeps
+        entries reachable where upstream would raise. Prefix-matched so the
+        sweep is resolving through `ModelInfo.match` rather than an exact id.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL,
+                    {"input_mtok": 1.0, "output_mtok": 2.0},
+                    match_prefix="dcode-override-",
+                )
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "unmatched-provider") == (
+            pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        )
+
+    def test_model_match_inference_wins_over_the_full_sweep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `model_match` claim narrows the search, as upstream's does.
+
+        Two providers carry the model at different rates and neither id matches
+        the request. Only the second declares `model_match`, so inference must
+        narrow to it; a sweep would reach the first provider and bill its rate
+        instead. The rates are what tell the two paths apart.
+        """
+        prices = {"input_mtok": 1.0, "output_mtok": 2.0}
+        claimed = {"input_mtok": 3.0, "output_mtok": 6.0}
+        self._install_raw_built_ins(
+            monkeypatch,
+            [
+                *_override_catalog(
+                    [_override_model(_OVERRIDE_MODEL, prices)], provider_id="swept"
+                ),
+                *_override_catalog(
+                    [_override_model(_OVERRIDE_MODEL, claimed)],
+                    provider_id="claimant",
+                    model_match={"starts_with": "dcode-override-"},
+                ),
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "unmatched-provider") == (
+            pytest.approx((1_000 * 3.0 + 100 * 6.0) / 1_000_000)
+        )
+
+    def test_a_matched_provider_id_wins_over_a_model_match_claim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The top rung of the ladder: an id claim beats an inferred claim.
+
+        Two providers carry the model. One is named by the request; the other
+        claims it via `model_match`. Swapping the two branches in
+        `_find_override_model` is otherwise caught by nothing, and the rates are
+        what tell them apart.
+        """
+        self._install_raw_built_ins(
+            monkeypatch,
+            [
+                *_override_catalog(
+                    [
+                        _override_model(
+                            _OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                        )
+                    ],
+                    provider_id="named",
+                ),
+                *_override_catalog(
+                    [
+                        _override_model(
+                            _OVERRIDE_MODEL, {"input_mtok": 3.0, "output_mtok": 6.0}
+                        )
+                    ],
+                    provider_id="claimant",
+                    model_match={"starts_with": "dcode-override-"},
+                ),
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "named") == pytest.approx(
+            (1_000 * 1.0 + 100 * 2.0) / 1_000_000
+        )
+
+    def test_a_claiming_provider_without_the_model_is_a_miss_not_a_sweep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A claim is final: the search does not fall through past it.
+
+        The request names a provider that exists in the catalog but does not
+        carry the model, while another provider does. Reporting nothing is the
+        intended outcome -- a file that names a provider is taken at its word
+        about which models it serves, and sweeping past it would bill some other
+        provider's copy of the model. Pinned because the alternative reads like a
+        bug fix, and "fixing" it would silently change which rate bills.
+        """
+        self._install_raw_built_ins(
+            monkeypatch,
+            [
+                *_override_catalog([], provider_id="claimant"),
+                *_override_catalog(
+                    [
+                        _override_model(
+                            _OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                        )
+                    ],
+                    provider_id="holder",
+                ),
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "claimant") is None
+
+    def test_a_sweep_that_prices_under_another_provider_warns(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The one path here that can bill a confidently wrong figure.
+
+        The same model id is commonly published by several providers at very
+        different rates, so an entry reached by a sweep may be the wrong
+        provider's copy. Unlike every other outcome, this hands the user a dollar
+        figure rather than no figure, so it must not stay at DEBUG.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = estimate_cost(_usage(), _OVERRIDE_MODEL, "some-other-provider")
+            estimate_cost(_usage(), _OVERRIDE_MODEL, "some-other-provider")
+
+        assert cost == pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        assert caplog.text.count("the request ran against provider") == 1
+        assert "'dcode-test'" in caplog.text
+        assert "'some-other-provider'" in caplog.text
+
+    def test_pricing_under_the_named_provider_does_not_warn(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The mismatch warning must not fire on the ordinary case."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert "the request ran against provider" not in caplog.text
+
+    def test_user_file_prices_a_model_both_catalogs_lack(self, tmp_path: Path) -> None:
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL, {"input_mtok": 4.0, "output_mtok": 8.0}
+                )
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_USER_MODEL, "dcode-test") == (
+            pytest.approx((1_000 * 4.0 + 100 * 8.0) / 1_000_000)
+        )
+
+    def test_user_file_beats_a_conflicting_built_in_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Same `(provider id, model id)`: the user rate must be the one used."""
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_CONFLICT_MODEL,
+                    {"input_mtok": 100.0, "output_mtok": 2.0},
+                )
+            ],
+        )
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_CONFLICT_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                )
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_CONFLICT_MODEL, "dcode-test") == (
+            pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        )
+
+    def test_user_provider_keeps_non_conflicting_bundled_models(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A partial user provider supplements rather than hides built-ins."""
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_BUNDLED_MODEL,
+                    {"input_mtok": 3.0, "output_mtok": 6.0},
+                )
+            ],
+        )
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL,
+                    {"input_mtok": 1.0, "output_mtok": 2.0},
+                )
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_BUNDLED_MODEL, "dcode-test") == (
+            pytest.approx((1_000 * 3.0 + 100 * 6.0) / 1_000_000)
+        )
+
+    def test_overrides_are_not_consulted_when_the_primary_catalog_covers_the_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upstream wins: a `calc_price` success never reaches the overrides."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(KNOWN_MODEL, {"input_mtok": 999.0, "output_mtok": 999.0})],
+        )
+        # The built-in fixture has no `model_match` and KNOWN_PROVIDER does not
+        # match its id, so were the overrides consulted the request would price
+        # at the absurd fixture rate instead of the real catalog one.
+        cost = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+        assert cost is not None
+        assert cost < 0.01
+
+    def test_malformed_user_file_warns_once_and_built_ins_still_price(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").write_text("{not json", encoding="utf-8")
+
+        # Twice, so the count below means "once per process" rather than "once
+        # per call" -- the claim the cached one-shot build is what buys.
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        # Count the message rather than the filename: the file's path is
+        # interpolated into it, so a substring count would also be counting
+        # however many times `tmp_path` happens to appear.
+        assert caplog.text.count("Could not parse the pricing overrides") == 1
+        assert "ignoring that source" in caplog.text
+        assert cost_tracking.pricing_data_available()
+
+    def test_schema_invalid_user_file_warns_once_and_built_ins_still_price(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").write_text(
+            json.dumps([{"id": "dcode-test", "bogus": True}]), encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert caplog.text.count("failed validation") == 1
+        assert cost_tracking.pricing_data_available()
+
+    def test_unreadable_user_file_warns_once_and_built_ins_still_price(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A directory where the file should be is the portable EISDIR case.
+
+        Permanent rather than transient: a directory does not become a readable
+        file on retry, so the build caches and the second call does not re-read.
+        Classifying it transient would cost a re-read and a full re-validation of
+        both catalogs on every unpriced request for the life of the process,
+        silently -- see `_TRANSIENT_READ_ERRNOS`.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").mkdir()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert caplog.text.count("Could not read the pricing overrides") == 1
+        assert cost_tracking._PRICE_OVERRIDES is not None
+        assert cost_tracking.pricing_data_available()
+
+    def test_a_non_utf8_user_file_is_reported_and_not_retried(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A UTF-16 or binary `prices.json` raises `UnicodeDecodeError`.
+
+        That is a `ValueError`, not an `OSError`, so it never reaches the errno
+        classification -- and the same bytes cannot decode differently later, so
+        it must cache like any other deterministic outcome.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").write_bytes(b"\xff\xfe[\x00]\x00")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert "as UTF-8 text" in caplog.text
+        assert cost_tracking._PRICE_OVERRIDES is not None
+        assert cost_tracking.pricing_data_available()
+
+    def test_a_deterministic_failure_on_one_source_does_not_spam_the_other(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Warn-once must not depend on the build having been cached.
+
+        A transient failure on one source suppresses caching by design, so the
+        *other* source's deterministic warning would re-fire on every unpriced
+        request if it relied on the cache for deduplication rather than on
+        `_report_override_once`.
+        """
+        import errno
+        import pathlib
+
+        # Built-ins are structurally invalid, deterministically. The user file
+        # read fails transiently every time, so no build ever caches.
+        self._install_raw_built_ins(monkeypatch, [{"id": "dcode-test", "bogus": True}])
+        real_read_text = pathlib.Path.read_text
+
+        def always_flaky(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self.name == "prices.json":
+                raise OSError(errno.EMFILE, "too many open files")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", always_flaky)
+        self._install_user_file(tmp_path, [])
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            for _ in range(3):
+                assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is None
+
+        assert cost_tracking._PRICE_OVERRIDES is None
+        assert caplog.text.count("failed validation") == 1
+        assert caplog.text.count("Could not read the pricing overrides") == 1
+
+    def test_invalid_overrides_do_not_touch_bundled_pricing_health(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A bad user file must not masquerade as a broken pricing install."""
+        (tmp_path / "prices.json").write_text("{not json", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        assert cost_tracking.pricing_data_available()
+
+    def test_a_missing_user_file_is_a_silent_no_op(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), "no-such-model-in-any-catalog", "") is None
+
+        assert "prices.json" not in caplog.text
+
+    def test_auto_update_snapshot_swap_cannot_clobber_overrides(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Composes with #5264: the hourly swap leaves override pricing intact.
+
+        Overrides live outside the snapshot mechanism precisely because
+        `UpdatePrices` wholesale-replaces the custom snapshot every refresh.
+        Installing an empty snapshot -- the most destructive thing an
+        auto-update can do to the primary catalog -- must not change where the
+        override rate comes from.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+
+        before = estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+
+        import genai_prices.data_snapshot
+
+        genai_prices.data_snapshot.set_custom_snapshot(
+            genai_prices.data_snapshot.DataSnapshot(providers=[], from_auto_update=True)
+        )
+        # Drop the cached build, so the second call rebuilds the catalog *after*
+        # the swap. Left cached, `after` would come back from the cache no matter
+        # what the swap did to the override path, and this would be a test of the
+        # cache rather than of the independence it claims to pin.
+        monkeypatch.setattr(cost_tracking, "_PRICE_OVERRIDES", None)
+        try:
+            after = estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+        finally:
+            genai_prices.data_snapshot.set_custom_snapshot(None)
+
+        assert before is not None
+        assert after == pytest.approx(before)
+
+    def test_an_override_stops_being_consulted_once_upstream_covers_the_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A built-in entry goes inert on its own once upstream ships the model.
+
+        That is what makes the maintenance policy in `bundled_prices.README.md`
+        cheap: removal is bookkeeping, not a migration. The interesting case is
+        not a statically covered model but a catalog that gains coverage *after*
+        an override already priced the model -- which is what an hourly
+        auto-update does.
+        """
+        import genai_prices.data_snapshot
+        from genai_prices.types import _providers_from_raw
+
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL, {"input_mtok": 100.0, "output_mtok": 100.0}
+                )
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") == pytest.approx(
+            (1_000 * 100.0 + 100 * 100.0) / 1_000_000
+        )
+
+        # Upstream now prices the model, at rates nothing else in this test uses.
+        genai_prices.data_snapshot.set_custom_snapshot(
+            genai_prices.data_snapshot.DataSnapshot(
+                providers=_providers_from_raw(
+                    _override_catalog(
+                        [
+                            _override_model(
+                                _OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                            )
+                        ]
+                    )
+                ),
+                from_auto_update=True,
+            )
+        )
+        try:
+            after = estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+        finally:
+            genai_prices.data_snapshot.set_custom_snapshot(None)
+
+        assert after == pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+
+    def test_editing_the_user_file_mid_session_needs_a_restart(
+        self, tmp_path: Path
+    ) -> None:
+        """The merged catalog is built once per process, deliberately.
+
+        Documented here because it is user-visible and otherwise invisible in the
+        code: without a test, adding mtime-based reloading looks free, and the
+        restart requirement `_PRICE_OVERRIDES` documents would quietly stop being
+        true.
+        """
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                )
+            ],
+        )
+        first = estimate_cost(_usage(), _OVERRIDE_USER_MODEL, "dcode-test")
+
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL, {"input_mtok": 50.0, "output_mtok": 50.0}
+                )
+            ],
+        )
+
+        assert first == pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        assert estimate_cost(_usage(), _OVERRIDE_USER_MODEL, "dcode-test") == (
+            pytest.approx(first)
+        )
+
+    def test_the_bundled_override_resource_ships_and_parses(self) -> None:
+        """The wheel `include` for `bundled_prices.json` is load-bearing.
+
+        Every other built-in test patches the read helper away, so without this
+        a dropped `pyproject.toml` include or a renamed resource would ship with
+        a green suite and a silently dead maintainer catalog.
+
+        The payload is parsed rather than merely shape-checked, because a schema
+        typo in the first real stopgap entry has no louder symptom in production:
+        `_price_overrides` logs one warning, drops the source, and the model goes
+        on showing $0 -- exactly what it showed before the entry was added.
+        Deliberately not asserted empty, so adding that first entry does not
+        red-fail this test and invite someone to weaken it.
+        """
+        from genai_prices.types import _providers_from_raw
+
+        payload, transient = cost_tracking._read_override_source(None)
+
+        assert transient is False
+        assert isinstance(payload, list)
+        assert _providers_from_raw(payload) is not None
+
+    def test_every_bundled_override_entry_is_priced_and_links_upstream(self) -> None:
+        """`bundled_prices.README.md`'s policy, enforced instead of just written.
+
+        The policy -- every entry names its upstream genai-prices PR/issue in
+        `price_comments`, so nobody has to remember why it is here or when to
+        remove it -- otherwise depends on a maintainer noticing a `.README.md`
+        next to a data file. An entry with no rates is the other silent defect:
+        it validates, matches, and prices at $0.
+        """
+        from genai_prices.types import _providers_from_raw
+
+        payload, _ = cost_tracking._read_override_source(None)
+        assert isinstance(payload, list)
+
+        for provider in _providers_from_raw(payload):
+            for model in provider.models:
+                where = f"{provider.id}/{model.id}"
+                assert model.prices, f"{where} carries no rates"
+                comments = model.price_comments or provider.price_comments or ""
+                assert "genai-prices" in comments, (
+                    f"{where} must link its upstream genai-prices PR/issue in "
+                    f"`price_comments` (see bundled_prices.README.md); got "
+                    f"{comments!r}"
+                )
+
+    def test_a_missing_bundled_resource_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unlike an absent user file, absent package data is always a defect."""
+        monkeypatch.setattr(
+            cost_tracking, "_BUNDLED_OVERRIDES_RESOURCE", "no-such-prices.json"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            payload, transient = cost_tracking._read_override_source(None)
+
+        assert payload is None
+        assert transient is False
+        assert "shipped without its package data" in caplog.text
+
+    def test_a_non_array_user_payload_is_rejected_with_the_schema_named(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """`{"providers": [...]}` is the shape users assume; say what is wanted."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").write_text(
+            json.dumps({"providers": _override_catalog([])}), encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert "must be an array of providers" in caplog.text
+        assert cost_tracking.pricing_data_available()
+
+    def test_an_empty_user_file_is_a_silent_no_op(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """`touch ~/.deepagents/prices.json` must not warn on every session."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").write_text("   \n", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert "prices.json" not in caplog.text
+
+    def test_a_transient_read_failure_is_retried_rather_than_cached(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A momentary I/O error must not read as "this user has no overrides".
+
+        Caching the empty build would hide the user's rates for the rest of the
+        process -- the mirror of the transient-failure latching
+        `_PRICING_UNAVAILABLE` refuses. The warning still fires only once.
+        """
+        import errno
+        import pathlib
+
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                )
+            ],
+        )
+        real_read_text = pathlib.Path.read_text
+        attempts = 0
+
+        def flaky(self: Path, *args: Any, **kwargs: Any) -> str:
+            nonlocal attempts
+            if self.name == "prices.json":
+                attempts += 1
+                if attempts == 1:
+                    raise OSError(errno.EMFILE, "too many open files")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", flaky)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            first = estimate_cost(_usage(), _OVERRIDE_USER_MODEL, "dcode-test")
+            second = estimate_cost(_usage(), _OVERRIDE_USER_MODEL, "dcode-test")
+
+        assert first is None
+        assert second == pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        assert caplog.text.count("Could not read the pricing overrides") == 1
+
+    def test_an_override_rate_that_overflows_a_float_is_not_billed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Rates are unbounded `Decimal`s, so a mistyped one converts to `inf`.
+
+        `inf > 0`, so nothing downstream filters it out: it would poison the
+        session total for good. The primary path returns `None` for the same
+        rate, and the override path must not be the looser of the two.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": int("1" + "0" * 400)})],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+
+        assert cost is None
+        assert "not a finite non-negative cost" in caplog.text
+
+    def test_a_negative_override_rate_is_not_billed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A negative rate parses, so the rejection has to happen at pricing time.
+
+        A negative cost would *subtract* from the running total, which is worse
+        than reporting nothing. The installed genai-prices raises out of
+        `calc_price` rather than at parse time, so what must hold is the
+        observable pair: nothing is billed, and the user hears about the entry
+        they hand-wrote instead of it failing at DEBUG.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL, {"input_mtok": -5.0, "output_mtok": 2.0}
+                )
+            ],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+            estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+
+        assert cost is None
+        assert caplog.text.count("its rates were rejected") == 1
+        assert _OVERRIDE_MODEL in caplog.text
+
+    def test_a_loaded_user_file_that_matches_nothing_is_reported_once(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The likeliest disappointment: ids that do not line up, and no signal.
+
+        Without this the case is indistinguishable from having no override file
+        at all, so a user who hand-wrote rates and still sees no cost has
+        nothing to go on.
+        """
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                )
+            ],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), "dcode-unmatched-model", "") is None
+            assert estimate_cost(_usage(), "dcode-unmatched-model", "") is None
+
+        assert caplog.text.count("No pricing override matched") == 1
+        assert "contributed 1 model entry" in caplog.text
+        # The full path, not the bare filename: which `prices.json` is the
+        # actionable part, and every other message here names its source in full.
+        assert str(tmp_path / "prices.json") in caplog.text
+
+    def test_the_miss_report_is_not_spent_by_an_unrelated_model(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Each model gets its own miss report.
+
+        A miss fires for every model the primary catalog does not cover, side
+        models included. Latched once per process, the first of those would spend
+        the report and the user's own misconfigured model would then miss in
+        silence -- while the warning they did see named a model they never wrote
+        an entry for.
+        """
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                )
+            ],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), "dcode-some-side-model", "") is None
+            assert estimate_cost(_usage(), "dcode-the-model-i-configured", "") is None
+
+        assert caplog.text.count("No pricing override matched") == 2
+        assert "dcode-the-model-i-configured" in caplog.text
+
+    def test_a_vanished_provider_lookup_degrades_to_inference_and_still_prices(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Losing the id lookup costs narrowing, not the whole catalog.
+
+        A different and weaker consequence than the parser going missing, so it
+        needs its own coverage: the request must still be priced, through the
+        sweep, with the loss reported.
+
+        Driven through `_override_price` rather than `estimate_cost` because
+        `DataSnapshot.find_provider` calls this same module-level name, so
+        deleting it takes the *primary* path down too -- with a `NameError` rather
+        than the `LookupError` that reaches the fallback. Simulating the rename
+        end-to-end is therefore not possible; what is under test is the override
+        path's own degradation.
+        """
+        import genai_prices.data_snapshot
+        from genai_prices import Usage
+
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        usage = Usage(input_tokens=1_000, output_tokens=100)
+        monkeypatch.delattr(genai_prices.data_snapshot, "find_provider_by_id")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = cost_tracking._override_price(usage, _OVERRIDE_MODEL, "dcode-test")
+            cost_tracking._override_price(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        assert cost == pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        assert caplog.text.count("genai-prices no longer provides") == 1
+        assert "find_provider_by_id" in caplog.text
+
+    def test_an_unexpected_load_failure_warns_and_disables_the_catalog(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A load failure must not be downgraded to DEBUG by the pricing net.
+
+        `_override_price`'s handler exists for a bad *rate*; what silently stops
+        applying on a bad *load* is the user's own hand-written catalog, so that
+        belongs at WARNING. Caching the empty catalog is the other half: letting
+        the failure escape would rebuild and re-raise on every unpriced request
+        for the life of the process.
+        """
+
+        def boom(*_args: Any, **_kwargs: Any) -> tuple[list[Any] | None, bool]:
+            msg = "unanticipated"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(cost_tracking, "_read_override_source", boom)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is None
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is None
+
+        assert caplog.text.count("Could not load the pricing override catalog") == 1
+        assert cost_tracking._PRICE_OVERRIDES == ()
+        assert cost_tracking.pricing_data_available()
+
+    def test_a_vanished_upstream_parser_is_reported_at_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The private-name dependency must not fail silently at DEBUG.
+
+        The pin spans every `0.1.x` patch, so `_providers_from_raw` can move on a
+        lockfile refresh alone -- and the visible symptom is that the models this
+        catalog exists to price revert to no cost at all, so it has to be louder
+        than `_override_price`'s handler.
+        """
+        import genai_prices.types
+
+        # Deleting the attribute is what a rename looks like to a `from ...
+        # import` -- and unlike patching `__import__`, it cannot disturb the
+        # primary pricing path's own imports.
+        monkeypatch.delattr(genai_prices.types, "_providers_from_raw")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is None
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is None
+
+        # Count the message, not the name: `exc_info` repeats the name in the
+        # traceback it attaches.
+        assert caplog.text.count("genai-prices no longer provides") == 1
+        assert "genai_prices.types._providers_from_raw" in caplog.text
+
+    def test_the_override_build_is_serialized_and_runs_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Concurrent unpriced requests must not each parse both catalogs.
+
+        `estimate_cost` runs inline on the event loop and from the executor
+        threads that price drained records, so this really is concurrent.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        patched_read = cost_tracking._read_override_source
+        builds = 0
+        lock = threading.Lock()
+
+        def counted(path: Path | None) -> tuple[list[Any] | None, bool]:
+            if path is None:
+                with lock:
+                    nonlocal builds
+                    builds += 1
+            return patched_read(path)
+
+        monkeypatch.setattr(cost_tracking, "_read_override_source", counted)
+        barrier = threading.Barrier(4)
+
+        def price() -> float | None:
+            barrier.wait()
+            return estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            costs = [
+                future.result() for future in [pool.submit(price) for _ in range(4)]
+            ]
+
+        assert builds == 1
+        assert all(cost == pytest.approx(costs[0]) for cost in costs)
+        assert costs[0] is not None
 
 
 class TestPriceUpdater:

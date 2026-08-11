@@ -5,7 +5,7 @@ from typing import Literal
 
 from deepagents_code.plugins.models import UnsupportedComponent
 
-PluginTab = Literal["discover", "installed", "marketplaces", "errors"]
+PluginTab = Literal["discover", "installed", "marketplaces", "errors", "settings"]
 PluginManagerView = Literal[
     "list",
     "add_marketplace",

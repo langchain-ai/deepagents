@@ -530,6 +530,32 @@ async def test_enter_from_search_activates_installed_row() -> None:
         assert screen._mode == "installed_details"
 
 
+async def test_settings_tab_enables_plugin_auto_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.plugin_auto_update_setting",
+        lambda: (False, "config.toml"),
+    )
+    save = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._save_toml_field", save
+    )
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    on_enabled = MagicMock()
+    screen = PluginManagerScreen(on_auto_update_enabled=on_enabled)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.click("#plugin-tab-settings")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        save.assert_called_once_with("plugins", "auto_update", True)
+        on_enabled.assert_called_once_with()
+
+
 async def test_search_query_resets_when_switching_tabs() -> None:
     """A query typed on one tab does not silently filter another tab."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

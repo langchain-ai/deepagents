@@ -1267,18 +1267,8 @@ def _resolve_existing_pasted_entry(
     Returns:
         Resolved existing path, otherwise `None`.
     """
-    try:
-        resolved = path.expanduser().resolve()
-    except (OSError, RuntimeError, ValueError) as e:
-        # ValueError covers an embedded NUL, which `resolve()` rejects outright.
-        logger.debug("Path resolution failed for %r: %s", path, e)
-        if not isinstance(e, ValueError):
-            # An embedded NUL is a definitive "not a path"; an OSError only
-            # means we could not find out. `RuntimeError` is kept for older
-            # interpreters: non-strict `resolve()` stopped raising it on
-            # symlink loops, which now surface as `ELOOP` from the `matches`
-            # stat below instead.
-            _record_probe_failure(path, e)
+    resolved = _resolve_recording_failures(path, what="Path resolution")
+    if resolved is None:
         return None
     if matches(resolved):
         return resolved
@@ -1286,16 +1276,42 @@ def _resolve_existing_pasted_entry(
     fuzzy = _resolve_with_unicode_space_variants(path, prefer=matches)
     if fuzzy is None:
         return None
-    try:
-        resolved_fuzzy = fuzzy.resolve()
-    except (OSError, RuntimeError, ValueError) as e:
-        logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
-        if not isinstance(e, ValueError):
-            _record_probe_failure(fuzzy, e)
+    resolved_fuzzy = _resolve_recording_failures(fuzzy, what="Unicode-space resolution")
+    if resolved_fuzzy is None:
         return None
     if matches(resolved_fuzzy):
         return resolved_fuzzy
     return None
+
+
+def _resolve_recording_failures(path: Path, *, what: str) -> Path | None:
+    """Resolve `path`, recording failures that mean "could not find out".
+
+    Failures are recorded against the path as the caller spelled it, not its
+    expanded form, so `select_probe_failure_for` can still match the failure
+    against the raw `~/...` payload the user dropped.
+
+    Args:
+        path: Path to resolve. Expanded before resolution; a no-op for a path
+            that does not begin with `~`.
+        what: Short description of the attempt, used in the debug log line.
+
+    Returns:
+        The resolved path, or `None` when resolution raised.
+    """
+    try:
+        return path.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as e:
+        # ValueError covers an embedded NUL, which `resolve()` rejects outright.
+        logger.debug("%s failed for %r: %s", what, path, e)
+        if not isinstance(e, ValueError):
+            # An embedded NUL is a definitive "not a path"; an OSError only
+            # means we could not find out. `RuntimeError` is kept for older
+            # interpreters: non-strict `resolve()` stopped raising it on
+            # symlink loops, which now surface as `ELOOP` from the `matches`
+            # stat in the caller instead.
+            _record_probe_failure(path, e)
+        return None
 
 
 def _normalize_unicode_spaces(text: str) -> str:

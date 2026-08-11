@@ -1805,6 +1805,14 @@ class ChatInput(Vertical):
         # from the user's buffer mid-edit. This includes in-place edits, not
         # only appending or backspacing.
         draft = self._dropped_path_draft
+        # Detection stats the filesystem, so its answer for this text is shared
+        # with the re-detection pass below rather than recomputed. A dropped
+        # path that is slow or impossible to stat -- a dead network mount, a
+        # TCC-denied folder -- would otherwise stall the handler twice, and the
+        # second pass would re-fire the unreadable-path toast that
+        # `_clear_dropped_path` has just reset.
+        detected_draft: str | None = None
+        detection_ran = False
         if not text:
             self._clear_dropped_path()
         elif draft is not None and not self._retains_dropped_origin(text):
@@ -1812,7 +1820,9 @@ class ChatInput(Vertical):
             # longer in the buffer, so no refresh below may keep the draft
             # alive on the strength of a shared `/`. Re-run detection instead
             # of assuming either answer.
-            self._set_dropped_path(self._detect_dropped_path_draft(text))
+            detected_draft = self._detect_dropped_path_draft(text)
+            detection_ran = True
+            self._set_dropped_path(detected_draft)
         elif draft is not None:
             if text.startswith(draft) or draft.startswith(text):
                 # The buffer still extends the accepted token. Remember the
@@ -1822,9 +1832,9 @@ class ChatInput(Vertical):
                 # the previous text is empty): assigning an empty draft would
                 # make `_starts_with_dropped_path` match every submission,
                 # which is worse than keeping the existing draft.
-                shared_prefix = self._longest_common_prefix(previous_text, text)
-                if shared_prefix:
-                    self._dropped_path_draft = shared_prefix
+                shared_len = self._common_prefix_len(previous_text, text)
+                if shared_len:
+                    self._dropped_path_draft = text[:shared_len]
             elif self._edit_preserves_dropped_path_context(previous_text, text, draft):
                 # An in-place edit made the remembered token stale, so
                 # `previous_text.startswith(draft)` no longer holds. Without
@@ -1833,13 +1843,15 @@ class ChatInput(Vertical):
                 # The updated prefix also lets `_starts_with_dropped_path`
                 # recognize the edited path at submission time even when it no
                 # longer exists on disk.
-                edited_prefix = self._longest_common_prefix(previous_text, text)
+                edited_prefix = text[: self._common_prefix_len(previous_text, text)]
                 if edited_prefix.startswith("/"):
                     self._dropped_path_draft = edited_prefix
             else:
                 # The path context has genuinely been replaced, so re-run
                 # detection rather than assuming either answer.
-                self._set_dropped_path(self._detect_dropped_path_draft(text))
+                detected_draft = self._detect_dropped_path_draft(text)
+                detection_ran = True
+                self._set_dropped_path(detected_draft)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -1868,7 +1880,8 @@ class ChatInput(Vertical):
         # or prefix stripping, which never need path detection.
         is_path_payload = False
         if should_check_path_payload:
-            detected_draft = self._detect_dropped_path_draft(text)
+            if not detection_ran:
+                detected_draft = self._detect_dropped_path_draft(text)
             if detected_draft is not None:
                 self._set_dropped_path(detected_draft)
                 is_path_payload = True
@@ -2001,14 +2014,8 @@ class ChatInput(Vertical):
             truncated = len(text) > 1 and origin.startswith(text)
             return kept_whole or truncated
 
-        prefix_len = len(self._longest_common_prefix(origin, text))
-        suffix_len = 0
-        max_suffix_len = min(len(origin), len(text)) - prefix_len
-        while (
-            suffix_len < max_suffix_len
-            and origin[-(suffix_len + 1)] == text[-(suffix_len + 1)]
-        ):
-            suffix_len += 1
+        prefix_len = self._common_prefix_len(origin, text)
+        suffix_len = self._common_suffix_len(origin, text, after_prefix_len=prefix_len)
         overlap = prefix_len + suffix_len
         # Halving is deliberately forgiving: trimming a trailing segment is
         # ordinary editing, while the failure this guards against (`/help`
@@ -2018,17 +2025,49 @@ class ChatInput(Vertical):
         return overlap >= _MIN_DROPPED_ORIGIN_OVERLAP and overlap * 2 >= len(origin)
 
     @staticmethod
-    def _longest_common_prefix(left: str, right: str) -> str:
-        """Return the longest shared prefix between two strings.
+    def _common_prefix_len(left: str, right: str) -> int:
+        """Return the length of the longest shared prefix of two strings.
 
         Order-independent: callers pass a before/after buffer pair in some
         places and an origin/buffer pair in others.
+
+        Args:
+            left: First string to compare.
+            right: Second string to compare.
+
+        Returns:
+            Number of leading characters the two strings share.
         """
         prefix_len = 0
         max_prefix_len = min(len(left), len(right))
         while prefix_len < max_prefix_len and left[prefix_len] == right[prefix_len]:
             prefix_len += 1
-        return left[:prefix_len]
+        return prefix_len
+
+    @staticmethod
+    def _common_suffix_len(left: str, right: str, *, after_prefix_len: int) -> int:
+        """Return the length of the longest shared suffix of two strings.
+
+        The suffix stops before `after_prefix_len` so a prefix and suffix
+        measured on the same pair never count the same character twice.
+
+        Args:
+            left: First string to compare.
+            right: Second string to compare.
+            after_prefix_len: Length of the shared prefix already counted.
+
+        Returns:
+            Number of trailing characters the two strings share beyond the
+            shared prefix.
+        """
+        suffix_len = 0
+        max_suffix_len = min(len(left), len(right)) - after_prefix_len
+        while (
+            suffix_len < max_suffix_len
+            and left[-(suffix_len + 1)] == right[-(suffix_len + 1)]
+        ):
+            suffix_len += 1
+        return suffix_len
 
     @classmethod
     def _edit_preserves_dropped_path_context(
@@ -2058,16 +2097,10 @@ class ChatInput(Vertical):
         if not previous_text.startswith(draft):
             return False
 
-        prefix_len = len(cls._longest_common_prefix(previous_text, text))
-
-        suffix_len = 0
-        max_suffix_len = min(len(previous_text), len(text))
-        while (
-            suffix_len < max_suffix_len - prefix_len
-            and previous_text[-(suffix_len + 1)] == text[-(suffix_len + 1)]
-        ):
-            suffix_len += 1
-
+        prefix_len = cls._common_prefix_len(previous_text, text)
+        suffix_len = cls._common_suffix_len(
+            previous_text, text, after_prefix_len=prefix_len
+        )
         return prefix_len > 1 or suffix_len > 0
 
     def _should_check_path_payload(self, text: str) -> bool:
@@ -2076,19 +2109,9 @@ class ChatInput(Vertical):
         if text == old:
             return False
 
-        prefix_len = len(self._longest_common_prefix(old, text))
-
-        old_suffix = len(old)
-        text_suffix = len(text)
-        while (
-            old_suffix > prefix_len
-            and text_suffix > prefix_len
-            and old[old_suffix - 1] == text[text_suffix - 1]
-        ):
-            old_suffix -= 1
-            text_suffix -= 1
-
-        inserted_len = text_suffix - prefix_len
+        prefix_len = self._common_prefix_len(old, text)
+        suffix_len = self._common_suffix_len(old, text, after_prefix_len=prefix_len)
+        inserted_len = len(text) - suffix_len - prefix_len
         return inserted_len > 1
 
     @staticmethod
@@ -2257,7 +2280,6 @@ class ChatInput(Vertical):
             failed on something drop-shaped, or `None` for ordinary text.
         """
         from deepagents_code.input import (
-            looks_like_dropped_payload,
             select_probe_failure_for,
             track_probe_failures,
         )
@@ -2265,7 +2287,11 @@ class ChatInput(Vertical):
         with track_probe_failures() as failures:
             prefix = self._resolve_dropped_path_prefix(text)
 
-        unreadable_drop = bool(failures) and looks_like_dropped_payload(text)
+        # A recorded failure already implies the payload was drop-shaped:
+        # `_resolve_dropped_path_prefix` runs its `looks_like_dropped_payload`
+        # guard before it touches the filesystem, so nothing can be recorded
+        # for a payload that failed it.
+        unreadable_drop = bool(failures)
         if unreadable_drop:
             # Reported even when a prefix resolved: a mixed drop whose second
             # entry is unreadable resolves on the first token alone and would
@@ -2276,17 +2302,6 @@ class ChatInput(Vertical):
         if prefix is not None:
             return prefix
         return text.strip() if unreadable_drop else None
-
-    def _is_existing_path_payload(self, text: str) -> bool:
-        """Return whether text is a dropped-path payload for existing entries.
-
-        Args:
-            text: Raw draft or submission text.
-
-        Returns:
-            `True` when the text begins with -- or wholly is -- a resolved path.
-        """
-        return self._classify_dropped_path(text) is not None
 
     def _detect_dropped_path_draft(self, text: str) -> str | None:
         """Return the draft token to remember for `text`, if it is a drop.
@@ -2399,7 +2414,7 @@ class ChatInput(Vertical):
         """
         if self._starts_with_dropped_path(value):
             return True
-        return self._is_existing_path_payload(value)
+        return self._classify_dropped_path(value) is not None
 
     def _starts_with_dropped_path(self, value: str) -> bool:
         """Return whether `value` still begins with the accepted drop token.

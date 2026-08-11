@@ -1,0 +1,60 @@
+# Remove the "pending-deletion" label as soon as a PR gains "do-not-close".
+#
+# close_old_prs.yml already strips the stale label when it notices a bypassed
+# PR, but it only runs once a day; this workflow clears the stale state
+# immediately instead of leaving a "pending deletion" warning on a PR that a
+# maintainer has just marked exempt.
+#
+# Uses the default GITHUB_TOKEN so the label-removal event does NOT re-trigger
+# other workflows: GitHub does not trigger new workflow runs from actions
+# performed by the default GITHUB_TOKEN (with narrow exceptions like
+# workflow_dispatch), which prevents infinite loops.
+
+name: Clear pending-deletion on do-not-close
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  remove-pending-deletion:
+    if: >-
+      github.event.label.name == 'do-not-close' &&
+      contains(github.event.pull_request.labels.*.name, 'pending-deletion')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Remove pending-deletion label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            console.log(
+              `PR #${issue_number} gained do-not-close — removing pending-deletion`,
+            );
+
+            try {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number,
+                name: 'pending-deletion',
+              });
+            } catch (e) {
+              // 404: label already absent (e.g. removed between the event and
+              // this run, or the event raced the daily close_old_prs sweep).
+              // Could also indicate issue/repo not found — include e.message
+              // to disambiguate.
+              if (e.status === 404) {
+                console.log(`Label already absent (404) — nothing to do: ${e.message}`);
+                return;
+              }
+              throw e;
+            }

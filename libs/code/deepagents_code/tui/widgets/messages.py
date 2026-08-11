@@ -3935,6 +3935,17 @@ _TOOL_SUMMARY_TARGET_ARGS: dict[str, tuple[str, ...]] = {
     "fetch": ("url",),
 }
 
+_PATH_TARGET_CATEGORIES = frozenset({"read", "write", "edit", "delete"})
+"""Categories from `_TOOL_SUMMARY_TARGET_ARGS` whose target is a filesystem path.
+
+Only these may be compared with `normpath`. Path rules are wrong for a URL: they
+rewrite `//` after the scheme, drop a trailing slash, and resolve `..` — so
+`/a//b`, `/a/`, and `/a/../b` would each be judged the same target as a
+different URL the server can answer differently. That would undercount, which
+this code must never do. Any category added here needs a genuine path, and any
+other target is compared exactly.
+"""
+
 
 def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
     """Identify the object a call acts on, for repeat-call collapsing.
@@ -3944,11 +3955,11 @@ def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
         args: The call's parsed arguments.
 
     Returns:
-        A normalized identity for the target, or None when the category counts
-        attempts rather than objects, or the naming argument is missing or not a
-        non-empty string. None means "cannot be judged a repeat", so the call is
-        always counted — an unparsed or partially streamed argument list
-        undercounts nothing.
+        An identity for the target, or None when the category counts attempts
+        rather than objects, or the naming argument is missing or not a non-empty
+        string. None means "cannot be judged a repeat", so the call is always
+        counted — an unparsed or partially streamed argument list undercounts
+        nothing.
     """
     category = _TOOL_SUMMARY_CATEGORY.get(tool_name, tool_name)
     arg_names = _TOOL_SUMMARY_TARGET_ARGS.get(category)
@@ -3957,6 +3968,10 @@ def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
     for arg_name in arg_names:
         value = args.get(arg_name)
         if isinstance(value, str) and value:
+            if category not in _PATH_TARGET_CATEGORIES:
+                # Not a path, so compare it exactly — see the type's docstring
+                # for why path rules would undercount a URL.
+                return f"{category}:{value}"
             # Purely lexical normalization: `normpath` collapses "a//b" and
             # "./a" without touching the filesystem. A relative and an absolute
             # spelling of one path stay distinct — the TUI's cwd is not

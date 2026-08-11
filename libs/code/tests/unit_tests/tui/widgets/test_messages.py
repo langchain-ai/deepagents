@@ -5284,6 +5284,29 @@ class TestSummaryTargetCounting:
                 ],
                 "Fetched 1 URL",
             ),
+            # A URL is compared exactly, never with path rules: a server can
+            # answer each of these differently, so collapsing would undercount.
+            (
+                [
+                    ("fetch_url", {"url": "http://x/a//b"}),
+                    ("fetch_url", {"url": "http://x/a/b"}),
+                ],
+                "Fetched 2 URLs",
+            ),
+            (
+                [
+                    ("fetch_url", {"url": "http://x/a/"}),
+                    ("fetch_url", {"url": "http://x/a"}),
+                ],
+                "Fetched 2 URLs",
+            ),
+            (
+                [
+                    ("fetch_url", {"url": "http://x/a/../b"}),
+                    ("fetch_url", {"url": "http://x/b"}),
+                ],
+                "Fetched 2 URLs",
+            ),
             # Attempt-counting categories never collapse: two runs of one
             # command are genuinely two runs.
             (

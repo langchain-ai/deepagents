@@ -16783,6 +16783,10 @@ class DeepAgentsApp(App):
                                         diff_file_path=path,
                                         diff_tool_name="edit_file",
                                         diff_stats=stats,
+                                        # Rebuilt from `old_string`/`new_string`
+                                        # fragments, not the file: hunk numbers
+                                        # start at 1 and are not file-relative.
+                                        diff_show_numbers=False,
                                     )
                                 )
                     else:

@@ -4562,6 +4562,11 @@ class DiffMessage(Static):
                 widget cannot see what else is mounted.
             show_numbers: Whether file-relative line numbers may be rendered.
                 Diffs whose numbers are not file-relative remain unnumbered.
+                The caller owns this judgement: a live `edit_file` diff is
+                computed from the full before/after file contents and has
+                file-relative numbers, while a resumed-thread `edit_file`
+                diff is rebuilt from `old_string`/`new_string` fragments and
+                does not.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4665,9 +4670,7 @@ class DiffMessage(Static):
                     path=self._file_path,
                     before=self._before,
                     after=self._after,
-                    show_numbers=(
-                        self._show_numbers and self._tool_name != "edit_file"
-                    ),
+                    show_numbers=self._show_numbers,
                 )
 
     def _recount(self) -> DiffStats | None:

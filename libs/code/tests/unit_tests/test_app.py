@@ -13569,6 +13569,39 @@ class TestAutoClassifierModelCommand:
             assert "Press Ctrl+S" not in rendered
             assert "config.toml" not in rendered
 
+    async def test_persisted_classifier_under_env_override_is_not_called_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored spec the env export outranks is "stored", not "the default".
+
+        The resolver consults `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` before
+        `[models].auto_classifier`, so claiming the stored spec "is already the
+        default for future sessions" misdescribes the next launch. Presence of
+        the variable is enough — a blank export still outranks the config key.
+        """
+        from deepagents_code import _env_vars
+
+        monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "")
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._set_auto_classifier_model(
+                    "openai:gpt-5.5-mini", persisted_as_default=True
+                )
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "stored in config.toml" in rendered
+            assert f"{_env_vars.AUTO_CLASSIFIER_MODEL} is set" in rendered
+            assert "already the default for future sessions" not in rendered
+
     async def test_set_auto_classifier_model_rejects_colon_only_spec(self) -> None:
         """A normalized-empty spec must not masquerade as an explicit clear."""
         startup_spec = "anthropic:claude-haiku-4-5"

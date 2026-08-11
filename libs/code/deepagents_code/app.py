@@ -19567,11 +19567,27 @@ class DeepAgentsApp(App):
         if display:
             revalidated = " (revalidated)" if unchanged else ""
             if persisted_as_default:
-                message = (
-                    f"Auto classifier model set to {display}{revalidated}; it "
-                    "reviews gated actions from the next turn and is already the "
-                    "default for future sessions."
-                )
+                # "Stored" rather than "the default for future sessions" when a
+                # launch override is present: the resolver consults the export
+                # (and `--auto-classifier-model`) before `[models].auto_classifier`,
+                # so the stored spec would not actually run on the next launch.
+                # Presence, not truthiness — the resolver treats a blank export
+                # as an explicit (rejected) value that still outranks config.
+                from deepagents_code import _env_vars
+
+                if _env_vars.AUTO_CLASSIFIER_MODEL in os.environ:
+                    message = (
+                        f"Auto classifier model set to {display}{revalidated}; it "
+                        "reviews gated actions from the next turn and is stored in "
+                        f"config.toml, but {_env_vars.AUTO_CLASSIFIER_MODEL} is set "
+                        "and overrides it at launch."
+                    )
+                else:
+                    message = (
+                        f"Auto classifier model set to {display}{revalidated}; it "
+                        "reviews gated actions from the next turn and is already "
+                        "the default for future sessions."
+                    )
             else:
                 message = (
                     f"Auto classifier model set to {display}{revalidated}; it "

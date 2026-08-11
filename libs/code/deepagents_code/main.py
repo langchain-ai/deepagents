@@ -3982,10 +3982,13 @@ def cli_main() -> None:
     # Warn (never block) when an editable dev venv's installed dependencies
     # are older than the floors the checkout's pyproject.toml declares.
     # Editable installs resolve deps once at install time, so nothing else
-    # surfaces this drift; released installs skip the check entirely.
+    # surfaces this drift; released installs skip the check entirely. A TTY
+    # means the interactive TUI is about to claim the screen, so stash the
+    # advisory for a startup toast there instead of printing to stderr where
+    # the alternate screen would hide it; non-TTY launches print to stderr.
     from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
 
-    warn_if_editable_deps_stale()
+    warn_if_editable_deps_stale(announce=not sys.stdout.isatty())
 
     # The app-owned server runs in a detached session so terminal job-control
     # signals do not suspend or kill it. Replace terminating signals' immediate

@@ -4363,6 +4363,7 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+        self.call_after_refresh(self._notify_dep_floor_stale)
 
         # Surface a `-m`/`--message` prompt as a queued message right away,
         # while the server is still connecting, instead of waiting for
@@ -4396,6 +4397,29 @@ class DeepAgentsApp(App):
             self.notify(notice, severity="warning", timeout=8, markup=False)
         except Exception:
             logger.exception("Failed to surface orphaned-tracing disabled notice")
+
+    def _notify_dep_floor_stale(self) -> None:
+        """Toast when an editable dev install runs against below-floor deps.
+
+        This is the TUI counterpart of the stderr warning emitted for
+        non-interactive launches in `main.cli_main` via
+        `warn_if_editable_deps_stale(announce=True)`: a pre-TUI stderr print is
+        invisible behind the alternate screen, so the same advisory is stashed
+        at launch and surfaced as a startup notification here.
+
+        The notice is consumed (cleared) before rendering, so a failed toast
+        drops it; the check is strictly best-effort, so swallow-and-log rather
+        than letting the exception escape this deferred callback unlogged.
+        """
+        from deepagents_code._dep_floor_check import consume_dep_floor_notice
+
+        notice = consume_dep_floor_notice()
+        if notice is None:
+            return
+        try:
+            self.notify(notice, severity="warning", timeout=10, markup=False)
+        except Exception:
+            logger.exception("Failed to surface stale-dependency floor notice")
 
     def _notify_interpreter_tools_without_interpreter(self) -> None:
         """Toast when `--interpreter-tools` was set while the interpreter is off.

@@ -181,16 +181,42 @@ def _version_key(version: str) -> tuple[int, ...]:
         return ()
 
 
-def warn_if_editable_deps_stale() -> None:
+_dep_floor_notice: str | None = None
+"""Pending stale-dependency advisory for the TUI to consume, if any."""
+
+
+def consume_dep_floor_notice() -> str | None:
+    """Return and clear the pending stale-dependency notice, if any.
+
+    Mirrors `consume_orphaned_tracing_disabled_notice`: the notice is built
+    pre-TUI in `cli_main` (where stdout is still the real terminal) and
+    consumed once by the mounted app, so the advisory surfaces exactly once
+    regardless of which channel renders it.
+    """
+    global _dep_floor_notice  # noqa: PLW0603
+
+    notice = _dep_floor_notice
+    _dep_floor_notice = None
+    return notice
+
+
+def warn_if_editable_deps_stale(*, announce: bool = True) -> None:
     """Warn when an editable install runs against below-floor dependencies.
 
     Runs only for editable installs (PEP 610 `dir_info.editable: true`);
-    released installs return immediately. Prints a warning naming each
+    released installs return immediately. Builds a warning naming each
     offending distribution with its installed and required versions plus
     the refresh command, then returns so startup continues. This is
     strictly best-effort: any unexpected failure degrades to a debug log
     and never raises.
+
+    Args:
+        announce: When `True` (non-interactive launches), print the warning
+            to stderr. When `False` (the interactive TUI, where the pre-TUI
+            stderr print is hidden behind the alternate screen), stash it for
+            `DeepAgentsApp._notify_dep_floor_stale` to toast instead.
     """
+    global _dep_floor_notice  # noqa: PLW0603
     try:
         if not _is_editable_install():
             return
@@ -200,13 +226,11 @@ def warn_if_editable_deps_stale() -> None:
         violations = _find_floor_violations(entries)
         if not violations:
             return
-        from rich.console import Console
 
         lines = [
             (
-                "[bold yellow]Warning:[/bold yellow] this editable dcode install "
-                "is running against dependencies older than the floors declared "
-                "in the checkout's pyproject.toml:"
+                "this editable dcode install is running against dependencies "
+                "older than the floors declared in the checkout's pyproject.toml:"
             )
         ]
         lines.extend(
@@ -219,15 +243,24 @@ def warn_if_editable_deps_stale() -> None:
             "uv pip install --python "
             f"{_quote_arg(sys.executable)} -e {_quote_arg(str(source))} --upgrade"
         )
-        from rich.markup import escape
-
         lines.append(
             "Refresh the active environment:\n"
-            f"  {escape(refresh)}\n"
+            f"  {refresh}\n"
             "Continuing anyway; behavior may be broken."
         )
-        # stdout carries ACP's JSON-RPC transport, so startup diagnostics must
-        # never be written there.
-        Console(stderr=True).print("\n".join(lines), highlight=False)
+        message = "\n".join(lines)
+        if announce:
+            from rich.console import Console
+            from rich.markup import escape
+
+            # stdout carries ACP's JSON-RPC transport, so startup diagnostics
+            # must never be written there.
+            Console(stderr=True).print(
+                f"[bold yellow]Warning:[/bold yellow] {escape(message)}",
+                highlight=False,
+            )
+        else:
+            # Plain text (no Rich markup): the TUI toast renders markup=False.
+            _dep_floor_notice = f"Warning: {message}"
     except Exception:  # strictly best-effort: a check failure must never break startup
         logger.debug("Dependency floor check failed", exc_info=True)

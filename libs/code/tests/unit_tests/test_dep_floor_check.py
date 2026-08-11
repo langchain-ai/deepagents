@@ -16,6 +16,7 @@ from deepagents_code._dep_floor_check import (
     _find_floor_violations,
     _load_cli_requirements,
     _quote_arg,
+    consume_dep_floor_notice,
     warn_if_editable_deps_stale,
 )
 
@@ -27,6 +28,12 @@ def _editable_install(monkeypatch: pytest.MonkeyPatch) -> None:
     Tests that exercise the non-editable gate re-patch the same symbol.
     """
     monkeypatch.setattr(dep_floor_check, "_is_editable_install", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _clear_dep_floor_notice() -> None:
+    """Reset the stashed TUI notice so one test's warning cannot leak."""
+    dep_floor_check._dep_floor_notice = None
 
 
 def _patch_versions(monkeypatch: pytest.MonkeyPatch, versions: dict[str, str]) -> None:
@@ -250,3 +257,66 @@ class TestBestEffort:
         monkeypatch.setattr(builtins, "__import__", _missing_packaging)
 
         warn_if_editable_deps_stale()  # must not raise
+
+
+class TestAnnounceVsStash:
+    """`announce` chooses stderr print (non-TUI) vs. stashed toast (TUI)."""
+
+    def _stale(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            dep_floor_check, "_load_cli_requirements", lambda: ["quickjs-rs>=0.2.5"]
+        )
+        _patch_versions(monkeypatch, {"quickjs-rs": "0.2.4"})
+
+    def test_announce_prints_and_does_not_stash(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Non-interactive launches print to stderr and leave nothing stashed."""
+        self._stale(monkeypatch)
+
+        warn_if_editable_deps_stale(announce=True)
+
+        assert "Warning" in capsys.readouterr().err
+        assert consume_dep_floor_notice() is None
+
+    def test_no_announce_stashes_and_does_not_print(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Interactive launches stash a plain-text notice and print nothing."""
+        self._stale(monkeypatch)
+
+        warn_if_editable_deps_stale(announce=False)
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+        notice = consume_dep_floor_notice()
+        assert notice is not None
+        assert "Warning" in notice
+        assert "quickjs-rs" in notice
+        assert "0.2.4" in notice
+        assert "0.2.5" in notice
+        assert "uv pip install --python" in notice
+        # The TUI toast renders markup=False, so no Rich tags survive.
+        assert "[bold yellow]" not in notice
+
+    def test_consume_clears_the_notice(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The stashed notice is returned once, then cleared."""
+        self._stale(monkeypatch)
+        warn_if_editable_deps_stale(announce=False)
+
+        assert consume_dep_floor_notice() is not None
+        assert consume_dep_floor_notice() is None
+
+    def test_no_violations_stashes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A satisfied editable install stashes no notice for the TUI."""
+        monkeypatch.setattr(
+            dep_floor_check, "_load_cli_requirements", lambda: ["quickjs-rs>=0.2.5"]
+        )
+        _patch_versions(monkeypatch, {"quickjs-rs": "0.2.6"})
+
+        warn_if_editable_deps_stale(announce=False)
+
+        assert consume_dep_floor_notice() is None

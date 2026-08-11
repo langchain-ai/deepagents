@@ -784,7 +784,7 @@ jobs:
           ref: ${{ matrix.pr.headBranchName }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Update lockfiles
         id: update-lockfiles

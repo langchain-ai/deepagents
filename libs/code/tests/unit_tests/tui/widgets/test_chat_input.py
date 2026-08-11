@@ -30,6 +30,7 @@ from deepagents_code.tui.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Coroutine
     from pathlib import Path
 
@@ -4133,19 +4134,17 @@ class TestDroppedFolderPaste:
         # Deny only the dropped path; Textual stats its own files while running.
         denied = str(folder.resolve())
 
-        def _make_denying(name: str):  # noqa: ANN202  # local test helper
-            original = getattr(pathlib.Path, name)
+        original_stat = pathlib.Path.stat
 
-            def _probe(self: pathlib.Path, *args: object, **kwargs: object) -> bool:
-                if str(self) == denied:
-                    msg = "permission denied"
-                    raise PermissionError(msg)
-                return original(self, *args, **kwargs)
+        def _stat(
+            self: pathlib.Path, *, follow_symlinks: bool = True
+        ) -> os.stat_result:
+            if str(self) == denied:
+                msg = "permission denied"
+                raise PermissionError(msg)
+            return original_stat(self, follow_symlinks=follow_symlinks)
 
-            return _probe
-
-        for probe in ("exists", "is_dir", "is_file"):
-            monkeypatch.setattr(pathlib.Path, probe, _make_denying(probe))
+        monkeypatch.setattr(pathlib.Path, "stat", _stat)
 
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:

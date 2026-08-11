@@ -10,8 +10,9 @@ from pathlib import Path, PureWindowsPath
 from deepagents_code.plugins._json import json_object
 from deepagents_code.plugins.agent_plugins import (
     AGENT_PLUGIN_FORMAT,
+    AGENT_PLUGIN_MANIFEST_SCHEMA,
     AgentPluginError,
-    load_agent_plugin_manifest,
+    validate_agent_plugin_manifest,
 )
 from deepagents_code.plugins.models import (
     ComponentInventory,
@@ -38,6 +39,16 @@ _NAME_RE = re.compile(r"^[^\s]+$")
 
 class PluginManifestError(ValueError):
     """Raised when a plugin manifest is malformed enough to skip the plugin."""
+
+
+def _reject_nonstandard_constant(value: str) -> None:
+    """Reject non-standard JSON constants (NaN, Infinity) during strict decode.
+
+    Raises:
+        AgentPluginError: Always, naming the offending constant.
+    """
+    msg = f"invalid JSON constant {value!r}"
+    raise AgentPluginError(msg)
 
 
 def find_manifest_path(root: Path) -> Path | None:
@@ -210,29 +221,47 @@ def load_manifest(
     manifest_path = find_manifest_path(root)
     if manifest_path is None:
         return None, None, ()
-    is_agent_plugin = manifest_path == root / _AGENT_PLUGIN_MANIFEST_PATH
-    if is_agent_plugin:
+    is_root_manifest = manifest_path == root / _AGENT_PLUGIN_MANIFEST_PATH
+    if is_root_manifest:
+        # A root `plugin.json` is the Agent Plugins v1 manifest slot, but a
+        # schema-less root manifest predates the v1 claim (legacy/auto-update
+        # plugins). Sniff `$schema` to route: only a matching v1 schema uses the
+        # strict v1 parser; anything else falls through to the legacy parser.
         try:
             if not manifest_path.resolve().is_relative_to(root.resolve()):
                 msg = f"Agent Plugins manifest escapes plugin root: {manifest_path}"
                 raise PluginManifestError(msg)
-            raw_manifest, agent_plugin_warnings = load_agent_plugin_manifest(
-                manifest_path
-            )
-        except (OSError, RuntimeError) as exc:
+            raw_text = manifest_path.read_text(encoding="utf-8")
+            decoded_root = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            msg = f"Invalid JSON syntax in {manifest_path}: {exc}"
+            raise PluginManifestError(msg) from exc
+        except (OSError, RuntimeError, UnicodeDecodeError) as exc:
             msg = f"Could not resolve Agent Plugins manifest {manifest_path}: {exc}"
             raise PluginManifestError(msg) from exc
-        except AgentPluginError as exc:
-            raise PluginManifestError(str(exc)) from exc
-        version_value = raw_manifest.get("version")
-        manifest = PluginManifest(
-            name=_validate_name(raw_manifest.get("name")),
-            version=version_value if isinstance(version_value, str) else None,
-            component_paths={},
-            inline_mcp={},
-            plugin_format=AGENT_PLUGIN_FORMAT,
-        )
-        return manifest, manifest_path, agent_plugin_warnings
+        if isinstance(decoded_root, dict) and (
+            decoded_root.get("$schema") == AGENT_PLUGIN_MANIFEST_SCHEMA
+        ):
+            try:
+                # Re-decode strictly so non-standard JSON constants (NaN,
+                # Infinity) are rejected as they are in `load_agent_plugin_manifest`.
+                strict_decoded = json.loads(
+                    raw_text, parse_constant=_reject_nonstandard_constant
+                )
+                raw_manifest, agent_plugin_warnings = validate_agent_plugin_manifest(
+                    strict_decoded
+                )
+            except AgentPluginError as exc:
+                raise PluginManifestError(str(exc)) from exc
+            version_value = raw_manifest.get("version")
+            manifest = PluginManifest(
+                name=_validate_name(raw_manifest.get("name")),
+                version=version_value if isinstance(version_value, str) else None,
+                component_paths={},
+                inline_mcp={},
+                plugin_format=AGENT_PLUGIN_FORMAT,
+            )
+            return manifest, manifest_path, agent_plugin_warnings
     try:
         decoded = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -262,6 +291,9 @@ def load_manifest(
     version_value = raw_manifest.get("version")
     version = version_value if isinstance(version_value, str) else None
     display_name_value = raw_manifest.get("displayName")
+    auto_update_settings = raw_manifest.get("extensions")
+    if isinstance(auto_update_settings, dict):
+        auto_update_settings = auto_update_settings.get("com.langchain.deepagents.code")
     manifest = PluginManifest(
         name=name,
         version=version,
@@ -270,6 +302,10 @@ def load_manifest(
         inline_hooks=_inline_hooks(raw_manifest.get("hooks")),
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
+        ),
+        auto_update=(
+            isinstance(auto_update_settings, dict)
+            and auto_update_settings.get("autoUpdate") is True
         ),
     )
     return manifest, manifest_path, tuple(warnings)

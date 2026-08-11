@@ -220,13 +220,20 @@ deadlock detector when two threads cold-import overlapping modules.
 """
 
 _TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
-"""Tools that stay expanded instead of collapsing into step summaries.
+"""Tools kept out of the collapsing step summaries.
 
-Each surfaces user-facing content worth keeping visible on its own — an
-interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
-(`write_todos`) — so it renders standalone and acts as a boundary between
-adjacent tool groups. Add a tool here only when its collapsed one-line
-summary would hide something the user needs to see.
+Each named tool surfaces user-facing content worth keeping visible on its own —
+an interactive prompt (`ask_user`) or a todo list (`write_todos`) — so it renders
+standalone and acts as a boundary between adjacent tool groups. Add a tool here
+only when its collapsed one-line summary would hide something the user needs to
+see.
+
+`edit_file` is here because its successful row hides itself in favour of the
+`DiffMessage` that replaces it. The group-reveal paths do consult
+`has_own_hide_reason`, so a groupable superseded row would stay hidden — but the
+group summary would still count and phrase a row the user cannot see, and one
+`display` flag with two independent owners is a standing hazard even when both
+currently agree.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
@@ -790,6 +797,17 @@ state as the single app-wide progress indicator.
 
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
+
+_CONCURRENT_UPDATE_MESSAGE = (
+    "An update is already being installed. Try again once it finishes."
+)
+"""Shown when the update install lock is held.
+
+Deliberately does not name *another* session as the holder: the lock also
+refuses a second install started from this one (`/update` racing the update
+notification), and blaming a nonexistent other terminal would send the user
+looking for something to wait on that isn't there.
+"""
 
 _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 """Upper bound on awaiting a confirmation modal's dismissal.
@@ -3254,6 +3272,9 @@ class DeepAgentsApp(App):
         self._session_plugin_ids: frozenset[str] = frozenset()
         """Plugin ids loaded into the current session (startup or last `/reload`)."""
 
+        self._plugin_auto_update_started = False
+        """Whether this session has started its first-prompt plugin update."""
+
         self._discovered_plugin_ids: frozenset[str] = frozenset()
         """Plugin ids found by the latest background skill discovery."""
 
@@ -3926,6 +3947,33 @@ class DeepAgentsApp(App):
         the streamed absolute total during a turn. The client never adds its own
         estimates here.
         """
+
+        from deepagents_code.config_manifest import (
+            SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+            get_option,
+            load_config_toml,
+            resolve_scalar,
+        )
+
+        cost_warning_option = get_option("warnings.session_cost_threshold_usd")
+        cost_warning_threshold: object = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
+        if cost_warning_option is not None:
+            cost_warning_threshold, _ = resolve_scalar(
+                cost_warning_option, toml_data=load_config_toml()
+            )
+        if not isinstance(cost_warning_threshold, float) or not math.isfinite(
+            cost_warning_threshold
+        ):
+            logger.warning(
+                "Invalid session cost warning threshold %r; using the default",
+                cost_warning_threshold,
+            )
+            cost_warning_threshold = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
+        self._session_cost_warning_threshold_usd = cost_warning_threshold
+        """Configured soft limit for the active thread's estimated cost."""
+
+        self._session_cost_warning_shown = False
+        """Whether the active thread has already crossed its cost soft limit."""
 
         self._provisional_cost_usd: float = 0.0
         """Streamed spend the graph has not reported a total for yet.
@@ -6378,15 +6426,26 @@ class DeepAgentsApp(App):
         upgrade_include_prereleases: bool | None,
         pin_upgrade_version: str | None,
     ) -> None:
-        """Serialize an app upgrade against every other environment mutation."""
+        """Serialize an app upgrade against every other environment mutation.
+
+        `_environment_mutation_lock` only covers this process, so the
+        cross-process update lock is taken too: a concurrent terminal may
+        already be installing into the same tool environment.
+        """
+        from deepagents_code.update_check import update_install_lock
+
         async with self._environment_mutation_lock:
-            await self._perform_app_upgrade_unlocked(
-                current=current,
-                latest=latest,
-                include_prereleases=include_prereleases,
-                upgrade_include_prereleases=upgrade_include_prereleases,
-                pin_upgrade_version=pin_upgrade_version,
-            )
+            with update_install_lock() as holding_update_lock:
+                if not holding_update_lock:
+                    await self._mount_message(AppMessage(_CONCURRENT_UPDATE_MESSAGE))
+                    return
+                await self._perform_app_upgrade_unlocked(
+                    current=current,
+                    latest=latest,
+                    include_prereleases=include_prereleases,
+                    upgrade_include_prereleases=upgrade_include_prereleases,
+                    pin_upgrade_version=pin_upgrade_version,
+                )
 
     async def _perform_app_upgrade_unlocked(
         self,
@@ -6510,12 +6569,24 @@ class DeepAgentsApp(App):
         include_prereleases: bool | None,
         app_update_version: str | None = None,
     ) -> None:
-        """Serialize dependency refresh against all environment mutations."""
+        """Serialize dependency refresh against all environment mutations.
+
+        A refresh runs `uv tool install -U deepagents-code==<current>`, which
+        replaces the installed distribution just as an upgrade does, so it takes
+        the cross-process update lock for the same reason `_perform_app_upgrade`
+        does: `_environment_mutation_lock` only covers this process.
+        """
+        from deepagents_code.update_check import update_install_lock
+
         async with self._environment_mutation_lock:
-            await self._refresh_dependencies_unlocked(
-                include_prereleases=include_prereleases,
-                app_update_version=app_update_version,
-            )
+            with update_install_lock() as holding_update_lock:
+                if not holding_update_lock:
+                    await self._mount_message(AppMessage(_CONCURRENT_UPDATE_MESSAGE))
+                    return
+                await self._refresh_dependencies_unlocked(
+                    include_prereleases=include_prereleases,
+                    app_update_version=app_update_version,
+                )
 
     async def _refresh_dependencies_unlocked(
         self,
@@ -7609,6 +7680,21 @@ class DeepAgentsApp(App):
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._provisional_cost_usd = 0.0
         self._refresh_session_cost_display()
+        threshold = self._session_cost_warning_threshold_usd
+        if (
+            not self._session_cost_warning_shown
+            and 0 < threshold < self._session_cost_usd
+        ):
+            self._session_cost_warning_shown = True
+            self.notify(
+                f"Estimated session cost is {format_cost(self._session_cost_usd)}, "
+                f"above the configured {format_cost(threshold)} threshold. Consider "
+                "/offload to reduce context usage or /clear to start fresh.",
+                title="Session cost warning",
+                severity="warning",
+                timeout=12,
+                markup=False,
+            )
 
     @property
     def _displayed_cost_usd(self) -> float:
@@ -7638,6 +7724,7 @@ class DeepAgentsApp(App):
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
         self._thread_has_completed_turn = False
+        self._session_cost_warning_shown = False
         self._set_session_cost(self._thread_restored_cost_usd)
 
     def _mark_thread_turn_completed(self) -> None:
@@ -8007,6 +8094,7 @@ class DeepAgentsApp(App):
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
+                self._link_message_timestamp_footer(widget, footer)
                 nodes: list[Widget] = [widget]
                 if footer is not None:
                     nodes.append(footer)
@@ -8077,6 +8165,7 @@ class DeepAgentsApp(App):
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
+                self._link_message_timestamp_footer(widget, footer)
                 nodes = [widget]
                 if footer is not None:
                     nodes.append(footer)
@@ -15376,6 +15465,35 @@ class DeepAgentsApp(App):
             return False
         return True
 
+    def _start_plugin_auto_update(self) -> None:
+        """Start the plugin auto-update worker."""
+        self.run_worker(
+            self._auto_update_plugins(),
+            exclusive=True,
+            group="plugin-auto-update",
+        )
+
+    async def _auto_update_plugins(self) -> None:
+        """Update plugins on disk and notify when `/reload` can apply them."""
+        from deepagents_code.plugins.discovery import auto_update_plugins
+
+        try:
+            updated = await asyncio.to_thread(auto_update_plugins)
+        except Exception:
+            logger.exception("Plugin auto-update failed")
+            return
+        if not updated:
+            return
+
+        names = [plugin_id.rsplit("@", 1)[0] for plugin_id in updated]
+        noun = "Plugin" if len(names) == 1 else "Plugins"
+        display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
+        self.notify(
+            f"{noun} updated: {display}. Run /reload to apply.",
+            timeout=10,
+            markup=False,
+        )
+
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
 
@@ -15436,6 +15554,9 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
+            if not self._plugin_auto_update_started:
+                self._plugin_auto_update_started = True
+                self._start_plugin_auto_update()
             self._set_agent_running(True)
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.
@@ -16447,6 +16568,8 @@ class DeepAgentsApp(App):
         """
         from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+        from deepagents_code.file_ops import compute_unified_diff, format_display_path
+
         result: list[MessageData] = []
         # Maps tool_call_id -> index into result list
         pending_tool_indices: dict[str, int] = {}
@@ -16524,6 +16647,35 @@ class DeepAgentsApp(App):
                     )
                     if status == "success":
                         data.tool_status = ToolStatus.SUCCESS
+                        if (
+                            data.tool_name == "edit_file"
+                            and data.tool_args
+                            and not data.tool_args.get("replace_all")
+                            and not content.startswith("Error:")
+                        ):
+                            before = str(data.tool_args.get("old_string", ""))
+                            after = str(data.tool_args.get("new_string", ""))
+                            path = format_display_path(
+                                str(data.tool_args.get("file_path", ""))
+                            )
+                            diff, stats = compute_unified_diff(
+                                before,
+                                after,
+                                path,
+                                max_lines=100,
+                                context_lines=0,
+                            )
+                            if diff:
+                                data.tool_diff_superseded = True
+                                result.append(
+                                    MessageData(
+                                        type=MessageType.DIFF,
+                                        content=diff,
+                                        diff_file_path=path,
+                                        diff_tool_name="edit_file",
+                                        diff_stats=stats,
+                                    )
+                                )
                     else:
                         data.tool_status = ToolStatus.ERROR
                     data.tool_output = content
@@ -16969,6 +17121,7 @@ class DeepAgentsApp(App):
                     msg_data, visible=self._message_timestamps_visible
                 )
                 if footer is not None:
+                    self._link_message_timestamp_footer(widget, footer)
                     nodes.append(footer)
             if nodes:
                 await self._mount_transcript_nodes(messages_container, nodes)
@@ -17056,6 +17209,16 @@ class DeepAgentsApp(App):
             id=_message_timestamp_footer_id(data.id),
             classes=classes,
         )
+
+    @staticmethod
+    def _link_message_timestamp_footer(widget: Widget, footer: Static | None) -> None:
+        """Make a tool footer follow its owning row's visibility.
+
+        A no-op when there is no footer or the row is not a `ToolCallMessage`,
+        which is why most call sites can invoke it unconditionally.
+        """
+        if footer is not None and isinstance(widget, ToolCallMessage):
+            widget._register_visibility_accessories(footer)
 
     def _sync_message_timestamps_display(self) -> None:
         """Apply the current visibility to every mounted timestamp footer.
@@ -17156,7 +17319,7 @@ class DeepAgentsApp(App):
     async def _mount_message(
         self,
         widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
-    ) -> None:
+    ) -> bool:
         """Mount a message widget to the messages area.
 
         This method also stores the message data and handles pruning
@@ -17168,17 +17331,23 @@ class DeepAgentsApp(App):
 
         Args:
             widget: The message widget to mount
+
+        Returns:
+            Whether the widget reached the screen. Callers that treat a mounted
+            widget as having delivered something the user must see — a display
+            caveat, in particular — have to distinguish this from the silent
+            teardown skips, or they credit a surface that never rendered.
         """
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
-            return
+            return False
 
         # During shutdown (e.g. Ctrl+D mid-stream) the container may still
         # be in the DOM tree but already detached, so mount() would raise
         # MountError. Bail out silently — the app is exiting anyway.
         if not messages.is_attached:
-            return
+            return False
 
         if isinstance(widget, QueuedUserMessage):
             # Queued placeholders mount at the bottom and stay out of the
@@ -17189,7 +17358,7 @@ class DeepAgentsApp(App):
                 input_container.scroll_visible()
             except NoMatches:
                 pass
-            return
+            return True
 
         await self._ensure_transcript_spacers(messages)
         await self._hydrate_all_messages_below()
@@ -17217,6 +17386,7 @@ class DeepAgentsApp(App):
         footer = self._build_message_timestamp_footer(
             message_data, visible=self._message_timestamps_visible
         )
+        self._link_message_timestamp_footer(widget, footer)
 
         # Coalesce the whole mount-and-fold sequence into a single repaint.
         # Otherwise mounting a groupable tool paints it at full height, then
@@ -17265,6 +17435,8 @@ class DeepAgentsApp(App):
             input_container.scroll_visible()
         except NoMatches:
             pass
+
+        return True
 
     async def _hydrate_all_messages_below(self) -> None:
         """Mount any hidden tail before appending fresh transcript output."""
@@ -17451,6 +17623,13 @@ class DeepAgentsApp(App):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
                         and child.is_success
+                        # A caveat is carried in the row's own output and the
+                        # summary line is built from tool names, so folding one
+                        # would summarize away the only statement that the
+                        # change could not be shown. The live path evicts these
+                        # (`_evict_unfoldable`); a rehydrated transcript has to
+                        # not fold them in the first place.
+                        and not child.has_display_caveat
                         and not child.has_class("-grouped")
                     )
                     if not groupable:
@@ -17571,6 +17750,14 @@ class DeepAgentsApp(App):
             tool_duration=data.tool_duration,
             tool_expanded=data.tool_expanded,
             tool_reject_reason=data.tool_reject_reason,
+            # Set after the row is first stored, when its diff mounts. Without
+            # it the store keeps the mount-time `False` and rehydration
+            # resurrects the row next to the diff that replaced it.
+            tool_diff_superseded=data.tool_diff_superseded,
+            # The display caveat can arrive after the initial mount when a
+            # file change cannot be rendered. Keep it through virtualization
+            # so hydration does not fold away the warning.
+            tool_display_caveat=data.tool_display_caveat,
         )
         if data.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING}:
             self._message_store.protect_message(widget.id)
@@ -17690,8 +17877,14 @@ class DeepAgentsApp(App):
         submission) only when the input holds no draft, so typed text is never
         clobbered. Unlike the queued-message pop, this path does not consume
         the message — the interrupted `UserMessage` stays visible in the
-        transcript, dimmed via `set_cancelled()` — so when it does not restore
-        it stays silent rather than reporting a "discarded" outcome.
+        transcript, dimmed via `set_cancelled()`.
+
+        A successful restore is deliberately silent: the text reappearing in
+        the chat input is its own confirmation, so a toast would only cover the
+        transcript (worse in a tiled terminal) to report something already on
+        screen. The paths that decline to restore are silent for a different
+        reason — nothing was consumed, so unlike the queued-message pop there is
+        no "discarded" outcome to report; the prompt is still in the transcript.
 
         Restore is also skipped once model text or a tool call is visible for
         the turn (`_active_turn_visible_output_started`). Returning the prompt
@@ -17720,7 +17913,6 @@ class DeepAgentsApp(App):
         snapshot = message.media_snapshot
         if snapshot is not None:
             self._image_tracker.restore(snapshot)
-        self.notify("Message restored to input", timeout=2)
 
     def _cleanup_external_event_source_sync(self) -> None:
         """Synchronously close the external event listener and unlink its socket.
@@ -21881,6 +22073,7 @@ class DeepAgentsApp(App):
             format_shadowed_dcode_warning,
             mark_update_notified,
             perform_upgrade,
+            update_install_lock,
         )
 
         if action_id == ActionId.INSTALL:
@@ -21897,92 +22090,104 @@ class DeepAgentsApp(App):
 
             from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
 
-            cmd = payload.upgrade_cmd
-            log_path = create_update_log_path()
-            screen = UpdateProgressScreen(
-                latest=payload.latest,
-                command=cmd,
-                log_path=log_path,
-            )
-            progress_modal_visible = not isinstance(self.screen, ModalScreen)
-            if progress_modal_visible:
-                await self.push_screen(screen)
-            else:
-                self.notify(
-                    f"Updating to v{payload.latest}... Logs: {log_path}",
-                    severity="information",
-                    timeout=8,
-                    markup=False,
-                )
-            self._update_install_running = True
-            try:
-                if os.environ.get(DEBUG_UPDATE):
-                    await self._run_debug_update_install(
-                        entry=entry,
-                        payload=payload,
-                        screen=screen,
-                        log_path=log_path,
-                        show_toast=not progress_modal_visible,
-                    )
-                    return
-                success, output = await perform_upgrade(
-                    progress=screen.append_line,
-                    log_path=log_path,
-                    target_version=payload.latest,
-                )
-                if success:
-                    self._notice_registry.remove(entry.key)
-                    # Same shadowing risk as `/update`: if a stale `dcode` is
-                    # earlier on PATH, the user's next launch will silently
-                    # run the old version. Surface that loudly even when only
-                    # a toast is visible. Keep the modal itself out of the
-                    # success state when relaunching would keep using the old
-                    # binary.
-                    shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
-                    if shadow is not None:
-                        warning = format_shadowed_dcode_warning(shadow)
-                        if progress_modal_visible:
-                            screen.mark_warning(
-                                warning,
-                                copy_text=format_shadowed_dcode_fix_command(shadow),
-                            )
-                        self.notify(
-                            warning,
-                            severity="warning",
-                            timeout=20,
-                            markup=False,
-                        )
-                        return
-                    screen.mark_success()
-                    if progress_modal_visible:
-                        return
+            # Claimed before any progress UI is shown so a session that loses
+            # the race never opens a modal it would have to abandon.
+            with update_install_lock() as holding_update_lock:
+                if not holding_update_lock:
                     self.notify(
-                        f"Updated to v{payload.latest}. "
-                        "Quit and relaunch dcode to use the new version.",
+                        _CONCURRENT_UPDATE_MESSAGE,
                         severity="information",
-                        timeout=10,
+                        timeout=6,
                         markup=False,
                     )
                     return
-                logger.warning(
-                    "Auto-upgrade failed for v%s. Output:\n%s",
-                    payload.latest,
-                    output,
-                )
-                self._notice_registry.remove(entry.key)
-                screen.mark_failure(cmd)
-                snippet = _truncate(output, limit=160) if output else ""
-                message = f"Auto-update failed. Run manually: {cmd}"
-                if snippet:
-                    message = f"{message}\n{snippet}"
-                self.notify(
-                    message,
-                    severity="warning",
-                    timeout=15,
-                    markup=False,
-                )
-            finally:
-                self._update_install_running = False
+
+                self._update_install_running = True
+                try:
+                    cmd = payload.upgrade_cmd
+                    log_path = create_update_log_path()
+                    screen = UpdateProgressScreen(
+                        latest=payload.latest,
+                        command=cmd,
+                        log_path=log_path,
+                    )
+                    progress_modal_visible = not isinstance(self.screen, ModalScreen)
+                    if progress_modal_visible:
+                        await self.push_screen(screen)
+                    else:
+                        self.notify(
+                            f"Updating to v{payload.latest}... Logs: {log_path}",
+                            severity="information",
+                            timeout=8,
+                            markup=False,
+                        )
+                    if os.environ.get(DEBUG_UPDATE):
+                        await self._run_debug_update_install(
+                            entry=entry,
+                            payload=payload,
+                            screen=screen,
+                            log_path=log_path,
+                            show_toast=not progress_modal_visible,
+                        )
+                        return
+                    success, output = await perform_upgrade(
+                        progress=screen.append_line,
+                        log_path=log_path,
+                        target_version=payload.latest,
+                    )
+                    if success:
+                        self._notice_registry.remove(entry.key)
+                        # Same shadowing risk as `/update`: if a stale `dcode` is
+                        # earlier on PATH, the user's next launch will silently
+                        # run the old version. Surface that loudly even when only
+                        # a toast is visible. Keep the modal itself out of the
+                        # success state when relaunching would keep using the old
+                        # binary.
+                        shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
+                        if shadow is not None:
+                            warning = format_shadowed_dcode_warning(shadow)
+                            if progress_modal_visible:
+                                screen.mark_warning(
+                                    warning,
+                                    copy_text=format_shadowed_dcode_fix_command(shadow),
+                                )
+                            self.notify(
+                                warning,
+                                severity="warning",
+                                timeout=20,
+                                markup=False,
+                            )
+                            return
+                        screen.mark_success()
+                        if progress_modal_visible:
+                            return
+                        self.notify(
+                            f"Updated to v{payload.latest}. "
+                            "Quit and relaunch dcode to use the new version.",
+                            severity="information",
+                            timeout=10,
+                            markup=False,
+                        )
+                        return
+                    logger.warning(
+                        "Auto-upgrade failed for v%s. Output:\n%s",
+                        payload.latest,
+                        output,
+                    )
+                    self._notice_registry.remove(entry.key)
+                    screen.mark_failure(cmd)
+                    snippet = _truncate(output, limit=160) if output else ""
+                    message = f"Auto-update failed. Run manually: {cmd}"
+                    if snippet:
+                        message = f"{message}\n{snippet}"
+                    self.notify(
+                        message,
+                        severity="warning",
+                        timeout=15,
+                        markup=False,
+                    )
+                finally:
+                    self._update_install_running = False
             return
         if action_id == ActionId.SKIP_VERSION:
             await asyncio.to_thread(mark_update_notified, payload.latest)
@@ -22431,6 +22636,11 @@ class DeepAgentsApp(App):
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
                 loaded_plugin_ids=self._session_plugin_ids,
+                on_auto_update_enabled=(
+                    self._start_plugin_auto_update
+                    if self._plugin_auto_update_started
+                    else None
+                ),
             ),
             on_close,
         )

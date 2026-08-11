@@ -511,6 +511,7 @@ def _run_startup_auto_update(console: "Console") -> None:
         release_requires_prereleases,
         should_announce_auto_update_default,
         should_skip_startup_auto_update_after_failure,
+        update_install_lock,
         upgrade_command,
     )
 
@@ -617,24 +618,43 @@ def _run_startup_auto_update(console: "Console") -> None:
                 )
             console.print(message, highlight=False)
             return
-        release_age = format_release_age_parenthetical(latest)
-        console.print(
-            f"Updating dcode from v{cli_version} to v{latest}{release_age}..."
-        )
-        if os.environ.get(DEBUG_UPDATE):
-            console.print("Skipped update install (debug mode).", style="dim")
-            return
-        log_path = create_update_log_path()
-        console.print(
-            f"Update log: {_tail_log_command(log_path)}",
-            style="dim",
-            highlight=False,
-            markup=False,
-        )
-        pending_failure_version = latest
-        success, output = asyncio.run(
-            perform_upgrade(log_path=log_path, target_version=latest)
-        )
+        # Everything below installs into the shared tool environment, so only
+        # the process holding the cross-process lock may proceed.
+        #
+        # The lock is scoped to the install and released before the re-exec
+        # below. `os.execv` would in fact drop it on its own — filelock opens
+        # its lock file with `os.open`, and PEP 446 makes that fd
+        # non-inheritable, so exec closes it — but relying on that would make
+        # correctness here hinge on the fd-inheritance behavior of a dependency
+        # we do not control. Releasing explicitly also covers the path where
+        # `_restart_current_process` raises and this process keeps running.
+        with update_install_lock() as holding_update_lock:
+            if not holding_update_lock:
+                console.print(
+                    f"Another dcode session is updating to v{latest}; "
+                    f"continuing with v{cli_version}.",
+                    style="dim",
+                    highlight=False,
+                )
+                return
+            release_age = format_release_age_parenthetical(latest)
+            console.print(
+                f"Updating dcode from v{cli_version} to v{latest}{release_age}..."
+            )
+            if os.environ.get(DEBUG_UPDATE):
+                console.print("Skipped update install (debug mode).", style="dim")
+                return
+            log_path = create_update_log_path()
+            console.print(
+                f"Update log: {_tail_log_command(log_path)}",
+                style="dim",
+                highlight=False,
+                markup=False,
+            )
+            pending_failure_version = latest
+            success, output = asyncio.run(
+                perform_upgrade(log_path=log_path, target_version=latest)
+            )
         if success:
             pending_failure_version = None
             installed_version = latest
@@ -4365,6 +4385,7 @@ def cli_main() -> None:
                     perform_upgrade,
                     prerelease_upgrade_supported,
                     release_requires_prereleases,
+                    update_install_lock,
                     upgrade_command,
                 )
 
@@ -4423,30 +4444,43 @@ def cli_main() -> None:
                         )
                         sys.exit(1)
 
-                release_age = format_release_age_parenthetical(latest)
-                installed_age = format_installed_age_suffix(cli_version)
-                console.print(
-                    f"Update available: v{latest}{release_age}. "
-                    f"Currently installed: {cli_version}{installed_age}. "
-                    "Upgrading..."
-                )
-                if os.environ.get(DEBUG_UPDATE):
-                    console.print("Skipped update install (debug mode).", style="dim")
-                    sys.exit(0)
-                log_path = create_update_log_path()
-                console.print(
-                    f"Update log: {_tail_log_command(log_path)}",
-                    style="dim",
-                    highlight=False,
-                    markup=False,
-                )
-                success, output = asyncio.run(
-                    perform_upgrade(
-                        log_path=log_path,
-                        include_prereleases=include_prereleases,
-                        target_version=latest,
+                # The install mutates the shared tool environment, so an
+                # explicit headless update must use the same cross-process
+                # guard as startup and in-session updates.
+                with update_install_lock() as holding_update_lock:
+                    if not holding_update_lock:
+                        console.print(
+                            "Another dcode session is currently updating. "
+                            "Try again after it finishes.",
+                            style="dim",
+                        )
+                        sys.exit(1)
+                    release_age = format_release_age_parenthetical(latest)
+                    installed_age = format_installed_age_suffix(cli_version)
+                    console.print(
+                        f"Update available: v{latest}{release_age}. "
+                        f"Currently installed: {cli_version}{installed_age}. "
+                        "Upgrading..."
                     )
-                )
+                    if os.environ.get(DEBUG_UPDATE):
+                        console.print(
+                            "Skipped update install (debug mode).", style="dim"
+                        )
+                        sys.exit(0)
+                    log_path = create_update_log_path()
+                    console.print(
+                        f"Update log: {_tail_log_command(log_path)}",
+                        style="dim",
+                        highlight=False,
+                        markup=False,
+                    )
+                    success, output = asyncio.run(
+                        perform_upgrade(
+                            log_path=log_path,
+                            include_prereleases=include_prereleases,
+                            target_version=latest,
+                        )
+                    )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:

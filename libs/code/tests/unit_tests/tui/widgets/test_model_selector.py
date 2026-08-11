@@ -2662,6 +2662,7 @@ class TestGetModelDisplayName:
         [
             ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
             ("meta:muse-spark-1.1", "Muse Spark 1.1"),
+            ("meta:muse-spark-1.2", "Muse Spark 1.2"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai:gpt-5.6-terra", "GPT-5.6 Terra"),

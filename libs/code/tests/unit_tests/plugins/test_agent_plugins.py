@@ -112,7 +112,6 @@ def test_agent_plugin_manifest_precedes_legacy_and_reports_nonfatal_fields(
 @pytest.mark.parametrize(
     ("override", "message"),
     [
-        ({"$schema": "https://example.com/schema.json"}, r"\$schema"),
         ({"name": "Invalid Name"}, "name"),
         ({"version": 1}, "version"),
         ({"author": {"name": "Team", "extra": True}}, "author"),
@@ -140,15 +139,35 @@ def test_agent_plugin_manifest_rejects_nonstandard_json(tmp_path: Path) -> None:
         load_manifest(tmp_path)
 
 
-def test_invalid_root_manifest_does_not_fall_back_to_legacy(tmp_path: Path) -> None:
+def test_schemaless_root_manifest_falls_back_to_legacy(tmp_path: Path) -> None:
+    """A root `plugin.json` without the v1 `$schema` parses as a legacy manifest.
+
+    Root `plugin.json` is the Agent Plugins v1 slot, but only a manifest whose
+    `$schema` matches the v1 schema routes to the strict v1 parser. A schema-less
+    root manifest (e.g. a legacy/auto-update plugin) falls back to the legacy
+    parser rather than failing.
+    """
     _write_json(tmp_path / "plugin.json", {"name": "portable-plugin"})
+
+    manifest, path, _warnings = load_manifest(tmp_path)
+
+    assert manifest is not None
+    assert manifest.plugin_format == "legacy"
+    assert manifest.name == "portable-plugin"
+    assert path == tmp_path / "plugin.json"
+
+
+def test_wrong_schema_root_manifest_falls_back_to_legacy(tmp_path: Path) -> None:
+    """A root `plugin.json` with a non-v1 `$schema` is not treated as v1."""
     _write_json(
-        tmp_path / ".claude-plugin" / "plugin.json",
-        {"name": "portable-plugin"},
+        tmp_path / "plugin.json",
+        {"$schema": "https://example.com/other.schema.json", "name": "portable-plugin"},
     )
 
-    with pytest.raises(PluginManifestError, match=r"\$schema"):
-        load_manifest(tmp_path)
+    manifest, _path, _warnings = load_manifest(tmp_path)
+
+    assert manifest is not None
+    assert manifest.plugin_format == "legacy"
 
 
 def test_agent_plugin_manifest_symlink_cannot_escape_root(tmp_path: Path) -> None:

@@ -216,19 +216,21 @@ def load_manifest(
             if not manifest_path.resolve().is_relative_to(root.resolve()):
                 msg = f"Agent Plugins manifest escapes plugin root: {manifest_path}"
                 raise PluginManifestError(msg)
-            raw, agent_plugin_warnings = load_agent_plugin_manifest(manifest_path)
+            raw_manifest, agent_plugin_warnings = load_agent_plugin_manifest(
+                manifest_path
+            )
         except (OSError, RuntimeError) as exc:
             msg = f"Could not resolve Agent Plugins manifest {manifest_path}: {exc}"
             raise PluginManifestError(msg) from exc
         except AgentPluginError as exc:
             raise PluginManifestError(str(exc)) from exc
-        version_value = raw.get("version")
+        version_value = raw_manifest.get("version")
         manifest = PluginManifest(
-            name=_validate_name(raw.get("name")),
+            name=_validate_name(raw_manifest.get("name")),
             version=version_value if isinstance(version_value, str) else None,
             component_paths={},
             inline_mcp={},
-            format=AGENT_PLUGIN_FORMAT,
+            plugin_format=AGENT_PLUGIN_FORMAT,
         )
         return manifest, manifest_path, agent_plugin_warnings
     try:
@@ -242,13 +244,13 @@ def load_manifest(
     if not isinstance(decoded, dict):
         msg = f"Plugin manifest {manifest_path} must be a JSON object"
         raise PluginManifestError(msg)
-    raw = json_object(decoded)
+    raw_manifest = json_object(decoded)
 
     warnings: list[str] = []
-    name = _validate_name(raw.get("name"), fallback=fallback_name)
+    name = _validate_name(raw_manifest.get("name"), fallback=fallback_name)
     component_paths: dict[str, tuple[Path, ...]] = {}
     for field_name in _PATH_COMPONENT_FIELDS:
-        declaration = raw.get(field_name)
+        declaration = raw_manifest.get(field_name)
         if declaration is None:
             continue
         if field_name in {"mcpServers", "hooks"} and isinstance(declaration, dict):
@@ -257,15 +259,15 @@ def load_manifest(
         if paths:
             component_paths[field_name] = paths
 
-    version_value = raw.get("version")
+    version_value = raw_manifest.get("version")
     version = version_value if isinstance(version_value, str) else None
-    display_name_value = raw.get("displayName")
+    display_name_value = raw_manifest.get("displayName")
     manifest = PluginManifest(
         name=name,
         version=version,
         component_paths=component_paths,
-        inline_mcp=_inline_mcp(raw.get("mcpServers")),
-        inline_hooks=_inline_hooks(raw.get("hooks")),
+        inline_mcp=_inline_mcp(raw_manifest.get("mcpServers")),
+        inline_hooks=_inline_hooks(raw_manifest.get("hooks")),
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
@@ -382,7 +384,7 @@ def build_inventory(
     """
     plugin_root = plugin_root.resolve()
     warnings = list(manifest_warnings)
-    if manifest is not None and manifest.format == AGENT_PLUGIN_FORMAT:
+    if manifest is not None and manifest.plugin_format == AGENT_PLUGIN_FORMAT:
         return ComponentInventory(
             skills=_agent_plugin_skills(plugin_root, warnings),
             mcp_files=_agent_plugin_mcp(plugin_root, warnings),

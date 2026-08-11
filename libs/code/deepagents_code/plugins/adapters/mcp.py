@@ -139,7 +139,7 @@ def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
         The unscoped server configuration keyed by declared server name.
     """
     manifest = plugin.manifest
-    if manifest is not None and manifest.format == AGENT_PLUGIN_FORMAT:
+    if manifest is not None and manifest.plugin_format == AGENT_PLUGIN_FORMAT:
         plugin_root, plugin_data = _agent_plugin_paths(plugin)
         servers: JsonObject = {}
         for path in plugin.inventory.mcp_files:
@@ -190,7 +190,7 @@ def _normalize_server(
     manifest = plugin.manifest
     if (
         manifest is not None
-        and manifest.format == AGENT_PLUGIN_FORMAT
+        and manifest.plugin_format == AGENT_PLUGIN_FORMAT
         and isinstance(normalized_server, dict)
     ):
         if normalized_server.get("type") != "stdio":
@@ -293,7 +293,7 @@ def plugin_mcp_configs(
         manifest = plugin.manifest
         if (
             manifest is not None
-            and manifest.format == AGENT_PLUGIN_FORMAT
+            and manifest.plugin_format == AGENT_PLUGIN_FORMAT
             and not data_ready
         ):
             servers = {

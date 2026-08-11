@@ -64,7 +64,8 @@ class PluginManifest:
         inline_mcp: Inline MCP servers declared in the manifest.
         inline_hooks: Inline hook configuration declared in the manifest, in
             `hooks.json` document form.
-        format: Package format that controls component discovery semantics.
+        plugin_format: Package format that controls component discovery
+            semantics.
     """
 
     name: str | None
@@ -73,7 +74,7 @@ class PluginManifest:
     inline_mcp: JsonObject
     inline_hooks: JsonObject = field(default_factory=dict)
     display_name: str | None = None
-    format: PluginFormat = "legacy"
+    plugin_format: PluginFormat = "legacy"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -101,7 +101,7 @@ def test_agent_plugin_manifest_precedes_legacy_and_reports_nonfatal_fields(
     assert manifest is not None
     assert manifest.name == "portable-plugin"
     assert manifest.version == "1.2.3"
-    assert manifest.format == "agent-plugins-v1"
+    assert manifest.plugin_format == "agent-plugins-v1"
     assert path == tmp_path / "plugin.json"
     assert warnings == (
         "ignoring unknown Agent Plugins manifest field 'unexpected'",
@@ -193,7 +193,7 @@ def test_marketplace_installs_and_discovers_agent_plugin(
     discovered = discover_plugins()
 
     assert installed.manifest is not None
-    assert installed.manifest.format == "agent-plugins-v1"
+    assert installed.manifest.plugin_format == "agent-plugins-v1"
     assert installed.root != source
     assert installed.inventory.skills == (
         (installed.root / "skills" / "review" / "SKILL.md").resolve(),
@@ -523,6 +523,6 @@ def test_legacy_plugin_discovery_remains_unchanged(tmp_path: Path) -> None:
     assert manifest is not None
     inventory = build_inventory(tmp_path, manifest, warnings)
 
-    assert manifest.format == "legacy"
+    assert manifest.plugin_format == "legacy"
     assert inventory.skills == ((tmp_path / "skills").resolve(),)
     assert inventory.mcp_files == ((tmp_path / ".mcp.json").resolve(),)

@@ -20,7 +20,12 @@ if TYPE_CHECKING:
 
 from deepagents_code._env_vars import INVOKED_AS
 from deepagents_code._invocation import invoked_name
-from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
+from deepagents_code.app import (
+    AppResult,
+    DeepAgentsApp,
+    TextualAppError,
+    run_textual_app,
+)
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
     _auto_install_ripgrep_cli,
@@ -1867,6 +1872,131 @@ class TestTeardownHintsOnCrash:
         assert "dcode -r test123" in output
         assert "the last turn may be incomplete and resume may be unsafe" in flattened
 
+    async def test_crash_preserves_final_thread_id(self) -> None:
+        """A crash surfaces the thread the app resolved, not the pre-launch ID.
+
+        On a `-r` launch the caller's `thread_id` local is `None` (resolution
+        is async), and a `/threads` switch never reaches the caller; the crash
+        snapshot is the only place the active thread survives.
+        """
+        result_snapshot = AppResult(return_code=1, thread_id="resolved-thread")
+        msg = "boom"
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            del kwargs
+            await asyncio.sleep(0)
+            raise TextualAppError(msg, result_snapshot)
+
+        with patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub):
+            result = await run_textual_cli_async(
+                "agent",
+                thread_id=None,
+                resume_thread="resolved-thread",
+                no_mcp=True,
+            )
+
+        assert result is result_snapshot
+
+    async def test_crash_without_app_state_falls_back_to_launch_thread(
+        self,
+    ) -> None:
+        """A failure before/without app state keeps the launch-time thread ID."""
+        msg = "boom"
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            del kwargs
+            await asyncio.sleep(0)
+            raise RuntimeError(msg)
+
+        with patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub):
+            result = await run_textual_cli_async(
+                "agent",
+                thread_id="launch-thread",
+                no_mcp=True,
+            )
+
+        assert result.return_code == 1
+        assert result.thread_id == "launch-thread"
+
+    def test_keyboard_interrupt_prints_hint_with_caveat(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ctrl+C teardown shows the resume hint with the incomplete-turn caveat."""
+        launch = AsyncMock(side_effect=KeyboardInterrupt)
+        thread_exists_mock = AsyncMock(return_value=True)
+        invoked_name.cache_clear()
+
+        with (
+            patch("sys.argv", ["dcode"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._install_termination_signal_handlers"),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=None),
+            patch("deepagents_code.main._check_project_hooks_trust", return_value=None),
+            patch(
+                "deepagents_code.sessions.generate_thread_id", return_value="test123"
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+            patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
+            patch(
+                "deepagents_code.config.build_langsmith_thread_url", return_value=None
+            ),
+            patch.dict(os.environ, {INVOKED_AS: "dcode"}),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 130
+        thread_exists_mock.assert_awaited_once_with("test123")
+        output = capsys.readouterr().out
+        flattened = output.replace("\n", "")
+        assert "Resume this thread with:" in output
+        assert "dcode -r test123" in output
+        assert "the last turn may be incomplete and resume may be unsafe" in flattened
+
+    def test_signal_exit_prints_hint_with_caveat(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A termination-signal SystemExit shows the caveat, not a clean hint."""
+        launch = AsyncMock(side_effect=SystemExit(143))
+        thread_exists_mock = AsyncMock(return_value=True)
+        invoked_name.cache_clear()
+
+        with (
+            patch("sys.argv", ["dcode"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._install_termination_signal_handlers"),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=None),
+            patch("deepagents_code.main._check_project_hooks_trust", return_value=None),
+            patch(
+                "deepagents_code.sessions.generate_thread_id", return_value="test123"
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+            patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
+            patch(
+                "deepagents_code.config.build_langsmith_thread_url", return_value=None
+            ),
+            patch.dict(os.environ, {INVOKED_AS: "dcode"}),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 143
+        thread_exists_mock.assert_awaited_once_with("test123")
+        output = capsys.readouterr().out
+        flattened = output.replace("\n", "")
+        assert "Resume this thread with:" in output
+        assert "the last turn may be incomplete and resume may be unsafe" in flattened
+
 
 class TestLangSmithTeardownUrl:
     """Test LangSmith thread URL display logic on teardown."""
@@ -2189,12 +2319,37 @@ class TestServerCleanupLifecycle:
             patch(
                 "deepagents_code.client.launch.server.emit_preserved_log_notices",
             ) as emit,
-            pytest.raises(RuntimeError, match="boom"),
+            pytest.raises(TextualAppError, match="boom"),
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
         emit.assert_called_once_with()
+
+    async def test_crash_carries_app_state(self) -> None:
+        """A run_async failure wraps the app's final thread ID and return code."""
+        msg = "boom"
+
+        async def _crash_after_switch(self: DeepAgentsApp) -> None:
+            # The app resolved/switched threads before dying (e.g. async `-r`
+            # resolution or `/threads`); the original launch-time ID is stale.
+            self._lc_thread_id = "switched-thread"
+            await asyncio.sleep(0)
+            raise RuntimeError(msg)
+
+        with (
+            patch.object(DeepAgentsApp, "run_async", new=_crash_after_switch),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ),
+            pytest.raises(TextualAppError) as exc_info,
+        ):
+            await run_textual_app(thread_id="launch-thread")
+
+        assert exc_info.value.result.thread_id == "switched-thread"
+        # No clean exit was recorded, so the crash snapshot reports failure.
+        assert exc_info.value.result.return_code == 1
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
     async def test_deferred_server_proc_stopped_after_app_exits(self) -> None:
         """server_proc set by the background worker must still be cleaned up."""

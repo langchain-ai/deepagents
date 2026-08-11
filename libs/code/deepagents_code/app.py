@@ -26170,6 +26170,26 @@ class AppResult:
     """`(is_available, latest_version)` for post-exit update warning."""
 
 
+class TextualAppError(Exception):
+    """`run_textual_app` failure that still carries the app's final state.
+
+    The TUI resolves resume intent and `/threads` switches asynchronously, so
+    only the app knows which thread was active when it crashed. Callers catch
+    this to render teardown hints against the right thread.
+    """
+
+    def __init__(self, message: str, result: AppResult) -> None:
+        """Store the partial result alongside the original error message.
+
+        Args:
+            message: The underlying exception's message.
+            result: Snapshot of the app's return code, thread ID, and session
+                stats at the moment of the crash.
+        """
+        super().__init__(message)
+        self.result = result
+
+
 async def run_textual_app(
     *,
     agent: Any = None,  # noqa: ANN401
@@ -26265,6 +26285,11 @@ async def run_textual_app(
 
     Returns:
         An `AppResult` with the return code and final thread ID.
+
+    Raises:
+        TextualAppError: The app crashed; the exception carries an `AppResult`
+            snapshot with the final thread ID so callers can still render
+            teardown hints for the thread that was active at the crash.
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -26295,6 +26320,19 @@ async def run_textual_app(
     )
     try:
         await app.run_async()
+    except Exception as e:
+        # The app resolves resume intent and `/threads` switches internally, so
+        # only it knows which thread was active at the crash. Attach that state
+        # so callers can aim teardown resume hints at the right thread.
+        raise TextualAppError(
+            str(e),
+            AppResult(
+                return_code=app.return_code or 1,
+                thread_id=app._lc_thread_id,
+                session_stats=app._session_stats,
+                update_available=app._update_available,
+            ),
+        ) from e
     finally:
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred

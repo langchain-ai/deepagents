@@ -155,6 +155,34 @@ def test_incomplete_extras_are_omitted() -> None:
     assert extras == {"anthropic": [("langchain-anthropic", "1.4.0")]}
 
 
+def test_complete_multi_package_extras_are_kept() -> None:
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "aiohttp>=3.14.3 ; extra == 'nvidia'",
+        "langchain-nvidia-ai-endpoints>=1.4.3 ; extra == 'nvidia'",
+    ]
+
+    def fake_version(name: str) -> str:
+        if name == "aiohttp":
+            return "3.14.3"
+        if name == "langchain-nvidia-ai-endpoints":
+            return "1.4.3"
+        raise PackageNotFoundError(name)
+
+    with (
+        patch("deepagents_code.extras_info.distribution", return_value=mock_dist),
+        patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
+    ):
+        extras = get_extras_status()
+
+    assert extras == {
+        "nvidia": [
+            ("aiohttp", "3.14.3"),
+            ("langchain-nvidia-ai-endpoints", "1.4.3"),
+        ],
+    }
+
+
 def test_optional_dependency_status_includes_missing_packages() -> None:
     mock_dist = MagicMock()
     mock_dist.requires = [

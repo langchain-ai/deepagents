@@ -1157,6 +1157,11 @@ def installed_extra_names(
 ) -> set[str]:
     """Return extras with at least one installed dependency.
 
+    Deliberately looser than `get_extras_status`, which requires every declared
+    package to be present. Callers here rebuild install commands, so a partially
+    installed extra must still be preserved across an upgrade; dropping it would
+    silently uninstall what the user asked for. Do not harmonize the two.
+
     Args:
         distribution_name: Name of the installed distribution to inspect.
         strict: Raise when the distribution metadata cannot be read or parsed

@@ -84,6 +84,7 @@ class TestApprovalModeDisplay:
             indicator = pilot.app.query_one("#auto-approve-indicator", Static)
             assert str(indicator.render()) == label
             assert indicator.has_class(mode)
+            assert indicator.styles.background.a == 1
 
 
 class TestCwdDisplay:
@@ -416,24 +417,26 @@ class TestResizePriority:
 class TestEdgeAlignment:
     """Tests that the status bar spans the full terminal width."""
 
-    async def test_model_label_is_flush_with_the_left_edge(self) -> None:
-        """The model should align with the workspace row's left edge."""
-        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_model(provider="fireworks", model="kimi-k3")
-            await pilot.pause()
-            model = pilot.app.query_one("#model-display", ModelLabel)
-            assert model.styles.padding.left == 0
-            assert model.content_region.x == bar.region.x
-
-    async def test_approval_text_is_flush_with_the_right_edge(self) -> None:
-        """The approval mode should occupy the session row's rightmost columns."""
+    async def test_approval_badge_is_flush_with_the_left_edge(self) -> None:
+        """The approval badge should occupy the session row's left edge."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_approval_mode("auto")
             await pilot.pause()
             indicator = pilot.app.query_one("#auto-approve-indicator", Static)
-            assert indicator.content_region.right == bar.region.right
+            cwd = pilot.app.query_one("#cwd-display", Static)
+            assert indicator.region.x == bar.region.x
+            assert cwd.region.x == indicator.region.right + 1
+
+    async def test_model_label_is_flush_with_the_right_edge(self) -> None:
+        """The model should occupy the session row's rightmost columns."""
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="fireworks", model="kimi-k3")
+            await pilot.pause()
+            model = pilot.app.query_one("#model-display", ModelLabel)
+            assert model.styles.padding.right == 0
+            assert model.content_region.right == bar.region.right
 
 
 class TestTokenDisplay:

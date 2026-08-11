@@ -2572,6 +2572,19 @@ class TestAppCSSValidation:
             # If we get here without exception, CSS is valid
             assert app.is_running
 
+    async def test_chat_input_aligns_with_status_rows(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+
+            input_box = app.query_one("#input-box")
+            session = app.query_one(".status-session")
+            metrics = app.query_one(".status-metrics")
+            assert input_box.region.x == session.region.x == metrics.region.x
+            assert (
+                input_box.region.right == session.region.right == metrics.region.right
+            )
+
 
 class TestCacheStatus:
     """Tests for active-thread cache metrics forwarded to the status bar."""

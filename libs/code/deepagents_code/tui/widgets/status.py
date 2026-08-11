@@ -298,21 +298,24 @@ class StatusBar(Vertical):
 
     StatusBar .status-auto-approve {
         width: auto;
-        padding: 0 0 0 2;
-        text-align: right;
+        padding: 0 1;
+        margin-right: 1;
     }
 
     StatusBar .status-auto-approve.yolo {
-        color: $error;
+        background: $error;
+        color: white;
         text-style: bold;
     }
 
     StatusBar .status-auto-approve.auto {
-        color: $success;
+        background: $success;
+        color: $background;
     }
 
     StatusBar .status-auto-approve.manual {
-        color: $warning;
+        background: $warning;
+        color: $background;
     }
 
     StatusBar .status-connection {
@@ -376,8 +379,9 @@ class StatusBar(Vertical):
         width: auto;
         max-width: 40%;
         min-width: 0;
-        padding: 0 2 0 0;
+        padding: 0 0 0 2;
         color: $text-muted;
+        text-align: right;
     }
 
     StatusBar BranchLabel {
@@ -430,15 +434,15 @@ class StatusBar(Vertical):
         """
         with Horizontal(classes="status-session"):
             yield Static("", classes="status-mode normal", id="mode-indicator")
-            yield ModelLabel(id="model-display")
-            yield Static("", classes="status-cwd", id="cwd-display")
-            yield BranchLabel(classes="status-branch", id="branch-display")
-            yield Static("", classes="status-rubric", id="rubric-display")
             yield Static(
                 "manual",
                 classes="status-auto-approve manual",
                 id="auto-approve-indicator",
             )
+            yield Static("", classes="status-cwd", id="cwd-display")
+            yield BranchLabel(classes="status-branch", id="branch-display")
+            yield Static("", classes="status-rubric", id="rubric-display")
+            yield ModelLabel(id="model-display")
         with Horizontal(classes="status-metrics"):
             yield Static("", classes="status-connection", id="connection-indicator")
             yield Static("", classes="status-message", id="status-message")

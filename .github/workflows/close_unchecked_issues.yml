@@ -120,13 +120,22 @@ jobs:
             // write/triage permissions), so a missing type reliably indicates
             // programmatic submission.
             if (!context.payload.issue.type) {
-              // Transferred issues keep their original created_at but arrive
-              // here as "opened" events with no type in the new repo. Treat
-              // anything older than 5 minutes as transferred and skip Rule 0.
-              const createdAt = new Date(context.payload.issue.created_at).getTime();
-              const ageMs = Date.now() - createdAt;
-              if (ageMs > 5 * 60 * 1000) {
-                console.log(`No issue type, but issue was created ${Math.round(ageMs / 60000)}m ago — likely transferred, skipping Rule 0`);
+              // Transferred issues fire an "opened" event in this repo but
+              // carry no issue type here, so check the timeline for a
+              // `transferred` event instead of assuming programmatic
+              // submission.
+              let transferred = false;
+              try {
+                const events = await github.paginate(
+                  github.rest.issues.listEventsForTimeline,
+                  { owner, repo, issue_number, per_page: 100 },
+                );
+                transferred = events.some((e) => e.event === 'transferred');
+              } catch (e) {
+                core.warning(`Rule 0: timeline lookup failed, treating as not transferred: ${e.message}`);
+              }
+              if (transferred) {
+                console.log('No issue type, but issue has a `transferred` timeline event — skipping Rule 0');
               } else {
                 let membership;
                 try {

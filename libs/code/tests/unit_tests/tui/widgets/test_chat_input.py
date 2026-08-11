@@ -3915,6 +3915,33 @@ class TestDroppedFolderPaste:
             assert chat.mode == "normal"
             assert chat._text_area.text == f"{dropped[:-2]}x{dropped[-2:]}"
 
+    async def test_in_place_edit_after_root_slash_keeps_dropped_path_context(
+        self, tmp_path: Path
+    ) -> None:
+        """Editing after `/` must retain the draft for the next keystroke."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        dropped = str(folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = dropped
+            chat._text_area.move_cursor((0, 1))
+            await _pause_for_strip(pilot)
+
+            await pilot.press("x")
+            await pilot.pause()
+            assert chat._dropped_path_draft == "/"
+
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"/xy{dropped[1:]}"
+
     async def test_multiple_in_place_edits_after_folder_drop_keep_normal_mode(
         self, tmp_path: Path
     ) -> None:

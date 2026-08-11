@@ -1782,7 +1782,7 @@ class ChatInput(Vertical):
                 # recognize the edited path at submission time even when it no
                 # longer exists on disk.
                 edited_prefix = self._longest_common_prefix(previous_text, text)
-                if len(edited_prefix) > 1 and edited_prefix.startswith("/"):
+                if edited_prefix.startswith("/"):
                     self._dropped_path_draft = edited_prefix
             else:
                 # The path context has genuinely been replaced, so re-run

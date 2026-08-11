@@ -824,20 +824,25 @@ class StatusBar(Vertical):
         pending = self._tokens_pending
         suffix = "+" if approximate else ""
         if pending:
-            usage = Content("... tokens")
+            percent_content = Content("...")
+            count_text = "..."
         elif self.context_limit is None:
-            usage = Content(f"{_compact_tokens(count)}{suffix} tokens")
+            percent_content = Content("0%" if count <= 0 else "--")
+            count_text = f"{_compact_tokens(count)}{suffix}"
         else:
             percent = min(100.0, max(0.0, count / self.context_limit * 100))
-            usage = Content.assemble(
-                (f"{percent:.0f}%", self._percent_color(percent)),
-                f"  {_compact_tokens(count)}{suffix}/"
-                f"{_compact_tokens(self.context_limit)}",
+            percent_content = Content.styled(
+                f"{percent:.0f}%", self._percent_color(percent)
             )
+            count_text = f"{_compact_tokens(count)}{suffix}"
+        muted = theme.get_theme_colors(self).muted
         return Content.assemble(
-            Content.styled("Context", theme.get_theme_colors(self).muted),
+            Content.styled("Context:", muted),
             " ",
-            usage,
+            percent_content,
+            " / ",
+            Content.styled("Tokens:", muted),
+            f" {count_text}",
         )
 
     def _cache_segment(self) -> Content:

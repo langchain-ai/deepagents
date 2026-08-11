@@ -2676,8 +2676,8 @@ class ChatInput(Vertical):
         Returns:
             `True` when the value was written, `False` when the text area is
             unavailable and the value could not be set. Callers that surface a
-            "restored"/"moved to input" toast should gate it on this so the
-            toast never claims a write that did not happen.
+            "moved to input" toast should gate it on this so the toast never
+            claims a write that did not happen.
         """
         if not self._text_area:
             return False

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
-import posixpath
+import os
 import re
 import textwrap
 from dataclasses import dataclass
@@ -4000,31 +4000,23 @@ def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
 
 
 def _normalize_path_target(value: str) -> str:
-    r"""Normalize a backend path for equality, collapsing only what is safe.
+    r"""Normalize a path using the filesystem middleware's canonical form.
 
-    Purely lexical and filesystem-free: it collapses "a//b" and "./a" so two
-    spellings of one path tally once. Deliberately conservative in three ways,
-    because a missed collapse only restores the old count while a wrong collapse
-    undercounts:
-
-    - POSIX rules always, even on a Windows client. These are the *backend's*
-      paths, and `os.path` would apply Windows rules locally, merging `a\b`
-      (a legal POSIX filename) with `a/b`.
-    - A `..` segment disables normalization entirely. Resolving it is lexical,
-      so `d/../a` would merge with `a` even when `d` is a symlink elsewhere.
-    - A relative and an absolute spelling stay distinct — the TUI's cwd is not
-      necessarily the backend's, so joining them here would be a guess.
+    This mirrors `validate_path` for paths that pass its validation: normalize
+    with the host's path rules, convert backslashes to forward slashes, and add
+    the virtual filesystem's leading slash. Rejected traversal paths remain
+    unchanged so failed calls are never folded into valid ones.
 
     Args:
         value: The raw path string as the tool was called with it.
 
     Returns:
-        The normalized path, or `value` unchanged when it contains a `..`
-        segment.
+        The normalized virtual path, or `value` for a rejected traversal path.
     """
-    if ".." in value.split("/"):
+    if ".." in value.replace("\\", "/").split("/"):
         return value
-    return posixpath.normpath(value)
+    normalized = os.path.normpath(value).replace("\\", "/")
+    return normalized if normalized.startswith("/") else f"/{normalized}"
 
 
 # category -> plural noun for the operation, used to report repeat work on one

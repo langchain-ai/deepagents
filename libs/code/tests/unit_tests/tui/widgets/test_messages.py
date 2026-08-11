@@ -5254,8 +5254,15 @@ class TestSummaryTargetCounting:
                 ],
                 "Read 1 file",
             ),
-            # A relative and an absolute spelling stay distinct: the TUI's cwd
-            # is not necessarily the backend's, so equating them would guess.
+            # The middleware anchors relative paths at the virtual root.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "/a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            # Different canonical paths remain distinct.
             (
                 [
                     ("read_file", {"file_path": "a.py"}),
@@ -5374,14 +5381,13 @@ class TestSummaryTargetCounting:
                 [("read_file", {"file_path": ""}), ("read_file", {"file_path": "."})],
                 "Read 2 files",
             ),
-            # Backend paths are compared with POSIX rules wherever the TUI runs:
-            # `a\b` is a legal POSIX filename, not a spelling of `a/b`.
+            # The middleware accepts backslashes as path separators.
             (
                 [
                     ("read_file", {"file_path": "a\\b"}),
                     ("read_file", {"file_path": "a/b"}),
                 ],
-                "Read 2 files",
+                "Read 1 file",
             ),
             (
                 [("read_file", {"file_path": 42}), ("read_file", {"file_path": 42})],
@@ -5414,20 +5420,12 @@ class TestSummaryTargetCounting:
         ]
         assert summarize_tool_group(calls) == "Read 2 files, edited 2 files"
 
-    def test_backend_paths_use_posix_rules_on_every_platform(self) -> None:
-        r"""Backend paths never pick up the client's path rules.
-
-        The first assertion is the hazard, not a behavior under test: Windows
-        rules treat a backslash as a separator, so `os.path` on a Windows client
-        would merge `a\\b` — a legal POSIX filename — with `a/b`. This can only
-        fail on a Windows runner, where it is exactly the regression that matters.
-        """
-        import ntpath
-
+    def test_path_normalization_matches_filesystem_middleware(self) -> None:
+        r"""Summary identities use the canonical paths executed by file tools."""
         from deepagents_code.tui.widgets.messages import _normalize_path_target
 
-        assert ntpath.normpath("a\\b") == ntpath.normpath("a/b")
-        assert _normalize_path_target("a\\b") != _normalize_path_target("a/b")
+        assert _normalize_path_target("a.py") == _normalize_path_target("/a.py")
+        assert _normalize_path_target("a\\b") == _normalize_path_target("a/b")
 
     def test_repeat_nouns_require_a_target_arg(self) -> None:
         """A repeat noun is dead unless its category also names a target.

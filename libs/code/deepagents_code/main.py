@@ -3924,6 +3924,8 @@ def _check_project_hooks_trust(
     if trust_flag or is_project_hooks_trusted(project_root):
         return granted
 
+    from rich.markup import escape
+
     prompt_console = Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
@@ -3931,11 +3933,11 @@ def _check_project_hooks_trust(
         "machine.[/bold yellow]",
         highlight=False,
     )
-    prompt_console.print(f"Hooks file: {config_path}", highlight=False)
+    prompt_console.print(f"Hooks file: {escape(str(config_path))}", highlight=False)
     prompt_console.print(
-        f'Trusting "{project_root}" lets the hooks it defines now and any '
-        "future edits to them run without asking. Only trust repositories you "
-        "control.",
+        f'Trusting "{escape(str(project_root))}" lets the hooks it defines now '
+        "and any future edits to them run without asking. Only trust "
+        "repositories you control.",
         style="yellow",
         highlight=False,
     )
@@ -3962,8 +3964,8 @@ def _check_project_hooks_trust(
             )
         else:
             prompt_console.print(
-                f'[dim]Hooks for "{project_root}" will run without asking from '
-                "now on.[/dim]",
+                f'[dim]Hooks for "{escape(str(project_root))}" will run without '
+                "asking from now on.[/dim]",
                 highlight=False,
             )
         return granted

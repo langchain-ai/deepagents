@@ -1,22 +1,29 @@
 # Sandbox Code Interpreter
 
-Pipes the output of a **host tool** into a file inside a **remote LangSmith
-sandbox**, then runs Python in that sandbox to analyze it — all from a single
-JavaScript REPL call.
+Moves data **both ways** across the host/sandbox boundary in a single JavaScript
+REPL call: a host tool's output becomes a file in a remote LangSmith sandbox,
+Python in the sandbox analyzes it, and the file that Python writes is fed back
+into a second host tool.
 
 ## The problem it solves
 
-A tool that runs on the host returns data to the *model*, not to the sandbox.
-Nothing in the sandbox can see it. To analyze that data with real Python you
-have to land it on the sandbox filesystem first.
+A tool that runs on the host returns data to the *model*, not to the sandbox —
+nothing in the sandbox can see it. The reverse is also true: a file a sandbox
+process writes is invisible to a host tool. Files are the only crossing, and
+each crossing normally costs a model round trip.
 
-Programmatic tool calling (PTC) makes that one round trip instead of four:
+Programmatic tool calling (PTC) collapses the whole chain into one call:
 
 ```js
-const raw = await tools.generateReadings({ count: 200 });   // runs on the host
-await tools.writeFile({ file_path: "/root/workspace/readings.json", content: raw });
-await tools.writeFile({ file_path: "/root/workspace/analyze.py", content: script });
-await tools.execute({ command: "python3 /root/workspace/analyze.py" });  // runs in the sandbox
+// host -> sandbox
+const raw = await tools.generateReadings({ count: 200 });          // host
+await tools.writeFile({ file_path: `${dir}/readings.json`, content: raw });
+await tools.writeFile({ file_path: `${dir}/analyze.py`, content: script });
+await tools.execute({ command: `python3 ${dir}/analyze.py` });     // sandbox
+
+// sandbox -> host
+const summary = await tools.readFile({ file_path: `${dir}/summary.json` });
+await tools.renderReport({ summary_json: strip(summary) });        // host
 ```
 
 ## How it works
@@ -28,26 +35,33 @@ route outward is PTC: tools named in `ptc=[...]` are exposed as
 
 Those names resolve against the *live* tool registry, which mixes both worlds:
 
-- `generate_readings` is a plain `@tool` on the host.
+- `generate_readings` and `render_report` are plain `@tool`s on the host.
 - `write_file` / `read_file` / `ls` / `execute` come from `backend=sandbox`, so
   they act on the remote filesystem.
 
 ```python
 agent = create_deep_agent(
     model="openai:gpt-5.6-luna",
-    tools=[generate_readings],
+    tools=[generate_readings, render_report],
     backend=LangSmithSandbox(sandbox),
     middleware=[
         CodeInterpreterMiddleware(
             tool_name="js_eval",
-            ptc=["generate_readings", "write_file", "read_file", "ls", "execute"],
+            ptc=[
+                "generate_readings",
+                "render_report",
+                "write_file",
+                "read_file",
+                "ls",
+                "execute",
+            ],
         )
     ],
 )
 ```
 
 The JS glues them together without the 200 readings ever passing back through
-the model's context.
+the model's context — only the final rendered table does.
 
 ## Trust boundary
 
@@ -82,10 +96,11 @@ The sandbox boots from the default image (Python 3.12, no snapshot) and is
 deleted on exit. Expected output:
 
 ```
-| Sensor | Count | Mean | Min | Max |
-| dryer  | 78    | 70.78 | 41.89 | 94.26 |
-| kiln   | 67    | 74.13 | 47.75 | 101.79 |
-| press  | 55    | 71.13 | 39.78 | 99.08 |
+SENSOR    COUNT     MEAN      MIN      MAX
+------------------------------------------
+kiln         67    74.13    47.75   101.79
+press        55    71.13    39.78    99.08
+dryer        78    70.78    41.89    94.26
 ```
 
 ## Notes

@@ -1,4 +1,7 @@
-"""Host tool output -> sandbox file -> Python analysis inside the sandbox."""
+"""Data crossing the host/sandbox boundary in both directions.
+
+Host tool -> sandbox file -> Python in the sandbox -> sandbox file -> host tool.
+"""
 
 import json
 import random
@@ -11,17 +14,25 @@ from langsmith.sandbox import SandboxClient
 
 WORKDIR = "/root/workspace"
 
-PTC_TOOLS = ["generate_readings", "write_file", "read_file", "ls", "execute"]
+PTC_TOOLS = [
+    "generate_readings",
+    "render_report",
+    "write_file",
+    "read_file",
+    "ls",
+    "execute",
+]
 
 SYSTEM_PROMPT = f"""Use the js_eval tool to orchestrate work in one call.
 
-Inside it, tools.generateReadings / tools.writeFile / tools.readFile / tools.ls
-/ tools.execute are async functions. Each takes a single object argument, e.g.
-tools.writeFile({{file_path: p, content: s}}).
+Inside it, tools.generateReadings / tools.renderReport / tools.writeFile /
+tools.readFile / tools.ls / tools.execute are async functions. Each takes a
+single object argument, e.g. tools.writeFile({{file_path: p, content: s}}).
 
-generateReadings runs on the host, so the data it returns only reaches the
-sandbox if you write it to a file there. Everything under {WORKDIR} is visible
-to processes you start with tools.execute.
+generateReadings and renderReport run on the host; the rest act on the sandbox.
+Data only crosses that boundary through files: write host data into {WORKDIR}
+for the sandbox to see, and read a sandbox file back before passing it to a
+host tool.
 
 Return values are the tools' own text output, not JSON:
 
@@ -35,11 +46,13 @@ QUESTION = f"""In a single js_eval call:
 1. Call generateReadings with count 200 to get sensor data from the host.
 2. Write the raw JSON to {WORKDIR}/readings.json.
 3. Write a Python script to {WORKDIR}/analyze.py that loads that file and
-   prints, per sensor, the reading count and the mean, min, and max value
-   rounded to two decimals.
-4. Run it with tools.execute and return its output.
+   writes {WORKDIR}/summary.json: a JSON list of objects with keys sensor,
+   count, mean, min, max, values rounded to two decimals.
+4. Run it with tools.execute.
+5. Read summary.json back and pass its contents to renderReport, which runs on
+   the host.
 
-Then report the per-sensor table."""
+Return renderReport's output verbatim."""
 
 
 @tool
@@ -58,6 +71,21 @@ def generate_readings(count: int) -> str:
     return json.dumps(readings)
 
 
+@tool
+def render_report(summary_json: str) -> str:
+    """Render a per-sensor summary, as written by the sandbox, into a table."""
+    rows = json.loads(summary_json)
+    header = f"{'SENSOR':<8}{'COUNT':>7}{'MEAN':>9}{'MIN':>9}{'MAX':>9}"
+    lines = [header, "-" * len(header)]
+    for row in sorted(rows, key=lambda r: -float(r["mean"])):
+        lines.append(
+            f"{row['sensor']:<8}{row['count']:>7}"
+            f"{float(row['mean']):>9.2f}{float(row['min']):>9.2f}"
+            f"{float(row['max']):>9.2f}"
+        )
+    return "\n".join(lines)
+
+
 def main() -> None:
     client = SandboxClient()
     sandbox = client.create_sandbox()
@@ -69,7 +97,7 @@ def main() -> None:
 
         agent = create_deep_agent(
             model="openai:gpt-5.6-luna",
-            tools=[generate_readings],
+            tools=[generate_readings, render_report],
             backend=backend,
             middleware=[
                 CodeInterpreterMiddleware(

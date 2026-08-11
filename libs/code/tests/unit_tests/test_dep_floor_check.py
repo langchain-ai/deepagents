@@ -32,7 +32,10 @@ from deepagents_code.main import _TrustAction, _TrustPromptOutcome
 
 _VIOLATIONS = [
     _FloorViolation(
-        dist_name="quickjs-rs", installed="0.2.4", required="quickjs-rs>=0.2.5"
+        dist_name="quickjs-rs",
+        installed="0.2.4",
+        floor="0.2.5",
+        required="quickjs-rs>=0.2.5",
     )
 ]
 
@@ -157,6 +160,37 @@ class TestExactPins:
         """`==X.*` has no single parseable version, so it cannot be a floor."""
         _patch_versions(monkeypatch, {"some-dep": "0.9"})
         assert _find_floor_violations(["some-dep==1.0.*"]) == []
+
+    def test_compatible_release_floor_is_honored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`~=` declares a floor, so an older install is a violation."""
+        _patch_versions(monkeypatch, {"some-dep": "1.4.1"})
+        violations = _find_floor_violations(["some-dep~=1.4.2"])
+        assert [(v.dist_name, v.installed, v.floor) for v in violations] == [
+            ("some-dep", "1.4.1", "1.4.2")
+        ]
+
+    def test_unreadable_dist_metadata_skips_only_that_entry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt `.dist-info` must not abandon the rest of the scan.
+
+        Letting the failure escape would discard violations already found and
+        leave later entries unexamined — a false all-clear for every dep.
+        """
+
+        def fake_version(name: str) -> str:
+            if name == "broken-dep":
+                msg = "corrupt .dist-info"
+                raise OSError(msg)
+            return "0.9"
+
+        monkeypatch.setattr(dep_floor_check.importlib.metadata, "version", fake_version)
+
+        violations = _find_floor_violations(["broken-dep>=1.0", "later-dep>=1.0"])
+
+        assert [v.dist_name for v in violations] == ["later-dep"]
 
 
 class TestQuoteArg:
@@ -349,7 +383,10 @@ class TestMuteStore:
 
         changed = [
             _FloorViolation(
-                dist_name="quickjs-rs", installed="0.2.4", required="quickjs-rs>=0.3.0"
+                dist_name="quickjs-rs",
+                installed="0.2.4",
+                floor="0.3.0",
+                required="quickjs-rs>=0.3.0",
             )
         ]
         monkeypatch.setattr(
@@ -385,6 +422,47 @@ class TestMuteStore:
         # Muting over the corrupt file recovers cleanly.
         assert mute_dep_floor_mismatch("fresh")
         assert is_dep_floor_mismatch_muted("fresh")
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param("[]", id="root-not-a-mapping"),
+            pytest.param('{"dismissed": []}', id="dismissed-not-a-mapping"),
+            pytest.param('{"dismissed": {"/checkout": 123}}', id="fingerprint-not-str"),
+        ],
+    )
+    def test_malformed_store_shapes_re_arm(
+        self, dismissal_store: Path, payload: str
+    ) -> None:
+        """Every shape that is not `{"dismissed": {str: str}}` re-arms."""
+        dismissal_store.write_text(payload, encoding="utf-8")
+        assert not is_dep_floor_mismatch_muted("anything")
+
+    def test_one_bad_entry_does_not_unmute_the_others(
+        self, dismissal_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-string fingerprint drops its own row, not the whole map."""
+        dismissal_store.write_text(
+            json.dumps({"dismissed": {"/other": 123, "/mine": "fp"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(dep_floor_check, "_checkout_key", lambda: "/mine")
+
+        assert is_dep_floor_mismatch_muted("fp")
+
+    def test_mute_write_failure_reports_false_and_leaves_no_temp_file(
+        self, dismissal_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed atomic replace is reported, not swallowed as success."""
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "simulated replace failure"
+            raise OSError(msg)
+
+        monkeypatch.setattr(dep_floor_check.Path, "replace", _boom)
+
+        assert not mute_dep_floor_mismatch("fp")
+        assert not list(dismissal_store.parent.glob("*.tmp"))
 
 
 class TestInteractivePrompt:
@@ -454,8 +532,34 @@ class TestInteractivePrompt:
         assert prompt_if_editable_deps_stale() is None
         assert "could not be saved" in capsys.readouterr().err
 
-    def test_deny_aborts_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_cancelled_aborts_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._stub_prompt(monkeypatch, _TrustPromptOutcome.CANCELLED)
+        assert prompt_if_editable_deps_stale() is _TrustPromptOutcome.CANCELLED
+
+    def test_picking_abort_launch_aborts_the_launch(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Selecting "Abort launch" in the picker must not start the TUI.
+
+        Exercises the real `prompt_for_dep_floor_mismatch`, stubbing only the
+        picker, because the regression this guards lived in the translation
+        between the picker's `DENY` and the launch-control outcome.
+        """
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: True)
+        monkeypatch.setattr(
+            main_module,
+            "_run_trust_action_picker",
+            lambda *_args, **_kwargs: _TrustAction.DENY,
+        )
+
+        assert prompt_if_editable_deps_stale() is _TrustPromptOutcome.CANCELLED
+        assert "Continuing this session" not in capsys.readouterr().err
+
+    def test_unexpected_outcome_aborts_rather_than_continuing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmapped outcome must refuse, not fall through to "continue"."""
+        self._stub_prompt(monkeypatch, _TrustAction.DENY)
         assert prompt_if_editable_deps_stale() is _TrustPromptOutcome.CANCELLED
 
     def test_interrupt_aborts_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -476,6 +580,72 @@ class TestInteractivePrompt:
         assert prompt_if_editable_deps_stale() is None
 
 
+class TestCliMainChannel:
+    """`cli_main` picks the prompt or the warning from the launch mode."""
+
+    @pytest.fixture
+    def channels(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        """Count which channel `cli_main` reaches, without running either."""
+        calls = {"prompt": 0, "warn": 0}
+
+        def _prompt() -> None:
+            """Stand in for the prompt, always choosing to continue."""
+            calls["prompt"] += 1
+
+        def _warn() -> None:
+            calls["warn"] += 1
+
+        monkeypatch.setattr(dep_floor_check, "prompt_if_editable_deps_stale", _prompt)
+        monkeypatch.setattr(dep_floor_check, "warn_if_editable_deps_stale", _warn)
+        monkeypatch.setattr(main_module, "check_cli_dependencies", lambda: None)
+        monkeypatch.setattr(main_module, "apply_stdin_pipe", lambda _args: None)
+        return calls
+
+    def _run_cli_main(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], *, tty: bool
+    ) -> None:
+        """Invoke `cli_main` far enough to pass the dep-floor gate, then stop.
+
+        `--no-mcp` with `--mcp-config` is rejected on the statement right
+        after the gate, so it stops the launch without stubbing session setup.
+        """
+        monkeypatch.setattr(main_module, "_trust_picker_has_terminal", lambda: tty)
+        monkeypatch.setattr(
+            main_module.sys,
+            "argv",
+            ["dcode", *argv, "--no-mcp", "--mcp-config", "/some/path"],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            main_module.cli_main()
+
+        assert exc.value.code == 2
+
+    def test_terminal_interactive_launch_prompts(
+        self, monkeypatch: pytest.MonkeyPatch, channels: dict[str, int]
+    ) -> None:
+        self._run_cli_main(monkeypatch, [], tty=True)
+        assert channels == {"prompt": 1, "warn": 0}
+
+    def test_piped_stdin_interactive_launch_warns_instead_of_prompting(
+        self, monkeypatch: pytest.MonkeyPatch, channels: dict[str, int]
+    ) -> None:
+        """`cat x | dcode -m ...` still mounts the TUI but cannot be prompted.
+
+        `apply_stdin_pipe` routes piped text into `initial_prompt` there, not
+        `non_interactive_message`, so the launch looks interactive while stdin
+        is a pipe. Prompting would read EOF and abort the launch outright.
+        """
+        self._run_cli_main(monkeypatch, ["-m", "explain this"], tty=False)
+        assert channels == {"prompt": 0, "warn": 1}
+
+    def test_headless_launch_warns(
+        self, monkeypatch: pytest.MonkeyPatch, channels: dict[str, int]
+    ) -> None:
+        self._run_cli_main(monkeypatch, ["-n", "summarize"], tty=True)
+        assert channels == {"prompt": 0, "warn": 1}
+
+
 def test_dep_floor_prompt_escapes_dynamic_rich_markup(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -485,6 +655,7 @@ def test_dep_floor_prompt_escapes_dynamic_rich_markup(
     violation = _FloorViolation(
         dist_name="langgraph-cli[inmem]",
         installed="0.4.0[local]",
+        floor="0.5.0",
         required="langgraph-cli[inmem]>=0.5.0",
     )
     monkeypatch.setattr(

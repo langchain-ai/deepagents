@@ -9,11 +9,12 @@ checkout declares. Released installs (uv tool / PyPI wheel) carry no
 editable `direct_url.json` record and skip the check entirely, so end
 users pay no startup cost here.
 
-Interactive launches stop on a blocking pre-TUI prompt (continue / mute /
-abort); non-interactive launches and subcommands get a one-time stderr
-warning. A dismissed (muted) mismatch is remembered per checkout as a
-fingerprint of the offending distributions and stays silent until the
-mismatch itself changes.
+Interactive launches on a terminal stop on a blocking pre-TUI prompt
+(continue / mute / abort); headless launches, subcommands, and interactive
+launches whose stdin is piped get a single stderr warning per launch instead,
+since they have no answerable prompt and must never block. A dismissed
+(muted) mismatch is remembered per checkout as a fingerprint of the offending
+distributions and stays silent until the mismatch itself changes.
 """
 
 from __future__ import annotations
@@ -51,12 +52,28 @@ class _FloorViolation:
     Attributes:
         dist_name: Distribution name as passed to `importlib.metadata.version`.
         installed: The installed version string.
-        required: The requirement spec as declared in `pyproject.toml`.
+        floor: The highest declared floor version `installed` sorts below.
+        required: The requirement spec as declared in `pyproject.toml`, kept
+            for display only. `floor` is the parsed value to compare against;
+            this string is `packaging`'s rendering and may shift across
+            `packaging` releases.
     """
 
     dist_name: str
     installed: str
+    floor: str
     required: str
+
+    def describe(self) -> str:
+        """Return the one-line advisory row for this violation.
+
+        Both the stderr warning and the interactive prompt render violations,
+        so the sentence lives here rather than being duplicated per channel.
+        """
+        return (
+            f"{self.dist_name} {self.installed} is installed, "
+            f"but {self.required} is required"
+        )
 
 
 def _load_cli_requirements() -> list[str] | None:
@@ -149,16 +166,37 @@ def _find_floor_violations(entries: list[str]) -> list[_FloorViolation]:
             # dists both land here; a missing dist is not a stale floor.
             logger.debug("Distribution %r is not installed; skipping", req.name)
             continue
+        except Exception:
+            # A corrupt or half-written `.dist-info` raises from the metadata
+            # parser. Skip just this entry: letting it escape would discard
+            # violations already found and leave the rest of the list
+            # unexamined, reporting a false all-clear for every dependency.
+            logger.debug(
+                "Could not read the installed version of %r; skipping",
+                req.name,
+                exc_info=True,
+            )
+            continue
         try:
             installed_version = Version(installed)
         except InvalidVersion:
             logger.debug("Unparseable installed version %r for %r", installed, req.name)
             continue
         floor = max(floors, key=_version_key)
-        if installed_version < Version(floor):
+        try:
+            floor_version = Version(floor)
+        except InvalidVersion:
+            # `_version_key` sorts unparseable floors lowest, so this is only
+            # reachable when every floor for the entry is unparseable.
+            logger.debug("Unparseable floor %r for %r; skipping", floor, req.name)
+            continue
+        if installed_version < floor_version:
             violations.append(
                 _FloorViolation(
-                    dist_name=req.name, installed=installed, required=str(req)
+                    dist_name=req.name,
+                    installed=installed,
+                    floor=floor,
+                    required=str(req),
                 )
             )
     return violations
@@ -204,18 +242,34 @@ def _version_key(version: str) -> tuple[int, ...]:
 _DEBUG_VIOLATION = _FloorViolation(
     dist_name="packaging",
     installed="0.0.1",
+    floor="26.2",
     required="packaging>=26.2",
 )
 """Fake below-floor violation used by `DEEPAGENTS_CODE_DEBUG_DEP_FLOOR`.
 
 Lets the warn/prompt/mute flow be exercised end to end without a genuinely
-stale environment or monkeypatching internals.
+stale environment or monkeypatching internals. This one instance deliberately
+misreports the environment, so "an instance describes a real installed
+version" is not an invariant of `_FloorViolation`.
 """
 
 
 def _checkout_root() -> Path:
     """Return the editable source checkout root this module runs from."""
     return Path(__file__).resolve().parent.parent
+
+
+def refresh_command() -> str:
+    """Return the shell command that refreshes this editable environment.
+
+    Shared by the stderr warning and the interactive prompt so the two
+    channels cannot drift apart.
+    """
+    return (
+        "uv pip install --python "
+        f"{_quote_arg(sys.executable)} -e {_quote_arg(str(_checkout_root()))} "
+        "--upgrade"
+    )
 
 
 def _collect_violations() -> list[_FloorViolation]:
@@ -247,11 +301,15 @@ def _mismatch_fingerprint(violations: list[_FloorViolation]) -> str:
         violations: The offending distributions.
 
     Returns:
-        A hex digest over sorted `name/installed/required` rows. Any change —
+        A hex digest over sorted `name/installed/floor` rows. Any change —
         a refreshed dep, a moved floor, a newly stale package — produces a
         different fingerprint and re-arms the warning.
+
+        The rows deliberately exclude `required`: it is `packaging`'s rendering
+        of the requirement, so hashing it would let a `packaging` upgrade that
+        reorders specifiers silently invalidate every stored dismissal.
     """
-    rows = sorted(f"{v.dist_name}/{v.installed}/{v.required}" for v in violations)
+    rows = sorted(f"{v.dist_name}/{v.installed}/{v.floor}" for v in violations)
     return hashlib.sha256("\n".join(rows).encode()).hexdigest()
 
 
@@ -262,8 +320,8 @@ def format_dep_floor_warning(violations: list[_FloorViolation]) -> str:
         violations: The offending distributions.
 
     Returns:
-        Plain-text (no Rich markup) advisory ending with the refresh command
-        and a "continuing anyway" caveat.
+        Plain-text (no Rich markup) advisory listing each violation, then the
+        refresh command, ending with a "continuing anyway" caveat.
     """
     lines = [
         (
@@ -271,15 +329,8 @@ def format_dep_floor_warning(violations: list[_FloorViolation]) -> str:
             "older than the floors declared in the checkout's pyproject.toml:"
         )
     ]
-    lines.extend(
-        f"  - {v.dist_name} {v.installed} is installed, but {v.required} is required"
-        for v in violations
-    )
-    refresh = (
-        "uv pip install --python "
-        f"{_quote_arg(sys.executable)} -e {_quote_arg(str(_checkout_root()))} "
-        "--upgrade"
-    )
+    lines.extend(f"  - {v.describe()}" for v in violations)
+    refresh = refresh_command()
     lines.append(
         "Refresh the active environment:\n"
         f"  {refresh}\n"
@@ -371,7 +422,15 @@ def _write_dismissed_fingerprints(path: Path, dismissed: dict[str, str]) -> None
     )
     tmp = Path(tmp_name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        # `fdopen` takes ownership of `fd`, so it is only closed by hand when
+        # the wrap itself failed; otherwise the `with` block closes it.
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            with suppress(OSError):
+                os.close(fd)
+            raise
+        with handle:
             handle.write(payload)
         if os.name != "nt":
             with suppress(OSError):
@@ -386,6 +445,12 @@ def _write_dismissed_fingerprints(path: Path, dismissed: dict[str, str]) -> None
 def is_dep_floor_mismatch_muted(fingerprint: str) -> bool:
     """Return whether this checkout's muted fingerprint matches *fingerprint*.
 
+    Reads without taking the store lock. Writes land via an atomic
+    `Path.replace`, so a concurrent mute is either wholly visible or wholly
+    absent — never torn. Locking here would instead put a `filelock` import
+    and a 5-second timeout on the startup path of every editable launch, and
+    a second `dcode` mid-write would stall this one for no benefit.
+
     Args:
         fingerprint: Fingerprint of the currently detected mismatch.
 
@@ -393,11 +458,9 @@ def is_dep_floor_mismatch_muted(fingerprint: str) -> bool:
         `True` when the user muted this exact mismatch for this checkout.
         Any store read failure returns `False`, re-arming the prompt.
     """
-    path = _default_dismissal_path()
     try:
-        with _dismissal_store_lock(path):
-            dismissed = _read_dismissed_fingerprints(path)
-            return dismissed.get(_checkout_key()) == fingerprint
+        dismissed = _read_dismissed_fingerprints(_default_dismissal_path())
+        return dismissed.get(_checkout_key()) == fingerprint
     except Exception:
         logger.debug("Could not read dependency floor dismissal store", exc_info=True)
         return False
@@ -430,8 +493,9 @@ def warn_if_editable_deps_stale() -> None:
 
     Skips silently when there are no violations or the exact mismatch was
     muted for this checkout. This is strictly best-effort: any unexpected
-    failure degrades to a debug log and never raises. stdout stays clean —
-    it carries ACP's JSON-RPC transport for some callers.
+    failure degrades to a debug log and never raises. The warning goes to
+    stderr so it never contaminates the stdout these launches produce for a
+    caller to consume (a piped `-n` answer, a subcommand's output).
     """
     try:
         violations = _collect_violations()
@@ -508,9 +572,16 @@ def _prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
                 "again next launch.[/yellow]",
                 highlight=False,
             )
-    else:
+    elif action is _TrustAction.ALLOW_ONCE:
         console.print(
             "[dim]Continuing this session; you will be asked again next launch.[/dim]",
             highlight=False,
         )
+    else:
+        # `abort_on_deny` should have collapsed a refusal into `CANCELLED`
+        # already, so `DENY` (or any future outcome) only lands here if that
+        # mapping regresses. Refuse rather than continuing: matching "continue"
+        # by default is what previously turned "Abort launch" into a launch.
+        logger.debug("Unexpected dependency floor prompt outcome %r; aborting", action)
+        return _TrustPromptOutcome.CANCELLED
     return None

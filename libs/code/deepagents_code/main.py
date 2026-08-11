@@ -3241,8 +3241,8 @@ def _run_trust_action_picker(
         deny_label: Label for the refuse option.
         deny_first: When `True`, list the deny option first; callers whose
             "deny" reads as a safe default (e.g. aborting a launch) put it in
-            the leading position. The picker starts highlighted on the last
-            item regardless, matching the historical deny-default.
+            the leading position. The picker starts highlighted on the deny
+            option in either ordering, so a bare Enter refuses.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
@@ -3280,7 +3280,14 @@ def _run_trust_action_picker(
     ]
     if deny_first:
         actions.reverse()
-    selected_index = len(actions) - 1
+    # Highlight the refusing option by identity, not position: `deny_first`
+    # moves it to the front, so a positional index would silently default to
+    # "allow" for exactly the callers that asked for a safer ordering.
+    selected_index = next(
+        index
+        for index, (action, _) in enumerate(actions)
+        if action is _TrustAction.DENY
+    )
 
     def _rows() -> FormattedText:
         rows: list[tuple[str, str]] = [
@@ -3380,8 +3387,10 @@ def prompt_for_dep_floor_mismatch(
 
     Returns:
         `ALLOW_ONCE` to continue this session, `REMEMBER` to mute this exact
-        mismatch for this checkout, `DENY` to abort the launch, `CANCELLED`
-        on Esc/Ctrl+D, or `INTERRUPTED` on Ctrl+C.
+        mismatch for this checkout, `CANCELLED` to abort the launch (chosen
+        "Abort launch", Esc, or Ctrl+D — `abort_on_deny` collapses all three
+        into one outcome, so `DENY` is never returned), or `INTERRUPTED` on
+        Ctrl+C.
     """
     console.print()
     console.print(
@@ -3391,19 +3400,11 @@ def prompt_for_dep_floor_mismatch(
     )
     from rich.markup import escape
 
-    for v in violations:
-        console.print(
-            f"  - {escape(v.dist_name)} {escape(v.installed)} is installed, but "
-            f"{escape(v.required)} is required",
-            highlight=False,
-        )
-    from deepagents_code._dep_floor_check import _checkout_root, _quote_arg
+    from deepagents_code._dep_floor_check import refresh_command
 
-    refresh = (
-        "uv pip install --python "
-        f"{_quote_arg(sys.executable)} -e {_quote_arg(str(_checkout_root()))} "
-        "--upgrade"
-    )
+    for v in violations:
+        console.print(f"  - {escape(v.describe())}", highlight=False)
+    refresh = refresh_command()
     console.print(
         f"Refresh the active environment:\n  {escape(refresh)}", highlight=False
     )
@@ -3446,9 +3447,10 @@ def _select_trust_action(
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
         deny_first: Forwarded to the picker to list the deny option first.
-        abort_on_deny: When `True`, the text fallback treats a deny answer as
-            `CANCELLED` and the caller maps the picker's deny the same way, so
-            prompts whose refuse option aborts the launch report one outcome.
+        abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
+            on every input path (picker, typed answer, and EOF), so prompts
+            whose refuse option aborts the launch report exactly one outcome
+            and callers cannot mistake a deny for a decision to proceed.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
@@ -3467,10 +3469,19 @@ def _select_trust_action(
             return _TrustPromptOutcome.CANCELLED
         return selected
 
+    # Mirror the caller's labels: for the dep-floor prompt the choices are
+    # continue / mute / abort, and a hardcoded "allow once / deny" would
+    # misdescribe what the default does. Both lines go to stderr, where the
+    # rest of the prompt already went; passing the question to `input()`
+    # instead would split it onto stdout, so `dcode 2>log` would show a bare
+    # question with all of its context redirected away.
+    console.print(
+        f"[dim]{allow_label} [y] · {remember_label} [r] · {deny_label} [N][/dim]",
+        highlight=False,
+    )
+    console.print("Choose [y/r/N]: ", end="", highlight=False)
     try:
-        answer = (
-            input("Choose [y] allow once / [r] remember / [N] deny: ").strip().lower()
-        )
+        answer = input().strip().lower()
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
@@ -4256,16 +4267,25 @@ def cli_main() -> None:
         # Gate on stale editable-install dependencies. Choose the channel from
         # the launch mode, not from `sys.stdout.isatty()`: a TTY does not imply
         # the interactive TUI. This runs after `apply_stdin_pipe` so
-        # `non_interactive_message` is final. The bare interactive launch gets
-        # a blocking pre-TUI continue/mute/abort prompt (printed to stderr
-        # before the alternate screen mounts); headless (`-n`/piped stdin) and
-        # every subcommand print the full warning to stderr once instead —
-        # they have no TUI to prompt in and must never block. (ACP exits
-        # above, before this point.)
+        # `non_interactive_message` is final. An interactive launch that can
+        # actually answer a prompt gets a blocking pre-TUI continue/mute/abort
+        # prompt (printed to stderr before the alternate screen mounts);
+        # headless (`-n`) launches and subcommands print the full warning to
+        # stderr once instead — they have no TUI to prompt in and must never
+        # block. Subcommands are warned earlier, before the `config`/`update`
+        # fast paths exit. (ACP exits above, before this point.)
+        #
+        # `_trust_picker_has_terminal()` is part of the condition because a
+        # piped-stdin interactive launch still mounts the TUI: per
+        # `apply_stdin_pipe`, `cat x | dcode -m ...` and `cat x | dcode
+        # --skill ...` set `initial_prompt`, not `non_interactive_message`.
+        # Prompting there would find no TTY for the picker, read EOF from the
+        # text fallback, and abort the launch outright — with no way to answer
+        # the prompt and mute it. Those launches get the warning instead.
         interactive_tui = (
             not getattr(args, "command", None) and not args.non_interactive_message
         )
-        if interactive_tui:
+        if interactive_tui and _trust_picker_has_terminal():
             from deepagents_code._dep_floor_check import prompt_if_editable_deps_stale
 
             dep_floor_outcome = prompt_if_editable_deps_stale()

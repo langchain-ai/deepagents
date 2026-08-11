@@ -1758,7 +1758,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="debug.dep_floor",
         group="Debug",
-        summary="Synthesize the stale editable-dependency warning at launch.",
+        summary="Synthesize the stale editable-dependency prompt/warning at launch.",
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.DEBUG_DEP_FLOOR,

@@ -133,12 +133,17 @@ set.
 """
 
 DEBUG_DEP_FLOOR = "DEEPAGENTS_CODE_DEBUG_DEP_FLOOR"
-"""Synthesize the stale editable-dependency floor warning at launch.
+"""Synthesize a stale editable-dependency floor mismatch at launch.
 
-Set to a truthy value to run the `warn_if_editable_deps_stale` flow with a
-hard-coded fake below-floor dependency, bypassing the editable-install gate
-and the real version comparison, so the stderr warning and TUI toast/teardown
-channels can be exercised without a genuinely stale environment.
+Set to a truthy value to short-circuit `_collect_violations` to a hard-coded
+fake below-floor dependency, bypassing the editable-install gate and the real
+version comparison. Both channels are then reachable without a genuinely stale
+environment: the blocking pre-TUI continue/mute/abort prompt on an interactive
+terminal launch, and the one-off stderr warning everywhere else.
+
+Note that muting the synthetic mismatch writes a real dismissal for this
+checkout; it re-arms on its own once the fake mismatch changes or the var is
+unset.
 
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """

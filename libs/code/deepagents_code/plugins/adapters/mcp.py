@@ -10,15 +10,36 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_code.plugins._json import json_object, json_value
+from deepagents_code.plugins.layouts import accepts_mcp_schema, dialect_by_name
 from deepagents_code.plugins.substitution import plugin_environment, substitute_json
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from deepagents_code.plugins.layouts import PluginDialect
     from deepagents_code.plugins.models import JsonObject, JsonValue, PluginInstance
 
 logger = logging.getLogger(__name__)
 # For example, `tools@example.com` becomes `tools_example_com_<hash>`.
 _MCP_NAME_PART_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _MCP_NAME_PART_LENGTH = 48
+_REMOTE_TRANSPORTS = {"http", "sse", "streamable-http", "streamable_http"}
+
+
+class _PluginMCPConfigError(ValueError):
+    """Raised when a plugin-relative MCP path escapes its permitted root."""
+
+
+def _resolved_within(path: Path, root: Path, field: str) -> Path:
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        msg = f"Could not resolve plugin MCP {field}: {exc}"
+        raise _PluginMCPConfigError(msg) from exc
+    if not resolved.is_relative_to(root):
+        msg = f"Plugin MCP {field} escapes its permitted root"
+        raise _PluginMCPConfigError(msg)
+    return resolved
 
 
 def _safe_mcp_name_part(value: str) -> str:
@@ -72,13 +93,7 @@ def plugin_mcp_server_entries(
     Returns:
         Deduplicated server entries in declaration order.
     """
-    servers: dict[str, object] = {}
-    for path in plugin.inventory.mcp_files:
-        if path.suffix in {".mcpb", ".dxt"}:
-            continue
-        servers.update(_load_mcp_server_map(path))
-    if plugin.manifest and plugin.manifest.inline_mcp:
-        servers.update(_server_map(plugin.manifest.inline_mcp))
+    servers = _plugin_mcp_server_map(plugin)
     entries: list[tuple[str, str, bool]] = []
     seen: set[str] = set()
     for name, server in servers.items():
@@ -106,25 +121,42 @@ def _server_map(raw: object) -> JsonObject:
     """
     if not isinstance(raw, dict):
         return {}
-    wrapped = raw.get("mcpServers")
-    if isinstance(wrapped, dict):
-        return json_object(wrapped)
-    codex_wrapped = raw.get("mcp_servers")
-    if isinstance(codex_wrapped, dict):
-        return json_object(codex_wrapped)
+    if "mcpServers" in raw:
+        wrapped = raw.get("mcpServers")
+        return json_object(wrapped) if isinstance(wrapped, dict) else {}
+    if "mcp_servers" in raw:
+        wrapped = raw.get("mcp_servers")
+        return json_object(wrapped) if isinstance(wrapped, dict) else {}
     return json_object(raw)
 
 
-def _load_mcp_server_map(path: Path) -> JsonObject:
+def _load_mcp_server_map(
+    path: Path,
+    *,
+    dialect: PluginDialect | None = None,
+) -> JsonObject:
     """Load an MCP config file and extract its server-name to config map.
 
+    Args:
+        path: MCP configuration path.
+        dialect: Dialect policy for a conventional schema-bearing document.
+
     Returns:
-        The extracted server map, or an empty map when the file cannot be read.
+        The extracted server map, or an empty map when the file cannot be read
+        with the selected dialect.
     """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Skipping plugin MCP config %s: %s", path, exc)
+        return {}
+    schema = raw.get("$schema") if isinstance(raw, dict) else None
+    if dialect is not None and not accepts_mcp_schema(dialect, schema):
+        logger.warning(
+            "Skipping plugin MCP config %s: unsupported schema %r",
+            path,
+            schema,
+        )
         return {}
     return _server_map(raw)
 
@@ -136,6 +168,16 @@ def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
         The unscoped server configuration keyed by declared server name.
     """
     servers: JsonObject = {}
+    dialect = (
+        dialect_by_name(plugin.manifest.dialect)
+        if plugin.manifest is not None
+        else None
+    )
+    conventional_mcp = (
+        (plugin.root / "mcp.json").resolve()
+        if dialect is not None and dialect.mcp_schema is not None
+        else None
+    )
     for path in plugin.inventory.mcp_files:
         if path.suffix in {".mcpb", ".dxt"}:
             logger.warning(
@@ -144,7 +186,12 @@ def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
                 path,
             )
             continue
-        servers.update(_load_mcp_server_map(path))
+        servers.update(
+            _load_mcp_server_map(
+                path,
+                dialect=dialect if path == conventional_mcp else None,
+            )
+        )
     if plugin.manifest and plugin.manifest.inline_mcp:
         servers.update(_server_map(plugin.manifest.inline_mcp))
     return servers
@@ -166,30 +213,84 @@ def plugin_mcp_server_names(plugin: PluginInstance) -> tuple[str, ...]:
     )
 
 
+def _is_stdio_server(server: Mapping[str, object]) -> bool:
+    transport = server.get("type") or server.get("transport")
+    if transport is not None and not isinstance(transport, str):
+        return False
+    return "url" not in server and transport not in _REMOTE_TRANSPORTS
+
+
 def _normalize_server(
     server: object, *, plugin: PluginInstance, project_dir: Path | None
 ) -> JsonValue:
+    plugin_root = plugin.root.resolve()
+    plugin_data = plugin.data_dir.resolve()
+    dialect = (
+        dialect_by_name(plugin.manifest.dialect)
+        if plugin.manifest is not None
+        else None
+    )
+    enforce_containment = dialect is not None and dialect.mcp_schema is not None
     normalized_server = json_value(server)
+    raw_cwd = (
+        normalized_server.get("cwd") if isinstance(normalized_server, dict) else None
+    )
     substituted = substitute_json(
         normalized_server,
-        plugin_root=plugin.root,
-        plugin_data=plugin.data_dir,
+        plugin_root=plugin_root,
+        plugin_data=plugin_data,
         project_dir=project_dir,
     )
-    if isinstance(substituted, dict):
+    if not isinstance(substituted, dict):
+        return json_value(substituted)
+
+    if _is_stdio_server(substituted):
+        command = substituted.get("command")
+        if isinstance(command, str) and command.startswith("./"):
+            command_path = plugin_root / command[2:]
+            resolved_command = (
+                _resolved_within(command_path, plugin_root, "command")
+                if enforce_containment
+                else command_path.resolve()
+            )
+            substituted = {**substituted, "command": str(resolved_command)}
         cwd = substituted.get("cwd")
         if isinstance(cwd, str) and cwd and not Path(cwd).is_absolute():
-            substituted = {**substituted, "cwd": str((plugin.root / cwd).resolve())}
-        env = substituted.get("env")
-        plugin_env = plugin_environment(
-            plugin_root=plugin.root,
-            plugin_data=plugin.data_dir,
-            project_dir=project_dir,
-        )
-        if isinstance(env, dict):
-            substituted = {**substituted, "env": {**plugin_env, **env}}
-        else:
-            substituted = {**substituted, "env": plugin_env}
+            if "${" not in cwd:
+                cwd_path = plugin_root / cwd
+                resolved_cwd = (
+                    _resolved_within(cwd_path, plugin_root, "cwd")
+                    if enforce_containment
+                    else cwd_path.resolve()
+                )
+                substituted = {**substituted, "cwd": str(resolved_cwd)}
+        elif cwd is None:
+            substituted = {**substituted, "cwd": str(plugin_root)}
+        if enforce_containment and isinstance(raw_cwd, str):
+            cwd_root = None
+            if raw_cwd.startswith(("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")):
+                cwd_root = plugin_root
+            elif raw_cwd.startswith(("${PLUGIN_DATA}", "${CLAUDE_PLUGIN_DATA}")):
+                cwd_root = plugin_data
+            substituted_cwd = substituted.get("cwd")
+            if cwd_root is not None and isinstance(substituted_cwd, str):
+                resolved_cwd = _resolved_within(
+                    Path(substituted_cwd),
+                    cwd_root,
+                    "cwd",
+                )
+                substituted = {**substituted, "cwd": str(resolved_cwd)}
+
+    env = substituted.get("env")
+    plugin_env = plugin_environment(
+        plugin_root=plugin_root,
+        plugin_data=plugin_data,
+        project_dir=project_dir,
+    )
+    if isinstance(env, dict):
+        substituted = {**substituted, "env": {**env, **plugin_env}}
+    else:
+        substituted = {**substituted, "env": plugin_env}
     return json_value(substituted)
 
 
@@ -223,7 +324,7 @@ def plugin_mcp_configs(
 ) -> list[JsonObject]:
     """Build MCP config layers for enabled plugins.
 
-    Default `.mcp.json` files are loaded before manifest `mcpServers`, so manifest
+    Conventional MCP files are loaded before manifest `mcpServers`, so manifest
     entries win on server-name conflicts.
 
     Args:
@@ -252,9 +353,19 @@ def plugin_mcp_configs(
             if not isinstance(name, str):
                 continue
             scoped_name = scoped_mcp_server_name(plugin.plugin_id, name)
-            scoped[scoped_name] = _normalize_server(
-                server, plugin=plugin, project_dir=project_dir
-            )
+            try:
+                scoped[scoped_name] = _normalize_server(
+                    server,
+                    plugin=plugin,
+                    project_dir=project_dir,
+                )
+            except _PluginMCPConfigError as exc:
+                logger.warning(
+                    "Skipping plugin MCP server %s from %s: %s",
+                    name,
+                    plugin.plugin_id,
+                    exc,
+                )
         if scoped:
             configs.append({"mcpServers": scoped})
     return configs

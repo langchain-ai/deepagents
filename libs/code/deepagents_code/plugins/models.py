@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
 ExternalPluginRepositorySourceType = Literal["github", "git-subdir", "url"]
+PluginDialectName = Literal["claude", "agent-plugin-v1"]
 UnsupportedComponent = Literal["agents", "commands"]
 """Plugin component directory that `deepagents-code` does not load."""
 
@@ -63,6 +64,8 @@ class PluginManifest:
         inline_mcp: Inline MCP servers declared in the manifest.
         inline_hooks: Inline hook configuration declared in the manifest, in
             `hooks.json` document form.
+        dialect: Schema-selected manifest and component layout dialect.
+        schema: Manifest schema URI, if one was declared.
         auto_update: Whether this plugin permits automatic updates.
     """
 
@@ -72,6 +75,8 @@ class PluginManifest:
     inline_mcp: JsonObject
     inline_hooks: JsonObject = field(default_factory=dict)
     display_name: str | None = None
+    dialect: PluginDialectName = "claude"
+    schema: str | None = None
     auto_update: bool = False
 
 

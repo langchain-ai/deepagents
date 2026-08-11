@@ -12,6 +12,7 @@ from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
 from deepagents_code.hooks.models.domain import HookEvent, SessionStartCause
 from deepagents_code.plugins import add_local_marketplace, install_plugin
+from deepagents_code.plugins.layouts import AGENT_PLUGIN_V1_SCHEMA
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -37,6 +38,8 @@ def _stage_plugins(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     documents: Mapping[str, dict[str, object] | bytes],
+    *,
+    agent_plugin: bool = False,
 ) -> tuple[Path, Path]:
     user_dir = tmp_path / "config"
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -57,10 +60,15 @@ def _stage_plugins(
     )
     for name, document in documents.items():
         plugin = root / "plugins" / name
-        _write_json(
-            plugin / ".claude-plugin" / "plugin.json",
-            {"name": name, "version": "1.0.0"},
+        manifest_path = (
+            plugin / "plugin.json"
+            if agent_plugin
+            else plugin / ".claude-plugin" / "plugin.json"
         )
+        manifest: dict[str, object] = {"name": name, "version": "1.0.0"}
+        if agent_plugin:
+            manifest["$schema"] = AGENT_PLUGIN_V1_SCHEMA
+        _write_json(manifest_path, manifest)
         hooks_path = plugin / "hooks" / "hooks.json"
         hooks_path.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(document, bytes):
@@ -78,8 +86,12 @@ def _install_all(root: Path, names: tuple[str, ...]) -> tuple[Path, ...]:
 @pytest.mark.skipif(
     sys.platform == "win32", reason="the hook command needs a POSIX shell"
 )
+@pytest.mark.parametrize("agent_plugin", [False, True])
 async def test_plugin_hook_runs_with_its_exported_variables(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    agent_plugin: bool,
 ) -> None:
     from deepagents_code.plugins.store import plugin_data_dir
 
@@ -93,6 +105,7 @@ async def test_plugin_hook_runs_with_its_exported_variables(
                 '"${CLAUDE_PROJECT_DIR}" > "${CLAUDE_PLUGIN_DATA}/observed.txt"'
             )
         },
+        agent_plugin=agent_plugin,
     )
     (plugin_root,) = _install_all(root, ("quality-review-plugin",))
     workspace = tmp_path / "$(touch${IFS}PWNED)"

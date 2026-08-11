@@ -495,6 +495,13 @@ class TestLoadMCPConfig:
         with pytest.raises(TypeError, match="env"):
             load_mcp_config(path)
 
+    def test_stdio_cwd_wrong_type(self, write_config: Callable[..., str]) -> None:
+        path = write_config(
+            {"mcpServers": {"fs": {"command": "x", "cwd": ["invalid"]}}}
+        )
+        with pytest.raises(TypeError, match="cwd"):
+            load_mcp_config(path)
+
     def test_remote_missing_url(self, write_config: Callable[..., str]) -> None:
         """Remote servers must declare a `url`."""
         path = write_config({"mcpServers": {"api": {"transport": "http"}}})
@@ -1429,6 +1436,7 @@ class TestGetMCPTools:
                 "srv": {
                     "command": "${DA_MCP_HOME}/server",
                     "args": ["--root", "${DA_MCP_HOME}"],
+                    "cwd": "${DA_MCP_HOME}/work",
                     "env": {"TOKEN": "${DA_MCP_TOKEN}"},
                 }
             }
@@ -1442,9 +1450,11 @@ class TestGetMCPTools:
 
         assert checked[0]["command"] == "/opt/mcp/server"
         assert checked[0]["args"] == ["--root", "/opt/mcp"]
+        assert checked[0]["cwd"] == "/opt/mcp/work"
         assert recorded[0] == {
             "command": "/opt/mcp/server",
             "args": ["--root", "/opt/mcp"],
+            "cwd": "/opt/mcp/work",
             "env": {"TOKEN": "token"},
             "transport": "stdio",
         }
@@ -5312,6 +5322,39 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"plugin", "other"}
+
+    async def test_invalid_plugin_server_does_not_hide_valid_sibling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        home = tmp_path / "home"
+        (home / ".deepagents").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        loader = AsyncMock(return_value=([], None, []))
+        monkeypatch.setattr("deepagents_code.mcp_tools._load_tools_from_config", loader)
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _tools, _manager, infos = await resolve_and_load_mcp_tools(
+            project_context=ctx,
+            trust_project_mcp=False,
+            additional_configs=(
+                {
+                    "mcpServers": {
+                        "valid": self._stdio(),
+                        "invalid": {"type": []},
+                    }
+                },
+            ),
+        )
+
+        assert set(loader.call_args.args[0]["mcpServers"]) == {"valid"}
+        assert any(info.name == "invalid" and info.status == "error" for info in infos)
 
     async def test_disabled_plugin_server_stays_disabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -8,6 +8,12 @@ import re
 from pathlib import Path, PureWindowsPath
 
 from deepagents_code.plugins._json import json_object
+from deepagents_code.plugins.layouts import (
+    ComponentDiscoveryPlan,
+    UnsupportedPluginSchemaError,
+    dialect_by_name,
+    dialect_for_schema,
+)
 from deepagents_code.plugins.models import (
     ComponentInventory,
     JsonObject,
@@ -34,7 +40,7 @@ class PluginManifestError(ValueError):
     """Raised when a plugin manifest is malformed enough to skip the plugin."""
 
 
-def find_manifest_path(root: Path) -> Path | None:
+def select_manifest_path(root: Path) -> Path | None:
     """Return the first supported manifest path under `root`, if present.
 
     Args:
@@ -189,7 +195,7 @@ def _inline_hooks(value: object) -> JsonObject:
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
-    """Load an Agent Plugins, Claude, or Codex plugin manifest.
+    """Load an Agent Plugin or Claude-style plugin manifest.
 
     Args:
         root: Plugin root directory.
@@ -201,9 +207,18 @@ def load_manifest(
     Raises:
         PluginManifestError: If the manifest exists but is invalid.
     """
-    manifest_path = find_manifest_path(root)
+    manifest_path = select_manifest_path(root)
     if manifest_path is None:
         return None, None, ()
+    try:
+        resolved_manifest = manifest_path.resolve()
+        resolved_root = root.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        msg = f"Could not resolve plugin manifest {manifest_path}: {exc}"
+        raise PluginManifestError(msg) from exc
+    if not resolved_manifest.is_relative_to(resolved_root):
+        msg = f"Plugin manifest escapes plugin root: {manifest_path}"
+        raise PluginManifestError(msg)
     try:
         decoded = json.loads(manifest_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -216,6 +231,12 @@ def load_manifest(
         msg = f"Plugin manifest {manifest_path} must be a JSON object"
         raise PluginManifestError(msg)
     raw = json_object(decoded)
+    schema_value = raw.get("$schema")
+    schema = schema_value if isinstance(schema_value, str) else None
+    try:
+        dialect = dialect_for_schema(schema)
+    except UnsupportedPluginSchemaError as exc:
+        raise PluginManifestError(str(exc)) from exc
 
     warnings: list[str] = []
     name = _validate_name(raw.get("name"), fallback=fallback_name)
@@ -234,8 +255,10 @@ def load_manifest(
     version = version_value if isinstance(version_value, str) else None
     display_name_value = raw.get("displayName")
     auto_update_settings = raw.get("extensions")
-    if isinstance(auto_update_settings, dict):
+    if dialect.supports_auto_update and isinstance(auto_update_settings, dict):
         auto_update_settings = auto_update_settings.get("com.langchain.deepagents.code")
+    else:
+        auto_update_settings = None
     manifest = PluginManifest(
         name=name,
         version=version,
@@ -245,6 +268,8 @@ def load_manifest(
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
+        dialect=dialect.name,
+        schema=schema,
         auto_update=(
             isinstance(auto_update_settings, dict)
             and auto_update_settings.get("autoUpdate") is True
@@ -297,7 +322,34 @@ def _unsupported_component_dirs(
     return tuple(found)
 
 
-def build_inventory(
+def _component_discovery_plan(
+    plugin_root: Path,
+    manifest: PluginManifest | None,
+) -> ComponentDiscoveryPlan:
+    dialect = (
+        dialect_by_name(manifest.dialect)
+        if manifest is not None
+        else dialect_for_schema(None)
+    )
+    layout = dialect.layout
+    declared = manifest.component_paths if manifest is not None else {}
+    root_skill_path = (
+        plugin_root / "SKILL.md"
+        if layout.root_skill_fallback and "skills" not in declared
+        else None
+    )
+    return ComponentDiscoveryPlan(
+        skill_paths=tuple(plugin_root / path for path in layout.skill_paths),
+        declared_skill_paths=declared.get("skills", ()),
+        mcp_paths=tuple(plugin_root / path for path in layout.mcp_paths),
+        declared_mcp_paths=declared.get("mcpServers", ()),
+        hook_paths=tuple(plugin_root / path for path in layout.hook_paths),
+        declared_hook_paths=declared.get("hooks", ()),
+        root_skill_path=root_skill_path,
+    )
+
+
+def discover_components(
     plugin_root: Path,
     manifest: PluginManifest | None,
     manifest_warnings: tuple[str, ...] = (),
@@ -314,28 +366,33 @@ def build_inventory(
     """
     plugin_root = plugin_root.resolve()
     warnings = list(manifest_warnings)
-    metadata_paths = manifest.component_paths if manifest else {}
+    plan = _component_discovery_plan(plugin_root, manifest)
 
-    default_skills = _existing_component_path(plugin_root / "skills", plugin_root)
+    default_skills = tuple(
+        component
+        for path in plan.skill_paths
+        for component in _existing_component_path(path, plugin_root)
+    )
     root_skill = (
         ()
-        if default_skills or (manifest and "skills" in manifest.component_paths)
-        else _existing_component_path(plugin_root / "SKILL.md", plugin_root)
+        if default_skills or plan.root_skill_path is None
+        else _existing_component_path(plan.root_skill_path, plugin_root)
     )
-    skills = (*default_skills, *metadata_paths.get("skills", ()), *root_skill)
+    skills = (*default_skills, *plan.declared_skill_paths, *root_skill)
 
     mcp_files = (
-        *_existing_component_path(plugin_root / ".mcp.json", plugin_root),
-        *metadata_paths.get("mcpServers", ()),
+        *(
+            component
+            for path in plan.mcp_paths
+            for component in _existing_component_path(path, plugin_root)
+        ),
+        *plan.declared_mcp_paths,
     )
 
-    hook_files = (
-        *_hooks_document_paths(plugin_root / "hooks", plugin_root),
-        *(
-            document
-            for path in metadata_paths.get("hooks", ())
-            for document in _hooks_document_paths(path, plugin_root)
-        ),
+    hook_files = tuple(
+        document
+        for path in (*plan.hook_paths, *plan.declared_hook_paths)
+        for document in _hooks_document_paths(path, plugin_root)
     )
 
     unsupported = _unsupported_component_dirs(plugin_root)
@@ -347,3 +404,7 @@ def build_inventory(
         unsupported=unsupported,
         warnings=tuple(warnings),
     )
+
+
+find_manifest_path = select_manifest_path
+build_inventory = discover_components

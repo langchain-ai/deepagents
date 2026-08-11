@@ -23,8 +23,8 @@ def plugin_environment(
     Returns:
         Environment variables for plugin subprocesses.
     """
-    root = str(plugin_root)
-    data = str(plugin_data)
+    root = str(plugin_root.resolve())
+    data = str(plugin_data.resolve())
     env = {
         "CLAUDE_PLUGIN_ROOT": root,
         "CLAUDE_PLUGIN_DATA": data,

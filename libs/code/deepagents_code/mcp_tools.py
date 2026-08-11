@@ -572,6 +572,10 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         if "env" in server_config and not isinstance(server_config["env"], dict):
             error_msg = f"Server '{server_name}' 'env' must be a dictionary"
             raise TypeError(error_msg)
+
+        if "cwd" in server_config and not isinstance(server_config["cwd"], str):
+            error_msg = f"Server '{server_name}' 'cwd' must be a string"
+            raise TypeError(error_msg)
     else:
         error_msg = (
             f"Server '{server_name}' has unsupported transport type '{server_type}'. "
@@ -1394,7 +1398,11 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     Returns:
         Whether a supported value contains a `${...}` reference.
     """
-    scalar_values = [server_config.get("command"), server_config.get("url")]
+    scalar_values = [
+        server_config.get("command"),
+        server_config.get("cwd"),
+        server_config.get("url"),
+    ]
     sequence_values = server_config.get("args")
     if isinstance(sequence_values, list):
         scalar_values.extend(sequence_values)
@@ -1903,6 +1911,18 @@ async def _load_tools_from_config(
     # discovery, and the final fold-in loop below.
     transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
 
+    def _stdio_connection(server_config: dict[str, Any]) -> Connection:
+        connection: Connection = StdioConnection(
+            command=server_config["command"],
+            args=server_config.get("args", []),
+            env=server_config.get("env") or None,
+            transport="stdio",
+        )
+        cwd = server_config.get("cwd")
+        if cwd is not None:
+            connection["cwd"] = cwd
+        return connection
+
     async def _preflight_and_connect(
         server_name: str,
         server_config: dict[str, Any],
@@ -2008,12 +2028,7 @@ async def _load_tools_from_config(
                     )
 
                 return conn
-            return StdioConnection(
-                command=server_config["command"],
-                args=server_config.get("args", []),
-                env=server_config.get("env") or None,
-                transport="stdio",
-            )
+            return _stdio_connection(server_config)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
                 error = (
@@ -2758,6 +2773,14 @@ async def resolve_and_load_mcp_tools(
 
     from deepagents_code.mcp_disabled import get_disabled_servers
 
+    def _reported_transport(server_config: object) -> str:
+        if not isinstance(server_config, dict):
+            return "unknown"
+        try:
+            return _resolve_server_type(cast("dict[str, Any]", server_config))
+        except (TypeError, ValueError):
+            return "unknown"
+
     disabled_names = get_disabled_servers()
     disabled_infos: list[MCPServerInfo] = []
     if disabled_names:
@@ -2767,9 +2790,7 @@ async def resolve_and_load_mcp_tools(
                 disabled_infos.append(
                     MCPServerInfo(
                         name=server_name,
-                        transport=_resolve_server_type(server_config)
-                        if isinstance(server_config, dict)
-                        else "unknown",
+                        transport=_reported_transport(server_config),
                         status="disabled",
                         error="Disabled by user (F2 to re-enable).",
                     ),
@@ -2781,12 +2802,26 @@ async def resolve_and_load_mcp_tools(
     if not merged.get("mcpServers"):
         return [], None, disabled_infos + _bad_config_infos()
 
-    try:
-        for server_name, server_config in merged["mcpServers"].items():
+    invalid_infos: list[MCPServerInfo] = []
+    valid_servers: dict[str, Any] = {}
+    for server_name, server_config in merged["mcpServers"].items():
+        try:
             _validate_server_config(server_name, server_config)
-    except (TypeError, ValueError, RuntimeError) as exc:
-        msg = f"Invalid MCP server configuration: {exc}"
-        raise RuntimeError(msg) from exc
+        except (TypeError, ValueError, RuntimeError) as exc:
+            invalid_infos.append(
+                MCPServerInfo(
+                    name=server_name,
+                    transport=_reported_transport(server_config),
+                    status="error",
+                    error=f"Invalid MCP server configuration: {exc}",
+                )
+            )
+        else:
+            valid_servers[server_name] = server_config
+    merged = {"mcpServers": valid_servers}
+
+    if not valid_servers:
+        return [], None, disabled_infos + invalid_infos + _bad_config_infos()
 
     tools, manager, server_infos = await _load_tools_from_config(
         merged,
@@ -2794,5 +2829,6 @@ async def resolve_and_load_mcp_tools(
         session_manager=session_manager,
     )
     server_infos.extend(disabled_infos)
+    server_infos.extend(invalid_infos)
     server_infos.extend(_bad_config_infos())
     return tools, manager, server_infos

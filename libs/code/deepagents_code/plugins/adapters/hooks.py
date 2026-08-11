@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.loading import PluginHooksSource, read_hooks_json
 from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
-from deepagents_code.plugins.manifest import find_manifest_path
+from deepagents_code.plugins.manifest import select_manifest_path
 from deepagents_code.plugins.substitution import plugin_environment
 
 if TYPE_CHECKING:
@@ -52,7 +52,7 @@ def _plugin_documents(
             documents.append((path, document))
     manifest = plugin.manifest
     if manifest and manifest.inline_hooks:
-        manifest_path = find_manifest_path(plugin.root) or plugin.root
+        manifest_path = select_manifest_path(plugin.root) or plugin.root
         documents.append((manifest_path, manifest.inline_hooks))
     return documents, diagnostics
 

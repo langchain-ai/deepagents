@@ -1,7 +1,7 @@
 """Validation and environment-variable expansion for MCP server config.
 
 Resolves `${VAR}` and `${VAR:-default}` references in the supported
-configuration fields (`command`, `url`, `args`, `env`, `headers`) and
+configuration fields (`command`, `url`, `cwd`, `args`, `env`, `headers`) and
 validates their types. A `${VAR:-default}` reference falls back to
 `default` when `VAR` is unset *or* empty (POSIX `:-` semantics).
 """
@@ -130,7 +130,7 @@ def resolve_mcp_server_env(
 ) -> dict[str, Any]:
     """Resolve `${VAR}` references in one MCP server's supported fields.
 
-    Interpolates the `command`, `url`, `args`, `env`, and `headers`
+    Interpolates the `command`, `url`, `cwd`, `args`, `env`, and `headers`
     fields (see `_interpolate_env` for the reference syntax); every other
     field is copied through verbatim. The input is not mutated.
 
@@ -150,7 +150,7 @@ def resolve_mcp_server_env(
     resolved: dict[str, Any] = copy.deepcopy(dict(server_config))
     prefix = f"mcpServers.{server_name}"
 
-    for name in ("command", "url"):
+    for name in ("command", "cwd", "url"):
         if name in resolved:
             resolved[name] = _resolve_string(resolved[name], field=f"{prefix}.{name}")
 

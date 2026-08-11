@@ -9,7 +9,7 @@ from pathlib import Path
 
 from deepagents_code.plugins.manifest import (
     PluginManifestError,
-    build_inventory,
+    discover_components,
     load_manifest,
 )
 from deepagents_code.plugins.marketplace import (
@@ -281,7 +281,7 @@ def _validate_plugin_copy(
     except PluginManifestError as exc:
         msg = f"Cannot install {plugin_id}: {exc}"
         raise MarketplaceError(msg) from exc
-    build_inventory(root, manifest, warnings)
+    discover_components(root, manifest, warnings)
 
 
 def _plugin_from_install_path(
@@ -300,7 +300,7 @@ def _plugin_from_install_path(
         return None, (f"Skipping plugin {plugin_id}: {exc}",)
     warnings.extend(manifest_warnings)
     name = manifest.name if manifest and manifest.name else fallback_name
-    inventory = build_inventory(root, manifest, tuple(warnings))
+    inventory = discover_components(root, manifest, tuple(warnings))
     try:
         instance = PluginInstance(
             plugin_id=plugin_id,

@@ -89,7 +89,18 @@ markers = [
     "scheduled: mark tests to run in scheduled testing",
 ]
 asyncio_mode = "auto"
-filterwarnings = []
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
+    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
+    # `google.genai.types` builds a union alias out of `typing._UnionGenericAlias`
+    # at import time, which Python 3.14 deprecates. Nothing here can act on it --
+    # it fires before any of our code runs and is fixed by upgrading the SDK.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+    # The `daytona` SDK's decorator still calls the deprecated API.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+]
 
 [tool.ruff.lint.extend-per-file-ignores]
 "tests/**/*.py" = ["D", "S101"]

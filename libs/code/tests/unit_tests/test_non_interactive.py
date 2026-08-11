@@ -50,7 +50,11 @@ from deepagents_code.client.non_interactive import (
     run_non_interactive,
 )
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
-from deepagents_code.file_ops import FileOpTracker
+from deepagents_code.file_ops import (
+    DiffOutcome,
+    FileOperationRecord,
+    FileOpTracker,
+)
 from deepagents_code.hooks.client_lifecycle import (
     ClientHookService,
     ClientHookStopError,
@@ -668,9 +672,31 @@ class TestQuietFileOpNotification:
     """The file-operation (📝) notification honors quiet mode."""
 
     @staticmethod
-    def _run(*, quiet: bool) -> str:
-        """Drive a file-op `ToolMessage` chunk and return captured stderr."""
-        record = SimpleNamespace(diff="--- a\n+++ b", display_path="src/foo.py")
+    def _run(
+        *,
+        quiet: bool,
+        diff_outcome: DiffOutcome = "shown",
+        after_read_error: str | None = None,
+        tool_succeeded: bool = True,
+    ) -> str:
+        """Drive a file-op `ToolMessage` chunk and return captured stderr.
+
+        Builds a real `FileOperationRecord` rather than a stand-in: the parity
+        this class asserts is between `-p` and the TUI reading the same type,
+        and a `SimpleNamespace` would keep passing after a field was renamed
+        out from under both.
+        """
+        record = FileOperationRecord(
+            tool_name="delete",
+            display_path="src/foo.py",
+            physical_path=None,
+            tool_call_id="tc1",
+            status="success",
+            tool_succeeded=tool_succeeded,
+            diff="--- a\n+++ b" if diff_outcome == "shown" else None,
+            diff_outcome=diff_outcome,
+            after_read_error=after_read_error,
+        )
         tracker = MagicMock()
         tracker.complete_with_message.return_value = record
 
@@ -691,6 +717,73 @@ class TestQuietFileOpNotification:
 
     def test_non_quiet_emits_file_op_notification(self) -> None:
         assert "foo.py" in self._run(quiet=False)
+
+    def test_a_lost_pre_image_is_reported_without_a_diff(self) -> None:
+        """Headless output must not stay silent about a change it cannot verify.
+
+        A `delete` whose pre-image was lost produces no diff, so gating the
+        notification on `record.diff` printed nothing at all — leaving `-p` and
+        CI users with no signal that the file's contents were never read.
+        """
+        output = self._run(quiet=False, diff_outcome="untrusted_before")
+
+        assert "foo.py" in output
+        assert "prior contents could not be read" in output
+
+    def test_quiet_keeps_the_caveat_but_drops_the_path_line(self) -> None:
+        """Quiet suppresses diagnostics; an unverifiable change is not one.
+
+        `--quiet` exists to keep stdout clean for `-p`, and it already routes
+        this console to stderr — so the caveat cannot pollute the result either
+        way. Dropping it here would leave a change that could not be verified
+        stated nowhere at all, which is the mode CI reads.
+        """
+        output = self._run(quiet=True, diff_outcome="untrusted_before")
+
+        assert "prior contents could not be read" in output
+        assert "foo.py" not in output
+
+    @pytest.mark.parametrize(
+        ("diff_outcome", "after_read_error", "expected"),
+        [
+            ("untrusted_before", None, "prior contents could not be read"),
+            ("unreadable_after", "permission_denied", "permission_denied"),
+            ("terminators_only", None, "confined to line terminators"),
+        ],
+    )
+    def test_every_unshowable_outcome_reaches_headless_output(
+        self,
+        diff_outcome: DiffOutcome,
+        after_read_error: str | None,
+        expected: str,
+    ) -> None:
+        """`-p` is the surface CI reads, so no outcome may go unstated there.
+
+        Only `untrusted_before` was covered, leaving the other two free to
+        print an unqualified path — a change reported as routine when it could
+        not be verified.
+        """
+        output = self._run(
+            quiet=False,
+            diff_outcome=diff_outcome,
+            after_read_error=after_read_error,
+        )
+
+        assert expected in output
+
+    def test_a_failed_tool_gets_no_success_caveat(self) -> None:
+        """A caveat describes what a *successful* call could not show.
+
+        With the pre-image lost and the tool then failing, the outcome survives
+        into the caveat, which would print "The `delete` call succeeded" beside
+        an operation that did not — and a CI consumer parsing `-p` would record
+        a successful write.
+        """
+        output = self._run(
+            quiet=False, diff_outcome="untrusted_before", tool_succeeded=False
+        )
+
+        assert "succeeded" not in output
 
 
 class TestNoStreamMode:

@@ -17,6 +17,7 @@ TAB_LABELS: Final[dict[PluginTab, str]] = {
     "installed": "Installed",
     "marketplaces": "Marketplaces",
     "errors": "Errors",
+    "settings": "Settings",
 }
 
 

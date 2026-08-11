@@ -13346,6 +13346,30 @@ class TestAutoClassifierModelCommand:
             app._server_proc.update_env.assert_not_called()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Auto classifier model set to openai:gpt-5.5-mini" in rendered
+            assert "Press Ctrl+S in the `/auto model` picker" in rendered
+            assert "`[models].auto_classifier` in config.toml" in rendered
+
+    async def test_persisted_classifier_omits_the_default_hint(self) -> None:
+        """A selector choice stored with Ctrl+S should not suggest persisting again."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._set_auto_classifier_model(
+                    "openai:gpt-5.5-mini", persisted_as_default=True
+                )
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "already the default for future sessions" in rendered
+            assert "Press Ctrl+S" not in rendered
+            assert "config.toml" not in rendered
 
     async def test_set_auto_classifier_model_rejects_colon_only_spec(self) -> None:
         """A normalized-empty spec must not masquerade as an explicit clear."""
@@ -13513,12 +13537,13 @@ class TestAutoClassifierModelCommand:
             assert app._chat_input is not None
             deferred: list[Callable[[], None]] = []
             handlers: list[Callable[[tuple[str, str] | None], None]] = []
+            screens: list[Any] = []
             run_worker = MagicMock()
             set_model = AsyncMock()
             focus_input = MagicMock()
 
             def capture_push(screen: object, callback: object = None) -> None:
-                del screen
+                screens.append(screen)
                 handlers.append(cast("Any", callback))
 
             with (
@@ -13529,6 +13554,7 @@ class TestAutoClassifierModelCommand:
                 patch.object(app._chat_input, "focus_input", focus_input),
             ):
                 await app._show_auto_classifier_model_selector()
+                screens[0]._default_spec = "openai:gpt-5.5-mini"
                 handlers[0](("openai:gpt-5.5-mini", "openai"))
 
                 # Nothing has run yet: the selector is still on the stack.
@@ -13541,7 +13567,9 @@ class TestAutoClassifierModelCommand:
                 focus_input.assert_called_once()
                 await run_worker.call_args.args[0]
 
-            set_model.assert_awaited_once_with("openai:gpt-5.5-mini")
+            set_model.assert_awaited_once_with(
+                "openai:gpt-5.5-mini", persisted_as_default=True
+            )
 
     async def test_cancelled_selector_names_unchanged_classifier(self) -> None:
         """Cancelling the picker should name the classifier that stays active."""

@@ -19157,6 +19157,9 @@ class DeepAgentsApp(App):
         def handle_result(result: tuple[str, str] | None) -> None:
             model_spec = result[0] if result is not None else None
             extra = screen.pending_install_extra if result is not None else None
+            persisted_as_default = model_spec is not None and screen.is_stored_default(
+                model_spec
+            )
 
             async def apply_selection() -> None:
                 if model_spec is None:
@@ -19168,7 +19171,9 @@ class DeepAgentsApp(App):
                     return
                 if extra and not await self._install_extra(extra, auto_restart=True):
                     return
-                await self._set_auto_classifier_model(model_spec)
+                await self._set_auto_classifier_model(
+                    model_spec, persisted_as_default=persisted_as_default
+                )
 
             def start_selection_worker() -> None:
                 # The coroutine is built here, not above, so a callback dropped
@@ -19236,7 +19241,12 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
-    async def _set_auto_classifier_model(self, model_spec: str | None) -> None:
+    async def _set_auto_classifier_model(
+        self,
+        model_spec: str | None,
+        *,
+        persisted_as_default: bool = False,
+    ) -> None:
         """Set the model the Auto approval classifier reviews actions with.
 
         The value rides on the per-run graph context, so it applies from the
@@ -19248,6 +19258,7 @@ class DeepAgentsApp(App):
 
         Args:
             model_spec: `provider:model` spec, or `None` to reuse the main model.
+            persisted_as_default: Whether the selector already stored this spec.
         """
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
@@ -19340,15 +19351,21 @@ class DeepAgentsApp(App):
 
         if display:
             revalidated = " (revalidated)" if unchanged else ""
-            await self._mount_message(
-                AppMessage(
+            if persisted_as_default:
+                message = (
+                    f"Auto classifier model set to {display}{revalidated}; it "
+                    "reviews gated actions from the next turn and is already the "
+                    "default for future sessions."
+                )
+            else:
+                message = (
                     f"Auto classifier model set to {display}{revalidated}; it "
                     "reviews gated actions from the next turn, for this session. "
                     "Press Ctrl+S in the `/auto model` picker, or set "
                     "`[models].auto_classifier` in config.toml, to make it the "
                     "default."
                 )
-            )
+            await self._mount_message(AppMessage(message))
         else:
             await self._mount_message(
                 AppMessage(

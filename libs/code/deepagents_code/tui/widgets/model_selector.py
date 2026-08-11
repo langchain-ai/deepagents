@@ -2018,6 +2018,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         self.app.push_screen(CodexAuthScreen(), _on_codex_done)
 
+    def is_stored_default(self, model_spec: str) -> bool:
+        """Return whether `model_spec` is the preference stored by this screen."""
+        return model_spec == self._default_spec
+
     async def action_set_default(self) -> None:
         """Toggle the highlighted model as the screen's stored default.
 

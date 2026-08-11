@@ -5292,6 +5292,39 @@ class TestSummaryTargetCounting:
                 ],
                 "Read 1 file",
             ),
+            # The fallback keeps scanning past a `file_path` that is present but
+            # unusable, which is the backend shape the fallback list exists for.
+            # Stopping at the first key that appears would silently disable it.
+            (
+                [
+                    ("read_file", {"file_path": "", "path": "a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            (
+                [
+                    ("read_file", {"file_path": None, "path": "a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            # A trailing slash is not a distinct file. This is a collapse, the
+            # direction that must never be wrong, so it is pinned explicitly.
+            (
+                [
+                    ("read_file", {"file_path": "d/a.py/"}),
+                    ("read_file", {"file_path": "d/a.py"}),
+                ],
+                "Read 1 file",
+            ),
+            (
+                [
+                    ("read_file", {"file_path": "d/./a.py"}),
+                    ("read_file", {"file_path": "d/a.py"}),
+                ],
+                "Read 1 file",
+            ),
             # URLs collapse on exact match.
             (
                 [
@@ -5420,12 +5453,51 @@ class TestSummaryTargetCounting:
         ]
         assert summarize_tool_group(calls) == "Read 2 files, edited 2 files"
 
-    def test_path_normalization_matches_filesystem_middleware(self) -> None:
-        r"""Summary identities use the canonical paths executed by file tools."""
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "a.py",
+            "/a.py",
+            r"a\b",
+            "a/b",
+            "d//a.py",
+            "./a.py",
+            "d/a.py/",
+            "d/./a.py",
+            "/repo/a.py",
+            "//a/b",
+            ".",
+        ],
+    )
+    def test_path_normalization_matches_filesystem_middleware(self, path: str) -> None:
+        r"""Summary identities use the canonical paths executed by file tools.
+
+        Compared against `validate_path` itself rather than against hand-written
+        expectations: the identity only has to be *the middleware's* canonical
+        form, so pinning the two together is what catches drift. Two spellings
+        the middleware resolves to one file must tally as one file, and only the
+        middleware decides which spellings those are.
+        """
+        from deepagents.backends.utils import validate_path
+
         from deepagents_code.tui.widgets.messages import _normalize_path_target
 
-        assert _normalize_path_target("a.py") == _normalize_path_target("/a.py")
-        assert _normalize_path_target("a\\b") == _normalize_path_target("a/b")
+        assert _normalize_path_target(path) == validate_path(path)
+
+    def test_traversal_paths_the_middleware_rejects_are_left_alone(self) -> None:
+        """A path the middleware refuses is never canonicalized.
+
+        Normalizing one would fold a call that could not have run into a valid
+        target's tally. The `..` is returned verbatim precisely because there is
+        no canonical form to agree with.
+        """
+        from deepagents.backends.utils import validate_path
+
+        from deepagents_code.tui.widgets.messages import _normalize_path_target
+
+        with pytest.raises(ValueError, match="traversal"):
+            validate_path("d/../a.py")
+        assert _normalize_path_target("d/../a.py") == "d/../a.py"
 
     def test_repeat_nouns_require_a_target_arg(self) -> None:
         """A repeat noun is dead unless its category also names a target.
@@ -5765,6 +5837,23 @@ class _LiveToolGroupOnePathApp(App[None]):
         yield t2
 
 
+class _LiveToolGroupTwoEditsApp(App[None]):
+    """Live group whose two edits name the same file."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("edit_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("edit_file", {"file_path": "a.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
 class TestLiveToolGroupSummary:
     """Eager/live group: collapsed from the start, running -> ran transition."""
 
@@ -5963,6 +6052,44 @@ class TestLiveToolGroupSummary:
             rendered = summary.render()
             assert isinstance(rendered, Content)
             assert "Read 1 file" in rendered.plain
+
+    async def test_evicting_a_failed_edit_shrinks_the_repeat_count(self) -> None:
+        """An edit that errored is not counted among the edits that landed.
+
+        The repeat parenthetical asserts work reached the tree, so it has to
+        shrink with the group: two edits of one file where one fails must close
+        as "Edited 1 file", never "Edited 1 file (2 edits)".
+
+        Both edits are settled and rendered first so the past-tense line is
+        cached as "(2 edits)" before the failure arrives — a late terminal
+        result is exactly the case `close` exists for. That ordering is what
+        makes the cache reset in `_evict_unfoldable` load-bearing rather than
+        defensive, so the assertion fails if the reset is dropped.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupTwoEditsApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(t1)
+            summary.add_member(t2)
+            t1.set_success("ok")
+            t2.set_success("ok")
+            summary._render_line()
+            cached = summary.render()
+            assert isinstance(cached, Content)
+            assert "(2 edits)" in cached.plain
+
+            t1.set_error("boom")
+            summary.close()
+            await pilot.pause()
+
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Edited 1 file" in rendered.plain
+            assert "2 edits" not in rendered.plain
 
     async def test_close_waits_for_pending_member_terminal_status(self) -> None:
         """A stream boundary must not report a still-pending tool as having run."""
@@ -6592,9 +6719,9 @@ class TestCaveatedRowsLeaveTheGroup:
     """A caveat is carried in the row, so folding the row hides the caveat.
 
     `write_file` and `delete` are groupable, and the collapsed summary is built
-    from tool names alone. Without eviction, deleting a 5,000-line file whose
-    contents could not be read renders as `▸ Wrote 1 file` — indistinguishable
-    from the successful case, which is the exact failure this PR set out to fix.
+    from tool names and arguments, never from tool output. Without eviction,
+    deleting a 5,000-line file whose contents could not be read renders as
+    `▸ Wrote 1 file` — indistinguishable from the successful case.
     """
 
     async def test_a_caveated_row_is_evicted_and_revealed(self) -> None:

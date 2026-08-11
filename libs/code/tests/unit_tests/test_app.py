@@ -80,6 +80,7 @@ from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
+    GOAL_STATUS_NOTE_CHAR_LIMIT,
     RUBRIC_CHAR_LIMIT,
 )
 from deepagents_code.goal_state_notice import (
@@ -11884,6 +11885,44 @@ class TestRubricCommand:
             assert app._next_rubric is None
             errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
             assert "maximum is 12,000" in errors
+
+    async def test_next_rubric_rejected_when_goal_notice_budget_exceeded(self) -> None:
+        """`/rubric next` must fit the combined notice budget with an active goal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "g" * GOAL_OBJECTIVE_CHAR_LIMIT
+            app._goal_status = "active"
+            app._goal_status_note = "n" * GOAL_STATUS_NOTE_CHAR_LIMIT
+            criteria = "x" * (RUBRIC_CHAR_LIMIT - 1)
+
+            await app._handle_command(f"/rubric next {criteria}")
+            await pilot.pause()
+
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "cannot be applied to the next turn" in errors
+            assert "maximum is 12,000" in errors
+            assert "Rubric set for next turn." not in "\n".join(
+                str(w._content) for w in app.query(AppMessage)
+            )
+
+    async def test_next_rubric_accepted_when_goal_state_fits_budget(self) -> None:
+        """`/rubric next` still applies when the combined notice text fits."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+
+            await app._handle_command("/rubric next update docs")
+            await pilot.pause()
+
+            assert app._next_rubric == "update docs"
+            assert any(
+                "Rubric set for next turn." in str(w._content)
+                for w in app.query(AppMessage)
+            )
 
     async def test_bare_rubric_shows_usage(self) -> None:
         """Bare `/rubric` should teach the command instead of showing only state."""

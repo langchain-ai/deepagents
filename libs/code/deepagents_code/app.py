@@ -11893,6 +11893,41 @@ class DeepAgentsApp(App):
             return str(exc)
         return None
 
+    def _next_rubric_size_error(self, criteria: str) -> str | None:
+        """Return why a one-shot rubric cannot fit the turn's notice budget.
+
+        The per-rubric limit alone is not sufficient: the turn notice embeds the
+        rubric alongside the actionable goal's objective and status note, and
+        `validate_goal_notice_text` rejects the combined text. Without this
+        check, `/rubric next` would accept criteria that the notice then drops,
+        silently disabling the promised one-shot grade.
+
+        Args:
+            criteria: Candidate next-turn rubric text.
+
+        Returns:
+            A user-facing validation error, or `None` when the combined notice
+            text is safe.
+        """
+        projected = project_goal_state(self._goal_state_update())
+        try:
+            validate_goal_notice_text(
+                objective=(
+                    projected["goal_objective"]
+                    if projected["goal_actionable"]
+                    else None
+                ),
+                criteria=criteria,
+                status_note=(
+                    projected["goal_status_note"]
+                    if projected["goal_actionable"]
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            return str(exc)
+        return None
+
     async def _announce_goal_status_transition(
         self, previous_status: str | None
     ) -> None:
@@ -13497,6 +13532,16 @@ class DeepAgentsApp(App):
                 validate_rubric(arg)
             except ValueError as exc:
                 await self._mount_message(ErrorMessage(str(exc)))
+                return
+            size_error = self._next_rubric_size_error(arg)
+            if size_error is not None:
+                await self._mount_message(
+                    ErrorMessage(
+                        "This rubric cannot be applied to the next turn alongside "
+                        "the active goal. Shorten it, or clear the goal first. "
+                        f"{size_error}"
+                    )
+                )
                 return
             self._next_rubric = arg
             self._sync_status_rubric()

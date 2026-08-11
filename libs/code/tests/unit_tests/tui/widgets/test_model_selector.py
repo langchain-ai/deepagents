@@ -928,7 +928,9 @@ class TestDefaultModelScope:
         assert notified
         message, severity = notified[0]
         assert severity == "warning"
+        assert "Default classifier model saved" in message
         assert _env_vars.AUTO_CLASSIFIER_MODEL in message
+        assert "next launch" in message
 
     async def test_success_warns_when_env_override_is_blank(
         self, monkeypatch: pytest.MonkeyPatch
@@ -968,7 +970,9 @@ class TestDefaultModelScope:
         assert notified
         message, severity = notified[0]
         assert severity == "warning"
+        assert "Default classifier model saved" in message
         assert _env_vars.AUTO_CLASSIFIER_MODEL in message
+        assert "next launch" in message
 
     async def test_main_scope_success_raises_no_override_warning(
         self, monkeypatch: pytest.MonkeyPatch

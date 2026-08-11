@@ -14,7 +14,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | --- | --- | --- |
 | `/agents` |  | Browse and switch between available agents |
 | `/auth` | `/connect` | Connect and manage provider and service credentials |
-| `/auto` |  | Switch to Auto approval mode, or pick its classifier model for this session or for future launches |
+| `/auto` |  | Switch to Auto approval mode or manage its classifier model |
 | `/auto-update` |  | Turn automatic updates on or off |
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Clear the chat and start a new thread |

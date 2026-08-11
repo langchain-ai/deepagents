@@ -19578,9 +19578,10 @@ class DeepAgentsApp(App):
                 if _env_vars.AUTO_CLASSIFIER_MODEL in os.environ:
                     message = (
                         f"Auto classifier model set to {display}{revalidated}; it "
-                        "reviews gated actions from the next turn and is stored in "
-                        f"config.toml, but {_env_vars.AUTO_CLASSIFIER_MODEL} is set "
-                        "and overrides it at launch."
+                        "reviews gated actions from the next turn in this session. "
+                        "The default classifier model is saved in config.toml, but "
+                        f"{_env_vars.AUTO_CLASSIFIER_MODEL} overrides it at next "
+                        "launch."
                     )
                 else:
                     message = (

@@ -13598,8 +13598,14 @@ class TestAutoClassifierModelCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "stored in config.toml" in rendered
-            assert f"{_env_vars.AUTO_CLASSIFIER_MODEL} is set" in rendered
+            assert (
+                "reviews gated actions from the next turn in this session" in rendered
+            )
+            assert "The default classifier model is saved in config.toml" in rendered
+            assert (
+                f"{_env_vars.AUTO_CLASSIFIER_MODEL} overrides it at next launch"
+                in rendered
+            )
             assert "already the default for future sessions" not in rendered
 
     async def test_set_auto_classifier_model_rejects_colon_only_spec(self) -> None:

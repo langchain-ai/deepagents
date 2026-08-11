@@ -13601,9 +13601,9 @@ class TestAutoClassifierModelCommand:
             assert (
                 "reviews gated actions from the next turn in this session" in rendered
             )
-            assert "Saved as the default classifier model" in rendered
+            assert "Saved as the default classifier model." in rendered
             assert (
-                f"{_env_vars.AUTO_CLASSIFIER_MODEL} overrides it at next launch"
+                f"{_env_vars.AUTO_CLASSIFIER_MODEL} is currently set; if it remains set"
                 in rendered
             )
             assert "already the default for future sessions" not in rendered

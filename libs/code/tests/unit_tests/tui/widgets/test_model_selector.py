@@ -930,6 +930,7 @@ class TestDefaultModelScope:
         assert severity == "warning"
         assert "Default classifier model saved" in message
         assert _env_vars.AUTO_CLASSIFIER_MODEL in message
+        assert "is currently set; if it remains set" in message
         assert "next launch" in message
 
     async def test_success_warns_when_env_override_is_blank(
@@ -972,6 +973,7 @@ class TestDefaultModelScope:
         assert severity == "warning"
         assert "Default classifier model saved" in message
         assert _env_vars.AUTO_CLASSIFIER_MODEL in message
+        assert "is currently set; if it remains set" in message
         assert "next launch" in message
 
     async def test_main_scope_success_raises_no_override_warning(

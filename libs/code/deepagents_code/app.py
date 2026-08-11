@@ -19579,9 +19579,9 @@ class DeepAgentsApp(App):
                     message = (
                         f"Auto classifier model set to {display}{revalidated}; it "
                         "reviews gated actions from the next turn in this session. "
-                        "Saved as the default classifier model, but "
-                        f"{_env_vars.AUTO_CLASSIFIER_MODEL} overrides it at next "
-                        "launch."
+                        "Saved as the default classifier model. "
+                        f"{_env_vars.AUTO_CLASSIFIER_MODEL} is currently set; if it "
+                        "remains set, it overrides the new default at next launch."
                     )
                 else:
                     message = (

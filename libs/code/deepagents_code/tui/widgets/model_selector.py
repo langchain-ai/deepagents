@@ -2165,8 +2165,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             ):
                 self.notify(
                     f"Default classifier model saved. {scope.override_env_var} "
-                    f"overrides it at next launch. Unset it to use {model_spec} "
-                    "next launch.",
+                    "is currently set; if it remains set, it overrides this "
+                    "default at next launch.",
                     severity="warning",
                     timeout=10,
                     markup=False,

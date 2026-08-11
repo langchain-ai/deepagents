@@ -161,7 +161,7 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         now = time.monotonic()
 
         # Drive the shared paste-burst state machine so a paste replayed as rapid
-        # key events (no bracketed paste) stays grouped and can be collapsed.
+        # key events (no bracketed paste) stays grouped without delaying typing.
         if await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()
@@ -172,10 +172,7 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             event.stop()
             return
 
-        if self._track_burst_run(event, now):
-            event.prevent_default()
-            event.stop()
-            return
+        self._track_burst_run(event, now)
 
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
             event.prevent_default()

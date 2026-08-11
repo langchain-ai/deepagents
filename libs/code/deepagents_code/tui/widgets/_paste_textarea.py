@@ -2,14 +2,14 @@
 
 Terminals deliver a paste in one of two shapes: a single bracketed `Paste`
 event, or — when bracketed paste is unavailable — a rapid stream of individual
-key events. Both the primary chat input and the inline free-text prompts need
-to (a) keep a multi-line paste grouped instead of submitting on the first
-embedded newline, and (b) collapse a large paste into a compact
-`[Pasted text #N]` placeholder that expands back to the full text on submit.
+key events. Both the primary chat input and the inline free-text prompts keep a
+multi-line paste grouped instead of submitting on the first embedded newline.
+Bracketed and detected multi-line key-event pastes may additionally collapse
+into a compact `[Pasted text #N]` placeholder that expands on submit.
 
 `PasteBurstTextArea` owns the burst detection and Enter-suppression state
 machine, leaving policy (slash-command context, whether collapsing is enabled,
-how a flushed payload is handled) to overridable hooks.
+how a buffered payload is handled) to overridable hooks.
 `CollapsingPasteTextArea` layers the large-paste collapse + placeholder storage
 on top, keeping the full content off-screen until submission.
 """
@@ -258,9 +258,9 @@ class PasteBurstTextArea(TextArea):
     def _should_start_paste_burst(self, char: str) -> bool:
         """Return whether a keypress should start paste-burst buffering.
 
-        Quote-prefixed input at an empty cursor is buffered immediately for
-        dropped-path parsing. Other printable runs are promoted into the same
-        buffer once they reach `PASTE_BURST_MIN_CHARS` rapid keystrokes.
+        Only quote-prefixed input at an empty cursor is buffered for dropped-path
+        parsing. Other rapid printable runs stay in the document while arming the
+        Enter-suppression window.
         """
         if char not in PASTE_BURST_START_CHARS:
             return False
@@ -283,32 +283,23 @@ class PasteBurstTextArea(TextArea):
             return
         await self._dispatch_burst_payload(payload)
 
-    def _promote_paste_burst_run(self, char: str, now: float) -> bool:
-        """Move a detected rapid run from the document into the burst buffer.
-
-        The first keys in an unquoted run are inserted normally while the run is
-        still indistinguishable from typing. Once the threshold is reached, this
-        removes those keys and buffers the complete run so its eventual flush can
-        apply dropped-path and paste-collapse policy.
-
-        Args:
-            char: Current character, which has not yet been inserted.
-            now: Monotonic timestamp for the current key event.
+    def _promote_paste_burst_run(self, now: float) -> bool:
+        """Move an inserted rapid run into the buffer after its first newline.
 
         Returns:
-            `True` when the run was promoted and the current key was buffered.
+            Whether the visible rapid run moved into the paste buffer.
         """
-        if not char or not self.selection.is_empty:
+        payload = self._paste_burst_run_text
+        if not payload or not self.selection.is_empty:
             return False
-        prefix = self._paste_burst_run_text[: -len(char)]
         cursor = self.cursor_location
         cursor_offset = self.document.get_index_from_location(cursor)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
-        start_offset = cursor_offset - len(prefix)
-        if start_offset < 0 or self.text[start_offset:cursor_offset] != prefix:
+        start_offset = cursor_offset - len(payload)
+        if start_offset < 0 or self.text[start_offset:cursor_offset] != payload:
             return False
         start = self.document.get_location_from_index(start_offset)  # ty: ignore[unresolved-attribute]
         self.delete(start, cursor)
-        self._start_paste_burst(self._paste_burst_run_text, now)
+        self._start_paste_burst(payload, now)
         return True
 
     def action_insert_newline(self) -> None:
@@ -357,13 +348,8 @@ class PasteBurstTextArea(TextArea):
             return True
         return False
 
-    def _track_burst_run(self, event: events.Key, now: float) -> bool:
-        """Track a rapid run and promote it into the paste buffer once detected.
-
-        Returns:
-            `True` when the current key was buffered and should not be handled by
-            the caller.
-        """
+    def _track_burst_run(self, event: events.Key, now: float) -> None:
+        """Track a rapid run and arm its Enter-suppression window."""
         if event.is_printable and event.character is not None:
             self._paste_burst_last_suppressed_enter_time = None
             self._note_paste_burst_keystroke(event.character, now)
@@ -374,10 +360,8 @@ class PasteBurstTextArea(TextArea):
                 self._paste_burst_window_until = (
                     now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
                 )
-                return self._promote_paste_burst_run(event.character, now)
         elif event.key != "enter":
             self._reset_paste_burst_run()
-        return False
 
     def _consume_enter_as_burst_newline(self, now: float) -> bool:
         """Insert a newline instead of submitting when inside a paste burst.
@@ -391,7 +375,10 @@ class PasteBurstTextArea(TextArea):
             return False
         self._paste_burst_window_until = now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._paste_burst_last_suppressed_enter_time = now
-        self.action_insert_newline()
+        if not self._paste_burst_buffer and self._promote_paste_burst_run(now):
+            self._append_paste_burst("\n", now)
+        else:
+            self.action_insert_newline()
         return True
 
     # -- Newline affordances (shared by concrete text areas) ------------------

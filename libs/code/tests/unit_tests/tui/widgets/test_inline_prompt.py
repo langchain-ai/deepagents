@@ -190,7 +190,7 @@ class TestInlinePromptPaste:
     async def test_key_burst_with_newline_does_not_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A multi-line paste replayed as key events inserts a newline, no submit."""
+        """Rapid key-event text stays visible and inserts a newline, no submit."""
         # Widen the burst gap/window so wall-clock delays on slow runners still
         # register as one rapid burst.
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
@@ -205,6 +205,9 @@ class TestInlinePromptPaste:
 
             for char in "hello":
                 await pilot.press(char)
+            assert ta.text == "hello"
+            assert ta._paste_burst_buffer == ""
+
             await pilot.press("enter")
             await pilot.press("w")
             await pilot.pause(0.15)

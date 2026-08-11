@@ -4498,7 +4498,7 @@ class TestPasteBurstEnterSuppression:
     async def test_rapid_burst_with_newline_does_not_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A fast keystroke run followed by enter inserts a newline."""
+        """A fast keystroke run stays visible and enter inserts a newline."""
         # Widen the burst gap so wall-clock delays between pilot.press calls on
         # slow CI runners still register as a single rapid burst.
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
@@ -4514,6 +4514,9 @@ class TestPasteBurstEnterSuppression:
 
             for char in "hello":
                 await pilot.press(char)
+            assert ta.text == "hello"
+            assert ta._paste_burst_buffer == ""
+
             await pilot.press("enter")
             await pilot.press("w")
             await pilot.pause(0.15)

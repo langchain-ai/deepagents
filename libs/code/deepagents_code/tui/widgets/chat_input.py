@@ -950,12 +950,9 @@ class ChatTextArea(PasteBurstTextArea):
             event.stop()
             return
 
-        # Promote rapid keystroke runs into the paste buffer so terminals without
-        # bracketed paste still get newline grouping and large-paste collapsing.
-        if self._track_burst_run(event, now):
-            event.prevent_default()
-            event.stop()
-            return
+        # Track rapid keystroke runs so terminals without bracketed paste keep
+        # embedded newlines grouped without delaying ordinary text insertion.
+        self._track_burst_run(event, now)
 
         # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
         # unselected input switches modes. Handle it before TextArea inserts the

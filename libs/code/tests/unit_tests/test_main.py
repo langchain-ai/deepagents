@@ -4739,6 +4739,95 @@ class TestSelectProjectServersToPersist:
         assert "Choose how to continue" not in rendered
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_deny_first_lists_deny_first_and_still_defaults_to_deny(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`deny_first` reorders the rows without moving the Enter default.
+
+        The default is computed from the deny action's identity, so reversing
+        the list must not hand a bare Enter to the allow option.
+        """
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustAction,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustAction:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustAction] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                confirm = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_confirm"
+                )
+                confirm(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_trust_action_picker(
+            Console(stderr=True),
+            remember_label="Mute until the mismatch changes",
+            allow_label="Continue this session only",
+            deny_label="Abort launch",
+            deny_first=True,
+        )
+
+        assert result is _TrustAction.DENY
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert rendered.index("Abort launch") < rendered.index(
+            "Mute until the mismatch changes"
+        )
+        assert rendered.index("Mute until the mismatch changes") < rendered.index(
+            "Continue this session only"
+        )
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_abort_on_deny_maps_picker_deny_to_cancelled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A picker deny must reach the caller as an abort, not as a decision.
+
+        Without this mapping the dep-floor prompt's "Abort launch" was
+        indistinguishable from "continue", and the launch proceeded.
+        """
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+            _TrustPromptOutcome,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: _TrustAction.DENY,
+        )
+
+        assert (
+            _select_trust_action(Console(stderr=True), abort_on_deny=True)
+            is _TrustPromptOutcome.CANCELLED
+        )
+        assert _select_trust_action(Console(stderr=True)) is _TrustAction.DENY
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_action_picker_hides_terminal_cursor(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -4839,6 +4928,28 @@ class TestSelectProjectServersToPersist:
         )
 
         result = _select_trust_action(Console(stderr=True))
+
+        assert result is _TrustPromptOutcome.CANCELLED
+
+    def test_select_action_maps_picker_deny_to_cancelled_when_requested(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A picker's explicit abort choice produces the launch-abort outcome."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+            _TrustPromptOutcome,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda _console, **_kwargs: _TrustAction.DENY,
+        )
+
+        result = _select_trust_action(Console(stderr=True), abort_on_deny=True)
 
         assert result is _TrustPromptOutcome.CANCELLED
 

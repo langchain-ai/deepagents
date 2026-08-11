@@ -624,6 +624,26 @@ async function validateTrigger({ github, context, core, botLogin = null, botId =
       }
       return { shouldRun: false };
     }
+    // A manual command otherwise passes silently into a queued Actions run,
+    // leaving the maintainer unsure whether it registered at all. Unlike the
+    // rejection replies above this is not gated on `canNotify`: clearing the
+    // write-permission check already proves the commenter is an insider.
+    // Best-effort by design — a createComment failure (e.g. secondary rate
+    // limit) must not fail validation and drop a command that passed every
+    // check. Never include COMMAND_MENTION here, or the ack re-triggers us.
+    try {
+      await createComment(
+        github,
+        owner,
+        repo,
+        number,
+        `Running \`${command}\` for the \`${target.component}\` release PR; the release-notes comment on this PR will be created or updated when the run finishes.`,
+      );
+    } catch (error) {
+      core.warning(
+        `Failed to post acknowledgment comment for ${command} on PR #${number}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   const result = {

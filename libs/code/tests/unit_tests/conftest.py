@@ -250,6 +250,16 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_splash_tips_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep startup-tip assertions honest.
+
+    A developer with this set locally would make every `not app.query(
+    StartupTip)` assertion pass vacuously.
+    """
+    monkeypatch.delenv("DEEPAGENTS_CODE_HIDE_SPLASH_TIPS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     """Pin the launch command name echoed by resume hints.
 
@@ -350,6 +360,7 @@ def _clear_update_env(
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "0")
 
     if _self_manages_update_check(request):
         monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)

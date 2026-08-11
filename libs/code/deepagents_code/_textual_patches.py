@@ -1,6 +1,6 @@
 r"""Runtime patches over Textual internals, imported for side effect.
 
-This module hosts four independent best-effort patches over private Textual
+This module hosts five independent best-effort patches over private Textual
 APIs. Each guards its own import/assignment and degrades to stock Textual
 behavior (logging a warning) if the targeted internals move, so they have
 separate lifecycles — do not delete the whole file when only one lands
@@ -51,6 +51,15 @@ upstream.
     crashes the app with `AttributeError: 'NoneType' object has no attribute
     'region'`. Tracked in Textualize/textual#6643; remove when that lands.
 
+5. Diff-gutter exclusion from selections. Textual paints the selection
+    highlight from the geometry stored in `Screen.selections`, so excluding
+    a diff row's decorative gutter (line number, `+`/`-` marker) only in
+    `Widget.get_selection` would copy the right text while still highlighting
+    the gutter. The patch rewrites each selection whenever that reactive
+    changes, shifting any endpoint inside a row's gutter past it via
+    `diff.clamp_selection`. No upstream issue tracks per-widget selection
+    masking; it stays until Textual grows one.
+
 Imported for side effect from `app.py` before any `App()` is created.
 """
 
@@ -68,7 +77,7 @@ from textual.geometry import Offset
 from textual.selection import Selection
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Iterable
 
     from textual.events import Click, Event
     from textual.screen import Screen
@@ -469,6 +478,50 @@ else:
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual detached-hit patch assignment rejected (textual %s): %s",
+            _textual_version,
+            exc,
+        )
+
+
+try:
+    from textual.screen import Screen as _ClampScreen
+
+    from deepagents_code.tui.widgets.diff import clamp_selection
+
+    _original_watch_selections_for_clamp = _ClampScreen._watch_selections
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning(
+        "Textual gutter-selection patch skipped (textual %s): %s",
+        _textual_version,
+        exc,
+    )
+else:
+
+    def _watch_selections_with_gutter_clamp(
+        self: Screen,
+        old_selections: dict[Widget, Selection],
+        selections: dict[Widget, Selection],
+    ) -> Awaitable[None] | None:
+        # Textual stores the new dict before invoking this watcher. Clamp that
+        # object synchronously before returning the original watcher's awaitable;
+        # assigning `self.selections` here would schedule this watcher again.
+        for widget, selection in list(selections.items()):
+            clamped = clamp_selection(widget, selection)
+            if clamped is None:
+                del selections[widget]
+            elif clamped != selection:
+                selections[widget] = clamped
+
+        result = _original_watch_selections_for_clamp(self, old_selections, selections)
+        # `_watch_selections` is async in the pinned Textual; the isawaitable
+        # guard tolerates a future synchronous implementation.
+        return result if isawaitable(result) else None
+
+    try:
+        _ClampScreen._watch_selections = _watch_selections_with_gutter_clamp  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Textual gutter-selection patch assignment rejected (textual %s): %s",
             _textual_version,
             exc,
         )

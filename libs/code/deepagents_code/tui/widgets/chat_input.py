@@ -898,6 +898,11 @@ class ChatTextArea(PasteBurstTextArea):
             return
 
         self.insert(payload)
+        # A multi-line payload adds rows the same way `action_insert_newline`
+        # does, and needs the same post-refresh scroll for the same reason: the
+        # built-in scroll sees stale dimensions and leaves the cursor off screen.
+        if "\n" in payload:
+            self.call_after_refresh(self.scroll_cursor_visible)
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -929,7 +934,18 @@ class ChatTextArea(PasteBurstTextArea):
         if event.key == "space" and event.character is None:
             event.prevent_default()
             event.stop()
-            self.insert(" ")
+            # This branch bypasses the burst helpers below, so it has to drive
+            # them itself: a space inside a replayed paste must reach the buffer
+            # (if one is live) or the run tracker (if not), otherwise the
+            # tracker's text diverges from the document and every promotion for
+            # the rest of that paste fails the verification in
+            # `_promote_paste_burst_run`.
+            space_now = time.monotonic()
+            if self._paste_burst_buffer:
+                self._append_paste_burst(" ", space_now)
+            else:
+                self.insert(" ")
+                self._note_printable_burst_keystroke(" ", space_now)
             self.post_message(self.Typing())
             return
 
@@ -968,6 +984,10 @@ class ChatTextArea(PasteBurstTextArea):
         ):
             event.prevent_default()
             event.stop()
+            # `_track_burst_run` above already counted this character, but it is
+            # consumed as a mode switch rather than inserted. Drop the run so the
+            # tracker does not claim a character the document never received.
+            self._reset_paste_burst_run()
             return
 
         # Some terminals (e.g. VSCode built-in) send a literal backslash
@@ -1009,9 +1029,11 @@ class ChatTextArea(PasteBurstTextArea):
             return
 
         # Plain Enter submits, unless a recent keystroke burst suggests this
-        # newline is part of a paste replayed as key events; then insert a
-        # newline and keep the window alive so the rest of the paste stays
-        # grouped instead of submitting mid-stream.
+        # newline is part of a paste replayed as key events. In that case the
+        # visible run is pulled off screen into the paste buffer along with this
+        # newline, and the window is kept alive so the rest of the paste stays
+        # grouped instead of submitting mid-stream. The text reappears when the
+        # burst flushes — possibly as a `[Pasted text #N]` placeholder.
         if event.key == "enter":
             event.prevent_default()
             event.stop()
@@ -1029,11 +1051,11 @@ class ChatTextArea(PasteBurstTextArea):
 
         await super()._on_key(event)
 
-        # After the key is inserted, check whether a detected rapid run looks
-        # like a dropped media path and promote it into the burst buffer for
-        # rejection. Must run after `super()._on_key` so the current character
-        # is already in the document and `_promote_paste_burst_run` can find it.
-        await self._check_burst_run_for_dropped_media()
+        # After the key is inserted, promote the rapid run if its shape (dropped
+        # path, for path routing) or size already confirms a paste. Must run
+        # after `super()._on_key` so the current character is already in the
+        # document and `_promote_paste_burst_run` can find it.
+        self._check_burst_run_for_promotion()
 
     def action_delete_right(self) -> None:
         """Delete a bound placeholder atomically or the next character."""

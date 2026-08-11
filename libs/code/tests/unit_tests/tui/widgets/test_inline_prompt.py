@@ -101,6 +101,13 @@ class TestInlinePromptPaste:
         monkeypatch.setattr(
             paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
         )
+        # Promotion now happens on the first suppressed Enter, so the
+        # suppression window is load-bearing here: without widening it, a slow
+        # runner can spend more than the default 0.12s between the third
+        # character and the Enter and the paste would submit instead.
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
         payload = "alpha\nbeta\ngamma\ndelta"
         app = _PromptApp()
         async with app.run_test() as pilot:

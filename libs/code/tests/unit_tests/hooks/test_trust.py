@@ -32,8 +32,16 @@ if TYPE_CHECKING:
     from deepagents_code.app import DeepAgentsApp
 
 
-def _write_project_hooks(root: Path, *, event: str = "Stop") -> Path:
-    (root / ".git").mkdir(parents=True, exist_ok=True)
+def _write_project_hooks(
+    root: Path,
+    *,
+    event: str = "Stop",
+    git: bool = True,
+) -> Path:
+    if git:
+        (root / ".git").mkdir(parents=True, exist_ok=True)
+    else:
+        root.mkdir(parents=True, exist_ok=True)
     hooks_dir = root / ".deepagents"
     hooks_dir.mkdir(exist_ok=True)
     (hooks_dir / "hooks.json").write_text(
@@ -222,15 +230,13 @@ async def test_runtime_refuses_loaded_project_hooks_without_trust(
         await runtime.invoke(invocation)
 
 
-def test_no_project_root_skips_prompt(
+def test_non_git_workspace_without_hooks_skips_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from deepagents_code.main import _check_project_hooks_trust
 
-    # No .git anywhere under tmp_path, so the launch directory has no project
-    # root. There is no project hooks file to trust; prompting here would
-    # mislabel the user hooks file as project-scoped.
+    # No .git or project hooks exist anywhere under tmp_path.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "deepagents_code.main._select_trust_action",
@@ -240,6 +246,44 @@ def test_no_project_root_skips_prompt(
     decision = _check_project_hooks_trust()
     assert isinstance(decision, WorkspaceTrust)
     assert not decision.allows(tmp_path)
+
+
+def test_explicit_trust_allows_non_git_project_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.main import _check_project_hooks_trust
+
+    root = _write_project_hooks(tmp_path / "project", git=False)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(
+        "deepagents_code.main._select_trust_action",
+        lambda *_args, **_kwargs: pytest.fail("prompt ran despite explicit trust"),
+    )
+
+    decision = _check_project_hooks_trust(trust_flag=True)
+    assert isinstance(decision, WorkspaceTrust)
+    assert decision.allows(root)
+
+
+def test_user_hooks_path_collision_skips_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.hooks import loading
+    from deepagents_code.main import _check_project_hooks_trust
+
+    home = _write_project_hooks(tmp_path / "home", git=False)
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(loading, "DEFAULT_CONFIG_DIR", home / ".deepagents")
+    monkeypatch.setattr(
+        "deepagents_code.main._select_trust_action",
+        lambda *_args, **_kwargs: pytest.fail("prompt ran for user hooks"),
+    )
+
+    decision = _check_project_hooks_trust(trust_flag=True)
+    assert isinstance(decision, WorkspaceTrust)
+    assert not decision.allows(home)
 
 
 @pytest.mark.parametrize(

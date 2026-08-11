@@ -3892,7 +3892,7 @@ def _check_project_hooks_trust(
     """
     from rich.console import Console
 
-    from deepagents_code.hooks.loading import project_hooks_path
+    from deepagents_code.hooks.loading import project_hooks_path, user_hooks_path
     from deepagents_code.hooks.trust import (
         WorkspaceTrust,
         is_project_hooks_trusted,
@@ -3902,18 +3902,13 @@ def _check_project_hooks_trust(
 
     try:
         context = ProjectContext.from_user_cwd(Path.cwd())
-        if context.project_root is None:
-            # No git root: hooks are only ever loaded from the user config
-            # (~/.deepagents/hooks.json), which needs no trust decision. Skipping
-            # here also keeps a home directory that happens to be a git repo from
-            # turning `~` into a trusted "workspace" — the user hooks path would
-            # otherwise double as the project hooks path (`~/` is the project
-            # root, so the project path resolves to `~/.deepagents/hooks.json`),
-            # and allowing once would execute user hooks thinking they were
-            # project-scoped.
-            return WorkspaceTrust.none()
-        project_root = context.project_root
+        project_root = context.project_root or context.user_cwd
         config_path = project_hooks_path(project_root)
+        if config_path.resolve(strict=False) == user_hooks_path().resolve(strict=False):
+            # Running from the user config's parent makes the user hooks path
+            # look project-scoped. It needs no trust decision and must not be
+            # granted project trust under the wrong provenance.
+            return WorkspaceTrust.none()
         if not config_path.is_file():
             return WorkspaceTrust.none()
     except OSError:

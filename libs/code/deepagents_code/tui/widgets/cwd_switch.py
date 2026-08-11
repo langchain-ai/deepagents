@@ -288,9 +288,10 @@ class HookTrustScreen(ModalScreen[HookTrustChoice]):
             yield Static(
                 Content.from_markup(
                     "[bold]$root[/bold] contains project hooks at "
-                    "[bold]$path[/bold]. Only trust projects you control. Allow "
-                    "once runs the file as it is now; always allow trusts "
-                    "[bold]$root[/bold] for future sessions and future edits.",
+                    "[bold]$path[/bold]. Only trust projects you control. "
+                    '"Allow once" runs the file as it is now; "always allow" '
+                    "trusts [bold]$root[/bold] for future sessions and future "
+                    "edits.",
                     root=self._project_root,
                     path=self._config_path,
                 ),

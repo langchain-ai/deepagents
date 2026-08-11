@@ -3505,10 +3505,8 @@ class TestCtrlCCopySelection:
             # Ctrl+C is the quit/copy flow: the prompt must NOT be restored to
             # the input (that behavior is exclusive to the Esc path).
             assert chat.value == ""
-            assert not any(
-                call.args and call.args[0] == "Message restored to input"
-                for call in mock_notify.call_args_list
-            )
+            # Interrupting is silent on both key paths.
+            mock_notify.assert_not_called()
 
     async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
         """Ctrl+C with a non-Input/TextArea widget focused never copies."""
@@ -4329,6 +4327,204 @@ class TestMessageQueue:
 
             assert not app.query(StartupTip)
 
+    async def test_startup_tip_not_mounted_for_resume(self) -> None:
+        """A resumed thread should not show a startup tip above the chat input."""
+        app = DeepAgentsApp(resume_thread="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_startup_tip_restored_after_resume_fallback(self) -> None:
+        """A resume fallback to a fresh session should restore the startup tip."""
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(StartupTip)
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            bottom = app.query_one("#bottom-app-container", Container)
+            child_ids = [child.id for child in bottom.children]
+            assert len(app.query(StartupTip)) == 1
+            assert child_ids.index("subagent-panel") < child_ids.index("startup-tip")
+            assert child_ids.index("startup-tip") < child_ids.index("input-area")
+
+    async def test_resume_fallback_does_not_restore_dismissed_tip(self) -> None:
+        """Queued input should keep a fallback session's startup tip dismissed."""
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._dismiss_startup_tip()
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_resume_fallback_does_not_restore_tip_with_initial_prompt(
+        self,
+    ) -> None:
+        """A pending `-m` prompt keeps a fallback session's tip hidden."""
+        app = DeepAgentsApp(
+            resume_thread="__MOST_RECENT__",
+            initial_prompt="hello world",
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(StartupTip)
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_successful_resume_does_not_restore_tip(self) -> None:
+        """A resume that succeeds must not remount the tip the compose gate hid.
+
+        The restore call is unconditional in `_resolve_resume_thread`'s
+        `finally`, so `_initial_resume_requested` staying set is the only thing
+        keeping a resumed thread tip-free.
+        """
+        app = DeepAgentsApp(resume_thread="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+                patch.object(
+                    app,
+                    "_offer_thread_cwd_switch",
+                    AsyncMock(return_value="continue"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert app._lc_thread_id == "thread-123"
+            assert not app.query(StartupTip)
+
+    @pytest.mark.parametrize("fallback", ["not_found", "abort", "lookup_error"])
+    async def test_startup_tip_restored_for_every_resume_fallback(
+        self,
+        fallback: str,
+    ) -> None:
+        """Every fallback branch must leave the fresh session with a tip.
+
+        Each branch clears `_initial_resume_requested` independently, so they
+        are only equivalent for as long as each one remembers to.
+        """
+        app = DeepAgentsApp(resume_thread="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(StartupTip)
+
+            if fallback == "not_found":
+                ctx: list[Any] = [
+                    patch(
+                        "deepagents_code.sessions.thread_exists",
+                        AsyncMock(return_value=False),
+                    ),
+                    patch(
+                        "deepagents_code.sessions.find_similar_threads",
+                        AsyncMock(return_value=[]),
+                    ),
+                ]
+            elif fallback == "abort":
+                ctx = [
+                    patch(
+                        "deepagents_code.sessions.thread_exists",
+                        AsyncMock(return_value=True),
+                    ),
+                    patch.object(
+                        app,
+                        "_offer_thread_cwd_switch",
+                        AsyncMock(return_value="abort"),
+                    ),
+                ]
+            else:
+                ctx = [
+                    patch(
+                        "deepagents_code.sessions.thread_exists",
+                        AsyncMock(side_effect=RuntimeError("boom")),
+                    ),
+                ]
+
+            with contextlib.ExitStack() as stack:
+                for patcher in ctx:
+                    stack.enter_context(patcher)
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert len(app.query(StartupTip)) == 1
+
+    async def test_resume_fallback_respects_hide_tips_env_var(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Opting out of tips also suppresses the post-fallback restore."""
+        from deepagents_code._env_vars import HIDE_SPLASH_TIPS
+
+        monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_resume_resolution_survives_tip_restore_failure(self) -> None:
+        """A tip-restore failure must never strand resume resolution.
+
+        The resolved event gates onboarding's `_write_launch_name_memory`, so
+        skipping `set()` would hang the launch sequence over a cosmetic widget.
+        """
+        app = DeepAgentsApp(resume_thread="__MOST_RECENT__")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.sessions.get_most_recent",
+                    AsyncMock(return_value=None),
+                ),
+                patch.object(
+                    app,
+                    "_restore_startup_tip_after_resume_fallback",
+                    AsyncMock(side_effect=RuntimeError("boom")),
+                ),
+            ):
+                await app._resolve_resume_thread()
+            await pilot.pause()
+
+            assert app._resume_thread_resolved_event.is_set()
+
     async def test_startup_tip_removed_after_first_submission(self) -> None:
         """The startup tip disappears once the first prompt is submitted."""
         app = DeepAgentsApp()
@@ -5112,7 +5308,8 @@ class TestMessageQueue:
             assert chat.value == "do the thing"
             worker.cancel.assert_called_once()
             assert active.has_class("-cancelled")
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            # The restored text is its own confirmation: no toast.
+            mock_notify.assert_not_called()
 
     async def test_escape_restores_interrupted_message_media(self) -> None:
         """Restored multimodal prompts keep their backing media attachments."""
@@ -5152,7 +5349,7 @@ class TestMessageQueue:
             assert images[0].placeholder == "[image 1]"
             worker.cancel.assert_called_once()
             assert active.has_class("-cancelled")
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            mock_notify.assert_not_called()
 
     async def test_escape_interrupt_keeps_existing_input_draft(self) -> None:
         """A non-empty draft is preserved when the agent is interrupted."""
@@ -5192,7 +5389,7 @@ class TestMessageQueue:
 
             assert chat.value == "do the thing"
             worker.cancel.assert_called_once()
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            mock_notify.assert_not_called()
 
     async def test_escape_interrupt_without_active_message_cancels_only(self) -> None:
         """Interrupting with no tracked prompt cancels without restoring."""
@@ -14172,6 +14369,39 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
+    async def test_restored_edit_without_diff_stays_visible(self) -> None:
+        """A resumed edit row remains when checkpoint history has no diff."""
+        app = DeepAgentsApp()
+        app._message_timestamps_visible = True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        type=MessageType.TOOL,
+                        content="",
+                        id="restored-edit",
+                        tool_name="edit_file",
+                        tool_args={"file_path": "a.py"},
+                        tool_status=ToolStatus.SUCCESS,
+                        tool_output="Updated file",
+                    )
+                ],
+                0,
+                "",
+            )
+
+            await app._load_thread_history(
+                thread_id="t-restored-edit", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            tool = app.query_one("#restored-edit", ToolCallMessage)
+            footer = app.query_one("#restored-edit-timestamp-footer", Static)
+            assert tool.display is True
+            assert footer.display is True
+
     async def test_resumed_history_populates_hook_transcript(self) -> None:
         from langchain_core.messages import HumanMessage
 
@@ -14609,6 +14839,62 @@ class TestMessageTimestampFooters:
             assert stored.tool_output == "done"
             assert stored.tool_duration is not None
             assert not app._message_store.is_protected("tool-sync")
+
+    async def test_tool_state_sync_persists_diff_supersession(self) -> None:
+        """Supersession is set after the row is stored, so it must be synced back.
+
+        The row is stored when it mounts, before its diff exists. Without this
+        keyword the store keeps that mount-time `False` and scrolling the row back
+        in resurrects it beside the diff that replaced it.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tool = ToolCallMessage(
+                "edit_file", {"file_path": "a.py"}, id="tool-superseded"
+            )
+            await app._mount_message(tool)
+            await pilot.pause()
+
+            tool.set_success("Updated file")
+            app._sync_tool_message_state(tool)
+            stored = app._message_store.get_message("tool-superseded")
+            assert stored is not None
+            assert stored.tool_diff_superseded is False
+
+            tool.mark_superseded_by_diff()
+            app._sync_tool_message_state(tool)
+            assert stored.tool_diff_superseded is True
+
+    async def test_tool_state_sync_persists_display_caveat(self) -> None:
+        """A late display caveat must survive transcript virtualization.
+
+        The row is stored at mount time, but the caveat is added only when the
+        file change cannot be rendered. Without syncing it back, hydration
+        would treat the successful row as groupable and hide its warning.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tool = ToolCallMessage(
+                "write_file", {"file_path": "a.py"}, id="tool-caveat"
+            )
+            await app._mount_message(tool)
+            await pilot.pause()
+
+            tool.set_success("The file change could not be shown.")
+            tool._mark_display_caveat()
+            app._sync_tool_message_state(tool)
+
+            stored = app._message_store.get_message("tool-caveat")
+            assert stored is not None
+            assert stored.tool_display_caveat is True
+
+            restored = stored.to_widget()
+            assert isinstance(restored, ToolCallMessage)
+            assert restored.has_display_caveat is True
 
     async def test_transcript_mounts_stay_chronological_around_spinner(self) -> None:
         """Rows mounted while the spinner is active stay above the bottom spacer."""
@@ -16355,6 +16641,7 @@ class TestShellCommandInterrupt:
         app._session_state = MagicMock()
         app._session_state.hooks = HooksManager.inert()
         app._pending_shell_messages = [self._shell_context_message("echo hi", "hi")]
+        app._plugin_auto_update_started = True
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -25362,6 +25649,141 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
 
+    async def test_install_defers_to_another_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A held update lock blocks the install before any progress UI opens.
+
+        The notification and the entry both survive, so the user can retry once
+        the running install finishes. The lock is taken in-process here for
+        determinism, so it is `_UPDATE_INSTALL_THREAD_LOCK` that refuses;
+        `TestUpdateInstallLock` covers genuine cross-process exclusion.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        monkeypatch.setattr(app, "notify", capture_notify)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new_callable=AsyncMock,
+                ) as upgrade_mock,
+                update_install_lock() as holding,
+            ):
+                assert holding is True
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert not isinstance(app.screen, UpdateProgressScreen)
+
+        upgrade_mock.assert_not_awaited()
+        assert app._notice_registry.get("update:available") is not None
+        assert any("An update is already being installed" in m for m in notified)
+
+    async def test_install_releases_lock_for_a_later_retry(self) -> None:
+        """A finished install must not leave the update lock held.
+
+        Asserts the install actually ran first: without that, an unrelated
+        early return would leave the lock free too and this would pass while
+        proving nothing.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+        upgrade_mock = AsyncMock(return_value=(False, "resolver: conflict"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=upgrade_mock,
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+        upgrade_mock.assert_awaited_once()
+        with update_install_lock() as holding:
+            assert holding is True
+
+    async def test_install_runs_while_holding_the_update_lock(self) -> None:
+        """The install must run inside the lock, not merely after a check.
+
+        Shrinking the `with` block to cover only the boolean check would leave
+        the install unguarded while every other test here still passed. The
+        lock is not reentrant, so re-entering from inside `perform_upgrade`
+        proves it is held for the real work.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+        held_during_install: list[bool] = []
+
+        async def _record_lock_state(**_kwargs: Any) -> tuple[bool, str]:  # noqa: RUF029
+            with update_install_lock() as holding:
+                held_during_install.append(holding)
+            return False, "resolver: conflict"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=_record_lock_state,
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+        assert held_during_install == [False], (
+            "the install ran without holding the update lock"
+        )
+
+    async def test_dependency_refresh_defers_to_a_running_install(self) -> None:
+        """`/update --deps` replaces the distribution, so it takes the lock too.
+
+        `perform_dependency_refresh` runs `uv tool install -U` against the same
+        tool environment as an upgrade, so racing another terminal's install
+        hits the same queued-uv and transiently-absent-module hazards.
+        """
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        refresh = AsyncMock(return_value=(True, ""))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_dependency_refresh",
+                    new=refresh,
+                ),
+                update_install_lock() as holding,
+            ):
+                assert holding is True
+                await app._refresh_dependencies(include_prereleases=None)
+                await pilot.pause()
+
+        refresh.assert_not_awaited()
+
     async def test_install_success_with_shadow_surfaces_warning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -26313,7 +26735,7 @@ class TestNotificationCenterIntegration:
             assert screen._tab == "discover"
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._tab == "errors"
+            assert screen._tab == "settings"
             await pilot.press("tab")
             await pilot.pause()
             assert screen._tab == "discover"
@@ -35244,6 +35666,32 @@ class TestToolGroupCollapse:
             assert pending.display is True
             assert pending_footer.display is True
 
+    async def test_diff_superseded_row_hides_its_timestamp_footer(self) -> None:
+        """A superseded row's footer follows it when hidden and restored."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("edit_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            await pilot.pause()
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+            assert footer.display is True
+
+            tool.set_success("Updated file")
+            tool.mark_superseded_by_diff()
+            await pilot.pause()
+            assert tool.display is False
+            assert footer.display is False
+
+            tool.set_error("Disk full")
+            await pilot.pause()
+            assert tool.display is True
+            assert footer.display is True
+
     async def test_timestamps_toggle_respects_collapsed_group(self) -> None:
         """Turning `/timestamps` on must not surface a collapsed run's footers.
 
@@ -35344,7 +35792,7 @@ class TestToolGroupCollapse:
     async def test_evicted_failed_tool_releases_its_footer(self) -> None:
         """Ejecting a failed tool restores its footer along with its row.
 
-        `_evict_failed` is the last owner of that footer's marker class: once
+        `_evict_unfoldable` is the last owner of that footer's marker class: once
         the tool is out of the group nothing else will clear it, so a failure
         would leave an error row visible with no timestamp beneath it.
         """
@@ -35515,7 +35963,12 @@ class TestToolGroupCollapse:
 
     @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
     async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
-        """Excluded tools stay visible and split adjacent tool groups."""
+        """Excluded tools stay visible and split adjacent tool groups.
+
+        `edit_file` is included deliberately: a row only self-hides once
+        `mark_superseded_by_diff` runs, so one that never got a diff must still
+        stay visible and act as a group boundary.
+        """
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-history")
@@ -35542,6 +35995,47 @@ class TestToolGroupCollapse:
             assert not excluded.has_class("-grouped")
             assert after.display is False
 
+    async def test_regroup_leaves_caveated_rows_expanded(self) -> None:
+        """A rehydrated caveat must not be folded into a group summary.
+
+        The live path evicts these rows (`_evict_unfoldable`); this is the
+        separate rehydration implementation, and nothing else covers it. The
+        summary line is built from tool names alone, so folding a caveated
+        `delete` renders destroying a 5,000-line file whose contents could not
+        be read as `▸ Deleted 1 file` — identical to destroying an empty one,
+        and visible only after the user scrolls away and back.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-caveat-history")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            before, caveated, after = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("before", "read_file", {"file_path": "a.py"}, "success"),
+                    ("caveated", "delete", {"file_path": "big.py"}, "success"),
+                    ("after", "read_file", {"file_path": "b.py"}, "success"),
+                ],
+            )
+            # Set the way rehydration does: the flag is restored before mount
+            # and the output carrying the sentence comes back separately.
+            caveated._mark_display_caveat()
+            await pilot.pause()
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert caveated.display is True, "the caveat was folded out of sight"
+            assert not caveated.has_class("-grouped")
+            # It is also a group boundary, like any other unfoldable row.
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert before.display is False
+            assert after.display is False
+
     async def test_regroup_leaves_edit_diff_outside_later_tool_group(self) -> None:
         """An edit diff arriving after a parallel read stays expanded."""
         from deepagents_code.tui.widgets.messages import DiffMessage, ToolGroupSummary
@@ -35561,13 +36055,15 @@ class TestToolGroupCollapse:
             )
             diff = DiffMessage("-old\n+new", "a.py", tool_name="edit_file")
             await messages.mount(diff)
+            edit.mark_superseded_by_diff()
             await pilot.pause()
 
             await app._regroup_completed_tools()
             await pilot.pause()
 
             assert len(list(app.query(ToolGroupSummary))) == 1
-            assert edit.display is True
+            # The edit row hides itself on success; its diff stays visible.
+            assert edit.display is False
             assert read.display is False
             assert diff.display is True
             assert not diff.has_class("-grouped")

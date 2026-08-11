@@ -63,11 +63,7 @@ on:
         type: string
         default: ""
       judge_models:
-        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index, research/DRBench), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna. The DRBench verifier only drives gpt-4o/gpt-4o-mini directly, since upstream routes on the model name — a value it cannot drive does NOT fail the research leaf, it falls back to gpt-4o and says so in the summary. Use `research_judge_models` to choose DRBench's grader deliberately."
-        type: string
-        default: ""
-      research_judge_models:
-        description: "Optional: grader for `research` (DRBench) only, when it must differ from `judge_models` — for example an independent grader for tau3 alongside gpt-4o for DRBench in one dispatch. Must be gpt-4o, gpt-4o-mini, or a single `openrouter/<vendor>/<model>` slug such as `openrouter/openai/gpt-5.6-sol`, since upstream routes on the model name; anything else fails prep rather than being silently rewritten. Empty inherits `judge_models` when DRBench can drive it, else gpt-4o. A different grader is not comparable to earlier DRBench runs or to the paper, so re-baseline rather than reading a delta."
+        description: "Optional: one grader model for all LLM-judge verifiers, including conversation/tau3, harbor-index, and research/DRBench. Empty defaults to gpt-5.6-luna. Use an independent grader to avoid self-grading. DRBench also supports its native gpt-4o/gpt-4o-mini judges and single `openrouter/<vendor>/<model>` slugs; unsupported values fall back to gpt-5.6-luna for research and are reported in the summary. Changing graders makes research scores incomparable, so re-baseline rather than reading a delta."
         type: string
         default: ""
 
@@ -327,7 +323,6 @@ jobs:
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}
-      research_judge_models: ${{ inputs.research_judge_models }}
 
   usage:
     name: "💰 Collect LangSmith usage"

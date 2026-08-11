@@ -1049,7 +1049,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.7.4"
+version = "0.7.5"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -1114,7 +1114,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.52"
+version = "0.1.54"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1337,7 +1337,7 @@ requires-dist = [
     { name = "langchain-together", marker = "extra == 'together'", specifier = ">=0.4.0,<2.0.0" },
     { name = "langchain-vercel-sandbox", marker = "extra == 'vercel'", editable = "../partners/vercel" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.3.0,<2.0.0" },
-    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0,<4.0.0" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.31,<1.0.0" },
     { name = "langgraph-runtime-inmem", specifier = ">=0.31.1,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.2,<1.0.0" },
@@ -2128,15 +2128,15 @@ wheels = [
 
 [[package]]
 name = "h2"
-version = "4.3.0"
+version = "4.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hpack" },
     { name = "hyperframe" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/17/afa56379f94ad0fe8defd37d6eb3f89a25404ffc71d4d848893d270325fc/h2-4.3.0.tar.gz", hash = "sha256:6c59efe4323fa18b47a632221a1888bd7fde6249819beda254aeca909f221bf1", size = 2152026, upload-time = "2025-08-23T18:12:19.778Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/85/7c366e69d84c17bb778fe41419e1fbcce3033d5b7ce29bbffff0a98b859f/h2-4.4.1.tar.gz", hash = "sha256:4e866ffb1a869ae14dd9b5e6beb5c24a13da0495ad72b65925ded182521c1516", size = 2157281, upload-time = "2026-08-03T11:45:09.509Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/b2/119f6e6dcbd96f9069ce9a2665e0146588dc9f88f29549711853645e736a/h2-4.3.0-py3-none-any.whl", hash = "sha256:c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd", size = 61779, upload-time = "2025-08-23T18:12:17.779Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/22/e85faf23bd72a92d1921e37d674ca56eb298a3c8be31fdecef0ff2b3aaac/h2-4.4.1-py3-none-any.whl", hash = "sha256:0e25f1462b23c9cb82d9eb02e28bc706dac2a68cb457c6a0d74d63c8a2a5d0e6", size = 62636, upload-time = "2026-08-03T11:44:59.164Z" },
 ]
 
 [[package]]
@@ -2381,8 +2381,8 @@ dependencies = [
     { name = "ibm-cos-sdk" },
     { name = "lomond" },
     { name = "packaging" },
-    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
-    { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.14.*'" },
+    { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.14.*'" },
     { name = "requests" },
     { name = "tabulate" },
     { name = "urllib3" },
@@ -3142,7 +3142,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 test = [
     { name = "build" },
-    { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.0,<4.0.0" },
+    { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.1,<4.0.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4.0.0" },
     { name = "pytest", specifier = ">=9.1.1,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
@@ -3325,16 +3325,16 @@ wheels = [
 
 [[package]]
 name = "langgraph-checkpoint-sqlite"
-version = "3.1.0"
+version = "3.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "langgraph-checkpoint" },
     { name = "sqlite-vec" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/ea/83917c2369acf8a10a894d4247655fd063c07924ba5bc4e83c85d2eaeded/langgraph_checkpoint_sqlite-3.1.0.tar.gz", hash = "sha256:f926916ebc1b985d802cc9c820026036e84db9d910d62c97b57e4ba64f67d5ae", size = 147902, upload-time = "2026-05-12T03:34:52.503Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/b1/26fef7572c4fce0322740ef3fcee471510028355d4d4c1d800f0fd432d73/langgraph_checkpoint_sqlite-3.1.1.tar.gz", hash = "sha256:6fcb20db4c37ef7aad52f29b539eb98c38e2dad6fab7c2446a2a9db24f37a70e", size = 146805, upload-time = "2026-07-30T19:19:37.516Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/07/b342811a16327900af2747c752ea19676172fcddf9b592cc384031076623/langgraph_checkpoint_sqlite-3.1.0-py3-none-any.whl", hash = "sha256:cc9b40df0076feae8a9ad42ae713621b148b00ac23adc09dc1dc66090a46e5ad", size = 38587, upload-time = "2026-05-12T03:34:51.231Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/b9/e458601a1718337839bcfeec9d1b27b8b16ce135be2bd50ed0395d33a878/langgraph_checkpoint_sqlite-3.1.1-py3-none-any.whl", hash = "sha256:8505c54c94a658080525d7e6780fdd4e0c078ff2566b30d399c02cc9f9af1c63", size = 40785, upload-time = "2026-07-30T19:19:36.424Z" },
 ]
 
 [[package]]
@@ -4466,11 +4466,11 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or python_full_version >= '3.14'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and python_full_version < '3.14'" },
-    { name = "python-dateutil", marker = "python_full_version < '3.14'" },
-    { name = "pytz", marker = "python_full_version < '3.14'" },
-    { name = "tzdata", marker = "python_full_version < '3.14'" },
+    { name = "python-dateutil" },
+    { name = "pytz" },
+    { name = "tzdata" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/33/01/d40b85317f86cf08d853a4f495195c73815fdf205eef3993821720274518/pandas-2.3.3.tar.gz", hash = "sha256:e05e1af93b977f7eafa636d043f9f94c7ee3ac81af99c13508215942e64c993b", size = 4495223, upload-time = "2025-09-29T23:34:51.853Z" }
 wheels = [
@@ -4525,9 +4525,9 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
-    { name = "python-dateutil", marker = "python_full_version >= '3.14'" },
-    { name = "tzdata", marker = "(python_full_version >= '3.14' and sys_platform == 'emscripten') or (python_full_version >= '3.14' and sys_platform == 'win32')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "python-dateutil" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f8/87/4341c6252d1c47b08768c3d25ac487362bf403f0313ddae4a2a26c9b1b4c/pandas-3.0.3.tar.gz", hash = "sha256:696a4a00a2a2a35d4e5deb3fc946641b96c944f02230e4f76137fe35d806c4fc", size = 4651414, upload-time = "2026-05-11T18:54:29.21Z" }
 wheels = [
@@ -5790,8 +5790,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography", marker = "sys_platform != 'win32'" },
-    { name = "jeepney", marker = "sys_platform != 'win32'" },
+    { name = "cryptography" },
+    { name = "jeepney" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
@@ -6560,11 +6560,11 @@ name = "vercel-workers"
 version = "0.0.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "python_full_version >= '3.12'" },
-    { name = "httpx", marker = "python_full_version >= '3.12'" },
-    { name = "pydantic", marker = "python_full_version >= '3.12'" },
-    { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
-    { name = "vercel", marker = "python_full_version >= '3.12'" },
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "vercel" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/30/df/04d37021ad7ca53b7599c313e411d91623c7a005c741f491d1eefb7a9f0c/vercel_workers-0.0.25.tar.gz", hash = "sha256:212ded01400b524be51d251df49f801caf115ad7d48cca7eb168cbeceda3def3", size = 64149, upload-time = "2026-06-20T19:26:27.177Z" }
 wheels = [

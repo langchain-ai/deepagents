@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from deepagents import FsToolName
     from rich.console import Console
 
+    from deepagents_code._dep_floor_check import _FloorViolation
     from deepagents_code.app import AppResult
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
@@ -3253,6 +3254,9 @@ def _run_trust_action_picker(
     console: "Console",
     *,
     remember_label: str = "Allow for this project — until changed",
+    allow_label: str = "Allow once",
+    deny_label: str = "Deny",
+    deny_first: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome | None:
     """Show the inline allow-once / remember / deny picker for a trust prompt.
 
@@ -3263,6 +3267,12 @@ def _run_trust_action_picker(
         console: Console to print fallback notices to (stderr).
         remember_label: Label for the persistent-trust option. Set this to match
             what the caller actually persists, since scope differs by subject.
+        allow_label: Label for the session-scoped allow option.
+        deny_label: Label for the refuse option.
+        deny_first: When `True`, list the deny option first; callers whose
+            "deny" reads as a safe default (e.g. aborting a launch) put it in
+            the leading position. The picker starts highlighted on the deny
+            option in either ordering, so a bare Enter refuses.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
@@ -3294,11 +3304,20 @@ def _run_trust_action_picker(
 
     glyphs = get_glyphs()
     actions = [
-        (_TrustAction.ALLOW_ONCE, "Allow once"),
+        (_TrustAction.ALLOW_ONCE, allow_label),
         (_TrustAction.REMEMBER, remember_label),
-        (_TrustAction.DENY, "Deny"),
+        (_TrustAction.DENY, deny_label),
     ]
-    selected_index = len(actions) - 1
+    if deny_first:
+        actions.reverse()
+    # Highlight the refusing option by identity, not position: `deny_first`
+    # moves it to the front, so a positional index would silently default to
+    # "allow" for exactly the callers that asked for a safer ordering.
+    selected_index = next(
+        index
+        for index, (action, _) in enumerate(actions)
+        if action is _TrustAction.DENY
+    )
 
     def _rows() -> FormattedText:
         rows: list[tuple[str, str]] = [
@@ -3381,10 +3400,67 @@ def _run_trust_action_picker(
         return None
 
 
+def prompt_for_dep_floor_mismatch(
+    console: "Console",
+    violations: "Sequence[_FloorViolation]",
+) -> _TrustAction | _TrustPromptOutcome:
+    """Block on a continue / mute / abort picker for a stale editable install.
+
+    Lives here (not in `_dep_floor_check`) beside the other pre-TUI trust
+    prompts so the picker implementation is shared. The prompt prints to
+    stderr and runs before the Textual alternate screen mounts, so it stays
+    visible.
+
+    Args:
+        console: Console printing to stderr.
+        violations: The detected below-floor dependencies.
+
+    Returns:
+        `ALLOW_ONCE` to continue this session, `REMEMBER` to mute this exact
+        mismatch for this checkout, `CANCELLED` to abort the launch (chosen
+        "Abort launch", Esc, or Ctrl+D — `abort_on_deny` collapses all three
+        into one outcome, so `DENY` is never returned), or `INTERRUPTED` on
+        Ctrl+C.
+    """
+    console.print()
+    console.print(
+        "[bold yellow]This editable dcode install is behind the checkout's "
+        "dependency floors:[/bold yellow]",
+        highlight=False,
+    )
+    from rich.markup import escape
+
+    from deepagents_code._dep_floor_check import refresh_command
+
+    for v in violations:
+        console.print(f"  - {escape(v.describe())}", highlight=False)
+    refresh = refresh_command()
+    console.print(
+        f"Refresh the active environment:\n  {escape(refresh)}", highlight=False
+    )
+    console.print(
+        "[yellow]Running stale source against older dependencies can break "
+        "behavior in hard-to-diagnose ways.[/yellow]",
+        highlight=False,
+    )
+    return _select_trust_action(
+        console,
+        remember_label="Mute until the mismatch changes",
+        allow_label="Continue this session only",
+        deny_label="Abort launch",
+        deny_first=True,
+        abort_on_deny=True,
+    )
+
+
 def _select_trust_action(
     console: "Console",
     *,
     remember_label: str = "Allow for this project — until changed",
+    allow_label: str = "Allow once",
+    deny_label: str = "Deny",
+    deny_first: bool = False,
+    abort_on_deny: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome:
     """Choose whether to allow once, remember, or deny a project-scoped subject.
 
@@ -3398,31 +3474,53 @@ def _select_trust_action(
         console: Console used by the text fallback.
         remember_label: Label for the persistent-trust option forwarded to the
             inline picker.
+        allow_label: Label for the session-scoped allow option.
+        deny_label: Label for the refuse option.
+        deny_first: Forwarded to the picker to list the deny option first.
+        abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
+            on every input path (picker, typed answer, and EOF), so prompts
+            whose refuse option aborts the launch report exactly one outcome
+            and callers cannot mistake a deny for a decision to proceed.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
-        Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
+        Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
+        user presses Ctrl+C.
     """
     selected = _run_trust_action_picker(
         console,
         remember_label=remember_label,
+        allow_label=allow_label,
+        deny_label=deny_label,
+        deny_first=deny_first,
     )
     if selected is not None:
+        if selected is _TrustAction.DENY and abort_on_deny:
+            return _TrustPromptOutcome.CANCELLED
         return selected
 
+    # Mirror the caller's labels: for the dep-floor prompt the choices are
+    # continue / mute / abort, and a hardcoded "allow once / deny" would
+    # misdescribe what the default does. Both lines go to stderr, where the
+    # rest of the prompt already went; passing the question to `input()`
+    # instead would split it onto stdout, so `dcode 2>log` would show a bare
+    # question with all of its context redirected away.
+    console.print(
+        f"[dim]{allow_label} [y] · {remember_label} [r] · {deny_label} [N][/dim]",
+        highlight=False,
+    )
+    console.print("Choose [y/r/N]: ", end="", highlight=False)
     try:
-        answer = (
-            input("Choose [y] allow once / [r] remember / [N] deny: ").strip().lower()
-        )
+        answer = input().strip().lower()
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _TrustAction.DENY
+        return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
         return _TrustAction.REMEMBER
-    return _TrustAction.DENY
+    return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 
 
 def _run_project_mcp_server_checkbox_picker(
@@ -4040,6 +4138,11 @@ def cli_main() -> None:
         # subcommands only. ACP/root-mode invocations may not define `command`,
         # and should fall through to the later handlers instead of raising here.
         command = getattr(args, "command", None)
+        if command is not None:
+            from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
+
+            warn_if_editable_deps_stale()
+
         if command == "config":
             from deepagents_code.client.commands.config import run_config_command
 
@@ -4198,6 +4301,46 @@ def cli_main() -> None:
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         apply_stdin_pipe(args)
+
+        # Gate on stale editable-install dependencies. Choose the channel from
+        # the launch mode, not from `sys.stdout.isatty()`: a TTY does not imply
+        # the interactive TUI. This runs after `apply_stdin_pipe` so
+        # `non_interactive_message` is final. An interactive launch that can
+        # actually answer a prompt gets a blocking pre-TUI continue/mute/abort
+        # prompt (printed to stderr before the alternate screen mounts);
+        # headless (`-n`) launches and subcommands print the full warning to
+        # stderr once instead — they have no TUI to prompt in and must never
+        # block. Subcommands are warned earlier, before the `config`/`update`
+        # fast paths exit. (ACP exits above, before this point.)
+        #
+        # `_trust_picker_has_terminal()` is part of the condition because a
+        # piped-stdin interactive launch still mounts the TUI: per
+        # `apply_stdin_pipe`, `cat x | dcode -m ...` and `cat x | dcode
+        # --skill ...` set `initial_prompt`, not `non_interactive_message`.
+        # Prompting there would find no TTY for the picker, read EOF from the
+        # text fallback, and abort the launch outright — with no way to answer
+        # the prompt and mute it. Those launches get the warning instead.
+        interactive_tui = (
+            not getattr(args, "command", None) and not args.non_interactive_message
+        )
+        if interactive_tui and _trust_picker_has_terminal():
+            from deepagents_code._dep_floor_check import prompt_if_editable_deps_stale
+
+            dep_floor_outcome = prompt_if_editable_deps_stale()
+            if dep_floor_outcome is _TrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if dep_floor_outcome is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; refresh the environment and relaunch.[/dim]",
+                    highlight=False,
+                )
+                return
+        elif command is None:
+            from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
+
+            warn_if_editable_deps_stale()
 
         # Validated here, before mode dispatch and any heavy session setup:
         # `apply_stdin_pipe` has finalized `non_interactive_message` (the same

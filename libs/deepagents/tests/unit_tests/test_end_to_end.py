@@ -4090,6 +4090,43 @@ def test_invalid_tool_call_recovers_in_same_turn() -> None:
     assert synthetic.status == "error"
 
 
+def test_mixed_valid_and_invalid_tool_calls_execute_valid_call() -> None:
+    @tool
+    def echo(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "call_valid", "name": "echo", "args": {"value": "weather"}}],
+                    invalid_tool_calls=[
+                        {
+                            "id": "call_malformed",
+                            "name": "echo",
+                            "args": '{"value":',
+                            "error": "Unexpected end of JSON input",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Recovered."),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=fake_model, tools=[echo])
+
+    result = agent.invoke({"messages": [HumanMessage(content="Call echo")]})
+
+    assert result["messages"][-1].content == "Recovered."
+    tool_messages = [m for m in fake_model.call_history[1]["messages"] if isinstance(m, ToolMessage)]
+    assert {message.tool_call_id for message in tool_messages} == {"call_valid", "call_malformed"}
+    assert next(message for message in tool_messages if message.tool_call_id == "call_valid").content == "weather"
+    assert next(message for message in tool_messages if message.tool_call_id == "call_malformed").status == "error"
+
+
 async def test_invalid_tool_call_recovers_in_same_turn_async() -> None:
     fake_model = FakeChatModelWithHistory(
         messages=iter(

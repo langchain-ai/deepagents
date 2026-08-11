@@ -53,14 +53,23 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         messages = state["messages"]
         if not messages or not isinstance(messages[-1], AIMessage):
             return None
+        last_message = messages[-1]
         error_messages = []
-        for tool_call in messages[-1].invalid_tool_calls:
+        for tool_call in last_message.invalid_tool_calls:
             error_message = self._error_tool_message(tool_call)
             if error_message is not None:
                 error_messages.append(error_message)
 
         if not error_messages:
             return None
+        if last_message.tool_calls:
+            # Allow continuation to the tool node to run the valid tool calls.
+            # The failed tool calls will be picked up in the model call after
+            # the tool node.
+            return {"messages": error_messages}
+        # Jump back to the model to retry the tool call, we can't
+        # delegate to the tool node to handle this since there are
+        # no valid tool calls to run
         return {"messages": error_messages, "jump_to": "model"}
 
     @hook_config(can_jump_to=["model"])

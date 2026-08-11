@@ -361,7 +361,7 @@ class TestHeaderToggle:
             panel.on_subagent_event(_complete("a", "E1"))
             panel.on_subagent_event(_error("b", "E1"))
             await pilot.pause()
-            header = _render(pilot.app.query_one("#subagent-header", Static))
+            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
             assert "2/2 done" in header
             assert "1 phase" in header  # singular for a single phase
             assert "1 failed" in header
@@ -371,14 +371,31 @@ class TestHeaderToggle:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1"))
             await pilot.pause()
-            header = _render(pilot.app.query_one("#subagent-header", Static))
+            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
             assert "1 phase" in header
             assert "1 phases" not in header  # singular, not "1 phases"
             # A second eval batch makes it plural.
             panel.on_subagent_event(_start("b", "E2"))
             await pilot.pause()
-            header = _render(pilot.app.query_one("#subagent-header", Static))
+            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
             assert "2 phases" in header
+
+    async def test_narrow_header_preserves_full_toggle_hint(self) -> None:
+        async with PanelApp().run_test(size=(80, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            panel.on_subagent_event(_error("a", "E1"))
+            panel.on_subagent_event(_start("b", "E2"))
+            panel.finalize_running()
+            await pilot.pause()
+
+            summary = pilot.app.query_one("#subagent-header-summary", Static)
+            hint = pilot.app.query_one("#subagent-header-hint", Static)
+            text = "click or Ctrl+G to collapse"
+            assert summary.size.width < len(_render(summary))
+            assert _render(hint) == text
+            assert hint.size.width == len(text)
+            assert hint.region.right <= panel.content_region.right
 
 
 class TestReset:
@@ -428,7 +445,7 @@ class TestReset:
             assert rec_b is not None
             assert rec_a.status == "cancelled"
             assert rec_b.status == "cancelled"
-            header = _render(pilot.app.query_one("#subagent-header", Static))
+            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
             assert "2 cancelled" in header
 
     async def test_finalize_running_preserves_finished_rows(self) -> None:

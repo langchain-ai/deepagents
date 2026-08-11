@@ -3967,7 +3967,7 @@ def _check_mcp_project_trust(
     return True
 
 
-_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this project"
 
 
 def _check_project_hooks_trust(
@@ -3989,9 +3989,8 @@ def _check_project_hooks_trust(
         abort startup.
     """
     from rich.console import Console
-    from rich.text import Text
 
-    from deepagents_code.hooks.loading import project_hooks_path
+    from deepagents_code.hooks.loading import project_hooks_path, user_hooks_path
     from deepagents_code.hooks.trust import (
         WorkspaceTrust,
         is_project_hooks_trusted,
@@ -4003,6 +4002,11 @@ def _check_project_hooks_trust(
         context = ProjectContext.from_user_cwd(Path.cwd())
         project_root = context.project_root or context.user_cwd
         config_path = project_hooks_path(project_root)
+        if config_path.resolve(strict=False) == user_hooks_path().resolve(strict=False):
+            # Running from the user config's parent makes the user hooks path
+            # look project-scoped. It needs no trust decision and must not be
+            # granted project trust under the wrong provenance.
+            return WorkspaceTrust.none()
         if not config_path.is_file():
             return WorkspaceTrust.none()
     except OSError:
@@ -4013,14 +4017,20 @@ def _check_project_hooks_trust(
     if trust_flag or is_project_hooks_trusted(project_root):
         return granted
 
+    from rich.markup import escape
+
     prompt_console = Console(stderr=True)
     prompt_console.print()
-    title = Text("Project hooks can execute commands from ", style="bold yellow")
-    title.append(str(config_path))
-    prompt_console.print(title, highlight=False)
     prompt_console.print(
-        "Only allow hooks for projects you trust. Future edits to this file "
-        "will run without asking again if you always allow.",
+        "[bold yellow]Project hooks can run arbitrary shell commands on your "
+        "machine.[/bold yellow]",
+        highlight=False,
+    )
+    prompt_console.print(f"Hooks file: {escape(str(config_path))}", highlight=False)
+    prompt_console.print(
+        "Only trust projects you control. Allow once runs this file as it is "
+        f'now; always allow trusts "{escape(str(project_root))}" for future '
+        "sessions and future edits.",
         style="yellow",
         highlight=False,
     )
@@ -4047,7 +4057,8 @@ def _check_project_hooks_trust(
             )
         else:
             prompt_console.print(
-                "[dim]Project hooks trusted for this workspace.[/dim]",
+                f'[dim]Hooks for "{escape(str(project_root))}" will run without '
+                "asking from now on.[/dim]",
                 highlight=False,
             )
         return granted

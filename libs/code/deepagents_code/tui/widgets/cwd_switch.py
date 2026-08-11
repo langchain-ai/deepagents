@@ -281,15 +281,17 @@ class HookTrustScreen(ModalScreen[HookTrustChoice]):
         """
         with Vertical():
             yield Static(
-                "Project hooks can execute commands",
+                "Project hooks can run arbitrary shell commands on your machine",
                 classes="cwd-switch-title",
                 markup=False,
             )
             yield Static(
                 Content.from_markup(
-                    "The workspace [bold]$root[/bold] contains project hooks at "
-                    "[bold]$path[/bold]. Only allow hooks for projects you trust. "
-                    "Always allow also trusts future edits to this file.",
+                    "[bold]$root[/bold] contains project hooks at "
+                    "[bold]$path[/bold]. Only trust projects you control. "
+                    '"Allow once" runs the file as it is now; "always allow" '
+                    "trusts [bold]$root[/bold] for future sessions and future "
+                    "edits.",
                     root=self._project_root,
                     path=self._config_path,
                 ),

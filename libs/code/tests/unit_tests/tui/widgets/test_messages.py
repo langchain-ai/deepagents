@@ -5178,18 +5178,18 @@ class TestSummarizeToolGroup:
             (["execute"], "Ran 1 shell command"),
             (
                 ["read_file", "read_file", "execute", "execute", "execute"],
-                "Read 2 files, ran 3 shell commands",
+                "2 file reads, ran 3 shell commands",
             ),
             (["grep"], "Searched for 1 pattern"),
             (["grep", "glob", "glob"], "Searched for 3 patterns"),
-            (["read_file"], "Read 1 file"),
+            (["read_file"], "1 file read"),
             (["web_search", "web_search"], "Searched the web 2 times"),
             (["web_search"], "Searched the web"),
             (["write_todos"], "Updated todos"),
             (["task", "task"], "Ran 2 agents"),
             (
                 ["edit_file", "write_file", "read_file"],
-                "Edited 1 file, wrote 1 file, read 1 file",
+                "Edited 1 file, wrote 1 file, 1 file read",
             ),
             (["mystery", "mystery"], "Ran 2 mystery calls"),
         ],
@@ -5241,7 +5241,7 @@ class TestToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Read 1 file, ran 1 shell command" in rendered.plain
+            assert "1 file read, ran 1 shell command" in rendered.plain
 
     async def test_toggle_expands_and_recollapses_members(self) -> None:
         """Toggling flips member visibility and the disclosure glyph."""
@@ -5531,7 +5531,7 @@ class TestLiveToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Read 1 file" in rendered.plain
+            assert "1 file read" in rendered.plain
 
     async def test_close_waits_for_pending_member_terminal_status(self) -> None:
         """A stream boundary must not report a still-pending tool as having run."""
@@ -5562,7 +5562,7 @@ class TestLiveToolGroupSummary:
             assert read.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Read 1 file" in rendered.plain
+            assert "1 file read" in rendered.plain
             assert "shell command" not in rendered.plain
 
     async def test_open_group_accepts_member_after_current_members_settle(self) -> None:
@@ -5654,7 +5654,7 @@ class TestLiveToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Read 1 file" in rendered.plain
+            assert "1 file read" in rendered.plain
 
     async def test_skipped_member_is_evicted_and_uncounted_on_close(self) -> None:
         """A skipped tool stays visible and is left out of the summary count.
@@ -5683,7 +5683,7 @@ class TestLiveToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Read 1 file" in rendered.plain
+            assert "1 file read" in rendered.plain
             # The skipped execute must not be summarized as if it had run.
             assert "shell command" not in rendered.plain
 

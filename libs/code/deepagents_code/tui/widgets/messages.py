@@ -3952,7 +3952,7 @@ _Tense = Literal["present", "past"]
 
 
 def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -> str:
-    """Phrase a single count segment, e.g. "Read 2 files" / "Reading 2 files".
+    """Phrase a single count segment, e.g. "2 file reads" / "Reading 2 files".
 
     Args:
         category: The summary category the tools were bucketed into.
@@ -3969,6 +3969,9 @@ def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -
         return base if count == 1 else f"{base} {count} times"
     if category == "todos":
         return "Updating todos" if tense == "present" else "Updated todos"
+    if category == "read" and tense == "past":
+        noun = "read" if count == 1 else "reads"
+        return f"{count} file {noun}"
     phrase = _TOOL_SUMMARY_PHRASES.get(category)
     if phrase is None:
         present, past = "Running", "Ran"
@@ -3985,7 +3988,7 @@ def summarize_tool_group(tool_names: list[str], *, tense: _Tense = "past") -> st
 
     Aggregates by category in first-appearance order and lowercases the lead
     word of every segment after the first, e.g.
-    `["read_file", "read_file", "execute"]` -> "Read 2 files, ran 1 shell command".
+    `["read_file", "read_file", "execute"]` -> "2 file reads, ran 1 shell command".
 
     Args:
         tool_names: Raw tool names for the run, in call order.
@@ -4020,8 +4023,8 @@ def _join_segments(segments: list[str]) -> str:
         segments: Pre-phrased segments in display order.
 
     Returns:
-        The segments joined with ", ", e.g. `["Ran 2 files", "Running 1 agent"]`
-        -> "Ran 2 files, running 1 agent".
+        The segments joined with ", ", e.g. `["2 file reads", "Running 1 agent"]`
+        -> "2 file reads, running 1 agent".
     """
     first, *rest = segments
     lowered = [f"{seg[0].lower()}{seg[1:]}" if seg else seg for seg in rest]

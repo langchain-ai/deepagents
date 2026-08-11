@@ -5,7 +5,7 @@
 # immediately instead of leaving a "pending deletion" warning on a PR that a
 # maintainer has just marked exempt.
 #
-# Uses the default GITHUB_TOKEN so the label-removal event does NOT re-trigger
+# The default GITHUB_TOKEN is used (no app token) so the label-removal event does NOT re-trigger
 # other workflows: GitHub does not trigger new workflow runs from actions
 # performed by the default GITHUB_TOKEN (with narrow exceptions like
 # workflow_dispatch), which prevents infinite loops.
@@ -13,7 +13,15 @@
 name: Clear pending-deletion on do-not-close
 
 on:
-  pull_request:
+  # pull_request_target is required here: for PRs opened from forks, a plain
+  # pull_request workflow receives a read-only GITHUB_TOKEN regardless of who
+  # applied the label, so issues.removeLabel would 403 and pending-deletion
+  # would linger on exactly the external PRs this automation targets.
+  # pull_request_target is safe here: we never check out or execute the
+  # PR's code — only read the event payload and manage labels.
+  # NEVER CHECK OUT UNTRUSTED CODE FROM A PR's HEAD IN A pull_request_target JOB.
+  # Doing so would allow attackers to execute arbitrary code in the context of your repository.
+  pull_request_target:
     types: [labeled]
 
 permissions:

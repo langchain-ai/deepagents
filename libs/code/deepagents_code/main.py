@@ -3935,9 +3935,9 @@ def _check_project_hooks_trust(
     )
     prompt_console.print(f"Hooks file: {escape(str(config_path))}", highlight=False)
     prompt_console.print(
-        f'Trusting "{escape(str(project_root))}" lets the hooks it defines now '
-        "and any future edits to them run without asking. Only trust "
-        "repositories you control.",
+        f'Trusting "{escape(str(project_root))}" means its hooks run without '
+        "asking, including any future edits. Only trust repositories you "
+        "control.",
         style="yellow",
         highlight=False,
     )

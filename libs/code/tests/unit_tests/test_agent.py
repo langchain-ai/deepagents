@@ -5614,6 +5614,62 @@ class TestCreateCliAgentInterpreterWiring:
         assert "print('hello world')" in read.content
         assert "app.py" in listing.content
 
+    def test_rubric_grader_tools_receive_tool_node_runtime(
+        self, tmp_path: Path
+    ) -> None:
+        from langchain_core.messages import (
+            AIMessage as LCAIMessage,
+            ToolMessage as LCToolMessage,
+        )
+        from langgraph.prebuilt import ToolNode
+        from langgraph.runtime import Runtime
+
+        tools, repo = self._grader_repo_tools(tmp_path)
+        calls = {
+            "read_file": {"file_path": str(repo / "app.py")},
+            "ls": {"path": str(repo)},
+            "glob": {"pattern": "**/*.py", "path": str(repo)},
+            "grep": {"pattern": "hello world", "path": str(repo)},
+        }
+        node = ToolNode(list(tools.values()))
+        result = node._func(
+            {
+                "messages": [
+                    LCAIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": name,
+                                "args": args,
+                                "id": f"grader-{name}",
+                                "type": "tool_call",
+                            }
+                            for name, args in calls.items()
+                        ],
+                    )
+                ]
+            },
+            {},
+            Runtime(),
+        )
+        messages = {
+            message.name: message
+            for message in result["messages"]
+            if isinstance(message, LCToolMessage)
+        }
+
+        assert set(messages) == set(calls)
+        assert all(message.status == "success" for message in messages.values())
+        assert "print('hello world')" in messages["read_file"].content
+        assert "app.py" in messages["ls"].content
+        assert "app.py" in messages["glob"].content
+        assert "app.py" in messages["grep"].content
+        for grader_tool in tools.values():
+            assert "runtime" in grader_tool.get_input_schema().model_fields
+            properties = grader_tool.tool_call_schema.model_json_schema()["properties"]
+            assert "runtime" not in properties
+            assert all("description" in field for field in properties.values())
+
     def test_rubric_grader_rejects_paths_outside_working_root(
         self, tmp_path: Path
     ) -> None:

@@ -55,6 +55,7 @@ from langchain.tools import (
     ToolRuntime,  # LangChain inspects this annotation for runtime injection.
 )
 from langchain_core.tools import StructuredTool, tool
+from pydantic import BaseModel, ConfigDict, create_model
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
@@ -453,6 +454,36 @@ def _normalize_rubric_grader_context_tools(
     return normalized
 
 
+class _RubricGraderRuntimeSchema(BaseModel):
+    """Retain the runtime injected by the grader's `ToolNode`."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    runtime: ToolRuntime[None, Any]
+
+
+def _rubric_grader_args_schema(tool: StructuredTool) -> type[BaseModel]:
+    """Preserve an SDK tool schema while adding its injected runtime.
+
+    Args:
+        tool: SDK tool whose model-facing arguments must be retained.
+
+    Returns:
+        A schema that also accepts the runtime injected by `ToolNode`.
+
+    Raises:
+        TypeError: If the SDK tool does not use a Pydantic v2 schema.
+    """
+    schema = tool.args_schema
+    if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+        msg = f"SDK {tool.name} tool has an unsupported argument schema."
+        raise TypeError(msg)
+    return create_model(
+        f"{schema.__name__}WithRuntime",
+        __base__=(schema, _RubricGraderRuntimeSchema),
+    )
+
+
 def _create_rubric_grader_tools(
     backend: CompositeBackend,
     *,
@@ -558,7 +589,7 @@ def _create_rubric_grader_tools(
 
     @tool(
         description=artifact_read_file.description,
-        args_schema=artifact_read_file.args_schema,
+        args_schema=_rubric_grader_args_schema(artifact_read_file),
     )
     def read_file(
         file_path: str,
@@ -637,7 +668,7 @@ def _create_rubric_grader_tools(
 
         @tool(
             description=fs_ls.description,
-            args_schema=fs_ls.args_schema,
+            args_schema=_rubric_grader_args_schema(fs_ls),
         )
         def ls(path: str, runtime: ToolRuntime[None, Any]) -> object:
             """List a working-directory path to verify criteria against files.
@@ -665,7 +696,7 @@ def _create_rubric_grader_tools(
 
         @tool(
             description=fs_glob.description,
-            args_schema=fs_glob.args_schema,
+            args_schema=_rubric_grader_args_schema(fs_glob),
         )
         def glob(
             pattern: str,
@@ -706,7 +737,7 @@ def _create_rubric_grader_tools(
 
         @tool(
             description=fs_grep.description,
-            args_schema=fs_grep.args_schema,
+            args_schema=_rubric_grader_args_schema(fs_grep),
         )
         def grep(
             pattern: str,

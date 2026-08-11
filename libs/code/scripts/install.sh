@@ -578,23 +578,35 @@ prepare_install_log_dir() {
 }
 
 # Print the live-follow command for the install log when this run streams
-# uv's output to it (UV_LIVE_LOG). Root and log-disabled runs have no live
-# file, so they keep the post-install "Full log:" pointer instead.
+# uv's output to it (UV_LIVE_LOG). Root and log-disabled runs have no live file
+# to follow, so for them the post-install "Full log:" pointer is the only
+# reference to the log; a live run prints both.
+#
+# Quote only when the path needs it. The overwhelmingly common path is a plain
+# `~/.cache/deepagents-code/install.log`, and rendering it bare keeps it
+# identical to the "Full log:" pointer printed later in the same run — two
+# spellings of one path read as two different files. A path carrying spaces or
+# shell metacharacters (a relocated XDG_CACHE_HOME, a home directory with a
+# space) still gets single-quoted so the pasted command survives word
+# splitting. The leading `~` stays outside the quotes either way: a quoted
+# tilde does not expand.
+tail_hint_quote() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._/@%+:,=-]*)
+      printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+      ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 log_update_tail_hint() {
   [ "${UV_LIVE_LOG:-false}" = true ] && [ -n "${INSTALL_LOG_DISPLAY:-}" ] || return 0
-  # Keep the leading `~` unquoted so a pasted command expands it, while
-  # quoting the remainder to preserve paths below a home directory containing
-  # spaces or shell metacharacters. Other paths must be quoted as a whole.
-  local quoted
+  # Only an update has an "update log" to follow; a fresh install has no prior
+  # version and would be told to watch something it is not doing.
+  [ -n "${PRE_VERSION:-}" ] || return 0
   case "$INSTALL_LOG_DISPLAY" in
-    \~/*)
-      quoted=$(printf '%s' "${INSTALL_LOG_DISPLAY#\~/}" | sed "s/'/'\\\\''/g")
-      log_info "  Update log: tail -f ~/'${quoted}'"
-      ;;
-    *)
-      quoted=$(printf '%s' "$INSTALL_LOG_DISPLAY" | sed "s/'/'\\\\''/g")
-      log_info "  Update log: tail -f '${quoted}'"
-      ;;
+    \~/*) log_info "  Update log: tail -f ~/$(tail_hint_quote "${INSTALL_LOG_DISPLAY#\~/}")" ;;
+    *) log_info "  Update log: tail -f $(tail_hint_quote "$INSTALL_LOG_DISPLAY")" ;;
   esac
 }
 
@@ -622,10 +634,19 @@ fix_install_log_owner() {
 }
 
 copy_install_log() {
-  # An unprivileged run that streamed uv's output straight to INSTALL_LOG has
-  # nothing to publish: the log is already in place. Staging a copy of the
-  # file onto itself would be a no-op at best.
-  [ "${UV_LIVE_LOG:-false}" != true ] || return 0
+  # A live run already wrote INSTALL_LOG in place; there is nothing to stage.
+  # It still has to answer the caller's question — "is the path I am about to
+  # advertise a real, untampered file?" — because the caller uses this return
+  # code to decide whether to print the pointer at all. Returning a bare 0
+  # would assert a file it never looked at. The fd pinned the inode uv wrote
+  # to, so only the *name* needs rechecking: a process able to write the cache
+  # dir can replace install.log with a symlink after uv exits, and the pointer
+  # would then send the user to a file of someone else's choosing.
+  if [ "${UV_LIVE_LOG:-false}" = true ]; then
+    [ -n "${INSTALL_LOG:-}" ] || return 1
+    [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ] || return 1
+    return 0
+  fi
   [ -n "${INSTALL_LOG:-}" ] || return 1
   [ -n "${install_log_dir:-}" ] || return 1
   [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 1
@@ -1740,16 +1761,24 @@ fi
 UV_LIVE_LOG=false
 # File descriptor that carries the live install log when UV_LIVE_LOG is on.
 # Picked from the user range (9+) so it cannot collide with the script's own
-# redirections, which all use the standard 0-2.
+# descriptors: 0-2 plus fd 3, which prompt_yn uses for /dev/tty.
 UV_LIVE_LOG_FD=9
 setup_live_install_log() {
   [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ] || return 0
-  # A planted symlink at the log path disables live logging, matching
-  # copy_install_log's refusal: never delete or follow it. Noclobber then
-  # refuses to create over any surviving file, so uv's output can never land
-  # somewhere the user did not intend. A regular file from a prior run is
-  # removed so this run's log starts empty.
+  # A planted symlink at the log path turns the install log off for this run
+  # entirely — not just the live tail: both variables are blanked, so no
+  # consumer offers a pointer and there is no fallback to the staged publish
+  # (copy_install_log would reject the same path). Never delete or follow it.
+  # Noclobber then refuses to create over any surviving file, so uv's output
+  # can never land somewhere the user did not intend. A regular file from a
+  # prior run is removed so this run's log starts empty.
   if [ -L "$INSTALL_LOG" ]; then
+    # Unlike a transient hostile race, a symlink sitting here is durable state
+    # — most plausibly the user's own (`ln -s /dev/null` to mute logging, or a
+    # link onto a roomier disk). They are the only one who can undo it, so say
+    # so rather than leaving the feature silently off on every future run too.
+    log_warn "${INSTALL_LOG_DISPLAY} is a symlink — not writing an install log this run."
+    log_warn "  Remove it to re-enable install logging."
     INSTALL_LOG=""
     INSTALL_LOG_DISPLAY=""
   else
@@ -1760,15 +1789,26 @@ setup_live_install_log() {
     # install.log for a symlink after this check and redirect uv's output. The
     # inherited fd pins the inode created here, so the later redirect never
     # touches the path again. `uv_stderr` keeps the real path so the
-    # post-install readers (awk/cat/grep/cp) operate on a file; the fd is only
+    # post-install readers (awk/cat/grep) operate on a file; the fd is only
     # the write target.
+    #
+    # umask 077: `exec >` honours the ambient umask, so without this the log
+    # lands 0644 where the staged-publish path produced 0600 (mktemp creates
+    # 0600 and `mv` preserves it). uv's stderr can carry credentialed index
+    # URLs, and the 0700 parent is not a reliable backstop —
+    # prepare_install_log_dir accepts a pre-existing directory at any mode.
+    local umask_save
+    umask_save=$(umask)
+    umask 077
     set -o noclobber
     if eval "exec $UV_LIVE_LOG_FD>\"\$INSTALL_LOG\"" 2>/dev/null; then
       set +o noclobber
+      umask "$umask_save"
       uv_stderr="$INSTALL_LOG"
       UV_LIVE_LOG=true
     else
       set +o noclobber
+      umask "$umask_save"
       eval "exec $UV_LIVE_LOG_FD>&-" 2>/dev/null || true
       rm -f "$INSTALL_LOG" 2>/dev/null || true
     fi
@@ -1875,12 +1915,14 @@ fi
 #      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
 #      bumps dependencies must report differently from a true no-op, so a
 #      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
-#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
-#      same-version dependency bump — or a failed install — can point the
+#   5. Persist the raw output to a log file (see the INSTALL_LOG block above)
+#      so a same-version dependency bump — or a failed install — can point the
 #      user at the full details after the terminal scrolls away.
-# Using a tempfile (vs. process substitution) ensures we see uv's full exit
+# Capturing to a file (vs. process substitution) ensures we see uv's full exit
 # status, don't race the warning past later log lines, and can re-scan the
-# raw output for (4) after the awk pass above has already reformatted it.
+# raw output for (4) after the awk pass above has already reformatted it. That
+# file is the mktemp scratch file in the staged path and INSTALL_LOG itself in
+# the live path; both are plain files by the time the readers below run.
 # Warn (and offer to back out) before *this* block would take the lock: it only
 # prints a warning and asks a question - the receipt itself was read far above,
 # also outside the lock - so holding the install lock across an unbounded human
@@ -1938,9 +1980,11 @@ elif [ -n "$INSTALLED_EXTRAS" ]; then
     fi
   fi
 fi
-# Take the install lock before replacing the prior diagnostic log. Once this
-# succeeds, the run is committed to starting `uv`; no no-op, declined update,
-# or lock-acquisition failure can erase the previous log.
+# Take the install lock before replacing the prior diagnostic log, so a no-op,
+# a declined update, or a failed lock acquisition can never erase it. The one
+# remaining gap is narrow: setup_live_install_log removes the old log before
+# opening the new one, so if the noclobber create *and* the mktemp fallback
+# below both fail, the run exits having replaced yesterday's log with nothing.
 if [ -z "$INSTALL_LOCK_KIND" ]; then
   acquire_install_lock
 fi
@@ -1954,9 +1998,8 @@ if [ "$UV_LIVE_LOG" = false ]; then
 else
   log_update_tail_hint
 fi
-# In live-log mode, uv's stderr goes to the open UV_LIVE_LOG_FD descriptor
-# (the noclobber-validated install log), not to a re-opened pathname — see
-# the fd setup far above. Otherwise it goes to the mktemp scratch file.
+# In live-log mode uv's stderr goes to the descriptor opened by
+# setup_live_install_log, not to a re-opened pathname; see the rationale there.
 if [ "$UV_LIVE_LOG" = true ]; then
   if [[ -z "$VERSION" ]]; then
     "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
@@ -1965,6 +2008,11 @@ if [ "$UV_LIVE_LOG" = true ]; then
     "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" \
       2>&$UV_LIVE_LOG_FD || uv_rc=$?
   fi
+  # Close the write end now that uv has exited. Everything downstream — the
+  # awk/cat/grep passes, `dcode -v`, the ripgrep install — would otherwise
+  # inherit a writable handle on the log for the rest of the run. Matches the
+  # convention prompt_yn already follows for its own descriptor.
+  eval "exec $UV_LIVE_LOG_FD>&-" 2>/dev/null || true
 elif [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
@@ -2068,14 +2116,22 @@ if [ -n "$INSTALL_LOG" ]; then
     INSTALL_LOG_DISPLAY=""
   fi
 fi
-# Live-log runs left uv's output in INSTALL_LOG, which must survive; only a
-# mktemp scratch file is removed here.
+# Live-log runs left uv's output in INSTALL_LOG, which must survive.
 [ "$UV_LIVE_LOG" = true ] || rm -f "$uv_stderr"
+# A live run truncated the previous log before uv started, so an empty one here
+# means yesterday's diagnostics are gone and nothing replaced them — uv was
+# interrupted or killed before writing a byte. Both `Full log:` pointers are
+# gated on `-s`, so without this the loss is completely silent. The staged
+# publish cannot reach this state: it only replaces the log once uv has output.
+if [ "$UV_LIVE_LOG" = true ] && [ -n "$INSTALL_LOG" ] && [ ! -s "$INSTALL_LOG" ]; then
+  log_warn "uv wrote no output — ${INSTALL_LOG_DISPLAY} is empty (any previous log was replaced)."
+fi
 if [ "$uv_rc" -ne 0 ]; then
   restore_terminal_after_signal "$uv_rc"
   log_signal_failure_hint "$uv_rc"
   log_error "Failed to install ${PACKAGE}. See errors above."
-  # The log captured uv's full stderr (copied just above, before this exit), so
+  # The log holds uv's full stderr — written live in the unprivileged path,
+  # copied just above in the staged one — so
   # point the user at it — non-verbose mode trims uv's lines from the terminal
   # and piped `curl | bash` runs lose scrollback. Require a non-empty file for
   # the same reason the success path does: uv killed by a signal before writing
@@ -3012,7 +3068,8 @@ elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
     # because a grep matched `- pkg==` / `+ pkg==` lines in the captured
     # stderr), but publication can still have failed - copy_install_log clears
     # INSTALL_LOG on failure - and then there is no log to point at from either
-    # site. Repeating it here would only print the same path on two lines.
+    # site. Leaving the pointer to that one site also keeps this line short;
+    # a live run already showed the path once in the `Update log:` hint.
     log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
   else
     log_success "deepagents-code ${NEW_VERSION} already up to date."
@@ -3329,13 +3386,15 @@ fi
 #
 # The last branch is a catch-all, not an enumerated set. It covers a fresh
 # install and an editable→PyPI swap. The version-move branches split on
-# UPGRADE_INTENDED (set far above): the script can only claim "Upgraded." when
-# it deliberately moved to the PyPI latest it had just fetched, confirmed
-# differed from the installed version, and installed a numerically newer
-# version. Any other move stays neutral because uv honors custom indexes and
-# configuration whose newest available package can be older than the installed
-# version. Two other known downgrade paths remain
-# in the catch-all branch:
+# UPGRADE_INTENDED (set in the update-check branch above): the script can only
+# claim "Upgraded." when it deliberately moved to the PyPI latest it had just
+# fetched, confirmed differed from the installed version, and installed a
+# numerically newer version. version_at_least compares dotted integers only, so
+# a non-numeric version on either side simply fails the check and falls through
+# to the neutral branch. Any other move stays neutral because uv honors custom
+# indexes and configuration whose newest available package can be older than
+# the installed version. Two other known downgrade paths remain in the
+# catch-all branch:
 #   - a *pinned* version (VERSION set): `bash -s -- 0.1.0` over an installed
 #     0.2.0 is a downgrade.
 #   - an explicit DEEPAGENTS_CODE_PRERELEASE (PRERELEASE_REQUESTED set): with
@@ -3353,7 +3412,7 @@ elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" 
   footer_msg="Already installed."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ] \
-  && [ "$UPGRADE_INTENDED" = true ] && [ -n "${LATEST_VERSION:-}" ] \
+  && [ "${UPGRADE_INTENDED:-false}" = true ] && [ -n "${LATEST_VERSION:-}" ] \
   && [ "$NEW_VERSION" = "$LATEST_VERSION" ] && version_at_least "$NEW_VERSION" "$PRE_VERSION"; then
   footer_msg="Upgraded."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \

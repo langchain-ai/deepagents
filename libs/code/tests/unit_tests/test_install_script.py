@@ -931,10 +931,166 @@ def test_install_script_uv_output_uses_cache_log_not_predictable_tmp(
         "live log output\n"
     )
     script = SCRIPT.read_text(encoding="utf-8")
-    assert 'eval "exec $UV_LIVE_LOG_FD>\\"\\$INSTALL_LOG\\""' in script
-    assert ': > "$INSTALL_LOG"' not in script
     assert "/tmp/deepagents-install.$$" not in script
     assert "/tmp/deepagents-ripgrep-setup.$$" not in script
+
+
+def test_install_script_live_log_is_not_world_readable(tmp_path: Path) -> None:
+    """Keep the log 0600 — uv's stderr can carry credentialed index URLs.
+
+    `exec >` honours the ambient umask, so without an explicit `umask 077` the
+    live log lands 0644 where the staged-publish path produced 0600. The 0700
+    parent is not a backstop: `prepare_install_log_dir` accepts a pre-existing
+    directory at any mode.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": "secret index url"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
+    assert stat.S_IMODE(log_path.stat().st_mode) & 0o077 == 0
+
+
+def test_install_script_live_log_replaces_prior_run_contents(tmp_path: Path) -> None:
+    """A second install must still log live, not silently fall back.
+
+    `setup_live_install_log` removes a prior regular `install.log` before the
+    noclobber create. Without that `rm`, noclobber refuses over the surviving
+    file, the run falls back to mktemp, and *every install after the user's
+    first* loses live logging and the `tail -f` hint — while the log still gets
+    published, so content-only assertions would not notice.
+    """
+    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("stale output from a previous run\n")
+
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": "this run's output"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert log_path.read_text() == "this run's output\n"
+    assert "Update log: tail -f" in proc.stdout
+
+
+def test_install_script_fresh_install_omits_update_log_hint(tmp_path: Path) -> None:
+    """A first-time install is not an update — don't offer an "update log"."""
+    env = _env(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _FRESH_INSTALL_DIFF},
+        installed_version=None,
+    )
+    env["PATH"] = (
+        f"{env['PATH'].split(os.pathsep)[0]}{os.pathsep}{_path_without_dcode()}"
+    )
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0
+    assert "Update log:" not in proc.stdout
+
+
+def test_install_script_symlinked_log_warns_and_offers_no_pointer(
+    tmp_path: Path,
+) -> None:
+    """A symlink at the log path is durable state the user can act on.
+
+    It disables the log feature entirely — no live tail *and* no `Full log:`
+    pointer — with no fallback to the staged publish, so staying silent would
+    leave logging off on every future run with no way to discover why.
+    """
+    log_dir = tmp_path / "home/.cache/deepagents-code"
+    log_dir.mkdir(parents=True)
+    target = tmp_path / "elsewhere.log"
+    target.write_text("pre-existing target\n")
+    (log_dir / "install.log").symlink_to(target)
+
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": "uv output"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "is a symlink" in proc.stderr
+    assert "Remove it to re-enable install logging." in proc.stderr
+    assert "Update log:" not in proc.stdout
+    assert "Full log:" not in proc.stdout
+    assert target.read_text() == "pre-existing target\n"
+
+
+def test_install_script_warns_when_live_log_ends_up_empty(tmp_path: Path) -> None:
+    """Truncating the prior log and writing nothing must not be silent.
+
+    A live run replaces the previous log before uv starts. If uv then writes
+    nothing, both `Full log:` pointers stay quiet (they require `-s`), so
+    without this warning the loss of yesterday's diagnostics is invisible.
+    """
+    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("yesterday's traceback\n")
+
+    proc, _ = _invoke(tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0")
+
+    assert proc.returncode == 0
+    assert log_path.read_text() == ""
+    assert "uv wrote no output" in proc.stderr
+    assert "Full log:" not in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("display", "expected"),
+    [
+        (
+            "~/.cache/deepagents-code/install.log",
+            "~/.cache/deepagents-code/install.log",
+        ),
+        ("~/my cache/install.log", "~/'my cache/install.log'"),
+        ("~/it's/install.log", "~/'it'\\''s/install.log'"),
+        ("/var/log/dcode.log", "/var/log/dcode.log"),
+        ("/var/my logs/dcode.log", "'/var/my logs/dcode.log'"),
+    ],
+)
+def test_install_script_tail_hint_quotes_only_when_needed(
+    display: str, expected: str
+) -> None:
+    """The hint is pasted into a shell, so it must survive word splitting.
+
+    Quoting only when needed keeps the common path spelled identically to the
+    `Full log:` pointer; a path with spaces or a quote still round-trips.
+    """
+    func = _extract_shell_function("tail_hint_quote")
+    hint = _extract_shell_function("log_update_tail_hint")
+    script = (
+        "log_info() { printf '%s\\n' \"$*\"; }\n"
+        f"{func}\n{hint}\n"
+        'UV_LIVE_LOG=true PRE_VERSION=0.1.0 INSTALL_LOG_DISPLAY="$1" '
+        "log_update_tail_hint\n"
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", display],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == f"Update log: tail -f {expected}"
 
 
 def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> None:
@@ -1864,7 +2020,7 @@ def test_install_script_pinned_downgrade_footer_is_not_upgrade(tmp_path: Path) -
     )
 
     assert proc.returncode == 0
-    assert "Upgrade complete" not in proc.stdout
+    assert "Upgraded." not in proc.stdout
     assert "✔ Setup complete. Run: dcode" in proc.stdout
 
 
@@ -1891,7 +2047,7 @@ def test_install_script_prerelease_downgrade_footer_is_not_upgrade(
     )
 
     assert proc.returncode == 0
-    assert "Upgrade complete" not in proc.stdout
+    assert "Upgraded." not in proc.stdout
     assert "✔ Setup complete. Run: dcode" in proc.stdout
 
 
@@ -1935,7 +2091,7 @@ def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
 
     assert proc.returncode == 0
     assert "Full log: ~/.cache/deepagents-code/install.log" in proc.stdout
-    assert "Update log: tail -f ~/'.cache/deepagents-code/install.log'" in proc.stdout
+    assert "Update log: tail -f ~/.cache/deepagents-code/install.log" in proc.stdout
 
 
 def test_install_script_dependency_bump_prints_log_pointer_once(
@@ -1955,8 +2111,11 @@ def test_install_script_dependency_bump_prints_log_pointer_once(
     # The success line used to carry its own `Details:` copy of the same path,
     # printing it twice on consecutive lines.
     assert "Details:" not in proc.stdout
-    # The path appears twice: the pre-install `Update log: tail -f ...` hint
-    # (live output) and the post-install `Full log:` pointer.
+    # The path appears twice, spelled identically both times: the pre-install
+    # `Update log: tail -f ...` hint (live output) and the post-install
+    # `Full log:` pointer. A metacharacter-free path is never quoted, so one
+    # spelling covers both sites.
+    assert "Update log: tail -f ~/.cache/deepagents-code/install.log" in proc.stdout
     assert proc.stdout.count("~/.cache/deepagents-code/install.log") == 2
 
 

@@ -54,7 +54,7 @@ class TestTwoLineMetrics:
             assert cache.region.x == metrics.region.x
             assert context.region.right == metrics.region.right
             assert str(cache.render()) == ("Cache 80% hit • 12.5K read / 750 write")
-            assert str(context.render()) == "6%  12.5K/200K • $0.42"
+            assert str(context.render()) == "Context 6%  12.5K/200K • $0.42"
 
 
 class TestApprovalModeDisplay:
@@ -444,7 +444,7 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens • $0.00"
+            assert str(display.render()) == "Context ... tokens • $0.00"
 
     async def test_show_pending_tokens_before_count_keeps_zero_state(self) -> None:
         async with StatusBarApp().run_test() as pilot:
@@ -452,7 +452,7 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "0 tokens • $0.00"
+            assert str(display.render()) == "Context 0 tokens • $0.00"
 
     async def test_set_tokens_after_pending_restores_display(self) -> None:
         """Regression: set_tokens must refresh even when value is unchanged.
@@ -487,7 +487,7 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens • $0.00"
+            assert str(display.render()) == "Context ... tokens • $0.00"
 
     async def test_cost_update_while_pending_keeps_the_placeholder(self) -> None:
         """A mid-turn cost update must not resurrect the stale token count.
@@ -575,7 +575,7 @@ class TestTokenDisplay:
         async with StatusBarApp().run_test() as pilot:
             display = pilot.app.query_one("#tokens-display")
             assert display.display is True
-            assert str(display.render()) == "0 tokens • $0.00"
+            assert str(display.render()) == "Context 0 tokens • $0.00"
 
     async def test_set_tokens_then_zero_restores_zero_state(self) -> None:
         """Zeroing a positive count restores visible placeholders."""
@@ -588,7 +588,7 @@ class TestTokenDisplay:
             bar.set_tokens(0)
             await pilot.pause()
             assert display.display is True
-            assert str(display.render()) == "0 tokens • $0.00"
+            assert str(display.render()) == "Context 0 tokens • $0.00"
 
 
 class TestCostDisplay:
@@ -610,7 +610,7 @@ class TestCostDisplay:
             bar.set_cost(1.25)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "0 tokens • $1.25"
+            assert str(display.render()) == "Context 0 tokens • $1.25"
             assert display.display is True
 
     async def test_zero_cost_is_visible(self) -> None:
@@ -620,7 +620,7 @@ class TestCostDisplay:
             bar.set_cost(0.0)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert rendered == "5K tokens • $0.00"
+            assert rendered == "Context 5K tokens • $0.00"
 
     async def test_sub_cent_cost_uses_display_floor(self) -> None:
         async with StatusBarApp().run_test() as pilot:
@@ -628,7 +628,7 @@ class TestCostDisplay:
             bar.set_cost(0.0045)
             await pilot.pause()
             assert str(pilot.app.query_one("#tokens-display").render()) == (
-                "0 tokens • <$0.01"
+                "Context 0 tokens • <$0.01"
             )
 
     async def test_approximate_token_marker_survives_cost_update(self) -> None:

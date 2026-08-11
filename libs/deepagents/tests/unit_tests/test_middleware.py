@@ -3308,6 +3308,21 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[4].type == "human"
         assert patched_messages[4].content == "What is the weather in Tokyo?"
 
+    def test_missing_tool_call_reports_error_status(self) -> None:
+        input_messages = [
+            AIMessage(
+                content="",
+                tool_calls=[ToolCall(id="123", name="get_events_for_days", args={})],
+                id="1",
+            )
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+
+        assert state_update is not None
+        patched_messages = state_update["messages"]
+        assert patched_messages[-1].status == "error"
+
     def test_no_missing_tool_calls(self) -> None:
         input_messages = [
             SystemMessage(content="You are a helpful assistant.", id="1"),
@@ -3375,8 +3390,6 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[7].type == "human"
         assert patched_messages[7].content == "What is the weather in Tokyo?"
 
-
-class TestTruncation:
     def test_truncate_list_result_no_truncation(self):
         items = ["/file1.py", "/file2.py", "/file3.py"]
         result = truncate_if_too_long(items)

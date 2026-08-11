@@ -3903,6 +3903,8 @@ _TOOL_SUMMARY_CATEGORY: dict[str, str] = {
 
 # category -> (present verb, past verb, singular noun, plural noun).
 _TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
+    # The past verb is dead: `_summary_segment` phrases settled reads as a noun
+    # phrase, and `read` is not diff-eligible. Editing it changes no output.
     "read": ("Reading", "Read", "file", "files"),
     "write": ("Writing", "Wrote", "file", "files"),
     "edit": ("Editing", "Edited", "file", "files"),
@@ -3952,7 +3954,11 @@ _Tense = Literal["present", "past"]
 
 
 def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -> str:
-    """Phrase a single count segment, e.g. "2 file reads" / "Reading 2 files".
+    """Phrase a single count segment for one category.
+
+    Most categories are phrased from `_TOOL_SUMMARY_PHRASES` as
+    "<verb> <count> <noun>", but several deviate per tense, e.g. reads render
+    as "2 file reads" in the past and "Reading 2 files" in the present.
 
     Args:
         category: The summary category the tools were bucketed into.
@@ -3970,6 +3976,12 @@ def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -
     if category == "todos":
         return "Updating todos" if tense == "present" else "Updated todos"
     if category == "read" and tense == "past":
+        # Reads dominate most steps, so counting operations rather than files
+        # keeps a repeatedly-read file from reading as several distinct ones.
+        # Deliberately past-only: in-flight lines keep the verb ("Reading 2
+        # files") to signal an active state. The cost is a joined line that
+        # mixes grammars ("Ran 1 shell command, 1 file read") — intended, not a
+        # bug, so don't "fix" it by deleting this branch.
         noun = "read" if count == 1 else "reads"
         return f"{count} file {noun}"
     phrase = _TOOL_SUMMARY_PHRASES.get(category)
@@ -4023,8 +4035,10 @@ def _join_segments(segments: list[str]) -> str:
         segments: Pre-phrased segments in display order.
 
     Returns:
-        The segments joined with ", ", e.g. `["2 file reads", "Running 1 agent"]`
-        -> "2 file reads, running 1 agent".
+        The segments joined with ", ", e.g. `["Ran 1 shell command", "1 file read"]`
+        -> "Ran 1 shell command, 1 file read". Segments leading with a digit (the
+        file-read phrasing) are unaffected by the lowercasing, so they read
+        identically in any position.
     """
     first, *rest = segments
     lowered = [f"{seg[0].lower()}{seg[1:]}" if seg else seg for seg in rest]
@@ -4081,11 +4095,11 @@ class ToolGroupSummary(Static):
     """Collapsed one-line stand-in for an assistant step's tool calls.
 
     Tools are hidden from the moment they start; this single line shows live
-    progress ("Running 1 shell command…") and flips to the fully past-tense
-    line ("Ran 1 shell command") once every tool finishes. While the step is
-    live, finished calls stay visible in the past tense next to the ones still
-    running in the present tense (e.g. "Ran 2 shell commands, running 1 agent…")
-    so the work already done in the step doesn't disappear. Failed, rejected,
+    progress ("Running 1 shell command…") and flips to the settled line ("Ran 1
+    shell command", or "1 file read" for reads) once every tool finishes. While
+    the step is live, finished calls stay visible in the past tense next to the
+    ones still running in the present tense (e.g. "Ran 2 shell commands, running
+    1 agent…") so the work already done doesn't disappear. Failed, rejected,
     and skipped tools are evicted to standalone rows (see `_evict_unfoldable`) so
     errors stay visible. Clicking the line or pressing Ctrl+O expands the
     underlying tool rows (and their diffs).

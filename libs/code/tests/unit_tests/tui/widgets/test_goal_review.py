@@ -11,6 +11,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Markdown, Static
 
 import deepagents_code
+from deepagents_code.goal_state_limits import GOAL_APPLICATION_CHAR_LIMIT
 from deepagents_code.tui.widgets.goal_review import (
     GoalReviewMenu,
     GoalReviewResult,
@@ -490,6 +491,34 @@ class TestGoalReviewMenu:
             assert text_input.display is True
             help_widget = menu.query_one(".goal-review-help", Static)
             assert "Enter some criteria" in str(help_widget.content)
+
+    async def test_oversized_edit_stays_open_with_inline_correction(self) -> None:
+        """An invalid edit is preserved and explained beside its editor."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            menu.action_edit()
+            await pilot.pause()
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
+            text_input.text = "x" * GOAL_APPLICATION_CHAR_LIMIT
+
+            menu._submit_edit()
+
+            assert future.done() is False
+            assert text_input.display is True
+            assert text_input.has_focus
+            assert text_input.text == "x" * GOAL_APPLICATION_CHAR_LIMIT
+            help_widget = menu.query_one(".goal-review-help", Static)
+            help_text = str(help_widget.content)
+            assert "combined" in help_text
+            assert "Remove at least" in help_text
+            assert "Ctrl+X external editor" in help_text
 
     async def test_empty_rejection_does_not_submit(self) -> None:
         """Submitting blank rejection feedback should keep the editor open."""

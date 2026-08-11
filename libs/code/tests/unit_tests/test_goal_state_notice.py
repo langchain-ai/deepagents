@@ -2,6 +2,10 @@
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from deepagents_code.goal_state_limits import (
+    GOAL_STATUS_NOTE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+)
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
     GOAL_MESSAGE_SCHEMA_VERSION,
@@ -139,6 +143,45 @@ def test_embedded_text_is_not_truncated() -> None:
     assert f"<goal_objective>{objective}</goal_objective>" in content
     assert f"<acceptance_criteria>{criteria}</acceptance_criteria>" in content
     assert "truncated to fit context" not in content
+
+
+def test_oversized_legacy_notice_is_bounded_and_non_actionable() -> None:
+    """Old checkpoint text cannot be re-pinned into every model request."""
+    criteria = "required" * (RUBRIC_CHAR_LIMIT // len("required") + 2)
+
+    content = build_goal_state_notice(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": criteria,
+        }
+    ).content
+
+    assert len(content) < 2_000
+    assert "Goal actionable: no" in content
+    assert "Rubric active: no" in content
+    assert "too large to include safely" in content
+    assert criteria not in content
+
+
+def test_oversized_legacy_prior_blocker_does_not_hide_safe_current_state() -> None:
+    """Transient resume context cannot pin a fallback over safe goal state."""
+    blocker = "x" * (GOAL_STATUS_NOTE_CHAR_LIMIT + 1)
+
+    content = build_goal_state_notice(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+        },
+        prior_blocker=blocker,
+    ).content
+
+    assert "Goal actionable: yes" in content
+    assert "<goal_objective>ship it</goal_objective>" in content
+    assert "<acceptance_criteria>tests pass</acceptance_criteria>" in content
+    assert "Prior blocker context was omitted" in content
+    assert blocker not in content
 
 
 def test_fingerprint_tracks_objective_and_criteria_text() -> None:

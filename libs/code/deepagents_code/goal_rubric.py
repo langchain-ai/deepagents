@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, Self, cast
 
 from deepagents.middleware.filesystem import FilesystemState
 from langchain.agents.middleware.types import (
@@ -26,6 +26,7 @@ from langchain_core.messages import (
     get_buffer_string,
 )
 from langgraph.errors import GraphRecursionError
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypedDict, override
 
 from deepagents_code._repository_bounds import (
@@ -33,6 +34,11 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_TOOL_CALL_LIMIT as _REPOSITORY_TOOL_CALL_LIMIT,
     REPOSITORY_TOOL_NAMES as _REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
+)
+from deepagents_code.goal_state_limits import (
+    GOAL_OBJECTIVE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+    validate_goal_application,
 )
 from deepagents_code.goal_state_notice import is_conversation_control_message
 from deepagents_code.resume_state import ResumeState
@@ -135,11 +141,49 @@ GOAL_AMENDMENT_SYSTEM_PROMPT = (
 )
 
 
-class GoalProposal(TypedDict):
+class GoalProposal(BaseModel):
     """Structured proposal returned by the criteria agent."""
 
-    objective: str
-    criteria: str
+    model_config = ConfigDict(extra="forbid")
+
+    objective: Annotated[
+        str,
+        Field(
+            max_length=GOAL_OBJECTIVE_CHAR_LIMIT,
+            description=(
+                "The complete goal objective, preserved exactly for a new goal."
+            ),
+        ),
+    ]
+    criteria: Annotated[
+        str,
+        Field(
+            max_length=RUBRIC_CHAR_LIMIT,
+            description="A concise flat Markdown bullet list of acceptance criteria.",
+        ),
+    ]
+
+    @field_validator("objective", "criteria")
+    @classmethod
+    def _require_nonempty_text(cls, value: str) -> str:
+        """Reject whitespace-only structured output so the model can retry.
+
+        Returns:
+            The original nonempty text.
+
+        Raises:
+            ValueError: If `value` contains only whitespace.
+        """
+        if not value.strip():
+            msg = "must contain non-whitespace text"
+            raise ValueError(msg)
+        return value
+
+    @model_validator(mode="after")
+    def _fit_notice_budget(self) -> Self:
+        """Return feedback to the model when the complete proposal is too large."""
+        validate_goal_application(self.objective, self.criteria)
+        return self
 
 
 class _GoalCriteriaRequestBase(TypedDict):
@@ -883,6 +927,8 @@ def _rubric_interrupt_on(
 
 def _coerce_goal_proposal(value: object) -> tuple[str, str] | None:
     """Return a complete objective and criteria pair from nested output."""
+    if isinstance(value, GoalProposal):
+        value = value.model_dump()
     if not isinstance(value, dict):
         return None
     objective = value.get("objective")
@@ -1222,6 +1268,7 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         objective = (
             request["objective"] if request["kind"] == "create" else proposed_objective
         )
+        validate_goal_application(objective, criteria)
         return {
             "goal_criteria_request": None,
             "rubric": None,

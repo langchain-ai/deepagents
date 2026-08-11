@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
 from deepagents_code._version import __version__
+from deepagents_code.goal_state_limits import validate_rubric
 
 logger = logging.getLogger(__name__)
 
@@ -1220,12 +1221,16 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
         if not text.strip():
             msg = f"Rubric file {path!r} is empty."
             raise ValueError(msg)
-        return text.strip()
+        resolved = text.strip()
+        validate_rubric(resolved)
+        return resolved
 
     if not rubric.strip():
         msg = "--rubric must not be empty."
         raise ValueError(msg)
-    return rubric.strip()
+    resolved = rubric.strip()
+    validate_rubric(resolved)
+    return resolved
 
 
 def _warn_if_interpreter_tools_without_interpreter(

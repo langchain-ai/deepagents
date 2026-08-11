@@ -26,13 +26,20 @@ from langgraph.types import Command
 from pydantic import Field
 from typing_extensions import override
 
+from deepagents_code.goal_state_limits import (
+    GOAL_STATUS_NOTE_CHAR_LIMIT,
+    validate_goal_notice_text,
+    validate_goal_status_note,
+)
 from deepagents_code.goal_state_notice import (
     build_goal_state_notice,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
+    is_goal_state_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
+    project_goal_state,
     summarization_cutoff,
 )
 
@@ -185,6 +192,14 @@ def _update_goal_command(
                 ]
             }
         )
+    try:
+        validate_goal_status_note(clean_note)
+    except ValueError as exc:
+        return Command(
+            update={
+                "messages": [ToolMessage(content=str(exc), tool_call_id=tool_call_id)]
+            }
+        )
     if status == "complete":
         return Command(
             update={
@@ -251,10 +266,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             note: Annotated[
                 str,
                 Field(
+                    max_length=GOAL_STATUS_NOTE_CHAR_LIMIT,
                     description=(
                         "Evidence the criteria are satisfied, or the specific "
                         "blocker. Required when calling this tool."
-                    )
+                    ),
                 ),
             ],
             tool_call_id: Annotated[str, InjectedToolCallId],
@@ -304,7 +320,30 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             messages,
             cutoff=summarization_cutoff(values.get("_summarization_event")),
         )
-        return {"messages": [notice]} if notice is not None else None
+        update: dict[str, Any] = {}
+        if notice is not None:
+            update["messages"] = [notice]
+        projected = project_goal_state(values)
+        try:
+            validate_goal_notice_text(
+                objective=(
+                    projected["goal_objective"]
+                    if projected["goal_actionable"]
+                    else None
+                ),
+                criteria=projected["rubric_criteria"],
+                status_note=(
+                    projected["goal_status_note"]
+                    if projected["goal_actionable"]
+                    else None
+                ),
+            )
+        except ValueError:
+            # Keep authoritative saved state recoverable, but clear the public
+            # per-invocation rubric so grading cannot re-inject oversized text.
+            if values.get("rubric") is not None:
+                update["rubric"] = None
+        return update or None
 
     @override
     def before_model(
@@ -344,12 +383,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     def _request_with_goal_notice(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Re-pin the current goal-state notice into a model request when needed.
+        """Expose only the current goal-state notice in a model request.
 
         When checkpointed history no longer surfaces a current notice, a
         transient goal-state notice is appended to the request messages only
-        (not persisted; `before_model` owns the durable write). The system
-        prompt is left unchanged.
+        (not persisted; `before_model` owns the durable write). Superseded notices
+        are removed from the transient window so a legacy oversized value cannot
+        remain model-visible beside its bounded replacement. The system prompt is
+        left unchanged.
 
         Returns:
             The original request when no notice is needed, otherwise a request
@@ -357,9 +398,18 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         """
         values = cast("dict[str, Any]", request.state)
         notice = _goal_state_notice_for(values, request.messages)
-        if notice is None:
+        messages = list(request.messages)
+        if notice is not None:
+            messages.append(notice)
+        latest_index = latest_goal_state_message_index(messages)
+        filtered = [
+            message
+            for index, message in enumerate(messages)
+            if not is_goal_state_message(message) or index == latest_index
+        ]
+        if notice is None and len(filtered) == len(request.messages):
             return request
-        return request.override(messages=[*request.messages, notice])
+        return request.override(messages=filtered)
 
     @override
     def wrap_model_call(

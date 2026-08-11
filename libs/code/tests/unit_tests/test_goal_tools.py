@@ -11,6 +11,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.types import Command
 
+from deepagents_code.goal_state_limits import (
+    GOAL_STATUS_NOTE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+)
 from deepagents_code.goal_state_notice import (
     GOAL_MESSAGE_SCHEMA_VERSION,
     build_goal_continuation,
@@ -153,6 +157,21 @@ def test_update_goal_rejects_empty_note() -> None:
     assert message.tool_call_id == "call-1"
 
 
+def test_update_goal_rejects_oversized_note_without_changing_status() -> None:
+    """Runtime validation covers calls that bypass the generated tool schema."""
+    command = _update_goal_command(
+        status="blocked",
+        note="x" * (GOAL_STATUS_NOTE_CHAR_LIMIT + 1),
+        tool_call_id="call-1",
+        state={"_goal_objective": "ship it", "_goal_status": "active"},
+    )
+
+    assert command.update is not None
+    assert "_goal_status" not in command.update
+    message = command.update["messages"][0]
+    assert "maximum is 4,000" in message.content
+
+
 def test_update_goal_tool_invokes_command_builder() -> None:
     """The registered `update_goal` tool should wire all args to the helper."""
     middleware = GoalToolsMiddleware()
@@ -280,6 +299,25 @@ def test_notice_update_is_none_for_empty_state() -> None:
     assert GoalToolsMiddleware._notice_update(state) is None
 
 
+def test_notice_update_disables_grading_for_oversized_legacy_rubric() -> None:
+    """A bounded fallback notice also suppresses the grader's rubric input."""
+    rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+    state = cast(
+        "AgentState[Any]",
+        {
+            "rubric": rubric,
+            "_sticky_rubric": rubric,
+            "messages": [HumanMessage(content="continue")],
+        },
+    )
+
+    update = GoalToolsMiddleware._notice_update(state)
+
+    assert update is not None
+    assert update["rubric"] is None
+    assert "too large to include safely" in update["messages"][0].content
+
+
 async def test_abefore_model_matches_before_model() -> None:
     # The async boundary must produce the same notice update as the sync one;
     # tests elsewhere only exercise `_notice_update` directly, so drive the
@@ -329,6 +367,38 @@ def test_wrap_model_call_restores_notice_after_compaction() -> None:
     notice = captured["request"].messages[-1]
     assert "Goal status: active" in notice.content
     assert goal_state_notice_info(notice) is not None
+
+
+def test_wrap_model_call_removes_superseded_oversized_notice() -> None:
+    """A bounded replacement also evicts the legacy poison from the request."""
+    rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+    state: dict[str, object] = {
+        "rubric": rubric,
+        "_sticky_rubric": rubric,
+    }
+    legacy = build_goal_state_notice({"rubric": "old"}, event_id="legacy-oversized")
+    legacy.content = f"legacy notice {rubric}"
+    legacy.additional_kwargs = {
+        **legacy.additional_kwargs,
+        "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
+    }
+    request = _fake_request(
+        None,
+        state=state,
+        messages=[HumanMessage(content="continue"), legacy],
+    )
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    messages = captured["request"].messages
+    assert legacy not in messages
+    assert len(messages) == 2
+    assert "too large to include safely" in messages[-1].content
+    assert len(messages[-1].content) < 2_000
 
 
 def test_wrap_model_call_does_not_restore_stale_state_over_unsaved_fallback() -> None:

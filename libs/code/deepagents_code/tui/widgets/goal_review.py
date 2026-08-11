@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code.config import get_glyphs
+from deepagents_code.goal_state_limits import validate_goal_application
 from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
     InlinePromptOption,
@@ -338,6 +339,11 @@ class GoalReviewMenu(Container):
         if not criteria:
             self._hint_empty_submission("criteria")
             return
+        try:
+            validate_goal_application(self._objective, criteria)
+        except ValueError as exc:
+            self._hint_invalid_submission(str(exc))
+            return
         self._submit({"type": "edited", "criteria": criteria})
 
     def _submit_rejection(self) -> None:
@@ -365,6 +371,15 @@ class GoalReviewMenu(Container):
         self._help_widget.update(
             f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
             f"{newline_hint()} {glyphs.bullet} Ctrl+X external editor"
+        )
+
+    def _hint_invalid_submission(self, error: str) -> None:
+        """Keep an invalid edit open and explain how to correct it inline."""
+        if self._help_widget is None:
+            return
+        glyphs = get_glyphs()
+        self._help_widget.update(
+            f"{error} {glyphs.bullet} Ctrl+X external editor {glyphs.bullet} Esc back"
         )
 
     def _submit(self, result: GoalReviewResult) -> None:

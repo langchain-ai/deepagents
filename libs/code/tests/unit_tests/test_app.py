@@ -77,6 +77,11 @@ from deepagents_code.app import (
     _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
+from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+)
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
     goal_state_notice_info,
@@ -10463,6 +10468,44 @@ class TestGoalCommand:
                 "warning", "Goal blocked"
             )
 
+    async def test_load_oversized_legacy_goal_surfaces_recovery(self) -> None:
+        """Resuming old unsafe state stays usable and explains how to recover."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+
+            await app._load_thread_history(
+                thread_id="thread-1",
+                preloaded_payload=payload,
+            )
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "goal work and grading are disabled" in errors
+            assert "maximum is 12,000" in errors
+
+    async def test_oversized_paused_legacy_goal_cannot_resume(self) -> None:
+        """A paused old goal is rejected before becoming model-actionable."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship it"
+            app._goal_status = "paused"
+            app._active_rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+
+            await app._resume_goal()
+
+            assert app._goal_status == "paused"
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "too large to resume safely" in errors
+
     async def test_load_thread_history_remounts_pending_goal_review(self) -> None:
         """Resumed pending goal proposals should be actionable in the prompt."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -11712,6 +11755,20 @@ class TestGoalCommand:
             assert "/goal max-iterations <N|clear>" in rendered
             assert "draft a checklist for it" in rendered
 
+    async def test_oversized_goal_is_rejected_before_generation(self) -> None:
+        """An oversized objective never opens policy review or starts a worker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        objective = "x" * (GOAL_OBJECTIVE_CHAR_LIMIT + 1)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_start_goal_proposal") as start:
+                await app._handle_command(f"/goal {objective}")
+                await pilot.pause()
+
+            start.assert_not_called()
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 8,000" in errors
+
     async def test_accept_goal_rubric_without_pending_reports_nothing(self) -> None:
         """Accepting with no pending objective must not set a half-formed goal."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -11742,6 +11799,20 @@ class TestGoalCommand:
                 str(w._content) == "Cannot accept empty goal criteria."
                 for w in app.query(AppMessage)
             )
+
+    async def test_accept_goal_rubric_rejects_oversized_combination(self) -> None:
+        """Defense-in-depth validation prevents an invalid proposal write."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "goal"
+
+            accepted = await app._accept_goal_rubric("x" * GOAL_APPLICATION_CHAR_LIMIT)
+
+            assert accepted is False
+            assert app._active_goal is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "combined" in errors
 
     async def test_finish_goal_review_exception_surfaces_error(self) -> None:
         """An unexpected failure mid-review should surface a recovery message."""
@@ -11793,6 +11864,26 @@ class TestGoalCommand:
 
 class TestRubricCommand:
     """Tests for interactive rubric state and turn plumbing."""
+
+    @pytest.mark.parametrize("subcommand", ["set", "next"])
+    async def test_oversized_inline_rubric_preserves_current_state(
+        self,
+        subcommand: str,
+    ) -> None:
+        """Inline rubric entry points reject before mutating valid state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set keep this")
+            oversized = "x" * (RUBRIC_CHAR_LIMIT + 1)
+
+            await app._handle_command(f"/rubric {subcommand} {oversized}")
+            await pilot.pause()
+
+            assert app._active_rubric == "keep this"
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
 
     async def test_bare_rubric_shows_usage(self) -> None:
         """Bare `/rubric` should teach the command instead of showing only state."""
@@ -12488,6 +12579,23 @@ class TestRubricCommand:
             assert app._status_bar.rubric_label == _rubric_status_label(
                 "checkmark", "Rubric set"
             )
+
+    async def test_oversized_rubric_file_preserves_current_state(
+        self, tmp_path: Path
+    ) -> None:
+        """A large file is refused without replacing the valid sticky rubric."""
+        rubric_file = tmp_path / "large.md"
+        rubric_file.write_text("x" * (RUBRIC_CHAR_LIMIT + 1), encoding="utf-8")
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set keep this")
+            await app._handle_command(f"/rubric file {rubric_file}")
+            await pilot.pause()
+
+            assert app._active_rubric == "keep this"
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
 
     async def test_rubric_file_reports_unparsable_path(self) -> None:
         """An unbalanced quote in the path should report a parse error."""

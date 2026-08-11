@@ -10,13 +10,14 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code.goal_state_limits import validate_goal_notice_text
 
 if TYPE_CHECKING:
     from langchain_core.messages import HumanMessage
 
 GOAL_CONTROL_MESSAGE_SOURCE: Final = "goal_control"
 GOAL_STATE_MESSAGE_SOURCE: Final = "goal_state"
-GOAL_MESSAGE_SCHEMA_VERSION: Final = 3
+GOAL_MESSAGE_SCHEMA_VERSION: Final = 4
 """Canonical goal-message schema version.
 
 Bump this whenever notice *content* changes in a way that makes an already
@@ -25,6 +26,8 @@ rejects any other version, so a resumed thread's outdated notice stops counting
 as authoritative and the next model boundary appends a current one. Version 2
 dropped the `get_goal`/`get_rubric` references version 1 notices carried, and
 version 3 stopped truncating the only model-visible objective and rubric text.
+Version 4 rejects oversized new state and replaces any legacy oversized notice
+with bounded recovery guidance.
 """
 _GOAL_MESSAGE_SCHEMA_KEY: Final = "goal_message_schema_version"
 _GOAL_MESSAGE_KIND_KEY: Final = "goal_message_kind"
@@ -407,7 +410,46 @@ def build_goal_state_notice(
     has_rubric = criteria is not None
     actionable = "yes" if is_actionable else "no"
     rubric_active = "yes" if has_rubric else "no"
-    if is_actionable:
+    size_error: ValueError | None = None
+    prior_blocker_error: ValueError | None = None
+    try:
+        validate_goal_notice_text(
+            objective=objective,
+            criteria=criteria,
+            status_note=status_note,
+        )
+    except ValueError as exc:
+        size_error = exc
+    if size_error is None and prior_blocker is not None:
+        try:
+            validate_goal_notice_text(
+                objective=objective,
+                criteria=criteria,
+                status_note=status_note,
+                prior_blocker=prior_blocker,
+            )
+        except ValueError as exc:
+            # `prior_blocker` is transient context for one resume event, not
+            # authoritative state. Omit a legacy oversized value without turning
+            # the otherwise-safe current notice into a persistent fallback whose
+            # state fingerprint would prevent a later full notice from replacing it.
+            prior_blocker_error = exc
+            prior_blocker = None
+    if size_error is not None:
+        actionable = "no"
+        rubric_active = "no"
+        objective = None
+        criteria = None
+        status_note = None
+        prior_blocker = None
+    if size_error is not None:
+        guidance = (
+            "Saved goal/rubric state is too large to include safely. Do not work "
+            "toward it and do not grade against it. Ask the user to clear and "
+            "recreate the goal, or replace/clear the rubric. "
+            f"Validation detail: {size_error}"
+        )
+    elif is_actionable:
         guidance = "Work toward the goal; do not call any goal or rubric read tool."
     elif has_rubric:
         guidance = (
@@ -419,10 +461,15 @@ def build_goal_state_notice(
             "No goal or rubric is currently actionable; do not let any prior goal "
             "drive work, and do not call goal or rubric tools."
         )
+    if prior_blocker_error is not None:
+        guidance += (
+            " Prior blocker context was omitted because it was too large. "
+            f"Validation detail: {prior_blocker_error}"
+        )
     # Only promise automatic grading when criteria actually exist: an actionable
     # goal without a rubric gets no `RubricMiddleware` verdict, and claiming
     # otherwise tells the model its work is being checked when it is not.
-    if has_rubric:
+    if has_rubric and size_error is None:
         guidance += " Acceptance criteria are graded automatically after your turn."
     content = (
         f"{SYSTEM_MESSAGE_PREFIX} Goal/rubric state changed.\n\n"

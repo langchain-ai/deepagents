@@ -88,6 +88,12 @@ from deepagents_code._session_stats import (
 # accessed after user interaction begins.
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
 from deepagents_code.formatting import format_message_timestamp
+from deepagents_code.goal_state_limits import (
+    validate_goal_application,
+    validate_goal_notice_text,
+    validate_goal_objective,
+    validate_rubric,
+)
 from deepagents_code.goal_state_notice import (
     build_goal_continuation,
     build_goal_state_notice,
@@ -97,6 +103,7 @@ from deepagents_code.goal_state_notice import (
     is_internal_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
+    project_goal_state,
     summarization_cutoff as _summarization_cutoff,
 )
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
@@ -11860,6 +11867,32 @@ class DeepAgentsApp(App):
         self._next_rubric = None
         self._sync_status_rubric()
 
+    def _active_goal_state_size_error(self) -> str | None:
+        """Return why restored active state cannot fit a safe model notice.
+
+        Returns:
+            A user-facing validation error, or `None` when active state is safe.
+        """
+        state = self._goal_state_update()
+        projected = project_goal_state(state)
+        try:
+            validate_goal_notice_text(
+                objective=(
+                    projected["goal_objective"]
+                    if projected["goal_actionable"]
+                    else None
+                ),
+                criteria=projected["rubric_criteria"],
+                status_note=(
+                    projected["goal_status_note"]
+                    if projected["goal_actionable"]
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            return str(exc)
+        return None
+
     async def _announce_goal_status_transition(
         self, previous_status: str | None
     ) -> None:
@@ -12442,6 +12475,11 @@ class DeepAgentsApp(App):
 
         objective = remainder
         await self._mount_message(UserMessage(command))
+        try:
+            validate_goal_objective(objective)
+        except ValueError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         await self._start_goal_proposal(
             lambda: self._propose_goal_rubric(objective),
             cleanup_context="goal replacement cleanup",
@@ -12670,6 +12708,11 @@ class DeepAgentsApp(App):
                 )
             )
             return
+        try:
+            validate_goal_application(base_objective, base_criteria)
+        except ValueError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         await self._run_goal_criteria_request(
             {
                 "request_id": uuid.uuid4().hex,
@@ -12696,6 +12739,11 @@ class DeepAgentsApp(App):
         """
         if not objective.strip():
             await self._mount_message(AppMessage("Usage: /goal <objective>"))
+            return
+        try:
+            validate_goal_objective(objective)
+        except ValueError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
             return
         request: GoalCreateRequest = {
             "request_id": uuid.uuid4().hex,
@@ -13046,6 +13094,11 @@ class DeepAgentsApp(App):
         if not rubric:
             await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
             return False
+        try:
+            validate_goal_application(objective, rubric)
+        except ValueError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return False
         kind = self._pending_goal_kind or "create"
         if kind == "amend" and (
             not self._active_goal or self._goal_status == "complete"
@@ -13295,6 +13348,20 @@ class DeepAgentsApp(App):
                 )
             )
             return
+        try:
+            validate_goal_notice_text(
+                objective=self._active_goal,
+                criteria=self._active_rubric,
+                status_note=self._goal_status_note,
+            )
+        except ValueError as exc:
+            await self._mount_message(
+                ErrorMessage(
+                    "This saved goal is too large to resume safely. Clear and "
+                    f"recreate it with a shorter objective and criteria. {exc}"
+                )
+            )
+            return
         async with self._goal_state_mutation_boundary():
             self._goal_status = "active"
             self._sync_status_rubric()
@@ -13402,6 +13469,11 @@ class DeepAgentsApp(App):
             if not arg:
                 await self._mount_message(AppMessage(self._rubric_set_usage_text()))
                 return
+            try:
+                validate_rubric(arg)
+            except ValueError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
+                return
             async with self._goal_state_mutation_boundary():
                 previous_state = self._goal_state_update()
                 self._reset_goal_tracking()
@@ -13420,6 +13492,11 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             if not arg:
                 await self._mount_message(AppMessage(self._rubric_next_usage_text()))
+                return
+            try:
+                validate_rubric(arg)
+            except ValueError as exc:
+                await self._mount_message(ErrorMessage(str(exc)))
                 return
             self._next_rubric = arg
             self._sync_status_rubric()
@@ -13608,6 +13685,11 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Rubric file {str(path)!r} is empty.")
             )
+            return
+        try:
+            validate_rubric(rubric)
+        except ValueError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
             return
         async with self._goal_state_mutation_boundary():
             previous_state = self._goal_state_update()
@@ -17001,6 +17083,17 @@ class DeepAgentsApp(App):
                 else await self._fetch_thread_history_data(history_thread_id)
             )
             self._restore_goal_rubric_state(payload)
+            size_error = self._active_goal_state_size_error()
+            size_warning = (
+                ErrorMessage(
+                    "Saved goal/rubric state is too large to use safely, so "
+                    "goal work and grading are disabled. Clear and recreate "
+                    "the goal, or replace/clear the rubric. "
+                    f"{size_error}"
+                )
+                if size_error is not None
+                else None
+            )
             self._hooks.record_messages(
                 payload.transcript_messages,
                 thread_id=history_thread_id,
@@ -17030,6 +17123,8 @@ class DeepAgentsApp(App):
                 self._on_tokens_update(payload.context_tokens)
 
             if not payload.messages:
+                if size_warning is not None:
+                    await self._mount_message(size_warning)
                 return
 
             # 5. Cache container ref (single query). Queried before the store
@@ -17140,6 +17235,8 @@ class DeepAgentsApp(App):
                 prefix="Resumed thread",
                 thread_id=history_thread_id,
             )
+            if size_warning is not None:
+                await self._mount_message(size_warning)
 
             # 10. Scroll once to bottom after history loads
             def scroll_to_end() -> None:

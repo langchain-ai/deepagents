@@ -19,6 +19,7 @@ from langchain.agents.middleware.human_in_the_loop import (
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import (
     AIMessage,
+    BaseMessage,
     FunctionMessage,
     HumanMessage,
     SystemMessage,
@@ -37,7 +38,10 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_READ_LINE_LIMIT as _REPOSITORY_READ_LINE_LIMIT,
     REPOSITORY_TOOL_RESULT_LIMIT as _REPOSITORY_TOOL_RESULT_LIMIT,
 )
-from deepagents_code._testing_models import GoalCriteriaIntegrationChatModel
+from deepagents_code._testing_models import (
+    GoalCriteriaIntegrationChatModel,
+    _tool_call_result,
+)
 from deepagents_code.goal_rubric import (
     _CONVERSATION_CONTEXT_MESSAGE_LIMIT,
     _CONVERSATION_CONTEXT_SERIALIZED_LIMIT,
@@ -53,6 +57,7 @@ from deepagents_code.goal_rubric import (
     GoalCriteriaMiddleware,
     GoalCriteriaRequest,
     GoalCriteriaState,
+    GoalProposal,
     _coerce_goal_proposal,
     _ContextToolCallBudgetMiddleware,
     _conversation_context,
@@ -73,16 +78,44 @@ from deepagents_code.goal_rubric import (
     create_goal_criteria_agent,
     create_goal_criteria_fallback_agent,
 )
+from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT
 from deepagents_code.goal_tools import GoalToolState
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.outputs import ChatResult
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
     from deepagents_code.agent import AsyncApprovalHITLMiddleware
+
+
+class _OversizedThenValidCriteriaModel(GoalCriteriaIntegrationChatModel):
+    """Return invalid long criteria once, then honor structured-output feedback."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        """Retry with concise criteria after receiving the validation error.
+
+        Returns:
+            An oversized proposal first, then a valid proposal.
+        """
+        saw_error = any(isinstance(message, ToolMessage) for message in messages)
+        criteria = "- concise result" if saw_error else "x" * (RUBRIC_CHAR_LIMIT + 1)
+        call_id = "valid-proposal" if saw_error else "oversized-proposal"
+        return _tool_call_result(
+            "GoalProposal",
+            {"objective": "ship it", "criteria": criteria},
+            call_id,
+        )
 
 
 class _LoopBoundAsyncStore:
@@ -2181,6 +2214,38 @@ class TestGoalCriteriaFallback:
                 self._state(), TestGoalCriteriaMiddleware._runtime()
             )
         fallback.ainvoke.assert_not_awaited()
+
+    def test_structured_output_validation_retries_oversized_criteria(self) -> None:
+        """The nested model self-corrects before an error reaches the user."""
+        agent = create_goal_criteria_fallback_agent(
+            model=_OversizedThenValidCriteriaModel()
+        )
+
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="ship it")],
+                "criteria_objective": "ship it",
+                "criteria_operation_id": "retry-op",
+            },
+            context={},
+        )
+
+        assert _proposal_from_result(result) == ("ship it", "- concise result")
+        messages = result["messages"]
+        assert any(
+            isinstance(message, ToolMessage) and "12000" in message.text
+            for message in messages
+        )
+
+    def test_goal_proposal_schema_rejects_oversized_combination(self) -> None:
+        """The structured schema reports pair limits through ToolStrategy."""
+        with pytest.raises(ValueError, match="combined"):
+            GoalProposal.model_validate(
+                {
+                    "objective": "goal",
+                    "criteria": "x" * RUBRIC_CHAR_LIMIT,
+                }
+            )
 
     def test_fallback_agent_can_be_created(self) -> None:
         agent = create_goal_criteria_fallback_agent(

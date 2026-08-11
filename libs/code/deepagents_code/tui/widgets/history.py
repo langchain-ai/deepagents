@@ -90,11 +90,13 @@ class HistoryManager:
                 exc_info=True,
             )
 
-    def add(self, text: str) -> None:
+    def add(self, text: str, *, mode: str | None = None) -> None:
         """Add a command to history.
 
         Args:
             text: The command text to add
+            mode: Submission mode when known. Normal-mode absolute paths are
+                retained even though they begin with `/`.
         """
         text = text.strip()
         # Skip empty input and slash commands, except the explicit
@@ -104,7 +106,8 @@ class HistoryManager:
         # `/remember` (later rewritten to `/skill:remember`) are dropped here
         # despite being skill invocations.
         lower_text = text.lower()
-        if not text or (text.startswith("/") and not lower_text.startswith("/skill:")):
+        is_command = mode == "command" if mode is not None else text.startswith("/")
+        if not text or (is_command and not lower_text.startswith("/skill:")):
             return
 
         # Skip duplicates of the last entry

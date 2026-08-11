@@ -204,6 +204,12 @@ class TestSlashCommandController:
         assert controller.has_command("/q") is True
         assert controller.has_command("/connec") is False
 
+    def test_has_command_is_case_insensitive(self, controller):
+        """Lookup casing should match case-insensitive command dispatch."""
+        assert controller.has_command("/HELP") is True
+        assert controller.has_command("/CONNECT") is True
+        assert controller.has_command("/Q") is True
+
     def test_cannot_handle_non_slash(self, controller):
         """Does not handle text not starting with /."""
         assert controller.can_handle("hello", 5) is False

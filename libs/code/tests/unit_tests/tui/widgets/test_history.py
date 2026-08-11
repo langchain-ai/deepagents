@@ -135,6 +135,14 @@ class TestSkillInvocationHistory:
         reloaded = HistoryManager(history_file)
         assert reloaded._entries == ["/skill:web-research find cats"]
 
+    def test_normal_absolute_path_added(self, tmp_path: Path) -> None:
+        """Normal-mode absolute paths should be stored despite their slash."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+
+        mgr.add("/tmp/assets what is in here", mode="normal")
+
+        assert mgr.get_previous("") == "/tmp/assets what is in here"
+
 
 class TestSubstringMatch:
     """Substring matching navigates to entries containing the query."""

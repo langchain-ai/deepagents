@@ -175,8 +175,11 @@ class SlashCommandController:
             `True` when a registered command has exactly this name or lists it
             as an alias.
         """
+        normalized = name.lower()
         return any(
-            entry.name == name or name in entry.aliases for entry in self._commands
+            entry.name.lower() == normalized
+            or normalized in (alias.lower() for alias in entry.aliases)
+            for entry in self._commands
         )
 
     def reset(self) -> None:

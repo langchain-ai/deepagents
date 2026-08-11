@@ -3736,7 +3736,10 @@ class TestDroppedFolderPaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append(str(folder))
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+            await pilot.press("enter")
+            await pilot.pause()
             await pilot.press("up")
             await pilot.pause()
 
@@ -3802,7 +3805,10 @@ class TestDroppedFolderPaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append(entry)
+            chat._text_area.text = entry
+            await _pause_for_strip(pilot)
+            await pilot.press("enter")
+            await pilot.pause()
             await pilot.press("up")
             await pilot.pause()
 

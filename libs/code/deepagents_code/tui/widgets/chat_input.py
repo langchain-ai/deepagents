@@ -2637,7 +2637,7 @@ class ChatInput(Vertical):
                 value, previous_text=self._text_area.text
             )
 
-        self._history.add(value)
+        self._history.add(value, mode=mode)
         self.post_message(self.Submitted(value, mode))
 
         if self._text_area:

@@ -120,24 +120,33 @@ jobs:
             // write/triage permissions), so a missing type reliably indicates
             // programmatic submission.
             if (!context.payload.issue.type) {
-              let membership;
-              try {
-                membership = await isOrgMember();
-              } catch (e) {
-                // Org membership check failed — skip Rule 0 and let
-                // Rules 1-4 handle validation via checkboxes.
-                core.warning(`Rule 0: org membership check failed, skipping: ${e.message}`);
-              }
-              if (membership?.internal) {
-                console.log(`No issue type, but ${membership.author} is internal — OK`);
-              } else if (membership) {
-                console.log(`No issue type and ${membership.author} is external — closing`);
-                await closeWithComment([
-                  'This issue was automatically closed because it appears to have been submitted programmatically — issue types are automatically set when using the GitHub web interface, and this issue has none.',
-                  '',
-                  'We do not allow automated issue submission at this time.',
-                ]);
-                return;
+              // Transferred issues keep their original created_at but arrive
+              // here as "opened" events with no type in the new repo. Treat
+              // anything older than 5 minutes as transferred and skip Rule 0.
+              const createdAt = new Date(context.payload.issue.created_at).getTime();
+              const ageMs = Date.now() - createdAt;
+              if (ageMs > 5 * 60 * 1000) {
+                console.log(`No issue type, but issue was created ${Math.round(ageMs / 60000)}m ago — likely transferred, skipping Rule 0`);
+              } else {
+                let membership;
+                try {
+                  membership = await isOrgMember();
+                } catch (e) {
+                  // Org membership check failed — skip Rule 0 and let
+                  // Rules 1-4 handle validation via checkboxes.
+                  core.warning(`Rule 0: org membership check failed, skipping: ${e.message}`);
+                }
+                if (membership?.internal) {
+                  console.log(`No issue type, but ${membership.author} is internal — OK`);
+                } else if (membership) {
+                  console.log(`No issue type and ${membership.author} is external — closing`);
+                  await closeWithComment([
+                    'This issue was automatically closed because it appears to have been submitted programmatically — issue types are automatically set when using the GitHub web interface, and this issue has none.',
+                    '',
+                    'We do not allow automated issue submission at this time.',
+                  ]);
+                  return;
+                }
               }
             }
 

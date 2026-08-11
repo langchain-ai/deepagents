@@ -4203,6 +4203,7 @@ class TestDroppedFolderPaste:
             assert str(folder) in message
             assert "permission denied" in message.lower()
             assert kwargs["severity"] == "warning"
+            assert kwargs["markup"] is False
 
     async def test_unreadable_dropped_path_warns_once_per_drop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

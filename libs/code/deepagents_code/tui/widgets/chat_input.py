@@ -2299,6 +2299,7 @@ class ChatInput(Vertical):
         notify(
             f"Couldn't read {failure.path} ({reason}). Sent as text; not attached.",
             severity="warning",
+            markup=False,
         )
 
     def _is_dropped_path_submission(self, value: str) -> bool:

@@ -19,6 +19,7 @@ from deepagents_code import config
 from deepagents_code._dep_floor_check import (
     _find_floor_violations,
     _load_cli_requirements,
+    _quote_arg,
     warn_if_editable_deps_stale,
 )
 
@@ -176,6 +177,30 @@ class TestExactPins:
         """`==X.*` has no single parseable version, so it cannot be a floor."""
         _patch_versions(monkeypatch, {"some-dep": "0.9"})
         assert _find_floor_violations(["some-dep==1.0.*"]) == []
+
+
+class TestQuoteArg:
+    """The refresh command is quoted for the platform's shell conventions."""
+
+    def test_posix_single_quotes_spaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """POSIX shells get `shlex.quote`-style single-quoted arguments."""
+        monkeypatch.setattr(dep_floor_check.sys, "platform", "darwin")
+        assert _quote_arg("/path with spaces/bin/python") == (
+            "'/path with spaces/bin/python'"
+        )
+        assert _quote_arg("/plain/path") == "/plain/path"
+
+    def test_windows_uses_cmdline_quoting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows gets argv quoting `cmd.exe` understands, not single quotes."""
+        monkeypatch.setattr(dep_floor_check.sys, "platform", "win32")
+        # cmd.exe does not treat single quotes as quoting, so a POSIX-quoted
+        # path would arrive with the quote characters included.
+        assert _quote_arg("C:\\Python\\python.exe") == "C:\\Python\\python.exe"
+        assert _quote_arg("C:\\Program Files\\Python\\python.exe") == (
+            '"C:\\Program Files\\Python\\python.exe"'
+        )
 
 
 class TestBestEffort:

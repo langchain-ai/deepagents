@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import shlex
+import subprocess  # noqa: S404  # only `list2cmdline` string quoting, never executed
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -143,6 +144,25 @@ def _find_floor_violations(entries: list[str]) -> list[_FloorViolation]:
     return violations
 
 
+def _quote_arg(arg: str) -> str:
+    """Quote a command argument for the platform's command-line conventions.
+
+    `shlex.quote` emits POSIX single quotes, which `cmd.exe` does not treat
+    as quoting — on Windows the quote characters would become part of the
+    path, so the printed refresh command would not work there.
+    `subprocess.list2cmdline` follows the Windows argv rules instead.
+
+    Args:
+        arg: The raw argument string.
+
+    Returns:
+        The argument quoted for the current platform's shell conventions.
+    """
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([arg])
+    return shlex.quote(arg)
+
+
 def _version_key(version: str) -> tuple[int, ...]:
     """Return a sortable key for a floor version string.
 
@@ -197,7 +217,7 @@ def warn_if_editable_deps_stale() -> None:
         source = Path(__file__).resolve().parent.parent
         refresh = (
             "uv pip install --python "
-            f"{shlex.quote(sys.executable)} -e {shlex.quote(str(source))} --upgrade"
+            f"{_quote_arg(sys.executable)} -e {_quote_arg(str(source))} --upgrade"
         )
         from rich.markup import escape
 

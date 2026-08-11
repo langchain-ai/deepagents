@@ -7,7 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
@@ -16,7 +16,7 @@ from textual.widgets import Static
 
 from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
-from deepagents_code._session_stats import format_cost
+from deepagents_code._session_stats import format_cost, format_token_count
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.loading import Spinner
 
@@ -185,14 +185,20 @@ class BranchLabel(Widget):
         return full[: width - len(ellipsis)] + ellipsis
 
 
-class StatusBar(Horizontal):
-    """Status bar showing mode, cwd, tokens with cost, and the active model."""
+class StatusBar(Vertical):
+    """Two-line status bar showing workspace, cache, context, cost, and model."""
 
     DEFAULT_CSS = """
     StatusBar {
-        height: 1;
+        height: 2;
         dock: bottom;
         background: $background;
+    }
+
+    StatusBar .status-top,
+    StatusBar .status-metrics {
+        width: 1fr;
+        height: 1;
     }
 
     StatusBar .status-mode {
@@ -283,10 +289,17 @@ class StatusBar(Horizontal):
         overflow-x: hidden;
     }
 
+    StatusBar .status-cache {
+        width: 1fr;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
     StatusBar .status-tokens {
         width: auto;
         padding: 0 1;
         color: $text-muted;
+        text-align: right;
     }
 
     StatusBar .status-rubric {
@@ -338,7 +351,10 @@ class StatusBar(Horizontal):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
+    context_limit: reactive[int | None] = reactive(None, init=False)
     cost_usd: reactive[float] = reactive(0.0, init=False)
+    cache_read_tokens: reactive[int] = reactive(0, init=False)
+    cache_write_tokens: reactive[int] = reactive(0, init=False)
     rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
@@ -368,20 +384,23 @@ class StatusBar(Horizontal):
             Widgets for mode, auto-approve, message, cwd, branch, tokens, and
                 model display.
         """
-        yield Static("", classes="status-mode normal", id="mode-indicator")
-        yield Static(
-            "manual",
-            classes="status-auto-approve manual",
-            id="auto-approve-indicator",
-        )
-        with Horizontal(classes="status-left-collapsible"):
-            yield Static("", classes="status-connection", id="connection-indicator")
-            yield Static("", classes="status-message", id="status-message")
-            yield Static("", classes="status-cwd", id="cwd-display")
-            yield BranchLabel(classes="status-branch", id="branch-display")
-        yield Static("", classes="status-rubric", id="rubric-display")
-        yield Static("", classes="status-tokens", id="tokens-display")
-        yield ModelLabel(id="model-display")
+        with Horizontal(classes="status-top"):
+            yield Static("", classes="status-mode normal", id="mode-indicator")
+            yield Static(
+                "manual",
+                classes="status-auto-approve manual",
+                id="auto-approve-indicator",
+            )
+            with Horizontal(classes="status-left-collapsible"):
+                yield Static("", classes="status-connection", id="connection-indicator")
+                yield Static("", classes="status-message", id="status-message")
+                yield Static("", classes="status-cwd", id="cwd-display")
+                yield BranchLabel(classes="status-branch", id="branch-display")
+            yield Static("", classes="status-rubric", id="rubric-display")
+            yield ModelLabel(id="model-display")
+        with Horizontal(classes="status-metrics"):
+            yield Static("", classes="status-cache", id="cache-display")
+            yield Static("", classes="status-tokens", id="tokens-display")
 
     _CWD_WIDTH_THRESHOLD = 70
     """Hide cwd display below this terminal width."""
@@ -445,16 +464,15 @@ class StatusBar(Horizontal):
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""
         label.model = settings.model_name or ""
+        self.set_context_limit(settings.model_context_limit)
+        self._render_cache_metrics()
         with suppress(NoMatches):
             self.query_one("#rubric-display", Static).display = False
         # Reactives are `init=False`, so the connection watcher never fires on
         # mount; render once to hide the empty indicator (and its padding).
         self._render_connection()
-        # Same reasoning for the message and token slots: both start empty, so
-        # hide them on mount so their padding doesn't reserve a blank gap.
         self.watch_status_message(self.status_message)
-        with suppress(NoMatches):
-            self.query_one("#tokens-display", Static).display = False
+        self._render_tokens(self.tokens, approximate=self._approximate)
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -750,9 +768,21 @@ class StatusBar(Horizontal):
         """Update the combined token and cost display when tokens change."""
         self._render_tokens(new_value, approximate=self._approximate)
 
+    def watch_context_limit(self, _new_value: int | None) -> None:
+        """Update context percentage when the model limit changes."""
+        self._render_tokens(self.tokens, approximate=self._approximate)
+
     def watch_cost_usd(self, _new_value: float) -> None:
         """Update the combined token and cost display when cost changes."""
         self._render_tokens(self.tokens, approximate=self._approximate)
+
+    def watch_cache_read_tokens(self, _new_value: int) -> None:
+        """Update cache metrics when read tokens change."""
+        self._render_cache_metrics()
+
+    def watch_cache_write_tokens(self, _new_value: int) -> None:
+        """Update cache metrics when write tokens change."""
+        self._render_cache_metrics()
 
     def watch_rubric_label(self, new_value: str) -> None:
         """Update rubric display when active rubric state changes."""
@@ -763,19 +793,30 @@ class StatusBar(Horizontal):
         display.display = bool(new_value)
         display.update(new_value)
 
-    @staticmethod
-    def _token_text(count: int, *, approximate: bool = False) -> str:
-        """Format the token portion of the shared status-bar slot.
+    def _token_text(self, count: int, *, approximate: bool = False) -> str:
+        """Format context percentage and token count for the metrics row.
 
         Returns:
-            Formatted token count, or an empty string when no count is known.
+            Compact context usage text.
         """
         if count <= 0:
             return ""
         suffix = "+" if approximate else ""
-        if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
-            return f"{count / 1000:.1f}K{suffix} tokens"
-        return f"{count}{suffix} tokens"
+        tokens = f"{format_token_count(count)}{suffix} tokens"
+        if self.context_limit is None:
+            return f"Context: {tokens}"
+        return f"Context: {count / self.context_limit * 100:.0f}% / {tokens}"
+
+    def _render_cache_metrics(self) -> None:
+        """Render cumulative cache reads and writes for the active thread."""
+        try:
+            display = self.query_one("#cache-display", Static)
+        except NoMatches:
+            return
+        display.update(
+            f"Cache: {format_token_count(self.cache_read_tokens)} read / "
+            f"{format_token_count(self.cache_write_tokens)} write"
+        )
 
     def _cost_text(self) -> str:
         """Format positive cost, hiding zero and unknown estimates.
@@ -839,6 +880,27 @@ class StatusBar(Horizontal):
             # Reactive assignment triggers watch_tokens, which reads
             # self._approximate for the suffix.
             self.tokens = count
+
+    def set_context_limit(self, limit: int | None) -> None:
+        """Set the active model's context limit."""
+        normalized = limit if isinstance(limit, int) and limit > 0 else None
+        if self.context_limit == normalized:
+            self._render_tokens(self.tokens, approximate=self._approximate)
+        else:
+            self.context_limit = normalized
+
+    def set_cache_tokens(self, read_tokens: int, write_tokens: int) -> None:
+        """Set cumulative cache read and write counts for the active thread."""
+        reads, writes = max(read_tokens, 0), max(write_tokens, 0)
+        changed = False
+        if self.cache_read_tokens != reads:
+            self.cache_read_tokens = reads
+            changed = True
+        if self.cache_write_tokens != writes:
+            self.cache_write_tokens = writes
+            changed = True
+        if not changed:
+            self._render_cache_metrics()
 
     def set_cost(self, cost_usd: float) -> None:
         """Set the cumulative thread cost shown beside context tokens.

@@ -4651,6 +4651,7 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_show = self._show_tokens
         self._ui_adapter._on_session_cost = self._set_session_cost
         self._ui_adapter._on_provisional_cost = self._add_provisional_cost
+        self._ui_adapter._on_usage_update = self._refresh_cache_display
         self._ui_adapter._on_stream_complete = self._mark_thread_turn_completed
 
         if self._server_startup_deferred:
@@ -7642,6 +7643,19 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
+    def _refresh_cache_display(self) -> None:
+        """Show active-thread cache totals, including the in-flight turn."""
+        if self._status_bar is None:
+            return
+        reads = self._thread_stats.cache_read_tokens
+        writes = self._thread_stats.cache_write_tokens
+        if self._inflight_turn_stats is not None and (
+            self._inflight_thread_id == self._lc_thread_id
+        ):
+            reads += self._inflight_turn_stats.cache_read_tokens
+            writes += self._inflight_turn_stats.cache_write_tokens
+        self._status_bar.set_cache_tokens(reads, writes)
+
     def _set_session_cost(
         self,
         cost_usd: float,
@@ -7720,6 +7734,7 @@ class DeepAgentsApp(App):
             has_restored_model_usage: Whether restored history contains model usage.
         """
         self._thread_stats = SessionStats()
+        self._refresh_cache_display()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
@@ -15388,6 +15403,7 @@ class DeepAgentsApp(App):
             self._session_stats.merge(offload_stats)
             if offload_thread_id == self._lc_thread_id:
                 self._thread_stats.merge(offload_stats)
+                self._refresh_cache_display()
 
     async def _remove_offload_artifacts(
         self,
@@ -15788,6 +15804,7 @@ class DeepAgentsApp(App):
             logger.debug("Screen stack empty during model sync", exc_info=True)
         if self._status_bar is None:
             return
+        self._status_bar.set_context_limit(settings.model_context_limit)
         if not provider or not model:
             logger.warning(
                 "Settings missing model identity at status sync "
@@ -16340,6 +16357,7 @@ class DeepAgentsApp(App):
                     self._thread_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
                 self._inflight_thread_id = None
+                self._refresh_cache_display()
             # Settle the display on the committed total. Only a completed turn
             # is read back: `durability="exit"` may drop an aborted turn's
             # writes, and the streamed totals already seen are closer to what

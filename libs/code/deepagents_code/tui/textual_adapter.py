@@ -81,6 +81,11 @@ if TYPE_CHECKING:
 
         def __call__(self, cost_usd: float, /) -> None: ...
 
+    class _UsageUpdateCallback(Protocol):
+        """Callback signature for `_on_usage_update`."""
+
+        def __call__(self) -> None: ...
+
 
 from deepagents_code import _session_stats
 from deepagents_code._ask_user_types import (
@@ -775,6 +780,9 @@ class TextualUIAdapter:
         checkpointed yet — a long subagent run, say — without making the client
         a second authority: every server total replaces what this accumulated.
         """
+
+        self._on_usage_update: _UsageUpdateCallback | None = None
+        """Called after streamed request usage changes."""
 
         self._on_stream_complete: Callable[[], None] | None = None
         """Called only after the agent stream reaches a clean end."""
@@ -1834,6 +1842,8 @@ async def execute_task_textual(
                             ),
                             recorded_requests=recorded_usage_requests,
                         )
+                    if recorded_usage is not None and adapter._on_usage_update:
+                        adapter._on_usage_update()
                     if recorded_usage is not None and (
                         recorded_usage.cost_usd is not None
                         and adapter._on_provisional_cost

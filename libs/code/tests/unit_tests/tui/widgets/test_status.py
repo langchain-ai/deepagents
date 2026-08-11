@@ -33,6 +33,28 @@ class StatusBarApp(App):
         yield StatusBar(id="status-bar")
 
 
+class TestTwoLineMetrics:
+    async def test_layout_and_metrics(self) -> None:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(12_500, 750)
+            bar.set_context_limit(200_000)
+            bar.set_tokens(12_500)
+            bar.set_cost(0.42)
+            await pilot.pause()
+
+            top = pilot.app.query_one(".status-top")
+            metrics = pilot.app.query_one(".status-metrics")
+            assert bar.size.height == 2
+            assert metrics.region.y == top.region.y + 1
+            assert str(pilot.app.query_one("#cache-display").render()) == (
+                "Cache: 12.5K read / 750 write"
+            )
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "Context: 6% / 12.5K tokens" in rendered
+            assert "$0.42" in rendered
+
+
 class TestApprovalModeDisplay:
     """Tests for the three-state approval indicator."""
 
@@ -599,7 +621,7 @@ class TestCostDisplay:
             bar.set_cost(0.0)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert rendered == "5.0K tokens"
+            assert rendered == "Context: 5.0K tokens"
             assert "$" not in rendered
 
     async def test_sub_cent_cost_uses_display_floor(self) -> None:

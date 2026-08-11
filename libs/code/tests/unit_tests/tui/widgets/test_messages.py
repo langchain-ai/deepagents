@@ -5169,6 +5169,16 @@ class TestUserMessageCancelled:
             assert msg.has_class("-cancelled")
 
 
+def _calls(*names: str) -> list[tuple[str, dict]]:
+    """Build argument-less calls, where every call counts for itself.
+
+    With no argument naming a target, nothing can be judged a repeat, so these
+    exercise phrasing and category aggregation without target collapsing. See
+    `TestSummaryTargetCounting` for the target-aware behavior.
+    """
+    return [(name, {}) for name in names]
+
+
 class TestSummarizeToolGroup:
     """Tests for the tool-group summary phrasing."""
 
@@ -5198,7 +5208,7 @@ class TestSummarizeToolGroup:
         """The summary aggregates by category and lowercases trailing verbs."""
         from deepagents_code.tui.widgets.messages import summarize_tool_group
 
-        assert summarize_tool_group(names) == expected
+        assert summarize_tool_group(_calls(*names)) == expected
 
     def test_empty_group_has_fallback(self) -> None:
         """An empty tool list yields a generic fallback rather than crashing."""
@@ -5207,8 +5217,8 @@ class TestSummarizeToolGroup:
         assert summarize_tool_group([]) == "Ran tools"
 
 
-class TestDedupeRepeatTargets:
-    """Repeat calls on one target collapse before the summary counts nouns."""
+class TestSummaryTargetCounting:
+    """The lead noun counts distinct targets, not calls."""
 
     @pytest.mark.parametrize(
         ("calls", "expected"),
@@ -5219,7 +5229,7 @@ class TestDedupeRepeatTargets:
                     ("read_file", {"file_path": "a.py"}),
                     ("read_file", {"file_path": "a.py"}),
                 ],
-                ["read_file"],
+                "Read 1 file",
             ),
             # Distinct paths are distinct work.
             (
@@ -5227,7 +5237,7 @@ class TestDedupeRepeatTargets:
                     ("read_file", {"file_path": "a.py"}),
                     ("read_file", {"file_path": "b.py"}),
                 ],
-                ["read_file", "read_file"],
+                "Read 2 files",
             ),
             # Lexically equal paths collapse; `normpath` needs no filesystem.
             (
@@ -5235,14 +5245,23 @@ class TestDedupeRepeatTargets:
                     ("read_file", {"file_path": "./a.py"}),
                     ("read_file", {"file_path": "a.py"}),
                 ],
-                ["read_file"],
+                "Read 1 file",
             ),
             (
                 [
                     ("read_file", {"file_path": "d//a.py"}),
                     ("read_file", {"file_path": "d/a.py"}),
                 ],
-                ["read_file"],
+                "Read 1 file",
+            ),
+            # A relative and an absolute spelling stay distinct: the TUI's cwd
+            # is not necessarily the backend's, so equating them would guess.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "/repo/a.py"}),
+                ],
+                "Read 2 files",
             ),
             # Same path, different category: reading then editing is two acts.
             (
@@ -5250,12 +5269,12 @@ class TestDedupeRepeatTargets:
                     ("read_file", {"file_path": "a.py"}),
                     ("edit_file", {"file_path": "a.py"}),
                 ],
-                ["read_file", "edit_file"],
+                "Read 1 file, edited 1 file",
             ),
             # The `path` fallback is honored for tools that use it.
             (
                 [("read_file", {"path": "a.py"}), ("read_file", {"file_path": "a.py"})],
-                ["read_file"],
+                "Read 1 file",
             ),
             # URLs collapse on exact match.
             (
@@ -5263,76 +5282,133 @@ class TestDedupeRepeatTargets:
                     ("fetch_url", {"url": "http://x/y"}),
                     ("fetch_url", {"url": "http://x/y"}),
                 ],
-                ["fetch_url"],
+                "Fetched 1 URL",
             ),
             # Attempt-counting categories never collapse: two runs of one
             # command are genuinely two runs.
             (
                 [("execute", {"command": "ls"}), ("execute", {"command": "ls"})],
-                ["execute", "execute"],
+                "Ran 2 shell commands",
             ),
             (
                 [("grep", {"pattern": "x"}), ("grep", {"pattern": "x"})],
-                ["grep", "grep"],
+                "Searched for 2 patterns",
             ),
             # A bare `ls()` means "the working directory", which `execute` can
             # change mid-step, so identical calls are not assumed identical.
-            ([("ls", {}), ("ls", {})], ["ls", "ls"]),
-            # Unidentifiable targets fail open — counting twice merely restores
-            # the pre-dedup count, while collapsing would invent a repeat.
-            (
-                [("read_file", {}), ("read_file", {})],
-                ["read_file", "read_file"],
-            ),
+            ([("ls", {}), ("ls", {})], "Listed 2 directories"),
+            # Unidentifiable targets fail open: counting each merely restores the
+            # old count, while collapsing would invent a repeat.
+            ([("read_file", {}), ("read_file", {})], "Read 2 files"),
             (
                 [("read_file", {"file_path": ""}), ("read_file", {"file_path": None})],
-                ["read_file", "read_file"],
+                "Read 2 files",
             ),
             (
                 [("read_file", {"file_path": 42}), ("read_file", {"file_path": 42})],
-                ["read_file", "read_file"],
+                "Read 2 files",
             ),
-            ([], []),
         ],
     )
-    def test_dedupe(self, calls: list[tuple[str, dict]], expected: list[str]) -> None:
+    def test_distinct_target_counting(
+        self, calls: list[tuple[str, dict]], expected: str
+    ) -> None:
         """Repeat targets collapse; distinct and unidentifiable ones do not."""
-        from deepagents_code.tui.widgets.messages import dedupe_repeat_targets
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
 
-        assert dedupe_repeat_targets(calls) == expected
+        assert summarize_tool_group(calls) == expected
 
-    def test_first_appearance_order_is_preserved(self) -> None:
-        """The kept call is the first one, so category ordering is unchanged."""
-        from deepagents_code.tui.widgets.messages import (
-            dedupe_repeat_targets,
-            summarize_tool_group,
-        )
+    def test_category_order_follows_first_call(self) -> None:
+        """Collapsing a repeat does not disturb first-appearance ordering."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
 
         calls = [
             ("execute", {"command": "ls"}),
             ("read_file", {"file_path": "a.py"}),
             ("read_file", {"file_path": "a.py"}),
         ]
-        assert dedupe_repeat_targets(calls) == ["execute", "read_file"]
-        assert (
-            summarize_tool_group(dedupe_repeat_targets(calls))
-            == "Ran 1 shell command, read 1 file"
-        )
+        assert summarize_tool_group(calls) == "Ran 1 shell command, read 1 file"
 
     def test_repeated_read_reports_one_file_in_both_tenses(self) -> None:
         """The user-visible payoff: neither tense claims two files."""
-        from deepagents_code.tui.widgets.messages import (
-            dedupe_repeat_targets,
-            summarize_tool_group,
-        )
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
 
         calls = [
             ("read_file", {"file_path": "a.py"}),
             ("read_file", {"file_path": "a.py"}),
         ]
-        names = dedupe_repeat_targets(calls)
-        assert summarize_tool_group(names, tense="past") == "Read 1 file"
-        assert summarize_tool_group(names, tense="present") == "Reading 1 file"
+        assert summarize_tool_group(calls, tense="past") == "Read 1 file"
+        assert summarize_tool_group(calls, tense="present") == "Reading 1 file"
+
+
+class TestRepeatOperationCounts:
+    """Mutations report repeat work on a target; reads collapse silently."""
+
+    @pytest.mark.parametrize(
+        ("calls", "expected"),
+        [
+            # A mutation is an event with its own diff, so three edits of one
+            # file must not read as a single edit.
+            (
+                [("edit_file", {"file_path": "a.py"})] * 3,
+                "Edited 1 file (3 edits)",
+            ),
+            # Both numbers survive when files and edits disagree.
+            (
+                [
+                    ("edit_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "b.py"}),
+                ],
+                "Edited 2 files (3 edits)",
+            ),
+            # No repeats, no parenthetical.
+            (
+                [
+                    ("edit_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "b.py"}),
+                ],
+                "Edited 2 files",
+            ),
+            ([("edit_file", {"file_path": "a.py"})], "Edited 1 file"),
+            (
+                [("write_file", {"file_path": "a.py"})] * 2,
+                "Wrote 1 file (2 writes)",
+            ),
+            # Reads repeat for pagination, where the count is noise.
+            ([("read_file", {"file_path": "a.py"})] * 3, "Read 1 file"),
+            # A repeated fetch of one URL is not a mutation either.
+            ([("fetch_url", {"url": "http://x"})] * 2, "Fetched 1 URL"),
+        ],
+    )
+    def test_repeat_counts(self, calls: list[tuple[str, dict]], expected: str) -> None:
+        """Only mutating categories append the operation count."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        assert summarize_tool_group(calls) == expected
+
+    def test_present_tense_keeps_the_parenthetical(self) -> None:
+        """An in-flight burst of edits reports both numbers too."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [("edit_file", {"file_path": "a.py"})] * 2
+        assert (
+            summarize_tool_group(calls, tense="present") == "Editing 1 file (2 edits)"
+        )
+
+    def test_parenthetical_lowercases_in_trailing_position(self) -> None:
+        """The segment still joins correctly when it is not the lead."""
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [
+            ("execute", {"command": "ls"}),
+            ("edit_file", {"file_path": "a.py"}),
+            ("edit_file", {"file_path": "a.py"}),
+        ]
+        assert (
+            summarize_tool_group(calls)
+            == "Ran 1 shell command, edited 1 file (2 edits)"
+        )
 
 
 class _ToolGroupApp(App[None]):
@@ -5436,11 +5512,13 @@ class TestSummarizeToolGroupPresentTense:
         from deepagents_code.tui.widgets.messages import summarize_tool_group
 
         assert (
-            summarize_tool_group(["execute"], tense="present")
+            summarize_tool_group(_calls("execute"), tense="present")
             == "Running 1 shell command"
         )
         assert (
-            summarize_tool_group(["read_file", "read_file", "grep"], tense="present")
+            summarize_tool_group(
+                _calls("read_file", "read_file", "grep"), tense="present"
+            )
             == "Reading 2 files, searching for 1 pattern"
         )
 
@@ -5453,7 +5531,7 @@ class TestSummarizeLiveToolGroup:
         from deepagents_code.tui.widgets.messages import summarize_live_tool_group
 
         assert (
-            summarize_live_tool_group(["execute", "execute"], ["task"])
+            summarize_live_tool_group(_calls("execute", "execute"), _calls("task"))
             == "Ran 2 shell commands, running 1 agent"
         )
 
@@ -5462,7 +5540,7 @@ class TestSummarizeLiveToolGroup:
         from deepagents_code.tui.widgets.messages import summarize_live_tool_group
 
         assert (
-            summarize_live_tool_group([], ["read_file", "read_file"])
+            summarize_live_tool_group([], _calls("read_file", "read_file"))
             == "Reading 2 files"
         )
 
@@ -5470,7 +5548,7 @@ class TestSummarizeLiveToolGroup:
         """With nothing left running the line is purely past tense."""
         from deepagents_code.tui.widgets.messages import summarize_live_tool_group
 
-        assert summarize_live_tool_group(["execute"], []) == "Ran 1 shell command"
+        assert summarize_live_tool_group(_calls("execute"), []) == "Ran 1 shell command"
 
     def test_empty_returns_blank(self) -> None:
         """No members at all yields an empty string, not a fallback phrase."""

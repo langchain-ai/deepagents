@@ -17845,9 +17845,12 @@ class DeepAgentsApp(App):
         the message — the interrupted `UserMessage` stays visible in the
         transcript, dimmed via `set_cancelled()`.
 
-        The restore is deliberately silent: the text reappearing in the chat
-        input is its own confirmation, so a toast would only cover the transcript
-        (worse in a tiled terminal) to report something already on screen.
+        A successful restore is deliberately silent: the text reappearing in
+        the chat input is its own confirmation, so a toast would only cover the
+        transcript (worse in a tiled terminal) to report something already on
+        screen. The paths that decline to restore are silent for a different
+        reason — nothing was consumed, so unlike the queued-message pop there is
+        no "discarded" outcome to report; the prompt is still in the transcript.
 
         Restore is also skipped once model text or a tool call is visible for
         the turn (`_active_turn_visible_output_started`). Returning the prompt

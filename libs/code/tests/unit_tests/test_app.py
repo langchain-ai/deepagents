@@ -3495,7 +3495,8 @@ class TestCtrlCCopySelection:
             assert chat is not None
             chat.value = ""
 
-            app.action_quit_or_interrupt()
+            with patch.object(app, "notify") as mock_notify:
+                app.action_quit_or_interrupt()
             await pilot.pause()
 
             assert user_message.has_class("-cancelled")
@@ -3504,6 +3505,8 @@ class TestCtrlCCopySelection:
             # Ctrl+C is the quit/copy flow: the prompt must NOT be restored to
             # the input (that behavior is exclusive to the Esc path).
             assert chat.value == ""
+            # Interrupting is silent on both key paths.
+            mock_notify.assert_not_called()
 
     async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
         """Ctrl+C with a non-Input/TextArea widget focused never copies."""

@@ -146,7 +146,7 @@ Screen {
 
 /* Status bar */
 #status-bar {
-    height: 1;
+    height: 2;
     dock: bottom;
 }
 

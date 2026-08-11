@@ -125,6 +125,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
+        name="/context",
+        description="Show current context window usage",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="tokens window usage remaining offload compact",
+    ),
+    SlashCommand(
         name="/cost",
         description="Show estimated thread cost",
         bypass_tier=BypassTier.QUEUED,

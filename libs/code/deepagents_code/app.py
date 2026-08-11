@@ -109,6 +109,7 @@ from deepagents_code.notifications import (
 )
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.context_usage import ContextUsageScreen
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.loading import LoadingWidget
 from deepagents_code.tui.widgets.message_store import (
@@ -14218,6 +14219,27 @@ class DeepAgentsApp(App):
                 timeout=5,
                 markup=False,
             )
+        elif cmd == "/context":
+            context_tokens, conversation_tokens = await self._get_context_usage_counts()
+            if context_tokens is None and not self._tokens_approximate:
+                context_tokens = self._context_tokens or None
+            approximate = context_tokens is None and bool(
+                conversation_tokens or self._context_tokens
+            )
+            if approximate:
+                conversation_tokens = conversation_tokens or self._context_tokens
+            elif context_tokens is None:
+                context_tokens = 0
+            self.push_screen(
+                ContextUsageScreen(
+                    context_tokens=context_tokens,
+                    conversation_tokens=conversation_tokens,
+                    context_limit=settings.model_context_limit,
+                    model_spec=self._effective_model_spec() or settings.model_name,
+                    approximate=approximate,
+                ),
+                lambda _result: self._focus_chat_input_after_refresh(),
+            )
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -14913,32 +14935,40 @@ class DeepAgentsApp(App):
             )
             return True
 
+    async def _get_context_usage_counts(self) -> tuple[int | None, int | None]:
+        """Read provider-reported total and estimated conversation usage together.
+
+        Returns:
+            Pair of provider-reported context tokens and approximate effective
+                conversation tokens. Either value is `None` when unavailable.
+        """
+        if not self._agent or not self._lc_thread_id:
+            return None, None
+        try:
+            from langchain_core.messages.utils import count_tokens_approximately
+
+            values = await self._get_thread_state_values(self._lc_thread_id)
+            reported = _persisted_context_tokens(values) or None
+            messages = values.get("messages", [])
+            if not isinstance(messages, list) or not messages:
+                return reported, None
+            effective = _effective_conversation(
+                messages,
+                values.get("_summarization_event"),
+            )
+            return reported, count_tokens_approximately(effective)
+        except Exception:  # best-effort for context-usage displays
+            logger.debug("Failed to retrieve context usage", exc_info=True)
+            return None, None
+
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
 
         Returns:
             Token count as an integer, or `None` if state is unavailable.
         """
-        if not self._agent:
-            return None
-        try:
-            from langchain_core.messages.utils import (
-                count_tokens_approximately,
-            )
-
-            config: RunnableConfig = {
-                "configurable": {"thread_id": self._lc_thread_id},
-            }
-            state = await self._agent.aget_state(config)
-            if not state or not state.values:
-                return None
-            messages = state.values.get("messages", [])
-            if not messages:
-                return None
-            return count_tokens_approximately(messages)
-        except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to retrieve conversation token count", exc_info=True)
-            return None
+        _, conversation = await self._get_context_usage_counts()
+        return conversation
 
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space.
@@ -15160,7 +15190,7 @@ class DeepAgentsApp(App):
                     )
                 )
 
-            self._on_tokens_update(tokens_after)
+            self._on_tokens_update(tokens_after, approximate=True)
 
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")

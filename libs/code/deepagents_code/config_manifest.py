@@ -1764,6 +1764,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.LOG_LEVEL,
     ),
     ConfigOption(
+        key="debug.dep_floor",
+        group="Debug",
+        summary="Synthesize the stale editable-dependency prompt/warning at launch.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_DEP_FLOOR,
+    ),
+    ConfigOption(
         key="debug.notifications",
         group="Debug",
         summary="Inject sample missing-dependency notifications at launch.",

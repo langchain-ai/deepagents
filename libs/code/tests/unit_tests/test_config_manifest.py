@@ -1683,6 +1683,16 @@ def test_resolve_bool_presence_enables_on_any_value(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={}) == (False, "default")
 
 
+@pytest.mark.parametrize("value", ["0", "false"])
+def test_debug_dep_floor_uses_boolean_semantics(monkeypatch, value: str) -> None:
+    """Config inspection agrees with the runtime for explicitly falsy values."""
+    opt = get_option("debug.dep_floor")
+    assert opt is not None
+    assert opt.kind is OptionKind.BOOL
+    monkeypatch.setenv(_env_vars.DEBUG_DEP_FLOOR, value)
+    assert resolve_scalar(opt, toml_data={})[0] is False
+
+
 def test_resolve_malformed_int_env_falls_back_with_warning(monkeypatch, caplog) -> None:
     """A non-numeric env value for an INT option logs and falls back.
 

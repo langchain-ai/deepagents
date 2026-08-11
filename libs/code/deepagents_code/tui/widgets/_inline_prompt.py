@@ -202,6 +202,12 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
 
         await super()._on_key(event)
 
+        # After the key is inserted, check whether a detected rapid run looks
+        # like a dropped media path and promote it into the burst buffer for
+        # rejection. Must run after `super()._on_key` so the current character
+        # is already in the document and `_promote_paste_burst_run` can find it.
+        await self._check_burst_run_for_dropped_media()
+
     async def _on_paste(self, event: events.Paste) -> None:
         """Reject a dragged media file, else defer to shared paste handling."""
         # Flush first, matching the base handler: a rejection returns early, and

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from textual.binding import Binding
 from textual.widgets import TextArea
 
+from deepagents_code.input import looks_like_dropped_payload
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
     PastedContent,
@@ -362,6 +363,24 @@ class PasteBurstTextArea(TextArea):
                 )
         elif event.key != "enter":
             self._reset_paste_burst_run()
+
+    async def _check_burst_run_for_dropped_media(self) -> None:
+        """Promote a rapid run into the burst buffer if it looks like a dropped path.
+
+        Called after each printable key event when the run reaches burst
+        threshold. Dropped paths start with a shape (`/`, `~`, drive letter,
+        `file://`, UNC) that fast typing never produces, so promoting now keeps
+        ordinary typing visible while still catching unquoted drops. The
+        promotion is async because it may trigger an immediate flush when the
+        payload is rejected by a subclass hook.
+        """
+        if (
+            self._paste_burst_run >= PASTE_BURST_MIN_CHARS
+            and not self._paste_burst_buffer
+            and looks_like_dropped_payload(self._paste_burst_run_text)
+        ):
+            self._promote_paste_burst_run(self._paste_burst_last_key_time or 0.0)
+            await self._flush_paste_burst()
 
     def _consume_enter_as_burst_newline(self, now: float) -> bool:
         """Insert a newline instead of submitting when inside a paste burst.

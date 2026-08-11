@@ -1029,6 +1029,12 @@ class ChatTextArea(PasteBurstTextArea):
 
         await super()._on_key(event)
 
+        # After the key is inserted, check whether a detected rapid run looks
+        # like a dropped media path and promote it into the burst buffer for
+        # rejection. Must run after `super()._on_key` so the current character
+        # is already in the document and `_promote_paste_burst_run` can find it.
+        await self._check_burst_run_for_dropped_media()
+
     def action_delete_right(self) -> None:
         """Delete a bound placeholder atomically or the next character."""
         if not self._delete_placeholder_token(backwards=False):

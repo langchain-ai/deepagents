@@ -215,6 +215,25 @@ class TestInlinePromptPaste:
             assert app.submissions == []
             assert "\n" in ta.text
 
+    async def test_rapid_typing_stays_visible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rapid ordinary typing is not hidden by the dropped-media check."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert ta.text == "hello"
+            assert ta._paste_burst_buffer == ""
+            assert not list(app._notifications)
+
     async def test_deliberate_enter_submits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -521,6 +540,33 @@ class TestInlinePromptMediaDrop:
             # its whole contract is the early return; a direct call is faithful.
             await ta._dispatch_burst_payload(str(clip))
             await pilot.pause()
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "clip.mp4" in latest.message
+
+    async def test_unquoted_media_key_burst_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unquoted media path replayed as rapid keys is rejected, not typed."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"vid")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in str(clip):
+                event = Key(char, char)
+                await ta._on_key(event)
+
+            await pilot.pause(0.35)
 
             assert ta.text == ""
             latest = list(app._notifications)[-1]

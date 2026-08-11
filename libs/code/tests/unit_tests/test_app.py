@@ -15596,7 +15596,10 @@ class TestDiffLineNumbersCommand:
             assert app._ui_adapter is not None
             assert app._ui_adapter._show_diff_line_numbers is False
             notify_mock.assert_called_once()
-            assert notify_mock.call_args.args[0] == "Diff line numbers hidden."
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers hidden for new diffs."
+            )
             assert notify_mock.call_args.kwargs.get("severity") == "information"
             assert notify_mock.call_args.kwargs.get("markup") is False
 
@@ -15607,7 +15610,10 @@ class TestDiffLineNumbersCommand:
             assert app._show_diff_line_numbers is True
             assert app._ui_adapter._show_diff_line_numbers is True
             notify_mock.assert_called_once()
-            assert notify_mock.call_args.args[0] == "Diff line numbers shown."
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers shown for new diffs."
+            )
 
 
 class TestDebugConsoleClickToCopyPreference:

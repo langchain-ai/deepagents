@@ -120,6 +120,8 @@ def _write_fake_tools(
     home = tmp_path / "home"
     tools = tmp_path / "tools"
     bin_dir.mkdir()
+    # exist_ok: a test may seed `home/.cache/deepagents-code/install.log` before
+    # invoking, to assert what happens to a previous run's log.
     home.mkdir(exist_ok=True)
     # exist_ok: a test may stage a uv tool receipt under `tools/deepagents-code`
     # before invoking, which creates `tools` as a side effect.
@@ -731,7 +733,10 @@ def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
 
     The `~/.deepagents` assertion pins that the early up-to-date exit returns
     before `acquire_install_lock`, so the no-op path leaves no lock directory
-    behind.
+    behind. `~/.cache` pins the same property for the install log:
+    `prepare_install_log_dir` creates the cache root and the package
+    subdirectory, so computing the log path above this exit would make a run
+    that installs nothing still leave directories on the machine.
     """
     proc, args_path = _invoke(
         tmp_path, {}, installed_version="0.1.0", latest_version="0.1.0"
@@ -741,6 +746,7 @@ def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
     assert not args_path.exists()
     assert "Already up to date!" in proc.stdout
     assert not (tmp_path / "home/.deepagents").exists()
+    assert not (tmp_path / "home/.cache").exists()
 
 
 def test_install_script_already_up_to_date_preserves_prior_log(tmp_path: Path) -> None:
@@ -936,12 +942,9 @@ def test_install_script_uv_output_uses_cache_log_not_predictable_tmp(
 
 
 def test_install_script_live_log_is_not_world_readable(tmp_path: Path) -> None:
-    """Keep the log 0600 — uv's stderr can carry credentialed index URLs.
+    """No group or world access on the log — uv's stderr can carry index URLs.
 
-    `exec >` honours the ambient umask, so without an explicit `umask 077` the
-    live log lands 0644 where the staged-publish path produced 0600. The 0700
-    parent is not a backstop: `prepare_install_log_dir` accepts a pre-existing
-    directory at any mode.
+    See `setup_live_install_log` for why the explicit `umask 077` is needed.
     """
     proc, _ = _invoke(
         tmp_path,
@@ -958,11 +961,11 @@ def test_install_script_live_log_is_not_world_readable(tmp_path: Path) -> None:
 def test_install_script_live_log_replaces_prior_run_contents(tmp_path: Path) -> None:
     """A second install must still log live, not silently fall back.
 
-    `setup_live_install_log` removes a prior regular `install.log` before the
-    noclobber create. Without that `rm`, noclobber refuses over the surviving
-    file, the run falls back to mktemp, and *every install after the user's
-    first* loses live logging and the `tail -f` hint — while the log still gets
-    published, so content-only assertions would not notice.
+    `setup_live_install_log` renames this run's log over any prior one. If it
+    instead let noclobber refuse over the surviving file, the run would fall
+    back to mktemp and *every install after the user's first* would lose live
+    logging and the `tail -f` hint — while the log still gets published, so
+    content-only assertions would not notice.
     """
     log_path = tmp_path / "home/.cache/deepagents-code/install.log"
     log_path.parent.mkdir(parents=True)
@@ -1469,6 +1472,11 @@ def _eval_version_at_least(tmp_path: Path, have: str, want: str) -> bool:
         ("0.10.0", "12.0.0", False),  # ancient distro package
         ("", "12.0.0", False),  # empty is never acceptable
         ("abc", "12.0.0", False),  # unparseable is never acceptable
+        # `want` is validated too: the footer's upgrade check passes package
+        # versions here, and a PEP 440 prerelease reaching the `-ge` compare
+        # leaks "integer expression expected" to stderr.
+        ("12.0.0", "", False),
+        ("0.1.0", "0.1.0rc1", False),
     ],
 )
 def test_version_at_least(tmp_path: Path, have: str, want: str, expected: bool) -> None:
@@ -1821,6 +1829,83 @@ def test_install_script_dependency_update_with_failed_log_copy_omits_log_pointer
     )
     assert "Full log:" not in proc.stdout
     assert not (install_log_dir / "install.log").exists()
+    # An unreadable log dir also fails the live create, so the run falls back
+    # to staged capture. The hint must not advertise a file to follow that no
+    # live path is writing.
+    assert "Update log:" not in proc.stdout
+
+
+def test_install_script_live_log_create_failure_keeps_prior_log(
+    tmp_path: Path,
+) -> None:
+    """A failed create must not cost the user yesterday's diagnostics.
+
+    `setup_live_install_log` creates `install.log.new` and renames it into
+    place, so the previous log survives until this run holds a writable file.
+    The older destroy-then-create shape removed it first, so a create that
+    then failed left the user with the old log gone and nothing in its place —
+    silently, since the create error was discarded.
+
+    A directory planted at the pending path fails the create while leaving the
+    log dir writable, which is what separates the two shapes: the older one
+    would have unlinked `install.log` before discovering it could not create.
+    `mktemp_fails` closes the staged fallback so nothing writes a replacement
+    log, leaving the prior one as the only thing that could still be there.
+    """
+    log_dir = tmp_path / "home/.cache/deepagents-code"
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / "install.log"
+    log_path.write_text("yesterday's traceback\n")
+    (log_dir / "install.log.new").mkdir()
+
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": "this run's output"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+        mktemp_fails=True,
+    )
+
+    assert proc.returncode != 0
+    assert log_path.read_text() == "yesterday's traceback\n"
+    assert "continuing without live logging" in proc.stderr
+    assert "Update log:" not in proc.stdout
+
+
+def test_install_script_interrupt_reports_replaced_live_log(tmp_path: Path) -> None:
+    """Ctrl-C between the log swap and uv's first byte must not lose it silently.
+
+    The post-install empty-log warning sits after uv returns, so the interrupt
+    handler never reaches it. Without a warning there, a user who cancels a
+    slow download is told only "Installation interrupted." while yesterday's
+    traceback is already gone.
+    """
+    harness = tmp_path / "interrupt_live_log.sh"
+    log_path = tmp_path / "install.log"
+    log_path.write_text("")
+    harness.write_text(
+        "set -uo pipefail\n"
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f"{_extract_shell_function('warn_live_log_replaced')}\n"
+        "UV_LIVE_LOG=true\n"
+        f"INSTALL_LOG={str(log_path)!r}\n"
+        "INSTALL_LOG_DISPLAY='~/.cache/deepagents-code/install.log'\n"
+        "warn_live_log_replaced\n"
+        # The flag makes the notice fire once, so a run that already warned
+        # after uv exited does not repeat itself from the EXIT trap.
+        "warn_live_log_replaced\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(harness)],
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert proc.returncode == 0
+    assert proc.stderr.count("any previous install log was replaced") == 1
 
 
 def test_install_script_refuses_symlinked_log_dir(tmp_path: Path) -> None:
@@ -1933,6 +2018,61 @@ def test_install_script_upgrade_footer_says_upgraded(tmp_path: Path) -> None:
     assert "✔ Upgraded. Run: dcode" in proc.stdout
     assert "Version changed" not in proc.stdout
     assert "Setup complete" not in proc.stdout
+
+
+def test_install_script_upgrade_footer_says_upgraded_with_assume_yes(
+    tmp_path: Path,
+) -> None:
+    """`DEEPAGENTS_CODE_YES` takes a different branch to the same conclusion.
+
+    `_invoke` is always detached from a TTY, so the plain upgrade test only
+    reaches the "no TTY to prompt" branch. Each branch sets `UPGRADE_INTENDED`
+    separately, so without this the assume-yes assignment could be deleted
+    with the suite still green.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "DEEPAGENTS_CODE_YES": "1",
+            "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.19",
+        },
+        installed_version="0.1.18",
+        latest_version="0.1.19",
+    )
+
+    assert proc.returncode == 0
+    assert "✔ Upgraded. Run: dcode" in proc.stdout
+    assert "Version changed" not in proc.stdout
+
+
+def test_install_script_upgrade_footer_says_upgraded_when_accepted(
+    tmp_path: Path,
+) -> None:
+    """The interactive accept — the most common human path — claims the upgrade.
+
+    This is also the only live-log run with a prompt, so it exercises fd 9 and
+    `prompt_yn`'s fd 3 open at once: the hint and the log must both survive.
+    """
+    code, output, _ = _invoke_interactive(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _UPGRADE_DIFF,
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.1.19",
+        },
+        answer="y",
+        installed_version="0.1.18",
+        latest_version="0.1.19",
+    )
+
+    assert code == 0
+    assert "✔ Upgraded. Run: dcode" in output
+    assert "Version changed" not in output
+    assert "Update log: tail -f" in output
+    log_path = tmp_path / "home/.cache/deepagents-code/install.log"
+    assert _UPGRADE_DIFF in log_path.read_text()
 
 
 def test_install_script_prerelease_upgrade_footer_is_neutral(tmp_path: Path) -> None:
@@ -2094,7 +2234,7 @@ def test_install_script_upgrade_prints_full_log_pointer(tmp_path: Path) -> None:
     assert "Update log: tail -f ~/.cache/deepagents-code/install.log" in proc.stdout
 
 
-def test_install_script_dependency_bump_prints_log_pointer_once(
+def test_install_script_dependency_bump_defers_log_pointer_to_footer(
     tmp_path: Path,
 ) -> None:
     """The dep-bump success line defers to `Full log:` instead of repeating it."""
@@ -2845,7 +2985,11 @@ def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:
 
 
 def _run_copy_install_log(
-    tmp_path: Path, *, race_hook: str = "", log_dir: Path | None = None
+    tmp_path: Path,
+    *,
+    race_hook: str = "",
+    log_dir: Path | None = None,
+    live: bool = False,
 ) -> tuple[int, Path, Path]:
     """Run the real `copy_install_log` from `install.sh` in isolation.
 
@@ -2866,6 +3010,10 @@ def _run_copy_install_log(
     directory rather than a glob of the log dir — it assumes the suite is not
     running copies of itself concurrently.
 
+    `live=True` drives the live-log branch instead: uv streamed straight to
+    `INSTALL_LOG`, so there is nothing to stage and the function only
+    re-validates the path it is about to advertise.
+
     Returns the function's exit status, the log dir, and the publish path.
     """
     home = tmp_path / "home"
@@ -2882,12 +3030,15 @@ def _run_copy_install_log(
         "TEMP_DIRS=()\n"
         'register_temp() { TEMP_FILES+=("$1"); }\n'
         'register_temp_dir() { TEMP_DIRS+=("$1"); }\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
         f"{_extract_shell_function('path_is_under_home')}\n"
         f"{_extract_shell_function('copy_install_log')}\n"
         f"HOME={str(home)!r}\n"
         f"install_log_dir={str(install_log_dir)!r}\n"
         # `${install_log_dir}` below is shell, not a Python f-string.
         'INSTALL_LOG="${install_log_dir}/install.log"\n'  # noqa: RUF027
+        'INSTALL_LOG_DISPLAY="$INSTALL_LOG"\n'
+        f"UV_LIVE_LOG={'true' if live else 'false'}\n"
         f"uv_stderr={str(source)!r}\n"
         f"{race_hook}\n"
         "copy_install_log\n"
@@ -2913,6 +3064,135 @@ def test_copy_install_log_publishes_captured_stderr(tmp_path: Path) -> None:
 
     assert rc == 0
     assert published.read_text() == "captured uv stderr\n"
+
+
+def test_copy_install_log_live_accepts_the_log_uv_wrote(tmp_path: Path) -> None:
+    """A live run has nothing to stage — it only vouches for the path.
+
+    The content must survive untouched: uv already wrote it through the
+    inherited descriptor, and any copying here would be a second write to a
+    file the user may already be tailing.
+    """
+    log_dir = tmp_path / "home/cache"
+    log_dir.mkdir(parents=True)
+    (log_dir / "install.log").write_text("live uv output\n")
+
+    rc, _log_dir, published = _run_copy_install_log(tmp_path, live=True)
+
+    assert rc == 0
+    assert published.read_text() == "live uv output\n"
+
+
+def test_copy_install_log_live_rejects_symlink_planted_after_uv(
+    tmp_path: Path,
+) -> None:
+    """A symlink swapped in after uv exited must not be advertised.
+
+    The descriptor pinned the inode uv wrote to, so only the *name* is at
+    risk: a process able to write the cache dir can replace `install.log`
+    between uv exiting and the `Full log:` pointer being printed. Returning 0
+    here would send the user to a file of someone else's choosing; returning 1
+    would drop the pointer but say nothing about real data loss, so this
+    reports 2 — the code the caller warns on.
+    """
+    log_dir = tmp_path / "home/cache"
+    log_dir.mkdir(parents=True)
+    target = tmp_path / "attacker.log"
+    target.write_text("attacker content\n")
+    (log_dir / "install.log").symlink_to(target)
+
+    rc, _log_dir, _published = _run_copy_install_log(tmp_path, live=True)
+
+    assert rc == 2
+    assert target.read_text() == "attacker content\n"
+
+
+def test_copy_install_log_live_reports_a_vanished_log(tmp_path: Path) -> None:
+    """A log removed after uv wrote it is loss, not a quiet rejected path."""
+    rc, _log_dir, published = _run_copy_install_log(tmp_path, live=True)
+
+    assert rc == 2
+    assert not published.exists()
+
+
+def _run_setup_live_install_log(
+    tmp_path: Path, *, uid: int, install_log: Path | None
+) -> tuple[str, str]:
+    """Run the real `setup_live_install_log` under a chosen effective uid.
+
+    Root must never take the live path: `copy_install_log` refuses to resolve
+    a user-writable parent as root, and streaming straight to `INSTALL_LOG`
+    would follow a symlink planted there. The whole-script suite skips
+    root-sensitive cases, so the guard is only reachable by overriding `id`.
+
+    Returns `UV_LIVE_LOG` and `uv_stderr` as the function left them.
+    """
+    harness = tmp_path / "setup_live_install_log_harness.sh"
+    log = "" if install_log is None else str(install_log)
+    harness.write_text(
+        "set -uo pipefail\n"
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f"id() {{ printf '%s\\n' {uid}; }}\n"
+        f"{_extract_shell_function('setup_live_install_log')}\n"
+        "UV_LIVE_LOG=false\n"
+        "UV_LIVE_LOG_FD=9\n"
+        "uv_stderr=\n"
+        f"INSTALL_LOG={log!r}\n"
+        'INSTALL_LOG_DISPLAY="$INSTALL_LOG"\n'
+        f"install_log_dir={str(tmp_path)!r}\n"
+        "setup_live_install_log\n"
+        'printf "live=%s\\nstderr=%s\\n" "$UV_LIVE_LOG" "$uv_stderr"\n',
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(harness)],
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 0, proc.stderr
+    live = re.search(r"live=(\S*)", proc.stdout)
+    stderr_path = re.search(r"stderr=(\S*)", proc.stdout)
+    assert live is not None, proc.stdout
+    return live.group(1), stderr_path.group(1) if stderr_path else ""
+
+
+def test_setup_live_install_log_skips_the_live_path_as_root(tmp_path: Path) -> None:
+    """Root keeps the staged publish and never creates the log itself."""
+    log_path = tmp_path / "install.log"
+
+    live, uv_stderr = _run_setup_live_install_log(tmp_path, uid=0, install_log=log_path)
+
+    assert live == "false"
+    assert uv_stderr == ""
+    assert not log_path.exists()
+
+
+def test_setup_live_install_log_streams_live_when_unprivileged(
+    tmp_path: Path,
+) -> None:
+    """An ordinary user gets the live log, pointed at the real path."""
+    log_path = tmp_path / "install.log"
+
+    live, uv_stderr = _run_setup_live_install_log(
+        tmp_path, uid=1000, install_log=log_path
+    )
+
+    assert live == "true"
+    assert uv_stderr == str(log_path)
+    assert log_path.exists()
+    assert stat.S_IMODE(log_path.stat().st_mode) & 0o077 == 0
+    # The pending file is renamed into place, never left beside the log.
+    assert not (tmp_path / "install.log.new").exists()
+
+
+def test_setup_live_install_log_no_op_without_a_log_path(tmp_path: Path) -> None:
+    """A disabled log (empty `INSTALL_LOG`) must not reach the create."""
+    live, uv_stderr = _run_setup_live_install_log(tmp_path, uid=1000, install_log=None)
+
+    assert live == "false"
+    assert uv_stderr == ""
 
 
 def test_copy_install_log_stages_outside_user_writable_log_dir(
@@ -4519,6 +4799,7 @@ def _run_signal_traps(
         f"{_extract_shell_function('is_linux_os')}\n"
         f"{_extract_shell_function('restore_terminal_after_signal')}\n"
         f"{_extract_shell_function('log_signal_failure_hint')}\n"
+        f"{_extract_shell_function('warn_live_log_replaced')}\n"
         f"{_extract_shell_function('cleanup_on_signal')}\n"
         f"{_extract_shell_function('cleanup_on_interrupt')}\n"
         "trap cleanup_on_signal EXIT\n"

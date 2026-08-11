@@ -689,7 +689,7 @@ class TextualUIAdapter:
         ) = None,
         on_approval_mode_fallback: Callable[[str], None] | None = None,
         *,
-        show_diff_line_numbers: bool = False,
+        show_diff_line_numbers: bool = True,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message

@@ -1122,10 +1122,10 @@ def _load_show_diff_line_numbers() -> bool:
     option = get_option("display.show_diff_line_numbers")
     if option is None:
         logger.warning(
-            "Unknown config option %r; hiding diff line numbers",
+            "Unknown config option %r; showing diff line numbers",
             "display.show_diff_line_numbers",
         )
-        return False
+        return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
 

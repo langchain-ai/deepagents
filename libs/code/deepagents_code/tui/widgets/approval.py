@@ -140,7 +140,7 @@ class ApprovalMenu(Container):
         id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
         *,
         auto_mode_eligible: bool = True,
-        show_diff_line_numbers: bool = False,
+        show_diff_line_numbers: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize the ApprovalMenu widget.

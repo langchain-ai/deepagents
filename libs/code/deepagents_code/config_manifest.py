@@ -1173,7 +1173,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Display",
         summary="Show file line numbers in diff hunks.",
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         toml_keys=("ui", "show_diff_line_numbers"),
     ),
     ConfigOption(

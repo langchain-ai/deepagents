@@ -58,30 +58,30 @@ def _declared_deepagents_env_vars() -> set[str]:
     }
 
 
-def test_show_diff_line_numbers_defaults_disabled(
+def test_show_diff_line_numbers_defaults_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Diff hunk line numbers are hidden when app config is unset."""
+    """Diff hunk line numbers remain enabled when app config is unset."""
     from deepagents_code import config_manifest
     from deepagents_code.app import _load_show_diff_line_numbers
 
     monkeypatch.setattr(config_manifest, "load_config_toml", dict)
-    assert _load_show_diff_line_numbers() is False
+    assert _load_show_diff_line_numbers() is True
 
 
 def test_show_diff_line_numbers_reads_app_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`[ui].show_diff_line_numbers` can enable the diff gutter."""
+    """`[ui].show_diff_line_numbers` can disable the diff gutter."""
     from deepagents_code import config_manifest
     from deepagents_code.app import _load_show_diff_line_numbers
 
     monkeypatch.setattr(
         config_manifest,
         "load_config_toml",
-        lambda: {"ui": {"show_diff_line_numbers": True}},
+        lambda: {"ui": {"show_diff_line_numbers": False}},
     )
-    assert _load_show_diff_line_numbers() is True
+    assert _load_show_diff_line_numbers() is False
 
 
 # --- Drift / coverage -------------------------------------------------------

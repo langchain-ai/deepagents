@@ -5484,20 +5484,46 @@ class TestSummaryTargetCounting:
 
         assert _normalize_path_target(path) == validate_path(path)
 
-    def test_traversal_paths_the_middleware_rejects_are_left_alone(self) -> None:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "d/../a.py",
+            "~",
+            "~/a.py",
+            "C:/a.py",
+            r"C:\a.py",
+        ],
+    )
+    def test_paths_the_middleware_rejects_are_left_alone(self, path: str) -> None:
         """A path the middleware refuses is never canonicalized.
 
         Normalizing one would fold a call that could not have run into a valid
-        target's tally. The `..` is returned verbatim precisely because there is
-        no canonical form to agree with.
+        target's tally. Each is returned verbatim precisely because there is no
+        canonical form to agree with. The middleware rejects more than traversal
+        — `~` and drive prefixes too — so every rejected form is covered here,
+        not just the `..` case.
         """
         from deepagents.backends.utils import validate_path
 
         from deepagents_code.tui.widgets.messages import _normalize_path_target
 
-        with pytest.raises(ValueError, match="traversal"):
-            validate_path("d/../a.py")
-        assert _normalize_path_target("d/../a.py") == "d/../a.py"
+        with pytest.raises(ValueError):  # noqa: PT011
+            validate_path(path)
+        assert _normalize_path_target(path) == path
+
+    def test_rejected_path_does_not_collapse_into_its_valid_twin(self) -> None:
+        """`~` and `/~` are two different reads, so the group must say two.
+
+        Canonicalizing the rejected spelling would make both identities `/~` and
+        undercount the group — the one error this summary must never make.
+        """
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [
+            ("read_file", {"file_path": "~"}),
+            ("read_file", {"file_path": "/~"}),
+        ]
+        assert summarize_tool_group(calls) == "Read 2 files"
 
     def test_repeat_nouns_require_a_target_arg(self) -> None:
         """A repeat noun is dead unless its category also names a target.

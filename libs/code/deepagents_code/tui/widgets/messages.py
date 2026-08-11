@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import json
 import logging
-import os
 import re
 import textwrap
 from dataclasses import dataclass
@@ -4004,21 +4003,25 @@ def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
 def _normalize_path_target(value: str) -> str:
     r"""Normalize a path using the filesystem middleware's canonical form.
 
-    This mirrors `validate_path` for paths that pass its validation: normalize
-    with the host's path rules, convert backslashes to forward slashes, and add
-    the virtual filesystem's leading slash. Rejected traversal paths remain
-    unchanged so failed calls are never folded into valid ones.
+    Defers to `validate_path` rather than reimplementing it, so the identity is
+    exactly the string the file tools act on and cannot drift from it. Every
+    path the middleware rejects — `..` traversal, a leading `~`, a drive prefix
+    like `C:/` — is returned verbatim: a call that could not have run has no
+    canonical form, and canonicalizing one would fold it into a valid target's
+    tally. `~` and `/~` are different reads and must count as two.
 
     Args:
         value: The raw path string as the tool was called with it.
 
     Returns:
-        The normalized virtual path, or `value` for a rejected traversal path.
+        The normalized virtual path, or `value` when the middleware rejects it.
     """
-    if ".." in value.replace("\\", "/").split("/"):
+    from deepagents.backends.utils import validate_path
+
+    try:
+        return validate_path(value)
+    except ValueError:
         return value
-    normalized = os.path.normpath(value).replace("\\", "/")
-    return normalized if normalized.startswith("/") else f"/{normalized}"
 
 
 # category -> plural noun for the operation, used to report repeat work on one

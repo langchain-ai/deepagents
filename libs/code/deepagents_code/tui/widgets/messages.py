@@ -4530,6 +4530,7 @@ class DiffMessage(Static):
         stats: DiffStats | None = None,
         outcome: DiffOutcome = "shown",
         show_caveat: bool = True,
+        show_numbers: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4559,6 +4560,8 @@ class DiffMessage(Static):
                 guaranteed: it can never be folded into a group, so both would
                 render adjacent. The caller owns that judgement because this
                 widget cannot see what else is mounted.
+            show_numbers: Whether file-relative line numbers may be rendered.
+                Diffs whose numbers are not file-relative remain unnumbered.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4576,6 +4579,7 @@ class DiffMessage(Static):
         self._stats = stats
         self._outcome = outcome
         self._show_caveat = show_caveat
+        self._show_numbers = show_numbers
 
     @property
     def renders_caveat(self) -> bool:
@@ -4661,7 +4665,9 @@ class DiffMessage(Static):
                     path=self._file_path,
                     before=self._before,
                     after=self._after,
-                    show_numbers=self._tool_name != "edit_file",
+                    show_numbers=(
+                        self._show_numbers and self._tool_name != "edit_file"
+                    ),
                 )
 
     def _recount(self) -> DiffStats | None:

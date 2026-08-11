@@ -1106,6 +1106,29 @@ def _load_message_timestamps_visible() -> bool:
     return False
 
 
+def _load_show_diff_line_numbers() -> bool:
+    """Resolve whether diff hunks show file line numbers.
+
+    Returns:
+        Whether file-relative line numbers are enabled.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.show_diff_line_numbers")
+    if option is None:
+        logger.warning(
+            "Unknown config option %r; showing diff line numbers",
+            "display.show_diff_line_numbers",
+        )
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def _load_show_scrollbar() -> bool:
     """Load the chat scrollbar visibility preference.
 
@@ -3601,6 +3624,9 @@ class DeepAgentsApp(App):
         Restored from `[ui].show_message_timestamps` and re-persisted on toggle.
         """
 
+        self._show_diff_line_numbers = _load_show_diff_line_numbers()
+        """Whether file-relative line numbers are shown in diff hunks."""
+
         self._show_scrollbar = _load_show_scrollbar()
         """Whether the vertical scrollbar is shown in the chat area.
 
@@ -4643,6 +4669,7 @@ class DeepAgentsApp(App):
             on_subagent_event=self._on_subagent_event,
             on_auto_mode_event=self._on_auto_mode_event,
             on_approval_mode_fallback=self._on_approval_mode_fallback,
+            show_diff_line_numbers=self._show_diff_line_numbers,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -8648,6 +8675,7 @@ class DeepAgentsApp(App):
             assistant_id,
             id=unique_id,
             auto_mode_eligible=self._auto_mode_eligible,
+            show_diff_line_numbers=self._show_diff_line_numbers,
         )
         menu.set_future(result_future)
 

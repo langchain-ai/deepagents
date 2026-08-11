@@ -688,6 +688,8 @@ class TextualUIAdapter:
             Callable[[dict[str, Any]], Awaitable[None] | None] | None
         ) = None,
         on_approval_mode_fallback: Callable[[str], None] | None = None,
+        *,
+        show_diff_line_numbers: bool = True,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -746,6 +748,9 @@ class TextualUIAdapter:
 
         self._on_approval_mode_fallback = on_approval_mode_fallback
         """Callback that synchronizes a fail-closed startup fallback to Manual."""
+
+        self._show_diff_line_numbers = show_diff_line_numbers
+        """Whether file-relative line numbers are shown in diff hunks."""
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
@@ -2144,6 +2149,7 @@ async def execute_task_textual(
                                         # the same sentence renders twice,
                                         # adjacent.
                                         show_caveat=not caveat_shown,
+                                        show_numbers=adapter._show_diff_line_numbers,
                                     )
                                     mounted = await adapter._mount_message(diff_msg)
                                     # Read from the widget rather than assuming

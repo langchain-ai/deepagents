@@ -8,20 +8,38 @@ startup when an installed runtime dependency is older than the floor the
 checkout declares. Released installs (uv tool / PyPI wheel) carry no
 editable `direct_url.json` record and skip the check entirely, so end
 users pay no startup cost here.
+
+Interactive launches stop on a blocking pre-TUI prompt (continue / mute /
+abort); non-interactive launches and subcommands get a one-time stderr
+warning. A dismissed (muted) mismatch is remembered per checkout as a
+fingerprint of the offending distributions and stays silent until the
+mismatch itself changes.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
+import json
 import logging
+import os
 import shlex
 import subprocess  # noqa: S404  # only `list2cmdline` string quoting, never executed
 import sys
+import tempfile
+import threading
 import tomllib
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents_code.config import _is_editable_install
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from deepagents_code.main import _TrustPromptOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +115,10 @@ def _find_floor_violations(entries: list[str]) -> list[_FloorViolation]:
         except InvalidRequirement:
             logger.debug("Unparseable dependency entry %r; skipping", entry)
             continue
-        except Exception:  # noqa: BLE001  # any unexpected parser failure skips the entry
-            logger.debug("Unparseable dependency entry %r; skipping", entry)
+        except Exception:  # any unexpected parser failure skips the entry
+            logger.debug(
+                "Requirement parser failed on %r; skipping", entry, exc_info=True
+            )
             continue
         if req.marker is not None:
             try:
@@ -181,123 +201,316 @@ def _version_key(version: str) -> tuple[int, ...]:
         return ()
 
 
-_TOAST_SUMMARY = (
-    "This editable dcode install has dependencies below the checkout's "
-    "declared floors; the full warning prints to the terminal on exit."
+_DEBUG_VIOLATION = _FloorViolation(
+    dist_name="packaging",
+    installed="0.0.1",
+    required="packaging>=26.2",
 )
-"""One-sentence TUI toast for stale editable deps.
+"""Fake below-floor violation used by `DEEPAGENTS_CODE_DEBUG_DEP_FLOOR`.
 
-Kept deliberately short: Textual toasts render in the bottom-right corner
-(never top-right) and are brief, auto-dismissing cards, so they cannot carry
-the full per-dependency listing plus refresh command. The toast only points
-to the full warning, which `run_textual_app` drains to stderr at teardown via
-`consume_dep_floor_full_warning` once the alternate screen is restored.
+Lets the warn/prompt/mute flow be exercised end to end without a genuinely
+stale environment or monkeypatching internals.
 """
 
-_dep_floor_notice: str | None = None
-"""Pending stale-dependency toast summary for the TUI to consume, if any."""
 
-_dep_floor_full_warning: str | None = None
-"""Pending full stale-dependency advisory for TUI teardown, if any."""
+def _checkout_root() -> Path:
+    """Return the editable source checkout root this module runs from."""
+    return Path(__file__).resolve().parent.parent
 
 
-def consume_dep_floor_notice() -> str | None:
-    """Return and clear the pending stale-dependency toast summary, if any.
+def _collect_violations() -> list[_FloorViolation]:
+    """Detect below-floor dependencies for this editable install.
 
-    Mirrors `consume_orphaned_tracing_disabled_notice`: the summary is built
-    pre-TUI in `cli_main` (where stdout is still the real terminal) and
-    consumed once by the mounted app, so the toast surfaces exactly once.
+    `DEEPAGENTS_CODE_DEBUG_DEP_FLOOR` short-circuits to a synthetic
+    violation before the editable gate and any real metadata reads.
+
+    Returns:
+        The offending distributions; empty when the install is released,
+        the checkout cannot be read, or every floor is satisfied.
     """
-    global _dep_floor_notice  # noqa: PLW0603
+    from deepagents_code._env_vars import DEBUG_DEP_FLOOR, is_env_truthy
 
-    notice = _dep_floor_notice
-    _dep_floor_notice = None
-    return notice
-
-
-def consume_dep_floor_full_warning() -> str | None:
-    """Return and clear the pending full stale-dependency advisory, if any.
-
-    The full advisory (one line per offending distribution plus the refresh
-    command) is too long for a toast, so interactive launches hold it here and
-    `run_textual_app` drains it to stderr after Textual restores the terminal —
-    where it persists in the user's scrollback instead of vanishing with the
-    auto-dismissing toast.
-    """
-    global _dep_floor_full_warning  # noqa: PLW0603
-
-    warning = _dep_floor_full_warning
-    _dep_floor_full_warning = None
-    return warning
+    if is_env_truthy(DEBUG_DEP_FLOOR):
+        return [_DEBUG_VIOLATION]
+    if not _is_editable_install():
+        return []
+    entries = _load_cli_requirements()
+    if entries is None:
+        return []
+    return _find_floor_violations(entries)
 
 
-def warn_if_editable_deps_stale(*, announce: bool = True) -> None:
-    """Warn when an editable install runs against below-floor dependencies.
-
-    Runs only for editable installs (PEP 610 `dir_info.editable: true`);
-    released installs return immediately. Builds a warning naming each
-    offending distribution with its installed and required versions plus
-    the refresh command, then returns so startup continues. This is
-    strictly best-effort: any unexpected failure degrades to a debug log
-    and never raises.
+def _mismatch_fingerprint(violations: list[_FloorViolation]) -> str:
+    """Hash the mismatch so a dismissal stays valid only while it is unchanged.
 
     Args:
-        announce: When `True` (non-interactive launches), print the full
-            warning to stderr. When `False` (the interactive TUI, where a
-            pre-TUI stderr print is hidden behind the alternate screen),
-            stash a one-sentence summary for
-            `DeepAgentsApp._notify_dep_floor_stale` to toast and hold the
-            full warning in `_dep_floor_full_warning` for `run_textual_app`
-            to print to stderr at teardown.
+        violations: The offending distributions.
+
+    Returns:
+        A hex digest over sorted `name/installed/required` rows. Any change —
+        a refreshed dep, a moved floor, a newly stale package — produces a
+        different fingerprint and re-arms the warning.
     """
-    global _dep_floor_notice, _dep_floor_full_warning  # noqa: PLW0603
+    rows = sorted(f"{v.dist_name}/{v.installed}/{v.required}" for v in violations)
+    return hashlib.sha256("\n".join(rows).encode()).hexdigest()
+
+
+def format_dep_floor_warning(violations: list[_FloorViolation]) -> str:
+    """Build the full advisory: one line per violation plus the refresh command.
+
+    Args:
+        violations: The offending distributions.
+
+    Returns:
+        Plain-text (no Rich markup) advisory ending with the refresh command
+        and a "continuing anyway" caveat.
+    """
+    lines = [
+        (
+            "this editable dcode install is running against dependencies "
+            "older than the floors declared in the checkout's pyproject.toml:"
+        )
+    ]
+    lines.extend(
+        f"  - {v.dist_name} {v.installed} is installed, but {v.required} is required"
+        for v in violations
+    )
+    refresh = (
+        "uv pip install --python "
+        f"{_quote_arg(sys.executable)} -e {_quote_arg(str(_checkout_root()))} "
+        "--upgrade"
+    )
+    lines.append(
+        "Refresh the active environment:\n"
+        f"  {refresh}\n"
+        "Continuing anyway; behavior may be broken."
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Dismissal ("mute") store — per-checkout fingerprint of a muted mismatch.
+# Mirrors the hooks trust store's locking/atomic-write pattern, but the file
+# records a *specific mismatch* rather than a durable grant: unlike hook
+# trust, muting never disables the check, it only silences the exact mismatch
+# the user already saw.
+# ---------------------------------------------------------------------------
+
+_DISMISSAL_STORE_LOCK_TIMEOUT_SECONDS = 5.0
+_DISMISSAL_STORE_THREAD_LOCK = threading.Lock()
+
+
+def _default_dismissal_path() -> Path:
+    from deepagents_code.model_config import DEFAULT_STATE_DIR
+
+    return DEFAULT_STATE_DIR / "dep_floor_dismissed.json"
+
+
+def _checkout_key() -> str:
+    """Return the canonical per-checkout key: the resolved editable source root."""
+    return str(_checkout_root())
+
+
+@contextmanager
+def _dismissal_store_lock(path: Path) -> Iterator[None]:
+    """Serialize read-merge-write updates to the dismissal store.
+
+    Args:
+        path: Path to the dismissal JSON file.
+
+    Yields:
+        Control while the caller exclusively holds the mutation lock.
+    """
+    from filelock import FileLock
+
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        with suppress(OSError):
+            path.parent.chmod(0o700)
+    file_lock = FileLock(
+        str(path.with_name(f"{path.name}.lock")),
+        timeout=_DISMISSAL_STORE_LOCK_TIMEOUT_SECONDS,
+        thread_local=False,
+    )
+    with _DISMISSAL_STORE_THREAD_LOCK, file_lock:
+        yield
+
+
+def _read_dismissed_fingerprints(path: Path) -> dict[str, str]:
+    """Read the dismissal store, tolerating corruption and absence.
+
+    Args:
+        path: Path to the dismissal JSON file.
+
+    Returns:
+        Map of checkout key to muted mismatch fingerprint; empty on any
+        read/parse failure (a lost dismissal simply re-arms the prompt).
+    """
     try:
-        if not _is_editable_install():
-            return
-        entries = _load_cli_requirements()
-        if entries is None:
-            return
-        violations = _find_floor_violations(entries)
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    dismissed = data.get("dismissed")
+    if not isinstance(dismissed, dict):
+        return {}
+    return {k: v for k, v in dismissed.items() if isinstance(v, str)}
+
+
+def _write_dismissed_fingerprints(path: Path, dismissed: dict[str, str]) -> None:
+    """Atomically replace the dismissal store.
+
+    Args:
+        path: Path to the dismissal JSON file.
+        dismissed: Full map of checkout key to muted mismatch fingerprint.
+    """
+    payload = json.dumps({"dismissed": dismissed}, indent=2, sort_keys=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        if os.name != "nt":
+            with suppress(OSError):
+                tmp.chmod(0o600)
+        tmp.replace(path)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+def is_dep_floor_mismatch_muted(fingerprint: str) -> bool:
+    """Return whether this checkout's muted fingerprint matches *fingerprint*.
+
+    Args:
+        fingerprint: Fingerprint of the currently detected mismatch.
+
+    Returns:
+        `True` when the user muted this exact mismatch for this checkout.
+        Any store read failure returns `False`, re-arming the prompt.
+    """
+    path = _default_dismissal_path()
+    try:
+        with _dismissal_store_lock(path):
+            dismissed = _read_dismissed_fingerprints(path)
+            return dismissed.get(_checkout_key()) == fingerprint
+    except Exception:
+        logger.debug("Could not read dependency floor dismissal store", exc_info=True)
+        return False
+
+
+def mute_dep_floor_mismatch(fingerprint: str) -> bool:
+    """Persist *fingerprint* as this checkout's muted mismatch.
+
+    Args:
+        fingerprint: Fingerprint of the mismatch the user chose to mute.
+
+    Returns:
+        `True` when the dismissal was persisted; `False` on any write
+        failure (the caller then treats the choice as session-only).
+    """
+    path = _default_dismissal_path()
+    try:
+        with _dismissal_store_lock(path):
+            dismissed = _read_dismissed_fingerprints(path)
+            dismissed[_checkout_key()] = fingerprint
+            _write_dismissed_fingerprints(path, dismissed)
+    except Exception:
+        logger.debug("Could not persist dependency floor dismissal", exc_info=True)
+        return False
+    return True
+
+
+def warn_if_editable_deps_stale() -> None:
+    """Print the stale-dependency warning to stderr for non-TUI launches.
+
+    Skips silently when there are no violations or the exact mismatch was
+    muted for this checkout. This is strictly best-effort: any unexpected
+    failure degrades to a debug log and never raises. stdout stays clean —
+    it carries ACP's JSON-RPC transport for some callers.
+    """
+    try:
+        violations = _collect_violations()
         if not violations:
             return
+        if is_dep_floor_mismatch_muted(_mismatch_fingerprint(violations)):
+            return
+        from rich.console import Console
+        from rich.markup import escape
 
-        lines = [
-            (
-                "this editable dcode install is running against dependencies "
-                "older than the floors declared in the checkout's pyproject.toml:"
-            )
-        ]
-        lines.extend(
-            f"  - {v.dist_name} {v.installed} is installed, but {v.required} "
-            "is required"
-            for v in violations
+        Console(stderr=True).print(
+            f"[bold yellow]Warning:[/bold yellow] "
+            f"{escape(format_dep_floor_warning(violations))}",
+            highlight=False,
         )
-        source = Path(__file__).resolve().parent.parent
-        refresh = (
-            "uv pip install --python "
-            f"{_quote_arg(sys.executable)} -e {_quote_arg(str(source))} --upgrade"
-        )
-        lines.append(
-            "Refresh the active environment:\n"
-            f"  {refresh}\n"
-            "Continuing anyway; behavior may be broken."
-        )
-        message = "\n".join(lines)
-        if announce:
-            from rich.console import Console
-            from rich.markup import escape
+    except Exception:  # strictly best-effort: a check failure must never break startup
+        logger.debug("Dependency floor check failed", exc_info=True)
 
-            # stdout carries ACP's JSON-RPC transport, so startup diagnostics
-            # must never be written there.
-            Console(stderr=True).print(
-                f"[bold yellow]Warning:[/bold yellow] {escape(message)}",
+
+def prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
+    """Block on a continue/mute/abort prompt when an interactive launch is stale.
+
+    Prompts only when violations exist and the exact mismatch was not muted
+    for this checkout. The prompt itself is implemented in `main` next to the
+    other pre-TUI trust prompts; this function handles detection, muting, and
+    the confirmation prints.
+
+    Returns:
+        `None` to continue the launch (no violation, muted, or the user
+        chose to continue), `INTERRUPTED` on Ctrl+C (caller exits 130), or
+        `CANCELLED` on Esc/abort (caller exits 0).
+    """
+    try:
+        return _prompt_if_editable_deps_stale()
+    except Exception:  # strictly best-effort: check failures must not break startup
+        logger.debug("Interactive dependency floor check failed", exc_info=True)
+        return None
+
+
+def _prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
+    """Run the interactive stale-dependency check after its fail-open boundary.
+
+    Returns:
+        The abort outcome, or `None` when launch should continue.
+    """
+    from rich.console import Console
+
+    from deepagents_code.main import (
+        _TrustAction,
+        _TrustPromptOutcome,
+        prompt_for_dep_floor_mismatch,
+    )
+
+    violations = _collect_violations()
+    if not violations:
+        return None
+    fingerprint = _mismatch_fingerprint(violations)
+    if is_dep_floor_mismatch_muted(fingerprint):
+        return None
+
+    console = Console(stderr=True)
+    action = prompt_for_dep_floor_mismatch(console, violations)
+    if action in {_TrustPromptOutcome.INTERRUPTED, _TrustPromptOutcome.CANCELLED}:
+        return action
+    if action is _TrustAction.REMEMBER:
+        if mute_dep_floor_mismatch(fingerprint):
+            console.print(
+                "[dim]Muted until the dependency mismatch changes.[/dim]",
                 highlight=False,
             )
         else:
-            # The toast carries only the summary (toasts are small,
-            # auto-dismissing bottom-right cards that markup=False renders as
-            # plain text); the full warning is held for the teardown print.
-            _dep_floor_notice = _TOAST_SUMMARY
-            _dep_floor_full_warning = message
-    except Exception:  # strictly best-effort: a check failure must never break startup
-        logger.debug("Dependency floor check failed", exc_info=True)
+            console.print(
+                "[yellow]The dismissal could not be saved; you will be asked "
+                "again next launch.[/yellow]",
+                highlight=False,
+            )
+    else:
+        console.print(
+            "[dim]Continuing this session; you will be asked again next launch.[/dim]",
+            highlight=False,
+        )
+    return None

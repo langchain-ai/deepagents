@@ -132,6 +132,17 @@ checkbox will not appear to "stick" across restarts while the env var remains
 set.
 """
 
+DEBUG_DEP_FLOOR = "DEEPAGENTS_CODE_DEBUG_DEP_FLOOR"
+"""Synthesize the stale editable-dependency floor warning at launch.
+
+Set to a truthy value to run the `warn_if_editable_deps_stale` flow with a
+hard-coded fake below-floor dependency, bypassing the editable-install gate
+and the real version comparison, so the stderr warning and TUI toast/teardown
+channels can be exercised without a genuinely stale environment.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
 """Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
 

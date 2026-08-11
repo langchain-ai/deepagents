@@ -4470,6 +4470,28 @@ class TestSelectProjectServersToPersist:
 
         assert result is _TrustPromptOutcome.CANCELLED
 
+    def test_select_action_maps_picker_deny_to_cancelled_when_requested(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A picker's explicit abort choice produces the launch-abort outcome."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+            _TrustPromptOutcome,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda _console, **_kwargs: _TrustAction.DENY,
+        )
+
+        result = _select_trust_action(Console(stderr=True), abort_on_deny=True)
+
+        assert result is _TrustPromptOutcome.CANCELLED
+
     def test_action_picker_falls_back_when_stderr_is_redirected(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

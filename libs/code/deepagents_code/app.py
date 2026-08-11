@@ -4363,7 +4363,6 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
         self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
-        self.call_after_refresh(self._notify_dep_floor_stale)
 
         # Surface a `-m`/`--message` prompt as a queued message right away,
         # while the server is still connecting, instead of waiting for
@@ -4397,35 +4396,6 @@ class DeepAgentsApp(App):
             self.notify(notice, severity="warning", timeout=8, markup=False)
         except Exception:
             logger.exception("Failed to surface orphaned-tracing disabled notice")
-
-    def _notify_dep_floor_stale(self) -> None:
-        """Toast when an editable dev install runs against below-floor deps.
-
-        This is the TUI counterpart of the stderr warning emitted for
-        non-interactive launches in `main.cli_main` via
-        `warn_if_editable_deps_stale(announce=True)`: a pre-TUI stderr print is
-        invisible behind the alternate screen, so a summary is stashed at
-        launch and surfaced as a startup toast here.
-
-        Textual toasts render in the bottom-right corner of the screen and are
-        small, auto-dismissing cards, so the toast carries only a one-sentence
-        pointer; the full warning (per-dependency listing plus refresh command)
-        stays stashed and `run_textual_app` prints it to stderr at teardown,
-        after the terminal is restored, where it persists in scrollback.
-
-        The notice is consumed (cleared) before rendering, so a failed toast
-        drops it; the check is strictly best-effort, so swallow-and-log rather
-        than letting the exception escape this deferred callback unlogged.
-        """
-        from deepagents_code._dep_floor_check import consume_dep_floor_notice
-
-        notice = consume_dep_floor_notice()
-        if notice is None:
-            return
-        try:
-            self.notify(notice, severity="warning", timeout=10, markup=False)
-        except Exception:
-            logger.exception("Failed to surface stale-dependency floor notice")
 
     def _notify_interpreter_tools_without_interpreter(self) -> None:
         """Toast when `--interpreter-tools` was set while the interpreter is off.
@@ -26329,21 +26299,10 @@ async def run_textual_app(
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred
         # server_kwargs path (where the background worker sets _server_proc).
-        from deepagents_code._dep_floor_check import consume_dep_floor_full_warning
         from deepagents_code.client.launch.server import emit_preserved_log_notices
 
         if app._server_proc is not None:
             app._server_proc.stop()
-        # Print the full stale-dependency warning now that Textual has torn
-        # down the alternate screen: the interactive launch suppressed the
-        # startup stderr print (it would be invisible behind the screen), and
-        # the startup toast was only a one-sentence pointer. Printing at
-        # teardown leaves the full advisory in the user's scrollback. A toast
-        # failure still leaves the notice consumed, so this is the durable
-        # channel for interactive sessions.
-        dep_floor_warning = consume_dep_floor_full_warning()
-        if dep_floor_warning:
-            print(f"Warning: {dep_floor_warning}", file=sys.stderr)  # noqa: T201
         # Surface any debug-preserved server-log paths now that Textual has torn
         # down the alternate screen; in-session teardown, `/restart`, and a
         # server whose startup failed only queued them (a stderr print then

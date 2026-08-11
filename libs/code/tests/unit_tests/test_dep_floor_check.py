@@ -3,23 +3,38 @@
 from __future__ import annotations
 
 import builtins
+import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from pathlib import Path
     from types import ModuleType
 
 import pytest
 
 import deepagents_code._dep_floor_check as dep_floor_check
+import deepagents_code.main as main_module
 from deepagents_code._dep_floor_check import (
+    _DEBUG_VIOLATION,
     _find_floor_violations,
+    _FloorViolation,
     _load_cli_requirements,
+    _mismatch_fingerprint,
     _quote_arg,
-    consume_dep_floor_full_warning,
-    consume_dep_floor_notice,
+    format_dep_floor_warning,
+    is_dep_floor_mismatch_muted,
+    mute_dep_floor_mismatch,
+    prompt_if_editable_deps_stale,
     warn_if_editable_deps_stale,
 )
+from deepagents_code.main import _TrustAction, _TrustPromptOutcome
+
+_VIOLATIONS = [
+    _FloorViolation(
+        dist_name="quickjs-rs", installed="0.2.4", required="quickjs-rs>=0.2.5"
+    )
+]
 
 
 @pytest.fixture(autouse=True)
@@ -32,31 +47,18 @@ def _editable_install(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_dep_floor_notice() -> None:
-    """Reset the stashed TUI notices so one test's warning cannot leak."""
-    dep_floor_check._dep_floor_notice = None
-    dep_floor_check._dep_floor_full_warning = None
-
-
-def _patch_versions(monkeypatch: pytest.MonkeyPatch, versions: dict[str, str]) -> None:
-    """Resolve `importlib.metadata.version` lookups from `versions` only."""
-
-    def fake_version(name: str) -> str:
-        try:
-            return versions[name]
-        except KeyError:
-            raise dep_floor_check.importlib.metadata.PackageNotFoundError(
-                name
-            ) from None
-
-    monkeypatch.setattr(dep_floor_check.importlib.metadata, "version", fake_version)
+def dismissal_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Isolate the dismissal store: every test gets a fresh, writable file."""
+    path = tmp_path / "dep_floor_dismissed.json"
+    monkeypatch.setattr(dep_floor_check, "_default_dismissal_path", lambda: path)
+    return path
 
 
 class TestEditableGate:
     """The PEP 610 editable gate decides whether the check runs at all."""
 
     def test_non_editable_install_skips_floor_logic(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Released installs must not parse requirements or read versions."""
         monkeypatch.setattr(dep_floor_check, "_is_editable_install", lambda: False)
@@ -70,10 +72,11 @@ class TestEditableGate:
         monkeypatch.setattr(dep_floor_check.importlib.metadata, "version", _fail)
 
         warn_if_editable_deps_stale()  # must not raise or call any of the above
+        assert capsys.readouterr().err == ""
 
 
 class TestWarnAndContinue:
-    """Editable installs with stale deps warn and return normally."""
+    """Editable installs with stale deps warn on stderr and return normally."""
 
     def test_below_floor_dep_warns_and_continues(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -261,77 +264,257 @@ class TestBestEffort:
         warn_if_editable_deps_stale()  # must not raise
 
 
-class TestAnnounceVsStash:
-    """`announce` chooses stderr print (non-TUI) vs. stashed toast (TUI)."""
+class TestDebugDepFloor:
+    """`DEEPAGENTS_CODE_DEBUG_DEP_FLOOR` synthesizes a stale-deps warning."""
 
-    def _stale(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            dep_floor_check, "_load_cli_requirements", lambda: ["quickjs-rs>=0.2.5"]
-        )
-        _patch_versions(monkeypatch, {"quickjs-rs": "0.2.4"})
-
-    def test_announce_prints_and_does_not_stash(
+    def test_debug_var_synthesizes_warning_on_non_editable_install(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Non-interactive launches print to stderr and leave nothing stashed."""
-        self._stale(monkeypatch)
+        """The synthetic warning bypasses the editable gate and real versions."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_DEP_FLOOR", "1")
+        monkeypatch.setattr(dep_floor_check, "_is_editable_install", lambda: False)
 
-        warn_if_editable_deps_stale(announce=True)
+        def _fail(*_args: object, **_kwargs: object) -> None:
+            msg = "real floor logic ran under the debug var"
+            raise AssertionError(msg)
 
-        assert "Warning" in capsys.readouterr().err
-        assert consume_dep_floor_notice() is None
-        assert consume_dep_floor_full_warning() is None
+        monkeypatch.setattr(dep_floor_check, "_load_cli_requirements", _fail)
+        monkeypatch.setattr(dep_floor_check, "_find_floor_violations", _fail)
+        monkeypatch.setattr(dep_floor_check.importlib.metadata, "version", _fail)
 
-    def test_no_announce_stashes_and_does_not_print(
+        warn_if_editable_deps_stale()
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        text = captured.err
+        assert "Warning" in text
+        assert "packaging" in text
+        assert "0.0.1" in text
+        assert "uv pip install --python" in text
+
+    def test_debug_var_drives_the_interactive_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The synthetic violation reaches the interactive prompt path."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_DEP_FLOOR", "1")
+        monkeypatch.setattr(dep_floor_check, "_is_editable_install", lambda: False)
+        seen: list[list[_FloorViolation]] = []
+
+        def _prompt(_console: object, violations: list[_FloorViolation]) -> object:
+            seen.append(violations)
+            return _TrustAction.ALLOW_ONCE
+
+        monkeypatch.setattr(main_module, "prompt_for_dep_floor_mismatch", _prompt)
+
+        assert prompt_if_editable_deps_stale() is None
+        assert seen == [[_DEBUG_VIOLATION]]
+
+    def test_debug_var_falsy_falls_back_to_real_check(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Interactive launches stash summary + full warning and print nothing."""
-        self._stale(monkeypatch)
+        """`DEEPAGENTS_CODE_DEBUG_DEP_FLOOR=0` means no synthetic warning."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_DEP_FLOOR", "0")
+        monkeypatch.setattr(dep_floor_check, "_is_editable_install", lambda: False)
 
-        warn_if_editable_deps_stale(announce=False)
+        warn_if_editable_deps_stale()
 
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""
 
-        # The toast is a one-sentence pointer — small auto-dismissing cards
-        # cannot carry the full per-dependency listing and refresh command.
-        notice = consume_dep_floor_notice()
-        assert notice is not None
-        assert "quickjs-rs" not in notice
-        assert "uv pip install" not in notice
-        # The TUI toast renders markup=False, so no Rich tags survive.
-        assert "[bold yellow]" not in notice
 
-        # The full advisory stays stashed for the teardown stderr print.
-        full = consume_dep_floor_full_warning()
-        assert full is not None
-        assert "quickjs-rs" in full
-        assert "0.2.4" in full
-        assert "0.2.5" in full
-        assert "uv pip install --python" in full
-        assert "[bold yellow]" not in full
+class TestMuteStore:
+    """The per-checkout dismissal store silences only the muted mismatch."""
 
-    def test_consume_clears_the_notice(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The stashed notices are returned once, then cleared."""
-        self._stale(monkeypatch)
-        warn_if_editable_deps_stale(announce=False)
+    def test_muted_mismatch_suppresses_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            dep_floor_check, "_collect_violations", lambda: list(_VIOLATIONS)
+        )
+        assert mute_dep_floor_mismatch(_mismatch_fingerprint(_VIOLATIONS))
 
-        assert consume_dep_floor_notice() is not None
-        assert consume_dep_floor_notice() is None
-        assert consume_dep_floor_full_warning() is not None
-        assert consume_dep_floor_full_warning() is None
+        warn_if_editable_deps_stale()
 
-    def test_no_violations_stashes_nothing(
+        assert capsys.readouterr().err == ""
+
+    def test_changed_mismatch_re_arms_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A different violation set must not match the muted fingerprint."""
+        monkeypatch.setattr(
+            dep_floor_check, "_collect_violations", lambda: list(_VIOLATIONS)
+        )
+        assert mute_dep_floor_mismatch(_mismatch_fingerprint(_VIOLATIONS))
+
+        changed = [
+            _FloorViolation(
+                dist_name="quickjs-rs", installed="0.2.4", required="quickjs-rs>=0.3.0"
+            )
+        ]
+        monkeypatch.setattr(
+            dep_floor_check, "_collect_violations", lambda: list(changed)
+        )
+        warn_if_editable_deps_stale()
+
+        assert "Warning" in capsys.readouterr().err
+
+    def test_mute_is_keyed_per_checkout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        dismissal_store: Path,
+    ) -> None:
+        """A dismissal recorded under one checkout never mutes another."""
+        monkeypatch.setattr(
+            dep_floor_check, "_collect_violations", lambda: list(_VIOLATIONS)
+        )
+        assert mute_dep_floor_mismatch(_mismatch_fingerprint(_VIOLATIONS))
+        stored = json.loads(dismissal_store.read_text(encoding="utf-8"))
+        assert len(stored["dismissed"]) == 1
+
+        monkeypatch.setattr(dep_floor_check, "_checkout_key", lambda: "/other/checkout")
+        warn_if_editable_deps_stale()
+
+        assert "Warning" in capsys.readouterr().err
+
+    def test_corrupt_store_re_arms(self, dismissal_store: Path) -> None:
+        """An unreadable store degrades to 'not muted', never a crash."""
+        dismissal_store.write_text("not json", encoding="utf-8")
+        assert not is_dep_floor_mismatch_muted("anything")
+        # Muting over the corrupt file recovers cleanly.
+        assert mute_dep_floor_mismatch("fresh")
+        assert is_dep_floor_mismatch_muted("fresh")
+
+
+class TestInteractivePrompt:
+    """`prompt_if_editable_deps_stale` maps picker outcomes to launch control."""
+
+    @pytest.fixture(autouse=True)
+    def _violations(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            dep_floor_check, "_collect_violations", lambda: list(_VIOLATIONS)
+        )
+
+    def _stub_prompt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        action: _TrustAction | _TrustPromptOutcome,
+    ) -> None:
+        monkeypatch.setattr(
+            main_module, "prompt_for_dep_floor_mismatch", lambda _c, _v: action
+        )
+
+    def test_no_violations_continues_without_prompting(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A satisfied editable install stashes no notice for the TUI."""
+        monkeypatch.setattr(dep_floor_check, "_collect_violations", list)
+
+        def _fail(*_args: object) -> None:
+            msg = "prompt shown without violations"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(main_module, "prompt_for_dep_floor_mismatch", _fail)
+        assert prompt_if_editable_deps_stale() is None
+
+    def test_muted_mismatch_continues_without_prompting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert mute_dep_floor_mismatch(_mismatch_fingerprint(_VIOLATIONS))
+
+        def _fail(*_args: object) -> None:
+            msg = "prompt shown for a muted mismatch"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(main_module, "prompt_for_dep_floor_mismatch", _fail)
+        assert prompt_if_editable_deps_stale() is None
+
+    def test_allow_once_continues_without_muting(
+        self, monkeypatch: pytest.MonkeyPatch, dismissal_store: Path
+    ) -> None:
+        self._stub_prompt(monkeypatch, _TrustAction.ALLOW_ONCE)
+
+        assert prompt_if_editable_deps_stale() is None
+        assert not dismissal_store.exists()
+
+    def test_remember_mutes_the_mismatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._stub_prompt(monkeypatch, _TrustAction.REMEMBER)
+
+        assert prompt_if_editable_deps_stale() is None
+        assert is_dep_floor_mismatch_muted(_mismatch_fingerprint(_VIOLATIONS))
+
+    def test_remember_warns_when_the_mute_cannot_be_saved(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._stub_prompt(monkeypatch, _TrustAction.REMEMBER)
         monkeypatch.setattr(
-            dep_floor_check, "_load_cli_requirements", lambda: ["quickjs-rs>=0.2.5"]
+            dep_floor_check, "mute_dep_floor_mismatch", lambda _fp: False
         )
-        _patch_versions(monkeypatch, {"quickjs-rs": "0.2.6"})
 
-        warn_if_editable_deps_stale(announce=False)
+        assert prompt_if_editable_deps_stale() is None
+        assert "could not be saved" in capsys.readouterr().err
 
-        assert consume_dep_floor_notice() is None
-        assert consume_dep_floor_full_warning() is None
+    def test_deny_aborts_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._stub_prompt(monkeypatch, _TrustPromptOutcome.CANCELLED)
+        assert prompt_if_editable_deps_stale() is _TrustPromptOutcome.CANCELLED
+
+    def test_interrupt_aborts_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._stub_prompt(monkeypatch, _TrustPromptOutcome.INTERRUPTED)
+        assert prompt_if_editable_deps_stale() is _TrustPromptOutcome.INTERRUPTED
+
+    def test_check_failure_continues_launch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unexpected metadata failures remain non-fatal before the TUI."""
+
+        def _fail() -> list[_FloorViolation]:
+            msg = "simulated metadata failure"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(dep_floor_check, "_collect_violations", _fail)
+
+        assert prompt_if_editable_deps_stale() is None
+
+
+def test_dep_floor_prompt_escapes_dynamic_rich_markup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Requirement extras and bracketed checkout paths render literally."""
+    from rich.console import Console
+
+    violation = _FloorViolation(
+        dist_name="langgraph-cli[inmem]",
+        installed="0.4.0[local]",
+        required="langgraph-cli[inmem]>=0.5.0",
+    )
+    monkeypatch.setattr(
+        dep_floor_check,
+        "_checkout_root",
+        lambda: dep_floor_check.Path("/tmp/[bold]"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_select_trust_action",
+        lambda *_args, **_kwargs: _TrustAction.ALLOW_ONCE,
+    )
+
+    main_module.prompt_for_dep_floor_mismatch(Console(stderr=True), [violation])
+
+    text = capsys.readouterr().err
+    assert "langgraph-cli[inmem]" in text
+    assert "0.4.0[local]" in text
+    assert "/tmp/[bold]" in text
+
+
+def _patch_versions(monkeypatch: pytest.MonkeyPatch, versions: dict[str, str]) -> None:
+    """Resolve `importlib.metadata.version` lookups from `versions` only."""
+
+    def fake_version(name: str) -> str:
+        try:
+            return versions[name]
+        except KeyError:
+            raise dep_floor_check.importlib.metadata.PackageNotFoundError(
+                name
+            ) from None
+
+    monkeypatch.setattr(dep_floor_check.importlib.metadata, "version", fake_version)

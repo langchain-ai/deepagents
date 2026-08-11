@@ -1924,6 +1924,9 @@ class TestUpdateSubcommand:
         prerelease_before_command: bool = False,
         install_method: str = "uv",
         release_requires_prereleases: bool = False,
+        # Runs in place of the stubbed `perform_upgrade`, for assertions about
+        # state that only holds mid-install.
+        upgrade_side_effect: Callable[..., object] | None = None,
     ) -> tuple[int, MagicMock, MagicMock]:
         """Invoke `cli_main()` with `update`; return exit code + mocks."""
         from deepagents_code._env_vars import DEBUG_UPDATE
@@ -1968,6 +1971,7 @@ class TestUpdateSubcommand:
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
+                side_effect=upgrade_side_effect,
             ) as perform_upgrade_mock,
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -2041,6 +2045,52 @@ class TestUpdateSubcommand:
             log_path="/tmp/deepagents-update.log",
             include_prereleases=None,
             target_version="99.0.0",
+        )
+
+    def test_update_skips_install_while_another_process_holds_lock(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Headless updates must not race another process's install."""
+        from deepagents_code.update_check import update_install_lock
+
+        with update_install_lock() as holding:
+            assert holding is True
+            code, _, perform_upgrade_mock = self._run_update(
+                editable=False,
+                is_update_available_return=(True, "99.0.0"),
+            )
+
+        assert code == 1
+        perform_upgrade_mock.assert_not_awaited()
+        assert "Another dcode session is currently updating" in capsys.readouterr().out
+
+    def test_update_runs_install_while_holding_the_lock(self) -> None:
+        """The install must run inside the lock, not merely after a check.
+
+        Shrinking the `with` block to cover only the boolean check would leave
+        the install unguarded while the deferral test above still passed. The
+        lock is not reentrant, so re-entering from inside `perform_upgrade`
+        proves it is held for the real work.
+        """
+        from deepagents_code.update_check import update_install_lock
+
+        held_during_install: list[bool] = []
+
+        def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:
+            with update_install_lock() as holding:
+                held_during_install.append(holding)
+            return True, ""
+
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            upgrade_side_effect=_record_lock_state,
+        )
+
+        assert code == 0
+        perform_upgrade_mock.assert_awaited_once()
+        assert held_during_install == [False], (
+            "the install ran without holding the update lock"
         )
 
     def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(

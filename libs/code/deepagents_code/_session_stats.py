@@ -144,12 +144,6 @@ class RecordedUsage:
     request_tokens: int
     """Running token total for the request after applying this message."""
 
-    cache_read_tokens: int
-    """Running cache-read total for the request."""
-
-    cache_write_tokens: int
-    """Running cache-write total for the request."""
-
 
 ModelStatsKey = tuple[str, str]
 """Per-model dict key: the `(provider, model_name)` pair.
@@ -811,8 +805,6 @@ def record_message_usage(
                     output_tokens=0,
                     cost_usd=reprice_delta,
                     request_tokens=previous.input_tokens + previous.output_tokens,
-                    cache_read_tokens=previous.cache_read_tokens,
-                    cache_write_tokens=previous.cache_write_tokens,
                 )
         return None
 
@@ -888,8 +880,6 @@ def record_message_usage(
             previous_model_name=previous.model_name if previous else model_name,
         ),
         request_tokens=input_count + output_count,
-        cache_read_tokens=cache_reads,
-        cache_write_tokens=cache_write_tokens,
     )
 
 

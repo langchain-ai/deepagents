@@ -81,11 +81,6 @@ if TYPE_CHECKING:
 
         def __call__(self, cost_usd: float, /) -> None: ...
 
-    class _UsageUpdateCallback(Protocol):
-        """Callback signature for `_on_usage_update`."""
-
-        def __call__(self) -> None: ...
-
 
 from deepagents_code import _session_stats
 from deepagents_code._ask_user_types import (
@@ -781,7 +776,7 @@ class TextualUIAdapter:
         a second authority: every server total replaces what this accumulated.
         """
 
-        self._on_usage_update: _UsageUpdateCallback | None = None
+        self._on_usage_update: Callable[[], None] | None = None
         """Called after streamed request usage changes."""
 
         self._on_stream_complete: Callable[[], None] | None = None

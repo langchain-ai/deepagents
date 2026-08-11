@@ -52,7 +52,6 @@ from deepagents_code.cost_tracking import (
     _ModelCallRecord,
     _SessionCostRecorder,
     _set_configured_provider_metadata,
-    cache_token_counts,
     estimate_cost,
     resolve_message_model,
 )
@@ -357,14 +356,6 @@ class TestEstimateCost:
 
     def test_codex_subscription_usage_is_not_priced_as_openai_api(self) -> None:
         assert estimate_cost(_usage(), "gpt-5.4", "openai_codex") is None
-
-    def test_cache_counts_share_pricing_normalization(self) -> None:
-        usage = _usage(1_000, 100, cache_read=600, cache_write=900)
-
-        reads, writes = cache_token_counts(usage)
-
-        assert reads == 600
-        assert sum(writes) == 400
 
     def test_cache_read_is_priced_separately(self) -> None:
         uncached = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)

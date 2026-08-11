@@ -51,15 +51,8 @@ StatusMessageSource = Literal["agent", "hooks"]
 def _compact_tokens(count: int) -> str:
     """Format a token count without a trailing `.0`.
 
-    The metrics line packs several counts into one row, where `1M` and `660K`
-    read faster than the `1.0M` / `660.0K` that `format_token_count` produces
-    for the wider `/context` and `/cost` tables.
-
-    Args:
-        count: Number of tokens.
-
     Returns:
-        A short token count such as `'660K'`, `'44.3K'`, or `'512'`.
+        Compact token count.
     """
     text = format_token_count(count)
     return text.replace(".0", "", 1) if ".0" in text else text
@@ -110,16 +103,7 @@ class ModelLabel(Widget):
                 the provider default) when one is present, else
                 `text` unchanged.
         """
-        return f"{text}{self._effort_suffix()}"
-
-    def _effort_suffix(self) -> str:
-        """Return the separator-and-effort suffix appended to the model name.
-
-        Returns:
-            The space-prefixed effort label, or an empty string when no effort
-                applies.
-        """
-        return f" {self.effort}" if self.effort else ""
+        return f"{text} {self.effort}" if self.effort else text
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
@@ -154,7 +138,7 @@ class ModelLabel(Widget):
             return Content(full_with_effort)
         if len(model_with_effort) <= width:
             return Content(model_with_effort)
-        suffix = self._effort_suffix()
+        suffix = f" {self.effort}" if self.effort else ""
         if suffix and width > len(suffix) + 1:
             model_width = width - len(suffix)
             return Content(f"\u2026{model[-(model_width - 1) :]}{suffix}")
@@ -224,26 +208,17 @@ class MetricsLine(Widget):
 
     segments: reactive[tuple[Content, ...]] = reactive((), layout=True)
 
-    leads_with_separator: reactive[bool] = reactive(False, layout=True)
-    """Whether to open with a separator, continuing the slot to the left."""
-
     def _separator(self) -> Content:  # noqa: PLR6301 — reads the active glyph set
         """Return the styled separator drawn between two segments."""
         return Content(f" {get_glyphs().bullet} ")
 
     def _chain(self, count: int) -> Content:
-        """Join the first `count` segments into one bullet-separated run.
-
-        Args:
-            count: How many leading segments to include.
+        """Join the first `count` segments with bullet separators.
 
         Returns:
-            The joined run, opened by a separator when this line continues from
-                the slot to its left.
+            Joined metric segments.
         """
-        separator = self._separator()
-        chain = separator.join(self.segments[:count])
-        return separator + chain if self.leads_with_separator else chain
+        return self._separator().join(self.segments[:count])
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width of the full chain so `width: auto` works.
@@ -280,12 +255,7 @@ class MetricsLine(Widget):
 
 
 class StatusBar(Vertical):
-    """Two-line status bar for session identity and runtime metrics.
-
-    The top line carries the model, workspace, and approval mode. The bottom
-    line keeps cache activity on the left and context usage and cost on the
-    right, with transient connection state flowing ahead of the cache.
-    """
+    """Two-line status bar for session identity and runtime metrics."""
 
     DEFAULT_CSS = """
     StatusBar {
@@ -326,10 +296,6 @@ class StatusBar(Vertical):
         text-style: bold;
     }
 
-    /* Colored text, not a filled pill: the mode is a persistent property of the
-       session rather than an alert, so it earns color but not a block of
-       background that competes with the input box for attention. No right pad
-       keeps it flush with the terminal edge, like the input box border above. */
     StatusBar .status-auto-approve {
         width: auto;
         padding: 0 0 0 2;
@@ -407,7 +373,6 @@ class StatusBar(Vertical):
     }
 
     StatusBar ModelLabel {
-        /* Keep enough of the top line available for cwd, branch, and run mode. */
         width: auto;
         max-width: 40%;
         min-width: 0;
@@ -430,11 +395,7 @@ class StatusBar(Vertical):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
-    context_limit: reactive[int | None] = reactive(None, init=False)
     cost_usd: reactive[float] = reactive(0.0, init=False)
-    cache_input_tokens: reactive[int] = reactive(0, init=False)
-    cache_read_tokens: reactive[int] = reactive(0, init=False)
-    cache_write_tokens: reactive[int] = reactive(0, init=False)
     rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
@@ -452,6 +413,10 @@ class StatusBar(Vertical):
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._busy_message = ""
+        self.context_limit: int | None = None
+        self.cache_input_tokens = 0
+        self.cache_read_tokens = 0
+        self.cache_write_tokens = 0
         self._status_by_source: dict[StatusMessageSource, str] = {
             "agent": "",
             "hooks": "",
@@ -494,12 +459,7 @@ class StatusBar(Vertical):
         self._set_cwd_visible(not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD)
 
     def _set_cwd_visible(self, visible: bool) -> None:
-        """Show or hide the cwd.
-
-        No adjacent spacing has to be adjusted: the model owns the gap before
-        the cwd, and the branch simply takes over after the model when cwd is
-        hidden.
-        """
+        """Show or hide the cwd."""
         with suppress(NoMatches):
             self.query_one("#cwd-display", Static).display = visible
 
@@ -669,8 +629,6 @@ class StatusBar(Vertical):
             parts.append(f"{self.queued_count} {label} queued")
         separator = f" {get_glyphs().bullet} "
         text = separator.join(parts)
-        # Hide the widget entirely when empty so its trailing pad doesn't leave a
-        # blank column before the cwd.
         widget.display = bool(text)
         widget.update(text)
 
@@ -821,25 +779,9 @@ class StatusBar(Vertical):
         """Update the combined token and cost display when tokens change."""
         self._render_tokens(new_value, approximate=self._approximate)
 
-    def watch_context_limit(self, _new_value: int | None) -> None:
-        """Update context percentage when the model limit changes."""
-        self._render_tokens(self.tokens, approximate=self._approximate)
-
     def watch_cost_usd(self, _new_value: float) -> None:
         """Update the combined token and cost display when cost changes."""
         self._render_tokens(self.tokens, approximate=self._approximate)
-
-    def watch_cache_read_tokens(self, _new_value: int) -> None:
-        """Update the metrics line when cache read tokens change."""
-        self._refresh_metrics()
-
-    def watch_cache_input_tokens(self, _new_value: int) -> None:
-        """Update the cache hit rate when cumulative input tokens change."""
-        self._refresh_metrics()
-
-    def watch_cache_write_tokens(self, _new_value: int) -> None:
-        """Update the metrics line when cache write tokens change."""
-        self._refresh_metrics()
 
     def _refresh_metrics(self) -> None:
         """Re-render the metrics line from the current reactive values."""
@@ -861,14 +803,7 @@ class StatusBar(Vertical):
     """Context usage at which the percentage turns to alert."""
 
     def _percent_color(self, percent: float) -> str:
-        """Return the color that encodes how full the context window is.
-
-        Args:
-            percent: Used portion of the context window, from `0` to `100`.
-
-        Returns:
-            A theme color escalating from muted through warning to error.
-        """
+        """Return the color that encodes how full the context window is."""
         colors = theme.get_theme_colors(self)
         if percent >= self._CONTEXT_CRITICAL_PERCENT:
             return colors.error
@@ -877,25 +812,16 @@ class StatusBar(Vertical):
         return colors.muted
 
     def _context_segment(self, count: int, *, approximate: bool = False) -> Content:
-        """Build the context segment: percentage used, then absolute usage.
-
-        The percentage carries the color, so a context window filling up reads
-        at a glance without spending width on a gauge.
-
-        Args:
-            count: Total context token count.
-            approximate: Whether the count is stale (shown with a `+` suffix).
+        """Build the context percentage and absolute-usage segment.
 
         Returns:
-            The context segment, or an empty `Content` when there is nothing to
-                report (no count and no known limit).
+            Styled context usage.
         """
         pending = self._tokens_pending
         suffix = "+" if approximate else ""
         if pending:
             return Content("... tokens")
         if self.context_limit is None:
-            # No limit to scale against, so report the raw count only.
             return Content(f"{_compact_tokens(count)}{suffix} tokens")
         percent = min(100.0, max(0.0, count / self.context_limit * 100))
         return Content.assemble(
@@ -904,11 +830,10 @@ class StatusBar(Vertical):
         )
 
     def _cache_segment(self) -> Content:
-        """Build the cache segment for the active thread.
+        """Build the active thread's cache segment.
 
         Returns:
-            Cumulative cache reads and writes, or an empty `Content` when the
-                thread has used no prompt cache.
+            Styled cache usage.
         """
         hit_rate = ""
         if self.cache_input_tokens:
@@ -931,18 +856,12 @@ class StatusBar(Vertical):
         """Format cumulative cost, including the initial zero state.
 
         Returns:
-            Formatted cost with a display floor for positive sub-cent values.
+            Formatted cost.
         """
         return format_cost(self.cost_usd)
 
     def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
-        """Render cache left and context/cost right on the metrics line.
-
-        Args:
-            count: Total context token count.
-            approximate: Append "+" suffix to indicate the count is stale
-                (e.g. after an interrupted generation).
-        """
+        """Render cache left and context/cost right on the metrics line."""
         try:
             cache_display = self.query_one("#cache-display", MetricsLine)
             context_display = self.query_one("#tokens-display", MetricsLine)
@@ -996,11 +915,8 @@ class StatusBar(Vertical):
 
     def set_context_limit(self, limit: int | None) -> None:
         """Set the active model's context limit."""
-        normalized = limit if isinstance(limit, int) and limit > 0 else None
-        if self.context_limit == normalized:
-            self._refresh_metrics()
-        else:
-            self.context_limit = normalized
+        self.context_limit = limit if isinstance(limit, int) and limit > 0 else None
+        self._refresh_metrics()
 
     def set_cache_tokens(
         self,
@@ -1020,18 +936,10 @@ class StatusBar(Vertical):
         reads = max(read_tokens, 0)
         writes = max(write_tokens, 0)
         inputs = max(input_tokens, 0)
-        changed = False
-        if self.cache_input_tokens != inputs:
-            self.cache_input_tokens = inputs
-            changed = True
-        if self.cache_read_tokens != reads:
-            self.cache_read_tokens = reads
-            changed = True
-        if self.cache_write_tokens != writes:
-            self.cache_write_tokens = writes
-            changed = True
-        if not changed:
-            self._refresh_metrics()
+        self.cache_input_tokens = inputs
+        self.cache_read_tokens = reads
+        self.cache_write_tokens = writes
+        self._refresh_metrics()
 
     def set_cost(self, cost_usd: float) -> None:
         """Set the cumulative thread cost shown beside context tokens.

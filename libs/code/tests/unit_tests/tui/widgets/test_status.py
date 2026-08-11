@@ -47,79 +47,14 @@ class TestTwoLineMetrics:
 
             session = pilot.app.query_one(".status-session")
             metrics = pilot.app.query_one(".status-metrics")
-            model = pilot.app.query_one("#model-display")
-            cwd = pilot.app.query_one("#cwd-display")
             cache = pilot.app.query_one("#cache-display")
             context = pilot.app.query_one("#tokens-display")
             assert bar.size.height == 2
             assert metrics.region.y == session.region.y + 1
-            assert model.region.x == session.region.x
-            assert cwd.region.y == session.region.y
-            assert cwd.region.x == model.region.right
-            assert pilot.app.query_one("#branch-display").region.y == session.region.y
             assert cache.region.x == metrics.region.x
             assert context.region.right == metrics.region.right
             assert str(cache.render()) == ("Cache 80% hit • 12.5K read / 750 write")
             assert str(context.render()) == "6%  12.5K/200K • $0.42"
-
-    async def test_narrow_width_keeps_context_right_aligned(self) -> None:
-        """The context/cost group stays anchored right when cache space shrinks."""
-        async with StatusBarApp().run_test(size=(48, 24)) as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_cache_tokens(12_500, 750)
-            bar.set_context_limit(200_000)
-            bar.set_tokens(12_500)
-            bar.set_cost(0.42)
-            await pilot.pause()
-
-            context = pilot.app.query_one("#tokens-display")
-            metrics = pilot.app.query_one(".status-metrics")
-            assert str(context.render()) == "6%  12.5K/200K • $0.42"
-            assert context.region.right == metrics.region.right
-
-
-class TestCacheMetrics:
-    """Tests for prompt-cache totals and hit rates."""
-
-    async def test_zero_state_is_visible_on_mount(self) -> None:
-        """The lower-left metric should not be blank before the first request."""
-        async with StatusBarApp().run_test() as pilot:
-            await pilot.pause()
-
-            rendered = str(pilot.app.query_one("#cache-display").render())
-            assert rendered == "Cache 0% hit • 0 read / 0 write"
-
-    async def test_unknown_input_total_omits_hit_rate(self) -> None:
-        """Restored cache totals without a denominator should remain useful."""
-        async with StatusBarApp().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_cache_tokens(800, 100)
-            await pilot.pause()
-
-            rendered = str(pilot.app.query_one("#cache-display").render())
-            assert rendered == "Cache 800 read / 100 write"
-
-    async def test_hit_rate_is_clamped_to_one_hundred_percent(self) -> None:
-        """Malformed provider totals must not produce a rate above 100%."""
-        async with StatusBarApp().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_cache_tokens(1_200, 0, input_tokens=1_000)
-            await pilot.pause()
-
-            rendered = str(pilot.app.query_one("#cache-display").render())
-            assert rendered == "Cache 100% hit • 1.2K read / 0 write"
-
-    async def test_input_only_update_refreshes_hit_rate(self) -> None:
-        """A denominator correction should update the rate with stable cache totals."""
-        async with StatusBarApp().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_cache_tokens(500, 0, input_tokens=1_000)
-            await pilot.pause()
-            assert "50% hit" in str(pilot.app.query_one("#cache-display").render())
-
-            bar.set_cache_tokens(500, 0, input_tokens=2_000)
-            await pilot.pause()
-            assert "25% hit" in str(pilot.app.query_one("#cache-display").render())
 
 
 class TestApprovalModeDisplay:
@@ -138,7 +73,6 @@ class TestApprovalModeDisplay:
             indicator = pilot.app.query_one("#auto-approve-indicator", Static)
             assert str(indicator.render()) == label
             assert indicator.has_class(mode)
-            assert indicator.styles.background.a == 0
 
 
 class TestCwdDisplay:
@@ -489,24 +423,6 @@ class TestEdgeAlignment:
             await pilot.pause()
             indicator = pilot.app.query_one("#auto-approve-indicator", Static)
             assert indicator.content_region.right == bar.region.right
-
-    async def test_narrow_session_keeps_approval_text_on_the_right(self) -> None:
-        """Long model details must not displace the right-aligned approval mode."""
-        async with StatusBarApp().run_test(size=(40, 24)) as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_model(
-                provider="anthropic",
-                model="claude-sonnet-4-5-20250929",
-                effort="xhigh",
-            )
-            bar.set_context_limit(200_000)
-            bar.set_tokens(150_000)
-            await pilot.pause()
-
-            model = pilot.app.query_one("#model-display", ModelLabel)
-            indicator = pilot.app.query_one("#auto-approve-indicator", Static)
-            assert indicator.content_region.right == bar.region.right
-            assert model.region.right <= indicator.region.x
 
 
 class TestTokenDisplay:

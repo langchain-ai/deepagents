@@ -326,8 +326,8 @@ def _render_teardown_thread_hints(
     console.print(hint)
     if return_code != 0:
         console.print(
-            "[dim]Note: the session ended in an error; the last turn may be "
-            "incomplete and resume may be unsafe.[/dim]"
+            "[dim]Note: the session exited with a non-zero status. Attempting "
+            "to resume this thread may fail.[/dim]"
         )
 
 

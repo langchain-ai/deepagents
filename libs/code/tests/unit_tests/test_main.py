@@ -1810,7 +1810,7 @@ class TestRenderTeardownThreadHints:
 
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
-        assert "the last turn may be incomplete and resume may be unsafe" in output
+        assert "Attempting to resume this thread may fail" in output
         thread_exists_mock.assert_awaited_once()
 
     def test_clean_exit_prints_resume_hint_without_caveat(self) -> None:
@@ -1823,7 +1823,7 @@ class TestRenderTeardownThreadHints:
 
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
-        assert "the last turn may be incomplete and resume may be unsafe" not in output
+        assert "Attempting to resume this thread may fail" not in output
         thread_exists_mock.assert_awaited_once()
 
 
@@ -1870,7 +1870,7 @@ class TestTeardownHintsOnCrash:
         assert "Application error: boom" in output
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
-        assert "the last turn may be incomplete and resume may be unsafe" in flattened
+        assert "Attempting to resume this thread may fail" in flattened
 
     async def test_crash_preserves_final_thread_id(self) -> None:
         """A crash surfaces the thread the app resolved, not the pre-launch ID.
@@ -1956,7 +1956,7 @@ class TestTeardownHintsOnCrash:
         flattened = output.replace("\n", "")
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
-        assert "the last turn may be incomplete and resume may be unsafe" in flattened
+        assert "Attempting to resume this thread may fail" in flattened
 
     def test_signal_exit_prints_hint_with_caveat(
         self, capsys: pytest.CaptureFixture[str]
@@ -1995,7 +1995,7 @@ class TestTeardownHintsOnCrash:
         output = capsys.readouterr().out
         flattened = output.replace("\n", "")
         assert "Resume this thread with:" in output
-        assert "the last turn may be incomplete and resume may be unsafe" in flattened
+        assert "Attempting to resume this thread may fail" in flattened
 
 
 class TestLangSmithTeardownUrl:

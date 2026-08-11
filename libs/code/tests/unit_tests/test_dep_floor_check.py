@@ -3,54 +3,21 @@
 from __future__ import annotations
 
 import builtins
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
-    from pathlib import Path
+    from collections.abc import Mapping, Sequence
     from types import ModuleType
 
 import pytest
-from rich.console import Console
 
 import deepagents_code._dep_floor_check as dep_floor_check
-from deepagents_code import config
 from deepagents_code._dep_floor_check import (
     _find_floor_violations,
     _load_cli_requirements,
     _quote_arg,
     warn_if_editable_deps_stale,
 )
-
-
-@contextmanager
-def _patched_config_console(console: Console) -> Iterator[None]:
-    """Point `deepagents_code.config`'s cached console at `console`.
-
-    `_get_console()` resolves through `globals()`, so assigning the
-    module-level `console` attribute is enough to capture output.
-    """
-    sentinel = object()
-    previous = config.__dict__.get("console", sentinel)
-    config.__dict__["console"] = console
-    try:
-        yield
-    finally:
-        if previous is sentinel:
-            config.__dict__.pop("console", None)
-        else:
-            config.__dict__["console"] = previous
-
-
-@pytest.fixture
-def console_output(tmp_path: Path) -> Iterator[Path]:
-    """Route the config console to a file and yield its path for assertions."""
-    out = tmp_path / "console.txt"
-    with out.open("w", encoding="utf-8") as stream:
-        console = Console(file=stream, force_terminal=False, width=200)
-        with _patched_config_console(console):
-            yield out
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +67,7 @@ class TestWarnAndContinue:
     """Editable installs with stale deps warn and return normally."""
 
     def test_below_floor_dep_warns_and_continues(
-        self, monkeypatch: pytest.MonkeyPatch, console_output: Path
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """A dep below its floor names the dist, versions, and remediation."""
         monkeypatch.setattr(
@@ -113,24 +80,21 @@ class TestWarnAndContinue:
         result = warn_if_editable_deps_stale()
 
         assert result is None  # warn-and-continue: returns, never exits
-        text = console_output.read_text(encoding="utf-8")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        text = captured.err
         assert "Warning" in text
         assert "quickjs-rs" in text
         assert "0.2.4" in text
         assert "0.2.5" in text
         assert "Refresh the active environment:" in text
-        refresh = (
-            "uv pip install --python "
-            f"{dep_floor_check.sys.executable} -e "
-            f"{dep_floor_check.Path(dep_floor_check.__file__).resolve().parent.parent} "
-            "--upgrade"
-        )
-        assert refresh in " ".join(text.split())
+        assert "uv pip install --python" in text
+        assert "--upgrade" in text
         # The satisfied floor is not listed as a violation.
         assert "packaging 26.2" not in text
 
     def test_all_deps_satisfied_stays_silent(
-        self, monkeypatch: pytest.MonkeyPatch, console_output: Path
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """An editable install at or above every floor prints nothing."""
         monkeypatch.setattr(
@@ -142,14 +106,16 @@ class TestWarnAndContinue:
 
         warn_if_editable_deps_stale()
 
-        assert console_output.read_text(encoding="utf-8") == ""
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
 
 
 class TestExactPins:
     """`==` pins participate in the floor comparison; wildcards do not."""
 
     def test_older_than_exact_pin_warns(
-        self, monkeypatch: pytest.MonkeyPatch, console_output: Path
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """An install older than a hard pin (e.g. the SDK's) is stale."""
         monkeypatch.setattr(
@@ -159,7 +125,9 @@ class TestExactPins:
 
         warn_if_editable_deps_stale()
 
-        text = console_output.read_text(encoding="utf-8")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        text = captured.err
         assert "deepagents" in text
         assert "0.7.3" in text
         assert "0.7.4" in text

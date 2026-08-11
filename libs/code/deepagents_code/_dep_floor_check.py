@@ -200,7 +200,7 @@ def warn_if_editable_deps_stale() -> None:
         violations = _find_floor_violations(entries)
         if not violations:
             return
-        from deepagents_code.config import _get_console
+        from rich.console import Console
 
         lines = [
             (
@@ -226,6 +226,8 @@ def warn_if_editable_deps_stale() -> None:
             f"  {escape(refresh)}\n"
             "Continuing anyway; behavior may be broken."
         )
-        _get_console().print("\n".join(lines), highlight=False)
+        # stdout carries ACP's JSON-RPC transport, so startup diagnostics must
+        # never be written there.
+        Console(stderr=True).print("\n".join(lines), highlight=False)
     except Exception:  # strictly best-effort: a check failure must never break startup
         logger.debug("Dependency floor check failed", exc_info=True)

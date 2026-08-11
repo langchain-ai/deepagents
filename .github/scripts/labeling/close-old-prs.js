@@ -284,6 +284,33 @@ async function getLivePr({ github, owner, repo, number }) {
   };
 }
 
+// A PR can gain do-not-close after processPr's initial live fetch but before
+// it adds pending-deletion. Fetch its labels again at that mutation boundary
+// so the label-removal workflow is not the only protection against that race.
+async function canAddPendingDeletionLabel({
+  github,
+  core,
+  owner,
+  repo,
+  number,
+  bypassLabel,
+  pendingDeletionLabel,
+}) {
+  const latest = await getLivePr({ github, owner, repo, number });
+  if (!latest.labels.includes(bypassLabel)) return latest.labels;
+
+  await removeIssueLabel({
+    github,
+    owner,
+    repo,
+    issueNumber: number,
+    name: pendingDeletionLabel,
+    existingLabels: latest.labels,
+  });
+  core.info(`PR #${number} gained ${bypassLabel}; skipping pending-deletion`);
+  return null;
+}
+
 async function searchOpenPrs({ github, owner, repo, maxItems, core }) {
   const query = `repo:${owner}/${repo} is:pr is:open draft:false`;
   const items = [];
@@ -424,6 +451,20 @@ async function processPr({
       issue_number: number,
       body: warningBody({ warningDays, closeDays, bypassLabel }),
     });
+    // Re-check the bypass label immediately before this mutation. The first
+    // live fetch above can be stale if a maintainer applied do-not-close while
+    // this run was posting the warning comment.
+    const labels = await canAddPendingDeletionLabel({
+      github,
+      core,
+      owner,
+      repo,
+      number,
+      bypassLabel,
+      pendingDeletionLabel,
+    });
+    if (labels === null) return 'skipped';
+
     // Apply at warning time so the PR is filterable until it stops being a
     // close candidate (closed, draft, release, or bypassed).
     await ensureIssueLabel({
@@ -432,7 +473,7 @@ async function processPr({
       repo,
       issueNumber: number,
       name: pendingDeletionLabel,
-      existingLabels: live.labels,
+      existingLabels: labels,
     });
     core.info(`Warned PR #${number} after ${age} day(s)`);
     return 'warned';
@@ -471,14 +512,26 @@ async function processPr({
   }
 
   // Backfill the pending label for PRs warned before this label existed, or
-  // when a prior run posted the comment but failed before labeling.
+  // when a prior run posted the comment but failed before labeling. As above,
+  // check do-not-close at the mutation boundary rather than relying only on
+  // the earlier live fetch.
+  const labels = await canAddPendingDeletionLabel({
+    github,
+    core,
+    owner,
+    repo,
+    number,
+    bypassLabel,
+    pendingDeletionLabel,
+  });
+  if (labels === null) return 'skipped';
   await ensureIssueLabel({
     github,
     owner,
     repo,
     issueNumber: number,
     name: pendingDeletionLabel,
-    existingLabels: live.labels,
+    existingLabels: labels,
   });
 
   core.info(

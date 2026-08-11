@@ -84,6 +84,7 @@ function makeGithub({
   incompleteResults = false,
   getErrors = new Map(),
   removeLabelErrors = new Map(),
+  onCreateComment = null,
 } = {}) {
   const calls = {
     createLabel: [],
@@ -127,7 +128,10 @@ function makeGithub({
             ...comment,
           })),
         }),
-        createComment: async params => { calls.createComment.push(params); },
+        createComment: async params => {
+          calls.createComment.push(params);
+          onCreateComment?.(params);
+        },
         updateComment: async params => { calls.updateComment.push(params); },
       },
       pulls: {
@@ -259,6 +263,27 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   // release-label condition from the provenance warning would emit a spurious
   // "failed provenance" line for every PR in the repo, every day.
   assert.deepEqual(core.warnings, []);
+});
+
+test('does not add pending-deletion when do-not-close is applied during warning', async () => {
+  const live = new Map([[106, { labels: [] }]]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 106, created_at: '2026-04-23T00:00:00Z' }],
+    live,
+    onCreateComment: ({ issue_number }) => {
+      live.set(issue_number, { labels: ['do-not-close'] });
+    },
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.warned, 0);
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(calls.addLabels, []);
+  assert.deepEqual(calls.get, [106, 106]);
+  assert.ok(core.infos.some(message => message.includes('gained do-not-close')));
+  assert.equal(core.failed, null);
 });
 
 test('skips genuine release-please PRs without warning or closing', async () => {

@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
@@ -246,6 +246,13 @@ def make_mock_model(summary_response: str = "This is a test summary.") -> MagicM
     """
     model = MagicMock()
     model.invoke.return_value = MagicMock(text=summary_response)
+    # `SummarizationMiddleware` wraps the model in `.with_retry()` before calling
+    # it (langchain #39268). Delegate the wrapper back to this mock so the
+    # configured `invoke`/`ainvoke` return values and call assertions still apply.
+    model.with_retry.return_value = model
+    # Async summary calls `await model.ainvoke(...)`, so the async path must be
+    # awaitable. `AsyncMock` returns the configured value from an awaitable.
+    model.ainvoke = AsyncMock(return_value=MagicMock(text=summary_response))
     model._llm_type = "test-model"
     model.profile = {"max_input_tokens": 100000}
     model._get_ls_params.return_value = {"ls_provider": "test"}
@@ -1397,7 +1404,7 @@ def test_system_message_counts_for_trigger_only() -> None:
 async def test_async_tools_passed_to_token_counter_for_summarization() -> None:
     backend = MockBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
     seen = {"tools": False, "system": False}
 
     def token_counter(messages: list[BaseMessage], *, tools: list[dict[str, Any]] | None = None) -> int:
@@ -1448,7 +1455,7 @@ async def test_async_tools_passed_to_token_counter_for_summarization() -> None:
 async def test_async_system_message_counts_for_truncate_trigger() -> None:
     backend = MockBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
     def token_counter(messages: list[BaseMessage], *, tools: list[dict[str, Any]] | None = None) -> int:
         if not any(isinstance(msg, SystemMessage) for msg in messages):
@@ -1630,7 +1637,7 @@ class TestAsyncBehavior:
         backend = MockBackend()
         mock_model = make_mock_model()
         # Mock the async create summary
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1655,7 +1662,7 @@ class TestAsyncBehavior:
         """Test that async summarization warns on backend failure but still summarizes."""
         backend = MockBackend(should_fail=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1746,7 +1753,7 @@ class TestDownloadFilesException:
         """Test that async summarization continues when adownload_files raises."""
         backend = MockBackend(download_raises=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1808,7 +1815,7 @@ class TestWriteEditException:
         """
         backend = MockBackend(write_raises=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1868,7 +1875,7 @@ class TestWriteEditException:
         existing = "## Summarized at 2024-01-01T00:00:00Z\n\nHuman: Previous message\n\n"
         backend = MockBackend(existing_content=existing, write_raises=True)
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -1951,7 +1958,7 @@ class TestCutoffIndexEdgeCases:
         """Test that async `abefore_model` returns `None` when `cutoff_index <= 0`."""
         backend = MockBackend()
         mock_model = make_mock_model()
-        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+        mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -2851,7 +2858,7 @@ async def test_async_context_overflow_triggers_summarization() -> None:
     """Test that ContextOverflowError triggers fallback to summarization (async)."""
     backend = MockBackend()
     mock_model = make_mock_model(summary_response="Fallback summary")
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async fallback summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async fallback summary"))
 
     middleware = SummarizationMiddleware(
         model=mock_model,
@@ -3419,7 +3426,7 @@ async def test_async_offloads_base64_images() -> None:
 
     backend = MockBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
 
     middleware = SummarizationMiddleware(
         model=mock_model,
@@ -3495,7 +3502,7 @@ async def test_async_upload_response_error_writes_placeholder() -> None:
 
     backend = ResponseErrorBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
     middleware = SummarizationMiddleware(
         model=mock_model,
         backend=backend,
@@ -3539,7 +3546,7 @@ async def test_async_all_uploads_raise_writes_placeholders() -> None:
 
     backend = RaisingUploadBackend()
     mock_model = make_mock_model()
-    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    mock_model.ainvoke = AsyncMock(return_value=MagicMock(text="Async summary"))
     middleware = SummarizationMiddleware(
         model=mock_model,
         backend=backend,

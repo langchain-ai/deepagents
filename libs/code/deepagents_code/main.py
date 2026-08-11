@@ -27,8 +27,11 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
     from deepagents import FsToolName
+    from deepagents_acp.server import AgentSessionContext
+    from langgraph.pregel import Pregel
     from rich.console import Console
 
+    from deepagents_code._dep_floor_check import _FloorViolation
     from deepagents_code.app import AppResult
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
@@ -2882,6 +2885,7 @@ async def _run_acp_cli_async(
     )
     from deepagents_code.model_config import (
         ModelConfigError,
+        get_available_models,
         save_recent_model,
         touch_recent_model,
     )
@@ -2916,6 +2920,19 @@ async def _run_acp_cli_async(
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
+    models = [
+        {"value": spec, "name": spec}
+        for spec in dict.fromkeys(
+            [
+                resolved_spec,
+                *(
+                    f"{provider}:{model}"
+                    for provider, available in get_available_models().items()
+                    for model in available
+                ),
+            ]
+        )
+    ]
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
@@ -2954,31 +2971,49 @@ async def _run_acp_cli_async(
         return 1
 
     async_subagents = load_async_subagents() or None
-
-    try:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        agent_graph, _backend = create_cli_agent(
-            model=model_result.model,
-            assistant_id=assistant_id,
-            tools=tools,
-            mcp_server_info=mcp_server_info,
-            checkpointer=InMemorySaver(),
-            async_subagents=async_subagents,
-            fs_tools=allow_fs_tools,
-            recursion_limit=recursion_limit,
-            memory_auto_save=is_memory_auto_save_enabled(),
-        )
-    except Exception as exc:
-        sys.stderr.write(f"Error: failed to create agent: {exc}\n")
-        sys.stderr.flush()
-        logger.debug("ACP agent creation failed", exc_info=True)
-        return 1
-
-    server = agent_server_cls(agent_graph)  # Pregel is a CompiledStateGraph at runtime
     exit_code = 0
     try:
-        await run_acp_agent(server)
+        from deepagents_code.sessions import get_checkpointer
+
+        async with get_checkpointer() as checkpointer:
+            await checkpointer.setup()
+
+            def build_agent(
+                context: "AgentSessionContext",
+            ) -> "Pregel[Any, Any, Any, Any]":
+                selected_model = context.model or resolved_spec
+                session_model = (
+                    model_result
+                    if selected_model == resolved_spec
+                    else create_model(
+                        selected_model,
+                        extra_kwargs=model_params,
+                        profile_overrides=profile_override,
+                    )
+                )
+                session_model.apply_to_settings()
+                agent_graph, _backend = create_cli_agent(
+                    model=session_model.model,
+                    assistant_id=assistant_id,
+                    tools=tools,
+                    mcp_server_info=mcp_server_info,
+                    checkpointer=checkpointer,
+                    async_subagents=async_subagents,
+                    fs_tools=allow_fs_tools,
+                    recursion_limit=recursion_limit,
+                    memory_auto_save=is_memory_auto_save_enabled(),
+                    cwd=context.cwd,
+                    project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
+                )
+                return agent_graph
+
+            server = agent_server_cls(
+                build_agent,
+                models=models,
+                load_sessions=True,
+                checkpoint_metadata={"agent_name": assistant_id},
+            )
+            await run_acp_agent(server)
     except KeyboardInterrupt:
         pass
     except Exception as exc:
@@ -3258,6 +3293,9 @@ def _run_trust_action_picker(
     console: "Console",
     *,
     remember_label: str = "Allow for this project — until changed",
+    allow_label: str = "Allow once",
+    deny_label: str = "Deny",
+    deny_first: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome | None:
     """Show the inline allow-once / remember / deny picker for a trust prompt.
 
@@ -3268,6 +3306,12 @@ def _run_trust_action_picker(
         console: Console to print fallback notices to (stderr).
         remember_label: Label for the persistent-trust option. Set this to match
             what the caller actually persists, since scope differs by subject.
+        allow_label: Label for the session-scoped allow option.
+        deny_label: Label for the refuse option.
+        deny_first: When `True`, list the deny option first; callers whose
+            "deny" reads as a safe default (e.g. aborting a launch) put it in
+            the leading position. The picker starts highlighted on the deny
+            option in either ordering, so a bare Enter refuses.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
@@ -3299,11 +3343,20 @@ def _run_trust_action_picker(
 
     glyphs = get_glyphs()
     actions = [
-        (_TrustAction.ALLOW_ONCE, "Allow once"),
+        (_TrustAction.ALLOW_ONCE, allow_label),
         (_TrustAction.REMEMBER, remember_label),
-        (_TrustAction.DENY, "Deny"),
+        (_TrustAction.DENY, deny_label),
     ]
-    selected_index = len(actions) - 1
+    if deny_first:
+        actions.reverse()
+    # Highlight the refusing option by identity, not position: `deny_first`
+    # moves it to the front, so a positional index would silently default to
+    # "allow" for exactly the callers that asked for a safer ordering.
+    selected_index = next(
+        index
+        for index, (action, _) in enumerate(actions)
+        if action is _TrustAction.DENY
+    )
 
     def _rows() -> FormattedText:
         rows: list[tuple[str, str]] = [
@@ -3386,10 +3439,67 @@ def _run_trust_action_picker(
         return None
 
 
+def prompt_for_dep_floor_mismatch(
+    console: "Console",
+    violations: "Sequence[_FloorViolation]",
+) -> _TrustAction | _TrustPromptOutcome:
+    """Block on a continue / mute / abort picker for a stale editable install.
+
+    Lives here (not in `_dep_floor_check`) beside the other pre-TUI trust
+    prompts so the picker implementation is shared. The prompt prints to
+    stderr and runs before the Textual alternate screen mounts, so it stays
+    visible.
+
+    Args:
+        console: Console printing to stderr.
+        violations: The detected below-floor dependencies.
+
+    Returns:
+        `ALLOW_ONCE` to continue this session, `REMEMBER` to mute this exact
+        mismatch for this checkout, `CANCELLED` to abort the launch (chosen
+        "Abort launch", Esc, or Ctrl+D — `abort_on_deny` collapses all three
+        into one outcome, so `DENY` is never returned), or `INTERRUPTED` on
+        Ctrl+C.
+    """
+    console.print()
+    console.print(
+        "[bold yellow]This editable dcode install is behind the checkout's "
+        "dependency floors:[/bold yellow]",
+        highlight=False,
+    )
+    from rich.markup import escape
+
+    from deepagents_code._dep_floor_check import refresh_command
+
+    for v in violations:
+        console.print(f"  - {escape(v.describe())}", highlight=False)
+    refresh = refresh_command()
+    console.print(
+        f"Refresh the active environment:\n  {escape(refresh)}", highlight=False
+    )
+    console.print(
+        "[yellow]Running stale source against older dependencies can break "
+        "behavior in hard-to-diagnose ways.[/yellow]",
+        highlight=False,
+    )
+    return _select_trust_action(
+        console,
+        remember_label="Mute until the mismatch changes",
+        allow_label="Continue this session only",
+        deny_label="Abort launch",
+        deny_first=True,
+        abort_on_deny=True,
+    )
+
+
 def _select_trust_action(
     console: "Console",
     *,
     remember_label: str = "Allow for this project — until changed",
+    allow_label: str = "Allow once",
+    deny_label: str = "Deny",
+    deny_first: bool = False,
+    abort_on_deny: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome:
     """Choose whether to allow once, remember, or deny a project-scoped subject.
 
@@ -3403,31 +3513,53 @@ def _select_trust_action(
         console: Console used by the text fallback.
         remember_label: Label for the persistent-trust option forwarded to the
             inline picker.
+        allow_label: Label for the session-scoped allow option.
+        deny_label: Label for the refuse option.
+        deny_first: Forwarded to the picker to list the deny option first.
+        abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
+            on every input path (picker, typed answer, and EOF), so prompts
+            whose refuse option aborts the launch report exactly one outcome
+            and callers cannot mistake a deny for a decision to proceed.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
-        Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
+        Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
+        user presses Ctrl+C.
     """
     selected = _run_trust_action_picker(
         console,
         remember_label=remember_label,
+        allow_label=allow_label,
+        deny_label=deny_label,
+        deny_first=deny_first,
     )
     if selected is not None:
+        if selected is _TrustAction.DENY and abort_on_deny:
+            return _TrustPromptOutcome.CANCELLED
         return selected
 
+    # Mirror the caller's labels: for the dep-floor prompt the choices are
+    # continue / mute / abort, and a hardcoded "allow once / deny" would
+    # misdescribe what the default does. Both lines go to stderr, where the
+    # rest of the prompt already went; passing the question to `input()`
+    # instead would split it onto stdout, so `dcode 2>log` would show a bare
+    # question with all of its context redirected away.
+    console.print(
+        f"[dim]{allow_label} [y] · {remember_label} [r] · {deny_label} [N][/dim]",
+        highlight=False,
+    )
+    console.print("Choose [y/r/N]: ", end="", highlight=False)
     try:
-        answer = (
-            input("Choose [y] allow once / [r] remember / [N] deny: ").strip().lower()
-        )
+        answer = input().strip().lower()
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _TrustAction.DENY
+        return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
         return _TrustAction.REMEMBER
-    return _TrustAction.DENY
+    return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 
 
 def _run_project_mcp_server_checkbox_picker(
@@ -3874,7 +4006,7 @@ def _check_mcp_project_trust(
     return True
 
 
-_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this project"
 
 
 def _check_project_hooks_trust(
@@ -3896,9 +4028,8 @@ def _check_project_hooks_trust(
         abort startup.
     """
     from rich.console import Console
-    from rich.text import Text
 
-    from deepagents_code.hooks.loading import project_hooks_path
+    from deepagents_code.hooks.loading import project_hooks_path, user_hooks_path
     from deepagents_code.hooks.trust import (
         WorkspaceTrust,
         is_project_hooks_trusted,
@@ -3910,6 +4041,11 @@ def _check_project_hooks_trust(
         context = ProjectContext.from_user_cwd(Path.cwd())
         project_root = context.project_root or context.user_cwd
         config_path = project_hooks_path(project_root)
+        if config_path.resolve(strict=False) == user_hooks_path().resolve(strict=False):
+            # Running from the user config's parent makes the user hooks path
+            # look project-scoped. It needs no trust decision and must not be
+            # granted project trust under the wrong provenance.
+            return WorkspaceTrust.none()
         if not config_path.is_file():
             return WorkspaceTrust.none()
     except OSError:
@@ -3920,14 +4056,20 @@ def _check_project_hooks_trust(
     if trust_flag or is_project_hooks_trusted(project_root):
         return granted
 
+    from rich.markup import escape
+
     prompt_console = Console(stderr=True)
     prompt_console.print()
-    title = Text("Project hooks can execute commands from ", style="bold yellow")
-    title.append(str(config_path))
-    prompt_console.print(title, highlight=False)
     prompt_console.print(
-        "Only allow hooks for projects you trust. Future edits to this file "
-        "will run without asking again if you always allow.",
+        "[bold yellow]Project hooks can run arbitrary shell commands on your "
+        "machine.[/bold yellow]",
+        highlight=False,
+    )
+    prompt_console.print(f"Hooks file: {escape(str(config_path))}", highlight=False)
+    prompt_console.print(
+        "Only trust projects you control. Allow once runs this file as it is "
+        f'now; always allow trusts "{escape(str(project_root))}" for future '
+        "sessions and future edits.",
         style="yellow",
         highlight=False,
     )
@@ -3954,7 +4096,8 @@ def _check_project_hooks_trust(
             )
         else:
             prompt_console.print(
-                "[dim]Project hooks trusted for this workspace.[/dim]",
+                f'[dim]Hooks for "{escape(str(project_root))}" will run without '
+                "asking from now on.[/dim]",
                 highlight=False,
             )
         return granted
@@ -4045,6 +4188,11 @@ def cli_main() -> None:
         # subcommands only. ACP/root-mode invocations may not define `command`,
         # and should fall through to the later handlers instead of raising here.
         command = getattr(args, "command", None)
+        if command is not None:
+            from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
+
+            warn_if_editable_deps_stale()
+
         if command == "config":
             from deepagents_code.client.commands.config import run_config_command
 
@@ -4203,6 +4351,46 @@ def cli_main() -> None:
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         apply_stdin_pipe(args)
+
+        # Gate on stale editable-install dependencies. Choose the channel from
+        # the launch mode, not from `sys.stdout.isatty()`: a TTY does not imply
+        # the interactive TUI. This runs after `apply_stdin_pipe` so
+        # `non_interactive_message` is final. An interactive launch that can
+        # actually answer a prompt gets a blocking pre-TUI continue/mute/abort
+        # prompt (printed to stderr before the alternate screen mounts);
+        # headless (`-n`) launches and subcommands print the full warning to
+        # stderr once instead — they have no TUI to prompt in and must never
+        # block. Subcommands are warned earlier, before the `config`/`update`
+        # fast paths exit. (ACP exits above, before this point.)
+        #
+        # `_trust_picker_has_terminal()` is part of the condition because a
+        # piped-stdin interactive launch still mounts the TUI: per
+        # `apply_stdin_pipe`, `cat x | dcode -m ...` and `cat x | dcode
+        # --skill ...` set `initial_prompt`, not `non_interactive_message`.
+        # Prompting there would find no TTY for the picker, read EOF from the
+        # text fallback, and abort the launch outright — with no way to answer
+        # the prompt and mute it. Those launches get the warning instead.
+        interactive_tui = (
+            not getattr(args, "command", None) and not args.non_interactive_message
+        )
+        if interactive_tui and _trust_picker_has_terminal():
+            from deepagents_code._dep_floor_check import prompt_if_editable_deps_stale
+
+            dep_floor_outcome = prompt_if_editable_deps_stale()
+            if dep_floor_outcome is _TrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if dep_floor_outcome is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; refresh the environment and relaunch.[/dim]",
+                    highlight=False,
+                )
+                return
+        elif command is None:
+            from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
+
+            warn_if_editable_deps_stale()
 
         # Validated here, before mode dispatch and any heavy session setup:
         # `apply_stdin_pipe` has finalized `non_interactive_message` (the same

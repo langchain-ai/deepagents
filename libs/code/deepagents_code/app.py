@@ -117,6 +117,7 @@ from deepagents_code.notifications import (
 )
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.context_usage import ContextUsageScreen
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.loading import LoadingWidget
 from deepagents_code.tui.widgets.message_store import (
@@ -4641,6 +4642,7 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_show = self._show_tokens
         self._ui_adapter._on_session_cost = self._set_session_cost
         self._ui_adapter._on_provisional_cost = self._add_provisional_cost
+        self._ui_adapter._on_usage_update = self._refresh_cache_display
         self._ui_adapter._on_stream_complete = self._mark_thread_turn_completed
 
         if self._server_startup_deferred:
@@ -7632,6 +7634,21 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
+    def _refresh_cache_display(self) -> None:
+        """Show active-thread cache totals and hit rate, including in-flight use."""
+        if self._status_bar is None:
+            return
+        inputs = self._thread_stats.input_tokens
+        reads = self._thread_stats.cache_read_tokens
+        writes = self._thread_stats.cache_write_tokens
+        if self._inflight_turn_stats is not None and (
+            self._inflight_thread_id == self._lc_thread_id
+        ):
+            inputs += self._inflight_turn_stats.input_tokens
+            reads += self._inflight_turn_stats.cache_read_tokens
+            writes += self._inflight_turn_stats.cache_write_tokens
+        self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
+
     def _set_session_cost(
         self,
         cost_usd: float,
@@ -7710,6 +7727,7 @@ class DeepAgentsApp(App):
             has_restored_model_usage: Whether restored history contains model usage.
         """
         self._thread_stats = SessionStats()
+        self._refresh_cache_display()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
@@ -13810,6 +13828,11 @@ class DeepAgentsApp(App):
             cli_profile_override=self._profile_override,
             title=title,
             description=description,
+            # Grader models have no persistent config key yet, so there is
+            # nothing for Ctrl+S to own here. `None` disables it; the main-model
+            # scope would persist `[models].default` and retarget the model the
+            # agent itself runs on.
+            default_scope=None,
         )
         self.push_screen(screen, handle_result)
 
@@ -14219,6 +14242,27 @@ class DeepAgentsApp(App):
                 severity="information",
                 timeout=5,
                 markup=False,
+            )
+        elif cmd == "/context":
+            context_tokens, conversation_tokens = await self._get_context_usage_counts()
+            if context_tokens is None and not self._tokens_approximate:
+                context_tokens = self._context_tokens or None
+            approximate = context_tokens is None and bool(
+                conversation_tokens or self._context_tokens
+            )
+            if approximate:
+                conversation_tokens = conversation_tokens or self._context_tokens
+            elif context_tokens is None:
+                context_tokens = 0
+            self.push_screen(
+                ContextUsageScreen(
+                    context_tokens=context_tokens,
+                    conversation_tokens=conversation_tokens,
+                    context_limit=settings.model_context_limit,
+                    model_spec=self._effective_model_spec() or settings.model_name,
+                    approximate=approximate,
+                ),
+                lambda _result: self._focus_chat_input_after_refresh(),
             )
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
@@ -14915,32 +14959,40 @@ class DeepAgentsApp(App):
             )
             return True
 
+    async def _get_context_usage_counts(self) -> tuple[int | None, int | None]:
+        """Read provider-reported total and estimated conversation usage together.
+
+        Returns:
+            Pair of provider-reported context tokens and approximate effective
+                conversation tokens. Either value is `None` when unavailable.
+        """
+        if not self._agent or not self._lc_thread_id:
+            return None, None
+        try:
+            from langchain_core.messages.utils import count_tokens_approximately
+
+            values = await self._get_thread_state_values(self._lc_thread_id)
+            reported = _persisted_context_tokens(values) or None
+            messages = values.get("messages", [])
+            if not isinstance(messages, list) or not messages:
+                return reported, None
+            effective = _effective_conversation(
+                messages,
+                values.get("_summarization_event"),
+            )
+            return reported, count_tokens_approximately(effective)
+        except Exception:  # best-effort for context-usage displays
+            logger.debug("Failed to retrieve context usage", exc_info=True)
+            return None, None
+
     async def _get_conversation_token_count(self) -> int | None:
         """Return the approximate conversation-only token count.
 
         Returns:
             Token count as an integer, or `None` if state is unavailable.
         """
-        if not self._agent:
-            return None
-        try:
-            from langchain_core.messages.utils import (
-                count_tokens_approximately,
-            )
-
-            config: RunnableConfig = {
-                "configurable": {"thread_id": self._lc_thread_id},
-            }
-            state = await self._agent.aget_state(config)
-            if not state or not state.values:
-                return None
-            messages = state.values.get("messages", [])
-            if not messages:
-                return None
-            return count_tokens_approximately(messages)
-        except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to retrieve conversation token count", exc_info=True)
-            return None
+        _, conversation = await self._get_context_usage_counts()
+        return conversation
 
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space.
@@ -15162,7 +15214,7 @@ class DeepAgentsApp(App):
                     )
                 )
 
-            self._on_tokens_update(tokens_after)
+            self._on_tokens_update(tokens_after, approximate=True)
 
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")
@@ -15464,6 +15516,7 @@ class DeepAgentsApp(App):
             self._session_stats.merge(offload_stats)
             if offload_thread_id == self._lc_thread_id:
                 self._thread_stats.merge(offload_stats)
+                self._refresh_cache_display()
 
     async def _remove_offload_artifacts(
         self,
@@ -15864,6 +15917,7 @@ class DeepAgentsApp(App):
             logger.debug("Screen stack empty during model sync", exc_info=True)
         if self._status_bar is None:
             return
+        self._status_bar.set_context_limit(settings.model_context_limit)
         if not provider or not model:
             logger.warning(
                 "Settings missing model identity at status sync "
@@ -16416,6 +16470,7 @@ class DeepAgentsApp(App):
                     self._thread_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
                 self._inflight_thread_id = None
+                self._refresh_cache_display()
             # Settle the display on the committed total. Only a completed turn
             # is read back: `durability="exit"` may drop an aborted turn's
             # writes, and the streamed totals already seen are closer to what
@@ -19465,11 +19520,12 @@ class DeepAgentsApp(App):
             "  /auto model <provider:model>\n"
             "  /auto model clear          Reuse the main agent model\n\n"
             "Auto reviews gated actions with a classifier model. It currently "
-            f"uses {self._auto_classifier_model_label()}. Actions it cannot "
-            "review are denied, and repeated review failures fall back to your "
-            "approval.\n\n"
-            "Changes here apply to this session only. Set "
-            "`[models].auto_classifier` in config.toml for a persistent choice."
+            f"uses {self._auto_classifier_model_label()}. A weaker model makes "
+            "that review weaker; actions it cannot review are denied, and "
+            "repeated review failures fall back to your approval.\n\n"
+            "Changes here apply to this session only. For a persistent choice, "
+            "press Ctrl+S in the `/auto model` picker or set "
+            "`[models].auto_classifier` in config.toml."
         )
 
     async def _handle_auto_command(self, command: str) -> None:
@@ -19504,7 +19560,10 @@ class DeepAgentsApp(App):
         """Open the model selector for choosing the Auto classifier model."""
         from deepagents_code.config import detect_provider, settings
         from deepagents_code.model_config import ModelSpec
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         current_provider = settings.model_provider
         current_model = settings.model_name
@@ -19528,6 +19587,9 @@ class DeepAgentsApp(App):
         def handle_result(result: tuple[str, str] | None) -> None:
             model_spec = result[0] if result is not None else None
             extra = screen.pending_install_extra if result is not None else None
+            persisted_as_default = model_spec is not None and screen.is_stored_default(
+                model_spec
+            )
 
             async def apply_selection() -> None:
                 if model_spec is None:
@@ -19539,7 +19601,9 @@ class DeepAgentsApp(App):
                     return
                 if extra and not await self._install_extra(extra, auto_restart=True):
                     return
-                await self._set_auto_classifier_model(model_spec)
+                await self._set_auto_classifier_model(
+                    model_spec, persisted_as_default=persisted_as_default
+                )
 
             def start_selection_worker() -> None:
                 # The coroutine is built here, not above, so a callback dropped
@@ -19603,10 +19667,16 @@ class DeepAgentsApp(App):
             include_recent_models=False,
             title="Choose the Auto classifier model",
             description=description,
+            default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )
         self.push_screen(screen, handle_result)
 
-    async def _set_auto_classifier_model(self, model_spec: str | None) -> None:
+    async def _set_auto_classifier_model(
+        self,
+        model_spec: str | None,
+        *,
+        persisted_as_default: bool = False,
+    ) -> None:
         """Set the model the Auto approval classifier reviews actions with.
 
         The value rides on the per-run graph context, so it applies from the
@@ -19618,6 +19688,7 @@ class DeepAgentsApp(App):
 
         Args:
             model_spec: `provider:model` spec, or `None` to reuse the main model.
+            persisted_as_default: Whether the selector already stored this spec.
         """
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
@@ -19710,14 +19781,38 @@ class DeepAgentsApp(App):
 
         if display:
             revalidated = " (revalidated)" if unchanged else ""
-            await self._mount_message(
-                AppMessage(
+            if persisted_as_default:
+                # "Stored" rather than "the default for future sessions" when a
+                # launch override is present: the resolver consults the export
+                # (and `--auto-classifier-model`) before `[models].auto_classifier`,
+                # so the stored spec would not actually run on the next launch.
+                # Presence, not truthiness — the resolver treats a blank export
+                # as an explicit (rejected) value that still outranks config.
+                from deepagents_code import _env_vars
+
+                if _env_vars.AUTO_CLASSIFIER_MODEL in os.environ:
+                    message = (
+                        f"Auto classifier model set to {display}{revalidated}; it "
+                        "reviews gated actions from the next turn in this session. "
+                        "Saved as the default classifier model. "
+                        f"{_env_vars.AUTO_CLASSIFIER_MODEL} is currently set; if it "
+                        "remains set, it overrides the new default at next launch."
+                    )
+                else:
+                    message = (
+                        f"Auto classifier model set to {display}{revalidated}; it "
+                        "reviews gated actions from the next turn and is already "
+                        "the default for future sessions."
+                    )
+            else:
+                message = (
                     f"Auto classifier model set to {display}{revalidated}; it "
                     "reviews gated actions from the next turn, for this session. "
-                    "Set `[models].auto_classifier` in config.toml to make it "
-                    "the default."
+                    "Press Ctrl+S in the `/auto model` picker, or set "
+                    "`[models].auto_classifier` in config.toml, to make it the "
+                    "default."
                 )
-            )
+            await self._mount_message(AppMessage(message))
         else:
             await self._mount_message(
                 AppMessage(
@@ -20238,7 +20333,10 @@ class DeepAgentsApp(App):
             Configured model selector modal.
         """
         from deepagents_code.config import settings
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         return ModelSelectorScreen(
             current_model=settings.model_name,
@@ -20254,6 +20352,11 @@ class DeepAgentsApp(App):
                 if curated
                 else None
             ),
+            # Onboarding advertises no Ctrl+S hint, so give it no scope either:
+            # the binding is unconditional and `action_set_default` has no
+            # curated guard, so a scope here would let Ctrl+S silently write
+            # `[models].default` with nothing on screen saying it did.
+            default_scope=None if curated else MAIN_MODEL_DEFAULT_SCOPE,
             result_callback=result_callback,
         )
 

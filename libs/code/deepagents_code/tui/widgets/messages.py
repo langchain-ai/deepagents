@@ -3903,8 +3903,6 @@ _TOOL_SUMMARY_CATEGORY: dict[str, str] = {
 
 # category -> (present verb, past verb, singular noun, plural noun).
 _TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
-    # The past verb is dead: `_summary_segment` phrases settled reads as a noun
-    # phrase, and `read` is not diff-eligible. Editing it changes no output.
     "read": ("Reading", "Read", "file", "files"),
     "write": ("Writing", "Wrote", "file", "files"),
     "edit": ("Editing", "Edited", "file", "files"),

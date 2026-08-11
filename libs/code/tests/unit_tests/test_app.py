@@ -3505,10 +3505,8 @@ class TestCtrlCCopySelection:
             # Ctrl+C is the quit/copy flow: the prompt must NOT be restored to
             # the input (that behavior is exclusive to the Esc path).
             assert chat.value == ""
-            assert not any(
-                call.args and call.args[0] == "Message restored to input"
-                for call in mock_notify.call_args_list
-            )
+            # Interrupting is silent on both key paths.
+            mock_notify.assert_not_called()
 
     async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
         """Ctrl+C with a non-Input/TextArea widget focused never copies."""
@@ -5310,7 +5308,8 @@ class TestMessageQueue:
             assert chat.value == "do the thing"
             worker.cancel.assert_called_once()
             assert active.has_class("-cancelled")
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            # The restored text is its own confirmation: no toast.
+            mock_notify.assert_not_called()
 
     async def test_escape_restores_interrupted_message_media(self) -> None:
         """Restored multimodal prompts keep their backing media attachments."""
@@ -5350,7 +5349,7 @@ class TestMessageQueue:
             assert images[0].placeholder == "[image 1]"
             worker.cancel.assert_called_once()
             assert active.has_class("-cancelled")
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            mock_notify.assert_not_called()
 
     async def test_escape_interrupt_keeps_existing_input_draft(self) -> None:
         """A non-empty draft is preserved when the agent is interrupted."""
@@ -5390,7 +5389,7 @@ class TestMessageQueue:
 
             assert chat.value == "do the thing"
             worker.cancel.assert_called_once()
-            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+            mock_notify.assert_not_called()
 
     async def test_escape_interrupt_without_active_message_cancels_only(self) -> None:
         """Interrupting with no tracked prompt cancels without restoring."""
@@ -25649,6 +25648,141 @@ class TestNotificationCenterIntegration:
                 await pilot.pause()
 
         assert app._notice_registry.get("update:available") is None
+
+    async def test_install_defers_to_another_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A held update lock blocks the install before any progress UI opens.
+
+        The notification and the entry both survive, so the user can retry once
+        the running install finishes. The lock is taken in-process here for
+        determinism, so it is `_UPDATE_INSTALL_THREAD_LOCK` that refuses;
+        `TestUpdateInstallLock` covers genuine cross-process exclusion.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        monkeypatch.setattr(app, "notify", capture_notify)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new_callable=AsyncMock,
+                ) as upgrade_mock,
+                update_install_lock() as holding,
+            ):
+                assert holding is True
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert not isinstance(app.screen, UpdateProgressScreen)
+
+        upgrade_mock.assert_not_awaited()
+        assert app._notice_registry.get("update:available") is not None
+        assert any("An update is already being installed" in m for m in notified)
+
+    async def test_install_releases_lock_for_a_later_retry(self) -> None:
+        """A finished install must not leave the update lock held.
+
+        Asserts the install actually ran first: without that, an unrelated
+        early return would leave the lock free too and this would pass while
+        proving nothing.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+        upgrade_mock = AsyncMock(return_value=(False, "resolver: conflict"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=upgrade_mock,
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+        upgrade_mock.assert_awaited_once()
+        with update_install_lock() as holding:
+            assert holding is True
+
+    async def test_install_runs_while_holding_the_update_lock(self) -> None:
+        """The install must run inside the lock, not merely after a check.
+
+        Shrinking the `with` block to cover only the boolean check would leave
+        the install unguarded while every other test here still passed. The
+        lock is not reentrant, so re-entering from inside `perform_upgrade`
+        proves it is held for the real work.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+        held_during_install: list[bool] = []
+
+        async def _record_lock_state(**_kwargs: Any) -> tuple[bool, str]:  # noqa: RUF029
+            with update_install_lock() as holding:
+                held_during_install.append(holding)
+            return False, "resolver: conflict"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=_record_lock_state,
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+        assert held_during_install == [False], (
+            "the install ran without holding the update lock"
+        )
+
+    async def test_dependency_refresh_defers_to_a_running_install(self) -> None:
+        """`/update --deps` replaces the distribution, so it takes the lock too.
+
+        `perform_dependency_refresh` runs `uv tool install -U` against the same
+        tool environment as an upgrade, so racing another terminal's install
+        hits the same queued-uv and transiently-absent-module hazards.
+        """
+        from deepagents_code.update_check import update_install_lock
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        refresh = AsyncMock(return_value=(True, ""))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_dependency_refresh",
+                    new=refresh,
+                ),
+                update_install_lock() as holding,
+            ):
+                assert holding is True
+                await app._refresh_dependencies(include_prereleases=None)
+                await pilot.pause()
+
+        refresh.assert_not_awaited()
 
     async def test_install_success_with_shadow_surfaces_warning(
         self, monkeypatch: pytest.MonkeyPatch

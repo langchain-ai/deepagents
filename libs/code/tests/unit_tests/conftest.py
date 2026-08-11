@@ -542,6 +542,14 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         tmp_path / "config.toml",
     )
     monkeypatch.setattr("deepagents_code.onboarding.DEFAULT_STATE_DIR", state_dir)
+    # Resolved from `DEFAULT_STATE_DIR` at import time, so patching the module
+    # constant above doesn't move it. Left unpatched, any test reaching the
+    # upgrade path would create a lock file in the developer's real home and
+    # contend with a genuinely running dcode.
+    monkeypatch.setattr(
+        "deepagents_code.update_check.UPDATE_LOCK_FILE",
+        state_dir / "update.lock",
+    )
     # Keep ordinary create/amend goal tests free of the one-time preference
     # modal without writing files into `tmp_path` (that would pollute git and
     # empty-tree assertions). Dedicated prompt coverage clears this env var.

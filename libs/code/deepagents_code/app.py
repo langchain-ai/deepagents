@@ -840,6 +840,17 @@ state as the single app-wide progress indicator.
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
 
+_CONCURRENT_UPDATE_MESSAGE = (
+    "An update is already being installed. Try again once it finishes."
+)
+"""Shown when the update install lock is held.
+
+Deliberately does not name *another* session as the holder: the lock also
+refuses a second install started from this one (`/update` racing the update
+notification), and blaming a nonexistent other terminal would send the user
+looking for something to wait on that isn't there.
+"""
+
 _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 """Upper bound on awaiting a confirmation modal's dismissal.
 
@@ -6465,15 +6476,26 @@ class DeepAgentsApp(App):
         upgrade_include_prereleases: bool | None,
         pin_upgrade_version: str | None,
     ) -> None:
-        """Serialize an app upgrade against every other environment mutation."""
+        """Serialize an app upgrade against every other environment mutation.
+
+        `_environment_mutation_lock` only covers this process, so the
+        cross-process update lock is taken too: a concurrent terminal may
+        already be installing into the same tool environment.
+        """
+        from deepagents_code.update_check import update_install_lock
+
         async with self._environment_mutation_lock:
-            await self._perform_app_upgrade_unlocked(
-                current=current,
-                latest=latest,
-                include_prereleases=include_prereleases,
-                upgrade_include_prereleases=upgrade_include_prereleases,
-                pin_upgrade_version=pin_upgrade_version,
-            )
+            with update_install_lock() as holding_update_lock:
+                if not holding_update_lock:
+                    await self._mount_message(AppMessage(_CONCURRENT_UPDATE_MESSAGE))
+                    return
+                await self._perform_app_upgrade_unlocked(
+                    current=current,
+                    latest=latest,
+                    include_prereleases=include_prereleases,
+                    upgrade_include_prereleases=upgrade_include_prereleases,
+                    pin_upgrade_version=pin_upgrade_version,
+                )
 
     async def _perform_app_upgrade_unlocked(
         self,
@@ -6597,12 +6619,24 @@ class DeepAgentsApp(App):
         include_prereleases: bool | None,
         app_update_version: str | None = None,
     ) -> None:
-        """Serialize dependency refresh against all environment mutations."""
+        """Serialize dependency refresh against all environment mutations.
+
+        A refresh runs `uv tool install -U deepagents-code==<current>`, which
+        replaces the installed distribution just as an upgrade does, so it takes
+        the cross-process update lock for the same reason `_perform_app_upgrade`
+        does: `_environment_mutation_lock` only covers this process.
+        """
+        from deepagents_code.update_check import update_install_lock
+
         async with self._environment_mutation_lock:
-            await self._refresh_dependencies_unlocked(
-                include_prereleases=include_prereleases,
-                app_update_version=app_update_version,
-            )
+            with update_install_lock() as holding_update_lock:
+                if not holding_update_lock:
+                    await self._mount_message(AppMessage(_CONCURRENT_UPDATE_MESSAGE))
+                    return
+                await self._refresh_dependencies_unlocked(
+                    include_prereleases=include_prereleases,
+                    app_update_version=app_update_version,
+                )
 
     async def _refresh_dependencies_unlocked(
         self,
@@ -18381,8 +18415,14 @@ class DeepAgentsApp(App):
         submission) only when the input holds no draft, so typed text is never
         clobbered. Unlike the queued-message pop, this path does not consume
         the message — the interrupted `UserMessage` stays visible in the
-        transcript, dimmed via `set_cancelled()` — so when it does not restore
-        it stays silent rather than reporting a "discarded" outcome.
+        transcript, dimmed via `set_cancelled()`.
+
+        A successful restore is deliberately silent: the text reappearing in
+        the chat input is its own confirmation, so a toast would only cover the
+        transcript (worse in a tiled terminal) to report something already on
+        screen. The paths that decline to restore are silent for a different
+        reason — nothing was consumed, so unlike the queued-message pop there is
+        no "discarded" outcome to report; the prompt is still in the transcript.
 
         Restore is also skipped once model text or a tool call is visible for
         the turn (`_active_turn_visible_output_started`). Returning the prompt
@@ -18411,7 +18451,6 @@ class DeepAgentsApp(App):
         snapshot = message.media_snapshot
         if snapshot is not None:
             self._image_tracker.restore(snapshot)
-        self.notify("Message restored to input", timeout=2)
 
     def _cleanup_external_event_source_sync(self) -> None:
         """Synchronously close the external event listener and unlink its socket.
@@ -22572,6 +22611,7 @@ class DeepAgentsApp(App):
             format_shadowed_dcode_warning,
             mark_update_notified,
             perform_upgrade,
+            update_install_lock,
         )
 
         if action_id == ActionId.INSTALL:
@@ -22588,92 +22628,104 @@ class DeepAgentsApp(App):
 
             from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
 
-            cmd = payload.upgrade_cmd
-            log_path = create_update_log_path()
-            screen = UpdateProgressScreen(
-                latest=payload.latest,
-                command=cmd,
-                log_path=log_path,
-            )
-            progress_modal_visible = not isinstance(self.screen, ModalScreen)
-            if progress_modal_visible:
-                await self.push_screen(screen)
-            else:
-                self.notify(
-                    f"Updating to v{payload.latest}... Logs: {log_path}",
-                    severity="information",
-                    timeout=8,
-                    markup=False,
-                )
-            self._update_install_running = True
-            try:
-                if os.environ.get(DEBUG_UPDATE):
-                    await self._run_debug_update_install(
-                        entry=entry,
-                        payload=payload,
-                        screen=screen,
-                        log_path=log_path,
-                        show_toast=not progress_modal_visible,
-                    )
-                    return
-                success, output = await perform_upgrade(
-                    progress=screen.append_line,
-                    log_path=log_path,
-                    target_version=payload.latest,
-                )
-                if success:
-                    self._notice_registry.remove(entry.key)
-                    # Same shadowing risk as `/update`: if a stale `dcode` is
-                    # earlier on PATH, the user's next launch will silently
-                    # run the old version. Surface that loudly even when only
-                    # a toast is visible. Keep the modal itself out of the
-                    # success state when relaunching would keep using the old
-                    # binary.
-                    shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
-                    if shadow is not None:
-                        warning = format_shadowed_dcode_warning(shadow)
-                        if progress_modal_visible:
-                            screen.mark_warning(
-                                warning,
-                                copy_text=format_shadowed_dcode_fix_command(shadow),
-                            )
-                        self.notify(
-                            warning,
-                            severity="warning",
-                            timeout=20,
-                            markup=False,
-                        )
-                        return
-                    screen.mark_success()
-                    if progress_modal_visible:
-                        return
+            # Claimed before any progress UI is shown so a session that loses
+            # the race never opens a modal it would have to abandon.
+            with update_install_lock() as holding_update_lock:
+                if not holding_update_lock:
                     self.notify(
-                        f"Updated to v{payload.latest}. "
-                        "Quit and relaunch dcode to use the new version.",
+                        _CONCURRENT_UPDATE_MESSAGE,
                         severity="information",
-                        timeout=10,
+                        timeout=6,
                         markup=False,
                     )
                     return
-                logger.warning(
-                    "Auto-upgrade failed for v%s. Output:\n%s",
-                    payload.latest,
-                    output,
-                )
-                self._notice_registry.remove(entry.key)
-                screen.mark_failure(cmd)
-                snippet = _truncate(output, limit=160) if output else ""
-                message = f"Auto-update failed. Run manually: {cmd}"
-                if snippet:
-                    message = f"{message}\n{snippet}"
-                self.notify(
-                    message,
-                    severity="warning",
-                    timeout=15,
-                    markup=False,
-                )
-            finally:
-                self._update_install_running = False
+
+                self._update_install_running = True
+                try:
+                    cmd = payload.upgrade_cmd
+                    log_path = create_update_log_path()
+                    screen = UpdateProgressScreen(
+                        latest=payload.latest,
+                        command=cmd,
+                        log_path=log_path,
+                    )
+                    progress_modal_visible = not isinstance(self.screen, ModalScreen)
+                    if progress_modal_visible:
+                        await self.push_screen(screen)
+                    else:
+                        self.notify(
+                            f"Updating to v{payload.latest}... Logs: {log_path}",
+                            severity="information",
+                            timeout=8,
+                            markup=False,
+                        )
+                    if os.environ.get(DEBUG_UPDATE):
+                        await self._run_debug_update_install(
+                            entry=entry,
+                            payload=payload,
+                            screen=screen,
+                            log_path=log_path,
+                            show_toast=not progress_modal_visible,
+                        )
+                        return
+                    success, output = await perform_upgrade(
+                        progress=screen.append_line,
+                        log_path=log_path,
+                        target_version=payload.latest,
+                    )
+                    if success:
+                        self._notice_registry.remove(entry.key)
+                        # Same shadowing risk as `/update`: if a stale `dcode` is
+                        # earlier on PATH, the user's next launch will silently
+                        # run the old version. Surface that loudly even when only
+                        # a toast is visible. Keep the modal itself out of the
+                        # success state when relaunching would keep using the old
+                        # binary.
+                        shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
+                        if shadow is not None:
+                            warning = format_shadowed_dcode_warning(shadow)
+                            if progress_modal_visible:
+                                screen.mark_warning(
+                                    warning,
+                                    copy_text=format_shadowed_dcode_fix_command(shadow),
+                                )
+                            self.notify(
+                                warning,
+                                severity="warning",
+                                timeout=20,
+                                markup=False,
+                            )
+                            return
+                        screen.mark_success()
+                        if progress_modal_visible:
+                            return
+                        self.notify(
+                            f"Updated to v{payload.latest}. "
+                            "Quit and relaunch dcode to use the new version.",
+                            severity="information",
+                            timeout=10,
+                            markup=False,
+                        )
+                        return
+                    logger.warning(
+                        "Auto-upgrade failed for v%s. Output:\n%s",
+                        payload.latest,
+                        output,
+                    )
+                    self._notice_registry.remove(entry.key)
+                    screen.mark_failure(cmd)
+                    snippet = _truncate(output, limit=160) if output else ""
+                    message = f"Auto-update failed. Run manually: {cmd}"
+                    if snippet:
+                        message = f"{message}\n{snippet}"
+                    self.notify(
+                        message,
+                        severity="warning",
+                        timeout=15,
+                        markup=False,
+                    )
+                finally:
+                    self._update_install_running = False
             return
         if action_id == ActionId.SKIP_VERSION:
             await asyncio.to_thread(mark_update_notified, payload.latest)
@@ -26708,6 +26760,26 @@ class AppResult:
     """`(is_available, latest_version)` for post-exit update warning."""
 
 
+class TextualAppError(Exception):
+    """`run_textual_app` failure that still carries the app's final state.
+
+    The TUI resolves resume intent and `/threads` switches asynchronously, so
+    only the app knows which thread was active when it crashed. Callers catch
+    this to render teardown hints against the right thread.
+    """
+
+    def __init__(self, message: str, result: AppResult) -> None:
+        """Store the partial result alongside the original error message.
+
+        Args:
+            message: The underlying exception's message.
+            result: Snapshot of the app's return code, thread ID, and session
+                stats at the moment of the crash.
+        """
+        super().__init__(message)
+        self.result = result
+
+
 async def run_textual_app(
     *,
     agent: Any = None,  # noqa: ANN401
@@ -26803,6 +26875,11 @@ async def run_textual_app(
 
     Returns:
         An `AppResult` with the return code and final thread ID.
+
+    Raises:
+        TextualAppError: The app crashed; the exception carries an `AppResult`
+            snapshot with the final thread ID so callers can still render
+            teardown hints for the thread that was active at the crash.
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -26833,6 +26910,19 @@ async def run_textual_app(
     )
     try:
         await app.run_async()
+    except Exception as e:
+        # The app resolves resume intent and `/threads` switches internally, so
+        # only it knows which thread was active at the crash. Attach that state
+        # so callers can aim teardown resume hints at the right thread.
+        raise TextualAppError(
+            str(e),
+            AppResult(
+                return_code=app.return_code or 1,
+                thread_id=app._lc_thread_id,
+                session_stats=app._session_stats,
+                update_available=app._update_available,
+            ),
+        ) from e
     finally:
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred

@@ -32,6 +32,10 @@ jobs:
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.14"
+          # This job never runs `uv sync`, so no cache dir is ever created
+          # and setup-uv's post-job cache save hard-fails on the missing
+          # path. Nothing to cache anyway.
+          enable-cache: "false"
 
       - name: "🔍 Check changed lockfiles"
         run: |

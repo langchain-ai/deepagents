@@ -828,6 +828,8 @@ async function run({ github, context, core, options = {} }) {
 // against release-please-config.json; nothing at runtime reads it.
 module.exports = {
   run,
+  // Required by clear_pending_deletion.yml, which shares this helper.
+  minimizeMarkerComment,
   warningBody,
   closeBody,
   ageInDays,

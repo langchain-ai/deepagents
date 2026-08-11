@@ -1,8 +1,8 @@
 [project]
 name = "deepagents"
-version = "0.7.4"
+version = "0.7.5"
 
-description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
+description = "Production-ready, extensible agent harness with a built-in filesystem and context management, sub-agent delegation, skills, and long-term memory."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
@@ -136,14 +136,25 @@ ignore-var-parameters = true
 asyncio_mode = "auto"
 addopts = "-m 'not benchmark'"
 filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
     "ignore:Passing `model=None` to `create_deep_agent`:DeprecationWarning",
     # `langsmith.sandbox` is alpha upstream; the FutureWarning fires on import.
     "ignore:langsmith.sandbox is in alpha:FutureWarning",
     # pytest-cov complains when invoked with `--no-cov` (used for fast runs).
     "ignore::pytest_cov.plugin.CovDisabledWarning",
+    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
+    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
+    # `google.genai.types` builds a union alias out of `typing._UnionGenericAlias`
+    # at import time, which Python 3.14 deprecates. Nothing here can act on it --
+    # it fires before any of our code runs and is fixed by upgrading the SDK.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+    # pytest-benchmark warns during pytest configuration when xdist is active.
+    "ignore:Benchmarks are automatically disabled:pytest_benchmark.logger.PytestBenchmarkWarning",
 ]
 markers = [
     "benchmark: wall-time benchmarks for construction performance",
+    "requires(*packages): integration test dependencies required to run a test",
     "video_extra: pin the read_file video gate on to snapshot the [video]-extra variant",
 ]
 

@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from textual.widget import Widget
 
+    from deepagents_code.diff_utils import DiffStats
+    from deepagents_code.file_ops import DiffOutcome
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEIGHT_HINT = 5
@@ -44,6 +47,8 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_duration",
         "tool_expanded",
         "tool_reject_reason",
+        "tool_diff_superseded",
+        "tool_display_caveat",
         "skill_expanded",
         "rubric_expanded",
         "user_expanded",
@@ -163,6 +168,18 @@ class MessageData:
     tool_reject_reason: str | None = None
     """User-supplied reason attached to a HITL reject decision (if any)."""
 
+    tool_diff_superseded: bool = False
+    """Whether a mounted diff replaces this successful tool row."""
+
+    tool_display_caveat: bool = False
+    """Whether `tool_output` opens with a caveat that must not be folded away.
+
+    Persisted rather than re-derived from the output text: matching prose would
+    tie rehydration to the caveat's exact wording, and the cost of getting it
+    wrong is a transcript that folds the change's only account into a summary
+    line. See `ToolCallMessage.has_display_caveat`.
+    """
+
     # ---
 
     diff_file_path: str | None = None
@@ -170,6 +187,43 @@ class MessageData:
 
     diff_tool_name: str | None = None
     """Name of the file tool that produced the diff (DIFF messages only)."""
+
+    diff_before_content: str | None = None
+    """Content prefix before the change, used to highlight DIFF messages.
+
+    Bounded by `diff.MAX_HIGHLIGHT_CHARS` as trimmed by
+    `highlight_source_prefixes` on the way to the widget; `from_widget` reads the
+    already-trimmed value.
+
+    `__post_init__` enforces the same *length* limit, but not the same rule: it
+    slices characters, so a value it truncates can end mid-line, which
+    `highlight_source_prefixes` — keyed on the diff's line numbers — never
+    produces. Such a prefix lexes into a partial final line and trips the drift
+    check in `_highlighted_rows`. It is a backstop against a direct constructor
+    call parking an unbounded copy of a file in a store whose whole point is
+    that thousands of messages cost little, not a second way to build a prefix.
+    """
+
+    diff_after_content: str | None = None
+    """Content prefix after the change, same bound and same caveat."""
+
+    diff_stats: DiffStats | None = None
+    """True change counts, which survive a truncated DIFF body."""
+
+    diff_outcome: DiffOutcome = "shown"
+    """What the operation could honestly say about what it changed.
+
+    One field rather than a `stats`-plus-"counts unknown" pair, so a rehydrated
+    diff cannot come back holding counts it also declares fictional.
+    """
+
+    diff_show_caveat: bool = True
+    """Whether the DIFF renders its outcome's caveat, or leaves it to its row.
+
+    Persisted rather than recomputed because the decision depends on what else
+    was mounted at the time, which rehydration cannot see. Without it a diff
+    whose row carries the caveat comes back printing the same sentence twice.
+    """
 
     # SKILL message fields - only populated for SKILL messages
     skill_name: str | None = None
@@ -252,6 +306,18 @@ class MessageData:
         if self.type == MessageType.RUBRIC and not self.rubric_details:
             msg = "RUBRIC messages must have rubric_details"
             raise ValueError(msg)
+        # Enforce the bound the highlight fields document. `from_widget` already
+        # supplies trimmed values, so this only catches direct construction —
+        # which is exactly the path that could otherwise park an unbounded copy
+        # of a file in a store whose whole point is that thousands of messages
+        # cost little. Imported here rather than at module scope to keep the
+        # widget module off the startup import path (AGENTS.md).
+        from deepagents_code.tui.widgets.diff import MAX_HIGHLIGHT_CHARS
+
+        if self.diff_before_content is not None:
+            self.diff_before_content = self.diff_before_content[:MAX_HIGHLIGHT_CHARS]
+        if self.diff_after_content is not None:
+            self.diff_after_content = self.diff_after_content[:MAX_HIGHLIGHT_CHARS]
 
     def to_widget(self) -> Widget:
         """Recreate a widget from this message data.
@@ -298,6 +364,13 @@ class MessageData:
                 widget._deferred_duration = self.tool_duration
                 widget._deferred_expanded = self.tool_expanded
                 widget._deferred_reject_reason = self.tool_reject_reason
+                if self.tool_display_caveat:
+                    widget._mark_display_caveat()
+                if self.tool_diff_superseded:
+                    # Go through the widget's own setter so a rehydrated row
+                    # passes the same tool-name guard as the live path; writing
+                    # the flag directly could hide a row no diff can replace.
+                    widget.mark_superseded_by_diff()
                 return widget
 
             case MessageType.SKILL:
@@ -335,6 +408,11 @@ class MessageData:
                     self.content,
                     file_path=self.diff_file_path or "",
                     tool_name=self.diff_tool_name,
+                    before=self.diff_before_content or "",
+                    after=self.diff_after_content or "",
+                    stats=self.diff_stats,
+                    outcome=self.diff_outcome,
+                    show_caveat=self.diff_show_caveat,
                     id=self.id,
                 )
 
@@ -425,6 +503,13 @@ class MessageData:
                 tool_duration=widget._duration,
                 tool_expanded=widget._expanded,
                 tool_reject_reason=widget._reject_reason,
+                # The raw flag, deliberately, not the `_superseded_by_diff`
+                # property: that property conjoins `is_success`, so persisting
+                # it would bake the current status into the stored value and a
+                # later error-to-success flip would lose the supersession. Do
+                # not "fix" this to use the public property.
+                tool_diff_superseded=widget._diff_superseded,
+                tool_display_caveat=widget.has_display_caveat,
             )
 
         if isinstance(widget, ErrorMessage):
@@ -444,6 +529,11 @@ class MessageData:
                 id=widget_id,
                 diff_file_path=widget._file_path,
                 diff_tool_name=widget._tool_name,
+                diff_before_content=widget._before,
+                diff_after_content=widget._after,
+                diff_stats=widget._stats,
+                diff_outcome=widget._outcome,
+                diff_show_caveat=widget._show_caveat,
             )
 
         if isinstance(widget, SummarizationMessage):

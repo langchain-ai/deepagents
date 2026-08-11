@@ -114,6 +114,9 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 Zero or negative disables the suggestion.
 """
 
+SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
+"""Default warning threshold in USD; zero or negative disables the warning."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -964,7 +967,13 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "together": ("langchain_together", "together"),
     "xai": ("langchain_xai", "xai"),
 }
-"""Provider integration import modules and the extras that install them."""
+"""Provider integration import modules and the extras that install them.
+
+Every import module name here must equal its PyPI distribution name up to
+underscore-for-hyphen substitution -- `provider_package_name` derives the
+distribution from it to build a `pypi.org/project/...` link, and a provider
+whose two names diverge would render a link to a nonexistent project.
+"""
 
 
 def provider_install_extra(provider: str) -> str | None:
@@ -980,6 +989,26 @@ def provider_install_extra(provider: str) -> str | None:
     """
     dependency = _PROVIDER_DEPENDENCIES.get(provider)
     return dependency[1] if dependency else None
+
+
+def provider_package_name(provider: str) -> str | None:
+    """Return the PyPI distribution that provides `provider`, if known.
+
+    Derived from the provider's integration import module by replacing
+    underscores with hyphens (e.g. `langchain_google_genai` ->
+    `langchain-google-genai`), which matches the distribution name for every
+    curated entry -- see the `_PROVIDER_DEPENDENCIES` docstring. This is not
+    PEP 503 normalization, and the result is not validated against PyPI.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`, `"google_genai"`).
+
+    Returns:
+        The distribution name, or `None` when the provider has no curated
+            extra (custom `class_path` providers, ambient-auth providers, etc.).
+    """
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    return dependency[0].replace("_", "-") if dependency else None
 
 
 def is_provider_package_installed(provider: str) -> bool:
@@ -1515,6 +1544,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.session_cost_threshold_usd",
+        group="Warnings",
+        summary=(
+            "Warn once when estimated thread cost exceeds this USD amount (0 disables)."
+        ),
+        kind=OptionKind.FLOAT,
+        default=SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+        toml_keys=("warnings", "session_cost_threshold_usd"),
+    ),
+    ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary=(
@@ -1583,6 +1622,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="MCP server names disabled by the user from the server viewer.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
+    ),
+    # --- Plugins --------------------------------------------------------
+    ConfigOption(
+        key="plugins.auto_update",
+        group="Plugins",
+        summary="Update opted-in plugins after the first prompt; disable globally.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PLUGIN_AUTO_UPDATE,
+        toml_keys=("plugins", "auto_update"),
+        empty_env_is_false=True,
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(

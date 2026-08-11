@@ -14370,6 +14370,39 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
+    async def test_restored_edit_without_diff_stays_visible(self) -> None:
+        """A resumed edit row remains when checkpoint history has no diff."""
+        app = DeepAgentsApp()
+        app._message_timestamps_visible = True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        type=MessageType.TOOL,
+                        content="",
+                        id="restored-edit",
+                        tool_name="edit_file",
+                        tool_args={"file_path": "a.py"},
+                        tool_status=ToolStatus.SUCCESS,
+                        tool_output="Updated file",
+                    )
+                ],
+                0,
+                "",
+            )
+
+            await app._load_thread_history(
+                thread_id="t-restored-edit", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            tool = app.query_one("#restored-edit", ToolCallMessage)
+            footer = app.query_one("#restored-edit-timestamp-footer", Static)
+            assert tool.display is True
+            assert footer.display is True
+
     async def test_resumed_history_populates_hook_transcript(self) -> None:
         from langchain_core.messages import HumanMessage
 
@@ -14807,6 +14840,62 @@ class TestMessageTimestampFooters:
             assert stored.tool_output == "done"
             assert stored.tool_duration is not None
             assert not app._message_store.is_protected("tool-sync")
+
+    async def test_tool_state_sync_persists_diff_supersession(self) -> None:
+        """Supersession is set after the row is stored, so it must be synced back.
+
+        The row is stored when it mounts, before its diff exists. Without this
+        keyword the store keeps that mount-time `False` and scrolling the row back
+        in resurrects it beside the diff that replaced it.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tool = ToolCallMessage(
+                "edit_file", {"file_path": "a.py"}, id="tool-superseded"
+            )
+            await app._mount_message(tool)
+            await pilot.pause()
+
+            tool.set_success("Updated file")
+            app._sync_tool_message_state(tool)
+            stored = app._message_store.get_message("tool-superseded")
+            assert stored is not None
+            assert stored.tool_diff_superseded is False
+
+            tool.mark_superseded_by_diff()
+            app._sync_tool_message_state(tool)
+            assert stored.tool_diff_superseded is True
+
+    async def test_tool_state_sync_persists_display_caveat(self) -> None:
+        """A late display caveat must survive transcript virtualization.
+
+        The row is stored at mount time, but the caveat is added only when the
+        file change cannot be rendered. Without syncing it back, hydration
+        would treat the successful row as groupable and hide its warning.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tool = ToolCallMessage(
+                "write_file", {"file_path": "a.py"}, id="tool-caveat"
+            )
+            await app._mount_message(tool)
+            await pilot.pause()
+
+            tool.set_success("The file change could not be shown.")
+            tool._mark_display_caveat()
+            app._sync_tool_message_state(tool)
+
+            stored = app._message_store.get_message("tool-caveat")
+            assert stored is not None
+            assert stored.tool_display_caveat is True
+
+            restored = stored.to_widget()
+            assert isinstance(restored, ToolCallMessage)
+            assert restored.has_display_caveat is True
 
     async def test_transcript_mounts_stay_chronological_around_spinner(self) -> None:
         """Rows mounted while the spinner is active stay above the bottom spacer."""
@@ -16553,6 +16642,7 @@ class TestShellCommandInterrupt:
         app._session_state = MagicMock()
         app._session_state.hooks = HooksManager.inert()
         app._pending_shell_messages = [self._shell_context_message("echo hi", "hi")]
+        app._plugin_auto_update_started = True
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -26511,7 +26601,7 @@ class TestNotificationCenterIntegration:
             assert screen._tab == "discover"
             await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._tab == "errors"
+            assert screen._tab == "settings"
             await pilot.press("tab")
             await pilot.pause()
             assert screen._tab == "discover"
@@ -35442,6 +35532,32 @@ class TestToolGroupCollapse:
             assert pending.display is True
             assert pending_footer.display is True
 
+    async def test_diff_superseded_row_hides_its_timestamp_footer(self) -> None:
+        """A superseded row's footer follows it when hidden and restored."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("edit_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            await pilot.pause()
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+            assert footer.display is True
+
+            tool.set_success("Updated file")
+            tool.mark_superseded_by_diff()
+            await pilot.pause()
+            assert tool.display is False
+            assert footer.display is False
+
+            tool.set_error("Disk full")
+            await pilot.pause()
+            assert tool.display is True
+            assert footer.display is True
+
     async def test_timestamps_toggle_respects_collapsed_group(self) -> None:
         """Turning `/timestamps` on must not surface a collapsed run's footers.
 
@@ -35542,7 +35658,7 @@ class TestToolGroupCollapse:
     async def test_evicted_failed_tool_releases_its_footer(self) -> None:
         """Ejecting a failed tool restores its footer along with its row.
 
-        `_evict_failed` is the last owner of that footer's marker class: once
+        `_evict_unfoldable` is the last owner of that footer's marker class: once
         the tool is out of the group nothing else will clear it, so a failure
         would leave an error row visible with no timestamp beneath it.
         """
@@ -35713,7 +35829,12 @@ class TestToolGroupCollapse:
 
     @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
     async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
-        """Excluded tools stay visible and split adjacent tool groups."""
+        """Excluded tools stay visible and split adjacent tool groups.
+
+        `edit_file` is included deliberately: a row only self-hides once
+        `mark_superseded_by_diff` runs, so one that never got a diff must still
+        stay visible and act as a group boundary.
+        """
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-history")
@@ -35740,6 +35861,47 @@ class TestToolGroupCollapse:
             assert not excluded.has_class("-grouped")
             assert after.display is False
 
+    async def test_regroup_leaves_caveated_rows_expanded(self) -> None:
+        """A rehydrated caveat must not be folded into a group summary.
+
+        The live path evicts these rows (`_evict_unfoldable`); this is the
+        separate rehydration implementation, and nothing else covers it. The
+        summary line is built from tool names alone, so folding a caveated
+        `delete` renders destroying a 5,000-line file whose contents could not
+        be read as `▸ Deleted 1 file` — identical to destroying an empty one,
+        and visible only after the user scrolls away and back.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-caveat-history")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            before, caveated, after = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("before", "read_file", {"file_path": "a.py"}, "success"),
+                    ("caveated", "delete", {"file_path": "big.py"}, "success"),
+                    ("after", "read_file", {"file_path": "b.py"}, "success"),
+                ],
+            )
+            # Set the way rehydration does: the flag is restored before mount
+            # and the output carrying the sentence comes back separately.
+            caveated._mark_display_caveat()
+            await pilot.pause()
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert caveated.display is True, "the caveat was folded out of sight"
+            assert not caveated.has_class("-grouped")
+            # It is also a group boundary, like any other unfoldable row.
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert before.display is False
+            assert after.display is False
+
     async def test_regroup_leaves_edit_diff_outside_later_tool_group(self) -> None:
         """An edit diff arriving after a parallel read stays expanded."""
         from deepagents_code.tui.widgets.messages import DiffMessage, ToolGroupSummary
@@ -35759,13 +35921,15 @@ class TestToolGroupCollapse:
             )
             diff = DiffMessage("-old\n+new", "a.py", tool_name="edit_file")
             await messages.mount(diff)
+            edit.mark_superseded_by_diff()
             await pilot.pause()
 
             await app._regroup_completed_tools()
             await pilot.pause()
 
             assert len(list(app.query(ToolGroupSummary))) == 1
-            assert edit.display is True
+            # The edit row hides itself on success; its diff stays visible.
+            assert edit.display is False
             assert read.display is False
             assert diff.display is True
             assert not diff.has_class("-grouped")

@@ -49,6 +49,7 @@ from deepagents_code.hooks.models.domain import (
     HookInvocation,
     PermissionEffect,
     PostToolUseDecision,
+    PostToolUseEvent,
     PostToolUseFailureDecision,
     PostToolUseFailureEvent,
     PreCompactDecision,
@@ -120,6 +121,7 @@ class _PublicHookState(AgentState[Any]):
 
     _hooks_stop_continuation_count: NotRequired[int]
     _hooks_pre_tool_outcomes: NotRequired[dict[str, Any]]
+    _hooks_pending_post_tools: NotRequired[dict[str, int | None]]
 
 
 def _hook_state_keys() -> frozenset[str]:
@@ -135,7 +137,7 @@ def _hook_state_keys() -> frozenset[str]:
 
 
 def _hook_state_subagent(*, name: str, content: str) -> CompiledSubAgent:
-    """Subagent that writes both hook keys directly, as a bare compiled runnable.
+    """Subagent that writes every hook key directly as a compiled runnable.
 
     `CompiledSubAgent` is the weaker of the two outbound layers: a raw `SubAgent`
     also gets filtered by its own graph's output schema, so only this shape
@@ -146,6 +148,7 @@ def _hook_state_subagent(*, name: str, content: str) -> CompiledSubAgent:
         return {
             "_hooks_stop_continuation_count": 1,
             "_hooks_pre_tool_outcomes": {name: {"behavior": "none", "context": []}},
+            "_hooks_pending_post_tools": {name: 1},
             "messages": [AIMessage(content=content)],
         }
 
@@ -183,11 +186,13 @@ def test_server_hook_state_fields_are_private() -> None:
 
     assert "_hooks_pre_tool_outcomes" in private_fields
     assert "_hooks_stop_continuation_count" in private_fields
+    assert "_hooks_pending_post_tools" in private_fields
     # `private_state_field_names` skips schemas whose annotations cannot be
     # resolved, which would silently return an empty set and revert the fix.
     assert _hook_state_keys() == {
         "_hooks_pre_tool_outcomes",
         "_hooks_stop_continuation_count",
+        "_hooks_pending_post_tools",
     }
 
 
@@ -317,6 +322,8 @@ def test_parallel_tasks_do_not_merge_subagent_server_hook_state(
     state = agent.get_state(config).values
     assert "first" not in state.get("_hooks_pre_tool_outcomes", {})
     assert "second" not in state.get("_hooks_pre_tool_outcomes", {})
+    assert "first" not in state.get("_hooks_pending_post_tools", {})
+    assert "second" not in state.get("_hooks_pending_post_tools", {})
     assert "_hooks_stop_continuation_count" not in state
 
 
@@ -407,6 +414,99 @@ def test_pretool_deny_blocks_tool_through_real_graph(
     assert len(denied) == 1
     assert denied[0].status == "error"
     assert "blocked by policy" in str(denied[0].content)
+
+
+async def test_post_tool_resumes_do_not_reexecute_parallel_tools(
+    tmp_path: Path,
+) -> None:
+    executed: list[str] = []
+
+    @tool
+    def side_effect(value: str) -> str:
+        """Record one visible side effect."""
+        executed.append(value)
+        return f"recorded {value}"
+
+    tool_calls = [
+        {
+            "name": "side_effect",
+            "args": {"value": value},
+            "id": f"call-{value}",
+            "type": "tool_call",
+        }
+        for value in ("first", "second")
+    ]
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=tool_calls),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_agent(
+        model=model,
+        tools=[side_effect],
+        middleware=[ServerHooksMiddleware(cwd=tmp_path)],
+        context_schema=CLIContextSchema,
+        checkpointer=InMemorySaver(),
+    )
+    context = CLIContextSchema(
+        hooks_snapshot_id="snap",
+        hooks_server_events=[HookEvent.POST_TOOL_USE.value],
+        thread_id="thread-post-tool",
+        approval_mode=ApprovalMode.MANUAL.value,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "thread-post-tool"}}
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="run both")]},
+        config=config,
+        context=context,
+    )
+
+    assert sorted(executed) == ["first", "second"]
+    assert "_hooks_pending_post_tools" not in result
+    checkpoint = agent.get_state(config).values
+    assert checkpoint["_hooks_pending_post_tools"].keys() == {
+        "call-first",
+        "call-second",
+    }
+    invoked: set[str] = set()
+    while result.get("__interrupt__"):
+        pending = result["__interrupt__"][0]
+        request = parse_hook_interrupt_payload(pending.value)
+        assert request is not None
+        event = request.invocation.event
+        assert isinstance(event, PostToolUseEvent)
+        assert event.duration_ms is not None
+        invoked.add(event.call.id)
+        response = HookInvocationResponse(
+            protocol_version=1,
+            invocation_id=request.invocation_id,
+            snapshot_id=request.snapshot_id,
+            decision=PostToolUseDecision(
+                event=HookEvent.POST_TOOL_USE,
+                feedback=[f"reviewed {event.call.id}"],
+            ),
+        )
+        result = await agent.ainvoke(
+            Command(resume=build_hook_resume_value(response)),
+            config=config,
+            context=context,
+        )
+        assert sorted(executed) == ["first", "second"]
+
+    assert invoked == {"call-first", "call-second"}
+    tool_results = {
+        message.tool_call_id: str(message.content)
+        for message in result["messages"]
+        if isinstance(message, ToolMessage)
+    }
+    for value in ("first", "second"):
+        assert f"recorded {value}" in tool_results[f"call-{value}"]
+        assert f"reviewed call-{value}" in tool_results[f"call-{value}"]
+    assert agent.get_state(config).values.get("_hooks_pending_post_tools") == {}
 
 
 def _request(event: PreToolUseEvent | None = None) -> HookInvocationRequest:

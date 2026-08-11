@@ -80,10 +80,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auto",
-        description=(
-            "Switch to Auto approval mode, or pick its classifier model for "
-            "this session"
-        ),
+        description="Switch to Auto approval mode or manage its classifier model",
         # Bare `/auto` still switches mode immediately (the switcher must work
         # mid-turn). `/auto model` with no further arguments only opens the
         # classifier picker, so it also bypasses (via IMMEDIATE_UI_ARG_FORMS);

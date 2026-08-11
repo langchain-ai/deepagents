@@ -19579,7 +19579,7 @@ class DeepAgentsApp(App):
                     message = (
                         f"Auto classifier model set to {display}{revalidated}; it "
                         "reviews gated actions from the next turn in this session. "
-                        "The default classifier model is saved in config.toml, but "
+                        "Saved as the default classifier model, but "
                         f"{_env_vars.AUTO_CLASSIFIER_MODEL} overrides it at next "
                         "launch."
                     )

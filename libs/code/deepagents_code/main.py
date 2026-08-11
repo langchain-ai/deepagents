@@ -282,8 +282,7 @@ def _render_teardown_thread_hints(
     Args:
         console: Console to print the hints to.
         thread_id: Thread whose checkpoints back the hints.
-        return_code: Process exit code; the resume hint is shown only on a clean
-            exit (`0`).
+        return_code: Process exit code; failed sessions add a resume safety caveat.
     """
     from rich.style import Style
     from rich.text import Text
@@ -317,15 +316,19 @@ def _render_teardown_thread_hints(
             exc_info=True,
         )
 
-    if return_code == 0:
-        console.print()
-        console.print("[dim]Resume this thread with:[/dim]")
-        # Echo the command the user actually launched (a shim or the
-        # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
-        hint = Text(invoked_name(), style="cyan")
-        hint.append(" -r ", style="cyan")
-        hint.append(str(thread_id), style="cyan")
-        console.print(hint)
+    console.print()
+    console.print("[dim]Resume this thread with:[/dim]")
+    # Echo the command the user actually launched (a shim or the
+    # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
+    hint = Text(invoked_name(), style="cyan")
+    hint.append(" -r ", style="cyan")
+    hint.append(str(thread_id), style="cyan")
+    console.print(hint)
+    if return_code != 0:
+        console.print(
+            "[dim]Note: the session ended in an error; the last turn may be "
+            "incomplete and resume may be unsafe.[/dim]"
+        )
 
 
 def _confirm_update_after_restart(console: "Console", version: str) -> None:
@@ -4911,6 +4914,7 @@ def cli_main() -> None:
 
             # Run Textual TUI
             return_code = 0
+            request_count = 0
             try:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
@@ -4976,26 +4980,28 @@ def cli_main() -> None:
                 # The user may have switched threads via /threads during the
                 # session; use the final thread ID for teardown messages.
                 thread_id = result.thread_id or thread_id
+                request_count = result.session_stats.request_count
                 _print_session_stats(result.session_stats, console)
             except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
+                return_code = 1
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))
                 console.print(error_msg)
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
-
-            # Show LangSmith thread link and resume hint for threads with
-            # checkpointed content. The `thread_id is not None` check narrows the
-            # type to `str` for the helper; `_should_check_teardown_thread` gates
-            # whether the teardown lookup runs at all.
-            if thread_id is not None and _should_check_teardown_thread(
-                thread_id,
-                request_count=result.session_stats.request_count,
-                resume_thread=args.resume_thread,
-            ):
-                _render_teardown_thread_hints(
-                    console, thread_id, return_code=return_code
-                )
+            finally:
+                # Show LangSmith thread link and resume hint for threads with
+                # checkpointed content. The `thread_id is not None` check narrows the
+                # type to `str` for the helper; `_should_check_teardown_thread` gates
+                # whether the teardown lookup runs at all.
+                if thread_id is not None and _should_check_teardown_thread(
+                    thread_id,
+                    request_count=request_count,
+                    resume_thread=args.resume_thread,
+                ):
+                    _render_teardown_thread_hints(
+                        console, thread_id, return_code=return_code
+                    )
 
             # Warn about available update on exit
             try:

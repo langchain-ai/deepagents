@@ -1746,13 +1746,15 @@ class TestRenderTeardownThreadHints:
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
 
-    def test_resume_hint_echoes_launch_command(self) -> None:
+    @pytest.mark.parametrize("return_code", [0, 1])
+    def test_resume_hint_echoes_launch_command(self, return_code: int) -> None:
         """The hint names the shim the user launched, not a hardcoded `dcode`."""
         thread_exists_mock = AsyncMock(return_value=True)
 
         output = self._render(
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
+            return_code=return_code,
             launch_name="abc",
         )
 
@@ -1770,11 +1772,16 @@ class TestRenderTeardownThreadHints:
         assert "Resume this thread with:" in output
         thread_exists_mock.assert_awaited_once()
 
-    def test_no_hints_without_checkpoints(self) -> None:
-        """No checkpoint means no link and no resume hint."""
+    @pytest.mark.parametrize("return_code", [0, 1])
+    def test_no_hints_without_checkpoints(self, return_code: int) -> None:
+        """No checkpoint means no link, resume hint, or crash caveat."""
         thread_exists_mock = AsyncMock(return_value=False)
 
-        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            return_code=return_code,
+        )
 
         assert output == ""
         thread_exists_mock.assert_awaited_once()
@@ -1788,16 +1795,77 @@ class TestRenderTeardownThreadHints:
         assert output == ""
         thread_exists_mock.assert_awaited_once()
 
-    def test_resume_hint_omitted_on_error_exit(self) -> None:
-        """The resume hint is only shown on a clean exit (return_code 0)."""
+    def test_error_exit_prints_resume_hint_with_caveat(self) -> None:
+        """A crashed checkpointed thread remains resumable with a safety caveat."""
         thread_exists_mock = AsyncMock(return_value=True)
 
         output = self._render(
             thread_exists_mock=thread_exists_mock, thread_url=None, return_code=1
         )
 
-        assert "Resume this thread with:" not in output
+        assert "Resume this thread with:" in output
+        assert "dcode -r test123" in output
+        assert "the last turn may be incomplete and resume may be unsafe" in output
         thread_exists_mock.assert_awaited_once()
+
+    def test_clean_exit_prints_resume_hint_without_caveat(self) -> None:
+        """Clean teardown output retains the resume hint without a caveat."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock, thread_url=None, return_code=0
+        )
+
+        assert "Resume this thread with:" in output
+        assert "dcode -r test123" in output
+        assert "the last turn may be incomplete and resume may be unsafe" not in output
+        thread_exists_mock.assert_awaited_once()
+
+
+class TestTeardownHintsOnCrash:
+    """Test crash handling still renders checkpoint-backed resume guidance."""
+
+    def test_runner_crash_prints_resume_hint_and_exits_nonzero(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An unhandled TUI exception renders teardown hints before exiting."""
+        launch = AsyncMock(side_effect=RuntimeError("boom"))
+        thread_exists_mock = AsyncMock(return_value=True)
+        invoked_name.cache_clear()
+
+        with (
+            patch("sys.argv", ["dcode"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._install_termination_signal_handlers"),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=None),
+            patch("deepagents_code.main._check_project_hooks_trust", return_value=None),
+            patch(
+                "deepagents_code.sessions.generate_thread_id", return_value="test123"
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+            patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
+            patch(
+                "deepagents_code.config.build_langsmith_thread_url", return_value=None
+            ),
+            patch.dict(os.environ, {INVOKED_AS: "dcode"}),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 1
+        launch.assert_awaited_once()
+        thread_exists_mock.assert_awaited_once_with("test123")
+        output = capsys.readouterr().out
+        flattened = output.replace("\n", "")
+        assert "Application error: boom" in output
+        assert "Resume this thread with:" in output
+        assert "dcode -r test123" in output
+        assert "the last turn may be incomplete and resume may be unsafe" in flattened
 
 
 class TestLangSmithTeardownUrl:

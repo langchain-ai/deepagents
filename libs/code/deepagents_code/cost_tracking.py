@@ -1,8 +1,10 @@
 """Estimate and persist cumulative model cost for each thread.
 
-The graph owns the durable total. `CostTrackingMiddleware` is the only writer of
-`_session_cost_usd`, so each cost update rides the model checkpoint and works for
-local, headless, and remote graph execution without a client-side state update.
+The server owns the durable total. `CostTrackingMiddleware` writes ordinary
+graph deltas, while `prepare_operation_cost` gives server-owned operations a
+rollback-safe delta to commit with their state update. Each cost update therefore
+rides a server checkpoint and works for local, headless, and remote execution
+without a client-side state update.
 The client is a reader: it renders the streamed total and never maintains its own
 lifetime figure.
 
@@ -1948,6 +1950,67 @@ def _restore_recorded_costs(
         return False
     recorder.restore(thread_id, records)
     return True
+
+
+@dataclass(slots=True)
+class PreparedOperationCost:
+    """A priced side-operation delta pending checkpoint persistence."""
+
+    thread_id: str
+    records: list[_ModelCallRecord]
+    delta_usd: float
+
+    @property
+    def update(self) -> dict[str, float]:
+        """Additive checkpoint update for this prepared charge."""
+        return {"_session_cost_usd": self.delta_usd} if self.delta_usd > 0 else {}
+
+    def rollback(self) -> None:
+        """Restore claimed records after the enclosing state update fails."""
+        if not _restore_recorded_costs(self.thread_id, self.records):
+            logger.warning(
+                "Could not restore %d operation cost record(s) after a failed "
+                "checkpoint update",
+                len(self.records),
+            )
+
+
+def prepare_operation_cost(
+    state: CostState,
+    thread_id: str,
+) -> PreparedOperationCost:
+    """Price model calls made by a server operation without committing them.
+
+    The caller must persist `PreparedOperationCost.update` atomically with the
+    operation state, or call `rollback()` if that write fails.
+
+    Args:
+        state: Current thread state used for model/provider fallback metadata.
+        thread_id: Thread that owns the side-operation model calls.
+
+    Returns:
+        Prepared additive cost delta and the claimed recorder entries.
+
+    """
+    records = _drain_recorded_costs(thread_id)
+    fallback = _checkpointed_model_spec(state)
+    delta_usd = 0.0
+    try:
+        for record in records:
+            cost_usd = estimate_cost(
+                record.usage_metadata,
+                *_pricing_target(record.model_name, record.provider, fallback),
+            )
+            if cost_usd is not None:
+                delta_usd += cost_usd
+    except BaseException:
+        _restore_recorded_costs(thread_id, records)
+        raise
+    return PreparedOperationCost(
+        thread_id=thread_id,
+        records=records,
+        delta_usd=delta_usd,
+    )
 
 
 class _CostTransfer(TypedDict):

@@ -13,7 +13,6 @@ from typing import (
     Any,
     Literal,
     NamedTuple,
-    NotRequired,
     Protocol,
     cast,
 )
@@ -27,13 +26,6 @@ from deepagents.middleware.summarization import (
     create_summarization_middleware,
     create_summarization_tool_middleware,
 )
-from langchain.agents.middleware.types import (
-    AgentMiddleware,
-    EphemeralValue,
-    OmitFromOutput,
-    PrivateStateAttr,
-    hook_config,
-)
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
@@ -41,16 +33,10 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.config import get_config
-from langgraph.errors import GraphBubbleUp
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
-from deepagents_code._cli_context import (
-    OFFLOAD_OPERATION,
-    OFFLOAD_OPERATION_NODE,
-    CLIContextSchema,
-    is_offload_operation,
-)
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.cost_tracking import CostState
 from deepagents_code.hooks.models.domain import (
     CompactTrigger,
@@ -61,6 +47,7 @@ from deepagents_code.hooks.models.domain import (
 from deepagents_code.hooks.server_middleware import (
     _DEFAULT_DEADLINE,
     _PRE_TOOL_STATE_KEY,
+    HookTransportInterruptError,
     _event_enabled,
     _hook_context,
     _invoke_hook,
@@ -71,6 +58,7 @@ from deepagents_code.hooks.server_middleware import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from deepagents.backends.composite import CompositeBackend
     from deepagents.backends.protocol import (
         BackendProtocol,
         EditResult,
@@ -119,41 +107,40 @@ class OffloadResult(TypedDict):
     error: str | None
 
 
-class OffloadOperationState(_OffloadState, total=False):
-    """Agent state used by the server-owned offload operation middleware."""
+class OffloadExecution(NamedTuple):
+    """State update and typed result produced by one server operation."""
 
-    dcode_operation: Annotated[
-        NotRequired[Literal["offload"]], EphemeralValue, OmitFromOutput
-    ]
-    _offload_result: Annotated[
-        NotRequired[OffloadResult], EphemeralValue, PrivateStateAttr
-    ]
+    update: dict[str, Any]
+    result: OffloadResult
 
 
-class OffloadOperationInput(TypedDict):
-    """The complete client request for server-owned thread offload."""
-
-    dcode_operation: Literal["offload"]
+_OFFLOAD_OPERATION_ATTR = "_dcode_offload_operation"
 
 
-def _offload_requested(state: OffloadOperationState) -> bool:
-    """Return whether the current run requested the offload operation.
+def attach_offload_operation(
+    backend: CompositeBackend,
+    operation: OffloadOperation,
+) -> None:
+    """Publish the operation on the backend shared with the server runtime.
 
-    LangGraph Server validates the custom operation field but does not expose it
-    to a `before_agent` node on an existing thread. `configurable` is the
-    server-supported run-scoped channel that survives that boundary and resume
-    rounds. Keeping the state check supports direct/in-process graph invocation.
+    Args:
+        backend: Composite backend owned by the agent server.
+        operation: Offload implementation bound to that backend.
+
+    Raises:
+        ValueError: If compaction writes through a different backend.
     """
-    if state.get("dcode_operation") == OFFLOAD_OPERATION:
-        return True
-    try:
-        configurable = get_config().get("configurable")
-    except RuntimeError:
-        return False
-    return (
-        isinstance(configurable, dict)
-        and configurable.get("dcode_operation") == OFFLOAD_OPERATION
-    )
+    bound = getattr(operation._compaction._summarization, "_backend", None)
+    if bound is not None and bound is not backend:
+        msg = "Offload operation must use the agent's composite backend"
+        raise ValueError(msg)
+    setattr(backend, _OFFLOAD_OPERATION_ATTR, operation)
+
+
+def offload_operation_from(backend: CompositeBackend) -> OffloadOperation | None:
+    """Return the server operation published on `backend`, when available."""
+    operation = getattr(backend, _OFFLOAD_OPERATION_ATTR, None)
+    return operation if isinstance(operation, OffloadOperation) else None
 
 
 def _event_cutoff(event: object) -> int:
@@ -183,7 +170,7 @@ into two paths, when that message always crossed the LangGraph server boundary.
 The driver is now used for local in-process agents, which cross no such
 boundary, but it still only sees message text.) Owning the literal here means
 the producers
-(`_forced_compact_error` and the operation graph's node, which reuses the prefix
+(`_forced_compact_error` and the server operation, which reuses the prefix
 in the `RuntimeError` it raises) and both consumers
 (`app._drive_local_seeded_compaction` live-stream detection and
 `app._find_compaction_failure` committed-state scan) reference one constant
@@ -266,9 +253,9 @@ class _HasRunContext(Protocol):
 
     The compaction helpers read `context` and nothing else, so they accept both
     the `ToolRuntime` injected into the tool and the plain LangGraph `Runtime`
-    the operation graph's node receives -- which is not a `ToolRuntime`. Stating
+    the server operation receives -- which is not a `ToolRuntime`. Stating
     the dependency this narrowly means a helper that starts touching, say,
-    `tool_call_id` fails to type-check instead of breaking the operation graph
+    `tool_call_id` fails to type-check instead of breaking the server operation
     at runtime.
     """
 
@@ -501,9 +488,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
       by the seeded `/offload` driver, which report failure by *returning* a
       `ToolMessage` because a tool node must always answer its call;
     - `arun_forced_compaction_update`, the non-tool entry point the `/offload`
-      operation graph calls, which *raises* instead — that graph has no tool
-      node to carry a message, so its node turns the exception into a
-      client-visible error.
+      server operation calls, which *raises* instead — there is no tool node to
+      carry a message, so the service returns a typed client-visible error.
     """
 
     @property
@@ -917,8 +903,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         """Run forced compaction as a server operation without a tool message.
 
         Unlike the tool paths, this raises on failure instead of returning a
-        `ToolMessage`: the operation graph has no tool node to carry one, so its
-        node converts the exception into a client-visible error. Any summarizer,
+        `ToolMessage`: the server operation has no tool node to carry one, so it
+        converts the exception into a client-visible error. Any summarizer,
         backend, or archive failure therefore propagates out of this method
         rather than being folded into the return value.
 
@@ -932,11 +918,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 not advance past the prior event.
 
         Raises:
-            ValueError: If the run observed no messages at all. On a real server
-                the run input *replaces* the `messages` channel, so this means
-                the caller replayed an empty list and has already truncated the
-                conversation; reporting "nothing to compact" would render that
-                as success.
+            ValueError: If called directly with no messages. The owning server
+                operation handles an empty thread before reaching this helper.
         """
         summarization = await asyncio.to_thread(
             self._summarization_for_runtime, runtime
@@ -944,12 +927,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         messages = state.get("messages", [])
         event = state.get("_summarization_event")
         if not messages:
-            msg = (
-                "Offload ran against an empty conversation. The run input "
-                "replaces the thread's messages, so this indicates the client "
-                "replayed an empty list rather than the checkpointed "
-                "conversation."
-            )
+            msg = "Offload compaction requires checkpointed conversation messages."
             raise ValueError(msg)
         effective = summarization._apply_event_to_messages(messages, event)
         cutoff = summarization._determine_cutoff_index(effective)
@@ -1002,7 +980,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         file_path: str | None,
         state_cutoff: int,
     ) -> dict[str, SummarizationEvent]:
-        """Build the state-only result used by the dedicated `/offload` graph.
+        """Build the state-only result used by the server `/offload` operation.
 
         Annotated with the SDK's own `SummarizationEvent` rather than a loose
         `dict[str, object]` so the hand-built payload is checked against the
@@ -1175,17 +1153,8 @@ def _forced_offload_call_id() -> str:
     return f"offload-precompact-{uuid5(_OFFLOAD_CALL_NAMESPACE, namespace)}"
 
 
-class OffloadOperationMiddleware(
-    AgentMiddleware[OffloadOperationState, CLIContextSchema]
-):
-    """Run `/offload` inside the thread's existing agent graph.
-
-    The operation is selected through non-checkpointed runtime context. Its
-    empty graph input therefore cannot replace or append conversation messages;
-    the middleware reads the complete checkpoint state supplied by LangGraph.
-    """
-
-    state_schema = OffloadOperationState
+class OffloadOperation:
+    """Compact checkpoint state behind dcode's server-owned HTTP boundary."""
 
     def __init__(
         self,
@@ -1198,14 +1167,8 @@ class OffloadOperationMiddleware(
             compaction: Compaction middleware bound to the agent backend.
             hooks: Server hook middleware used by the interactive graph.
         """
-        super().__init__()
         self._compaction = compaction
         self._hooks = hooks
-
-    @property
-    def name(self) -> str:
-        """Stable graph node prefix used for capability discovery."""
-        return OFFLOAD_OPERATION_NODE.removesuffix(".before_agent")
 
     @staticmethod
     def _result(
@@ -1240,7 +1203,7 @@ class OffloadOperationMiddleware(
             Failure status and detail, or `None` when hooks allow compaction.
 
         Raises:
-            GraphBubbleUp: If a hook interrupts the graph for client execution.
+            HookTransportInterruptError: If the client must fulfill a hook request.
         """
         try:
             forced_call_id = _forced_offload_call_id()
@@ -1264,7 +1227,7 @@ class OffloadOperationMiddleware(
                 ),
                 cast("Runtime[Any]", runtime),
             )
-        except GraphBubbleUp:
+        except HookTransportInterruptError:
             raise
         except Exception as exc:
             logger.exception("/offload hook dispatch failed")
@@ -1281,23 +1244,19 @@ class OffloadOperationMiddleware(
             )
         return None
 
-    @hook_config(can_jump_to=["end"])
-    async def abefore_agent(  # ty: ignore[invalid-method-override]
+    async def execute(
         self,
-        state: OffloadOperationState,
+        state: _OffloadState,
         runtime: Runtime[CLIContextSchema],
-    ) -> dict[str, Any] | None:
-        """Run a requested offload and bypass the normal model/tool loop.
+    ) -> OffloadExecution:
+        """Run one offload against server-read checkpoint state.
 
         Returns:
-            Operation state update, or `None` during an ordinary agent turn.
+            State update for the server to persist and the typed client result.
 
         Raises:
-            GraphBubbleUp: If a hook interrupts the graph for client execution.
+            HookTransportInterruptError: If the client must fulfill a hook request.
         """
-        if not (_offload_requested(state) or is_offload_operation(runtime.context)):
-            return None
-
         from langchain_core.messages.utils import count_tokens_approximately
 
         messages = list(state.get("messages", []))
@@ -1308,7 +1267,7 @@ class OffloadOperationMiddleware(
         tokens_before = count_tokens_approximately(effective)
         if not messages:
             result = self._result("empty", messages=0, tokens=0)
-            return {"jump_to": "end", "_offload_result": result}
+            return OffloadExecution({}, result)
 
         hook_failure = await self._run_hooks(runtime)
         if hook_failure is not None:
@@ -1319,13 +1278,13 @@ class OffloadOperationMiddleware(
                 tokens=tokens_before,
                 error=error,
             )
-            return {"jump_to": "end", "_offload_result": result}
+            return OffloadExecution({}, result)
 
         try:
             update = await self._compaction.arun_forced_compaction_update(
                 state, runtime
             )
-        except GraphBubbleUp:
+        except HookTransportInterruptError:
             raise
         except Exception as exc:
             logger.exception("forced /offload compaction failed")
@@ -1335,7 +1294,7 @@ class OffloadOperationMiddleware(
                 tokens=tokens_before,
                 error=f"{COMPACTION_FAILURE_PREFIX}: {type(exc).__name__}: {exc}",
             )
-            return {"jump_to": "end", "_offload_result": result}
+            return OffloadExecution({}, result)
 
         if not update:
             result = self._result(
@@ -1343,7 +1302,7 @@ class OffloadOperationMiddleware(
                 messages=len(messages) - _event_cutoff(event),
                 tokens=tokens_before,
             )
-            return {"jump_to": "end", "_offload_result": result}
+            return OffloadExecution({}, result)
 
         new_event = update["_summarization_event"]
         new_cutoff = _event_cutoff(new_event)
@@ -1364,4 +1323,4 @@ class OffloadOperationMiddleware(
             "archive_ephemeral": offload_storage_is_ephemeral(),
             "error": None,
         }
-        return {**update, "jump_to": "end", "_offload_result": result}
+        return OffloadExecution(dict(update), result)

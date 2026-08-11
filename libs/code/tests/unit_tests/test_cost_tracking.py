@@ -2259,6 +2259,35 @@ class TestPriceCatalogGuard:
 class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
 
+    def test_prepared_operation_cost_can_commit_or_rollback(
+        self,
+        recorder: _SessionCostRecorder,
+    ) -> None:
+        """Operation pricing is additive and restores records after failure."""
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {
+                "messages": [],
+                "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+            },
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert one_call is not None
+        assert prepared.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert recorder.drain(THREAD_ID) == []
+
+        prepared.rollback()
+        retried = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        assert retried.update == {"_session_cost_usd": pytest.approx(one_call)}
+
     def test_cost_channel_is_private_and_additive(self) -> None:
         """The channel must compile to a summing reducer, not a `LastValue`.
 

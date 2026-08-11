@@ -12,6 +12,7 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import (
@@ -45,7 +46,6 @@ from langgraph.types import Command, interrupt
 from pydantic import ValidationError
 from typing_extensions import TypedDict
 
-from deepagents_code._cli_context import is_offload_operation
 from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
 from deepagents_code.hooks.interrupt import (
     build_hook_interrupt_payload,
@@ -100,6 +100,42 @@ _PENDING_POST_TOOL_STATE_KEY = "_hooks_pending_post_tools"
 _TASK_TOOL_NAME = "task"
 _COMPACT_TOOL_NAME = "compact_conversation"
 _INVOCATION_NAMESPACE = UUID("f2896d18-cf2a-4e7d-b11a-d5b10fc0e335")
+
+
+class HookTransportInterruptError(Exception):
+    """Carry a hook request across a non-graph server operation boundary."""
+
+    def __init__(self, request: HookInvocationRequest) -> None:
+        """Initialize the transport interrupt.
+
+        Args:
+            request: Hook invocation the client must fulfill.
+        """
+        super().__init__(str(request.invocation_id))
+        self.request = request
+
+
+_HOOK_RESPONSES: ContextVar[Mapping[str, object] | None] = ContextVar(
+    "deepagents_code_hook_responses",
+    default=None,
+)
+
+
+@contextmanager
+def operation_hook_responses(
+    responses: Mapping[str, object],
+) -> Iterator[None]:
+    """Serve hook responses while a server operation replays from the top.
+
+    Args:
+        responses: Resume payloads keyed by deterministic hook invocation ID.
+    """
+    token = _HOOK_RESPONSES.set(responses)
+    try:
+        yield
+    finally:
+        _HOOK_RESPONSES.reset(token)
+
 
 PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
 _DEFAULT_DENY_REASON = "Blocked by PreToolUse hook"
@@ -675,14 +711,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         state: ServerHooksState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
-        # `/offload` uses the main graph's exit path so cost is checkpointed,
-        # but it is an operation rather than a conversational agent turn.
-        offload_result = cast("dict[str, Any]", state).get("_offload_result")
-        if (
-            not self._emit_stop
-            or is_offload_operation(runtime.context)
-            or offload_result is not None
-        ):
+        if not self._emit_stop:
             return None
         gate = _session_gate(runtime.context)
         if not _event_enabled(gate, HookEvent.STOP):
@@ -861,7 +890,14 @@ def _invoke_hook(
         invocation=HookInvocation(context=context, event=event),
         deadline=datetime.now(UTC) + deadline,
     )
-    raw = interrupt(build_hook_interrupt_payload(request))
+    operation_responses = _HOOK_RESPONSES.get()
+    if operation_responses is None:
+        raw = interrupt(build_hook_interrupt_payload(request))
+    else:
+        key = str(request.invocation_id)
+        if key not in operation_responses:
+            raise HookTransportInterruptError(request)
+        raw = operation_responses[key]
     try:
         response = parse_hook_resume_value(
             raw,

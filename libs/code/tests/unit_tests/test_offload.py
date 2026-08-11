@@ -108,6 +108,7 @@ def _setup_server_offload_app(app: DeepAgentsApp) -> MagicMock:
     agent = MagicMock(spec=RemoteAgent)
     agent.aupdate_state = AsyncMock()
     agent.asupports_offload = AsyncMock(return_value=True)
+    agent.aoffload = AsyncMock()
     app._agent = agent
     app._backend = None
     app._lc_thread_id = "test-thread"
@@ -120,7 +121,7 @@ def _setup_local_offload_app(app: DeepAgentsApp) -> MagicMock:
 
     A plain `MagicMock` agent is *not* a `RemoteAgent`, so `_remote_agent()`
     returns `None` and `_handle_offload` takes the seeded in-process path
-    (`_drive_local_seeded_compaction`) instead of the operation graph.
+    (`_drive_local_seeded_compaction`) instead of the server operation.
     """
     agent = MagicMock()
     agent.aupdate_state = AsyncMock()
@@ -187,13 +188,9 @@ class TestOffloadCommand:
         }
         async with app.run_test() as pilot:
             await pilot.pause()
-            _setup_server_offload_app(app)
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
             with (
-                patch.object(
-                    app,
-                    "_drive_server_offload_operation",
-                    new=AsyncMock(return_value=result),
-                ) as drive,
                 patch.object(
                     app,
                     "_get_thread_state_values",
@@ -209,9 +206,12 @@ class TestOffloadCommand:
                 assert "Offloaded 6 older messages" in text
                 assert "4 messages kept" in text
 
-            drive.assert_awaited_once_with(
-                {"configurable": {"thread_id": "test-thread"}}
-            )
+            remote.aoffload.assert_awaited_once()
+            await_args = remote.aoffload.await_args
+            assert await_args is not None
+            kwargs = await_args.kwargs
+            assert kwargs["config"] == {"configurable": {"thread_id": "test-thread"}}
+            assert "messages" not in kwargs["context"]
 
     async def test_server_failure_is_rendered_from_typed_result(self) -> None:
         app = DeepAgentsApp()
@@ -227,13 +227,9 @@ class TestOffloadCommand:
         }
         async with app.run_test() as pilot:
             await pilot.pause()
-            _setup_server_offload_app(app)
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
             with (
-                patch.object(
-                    app,
-                    "_drive_server_offload_operation",
-                    new=AsyncMock(return_value=result),
-                ),
                 patch.object(
                     app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
                 ),
@@ -262,11 +258,6 @@ class TestOffloadCommand:
                     "_drive_local_seeded_compaction",
                     new=AsyncMock(return_value="fallback stopped"),
                 ) as seeded,
-                patch.object(
-                    app,
-                    "_drive_server_offload_operation",
-                    new=AsyncMock(side_effect=AssertionError("server operation")),
-                ),
             ):
                 await app._handle_offload()
                 assert any(
@@ -275,6 +266,7 @@ class TestOffloadCommand:
                 )
 
             seeded.assert_awaited_once()
+            remote.aoffload.assert_not_awaited()
 
 
 class TestOffloadFallbackRoot:
@@ -812,130 +804,11 @@ class TestOffloadToolGuard:
         handler.assert_awaited_once_with(request)
 
 
-class TestServerOperationOffload:
-    """The remote driver uses the current graph as a typed operation API."""
-
-    @staticmethod
-    def _result() -> dict[str, object]:
-        return {
-            "status": "compacted",
-            "messages_offloaded": 2,
-            "messages_kept": 2,
-            "tokens_before": 100,
-            "tokens_after": 40,
-            "archive_path": "/conversation_history/test-thread.md",
-            "archive_ephemeral": False,
-            "error": None,
-        }
-
-    async def test_sends_empty_input_to_current_graph(self) -> None:
-        app = DeepAgentsApp()
-        remote = _setup_server_offload_app(app)
-        calls: list[tuple[object, dict[str, object]]] = []
-
-        async def stream(  # noqa: RUF029
-            value: object, **kwargs: object
-        ) -> AsyncIterator[tuple[tuple[str, ...], str, dict[str, object]]]:
-            calls.append((value, kwargs))
-            yield (
-                (),
-                "updates",
-                {
-                    "OffloadOperationMiddleware.before_agent": {
-                        "_offload_result": self._result()
-                    }
-                },
-            )
-
-        remote.astream = stream
-        result = await app._drive_server_offload_operation(
-            {"configurable": {"thread_id": "test-thread"}}
-        )
-
-        assert result == self._result()
-        assert calls[0][0] == {"dcode_operation": "offload"}
-        context = cast("dict[str, object]", calls[0][1]["context"])
-        assert context["operation"] == "offload"
-        remote.for_graph.assert_not_called()
-        remote.aget_state.assert_not_called()
-
-    async def test_fulfills_hook_interrupt_and_resumes(self) -> None:
-        from langgraph.types import Command, Interrupt
-
-        app = DeepAgentsApp()
-        remote = _setup_server_offload_app(app)
-        inputs: list[object] = []
-
-        async def stream(  # noqa: RUF029
-            value: object, **_kwargs: object
-        ) -> AsyncIterator[tuple[tuple[str, ...], str, dict[str, object]]]:
-            inputs.append(value)
-            if len(inputs) == 1:
-                yield (
-                    (),
-                    "updates",
-                    {
-                        "__interrupt__": [
-                            Interrupt(value={"type": "hook_invocation"}, id="hook-1")
-                        ]
-                    },
-                )
-            else:
-                yield (
-                    (),
-                    "updates",
-                    {
-                        "OffloadOperationMiddleware.before_agent": {
-                            "_offload_result": self._result()
-                        }
-                    },
-                )
-
-        remote.astream = stream
-        fulfillment = AsyncMock(return_value={"decision": "allow"})
-        with patch.object(HooksManager, "fulfill_interrupt", fulfillment):
-            await app._drive_server_offload_operation(
-                {"configurable": {"thread_id": "test-thread"}}
-            )
-
-        assert inputs[0] == {"dcode_operation": "offload"}
-        assert isinstance(inputs[1], Command)
-        fulfillment.assert_awaited_once()
-
-    async def test_missing_result_fails_loudly(self) -> None:
-        app = DeepAgentsApp()
-        remote = _setup_server_offload_app(app)
-
-        async def stream(  # noqa: RUF029
-            *_args: object, **_kwargs: object
-        ) -> AsyncIterator[tuple[tuple[str, ...], str, dict[str, object]]]:
-            yield (), "updates", {"some_node": {}}
-
-        remote.astream = stream
-        with pytest.raises(RuntimeError, match="without an operation result"):
-            await app._drive_server_offload_operation(
-                {"configurable": {"thread_id": "test-thread"}}
-            )
-
-    async def test_unsupported_custom_graph_is_not_invoked(self) -> None:
-        app = DeepAgentsApp()
-        remote = _setup_server_offload_app(app)
-        remote.asupports_offload = AsyncMock(return_value=False)
-
-        from deepagents_code.app import _MissingOffloadOperationError
-
-        with pytest.raises(_MissingOffloadOperationError):
-            await app._drive_server_offload_operation(
-                {"configurable": {"thread_id": "test-thread"}}
-            )
-        remote.astream.assert_not_called()
-
-
 class TestDriveLegacySeededCompaction:
     """Unit-test the seeded in-process `compact_conversation` trigger.
 
     This driver serves local `Pregel` agents, which have no server operation
-    graph; server-backed agents use the dedicated `offload` operation instead.
+    graph; server-backed agents use the dedicated HTTP operation instead.
     """
 
     @staticmethod
@@ -1956,18 +1829,18 @@ def _deny_dispatched_call(
     return deny
 
 
-class TestOffloadOperationMiddleware:
-    """The main-graph operation owns checkpoint state and compaction policy."""
+class TestOffloadOperation:
+    """The server service owns checkpoint state and compaction policy."""
 
     @staticmethod
     def _runtime() -> Runtime[CLIContextSchema]:
-        return Runtime(context=CLIContextSchema(operation="offload"))
+        return Runtime(context=CLIContextSchema())
 
     @staticmethod
     def _middleware(
         *, hook_update: dict[str, object] | None = None
     ) -> tuple[Any, MagicMock, MagicMock]:
-        from deepagents_code.offload_middleware import OffloadOperationMiddleware
+        from deepagents_code.offload_middleware import OffloadOperation
 
         compaction = MagicMock()
         compaction.arun_forced_compaction_update = AsyncMock()
@@ -1976,18 +1849,7 @@ class TestOffloadOperationMiddleware:
         )
         hooks = MagicMock()
         hooks.aafter_model = AsyncMock(return_value=hook_update or {})
-        return OffloadOperationMiddleware(compaction, hooks), compaction, hooks
-
-    async def test_ordinary_turn_is_unchanged(self) -> None:
-        middleware, compaction, hooks = self._middleware()
-        result = await middleware.abefore_agent(
-            {"messages": [_make_dict_message("hi")]},
-            Runtime(context=CLIContextSchema()),
-        )
-
-        assert result is None
-        compaction.arun_forced_compaction_update.assert_not_awaited()
-        hooks.aafter_model.assert_not_awaited()
+        return OffloadOperation(compaction, hooks), compaction, hooks
 
     async def test_compacts_checkpoint_state_without_message_input(self) -> None:
         event = _summary_event(2)
@@ -1997,21 +1859,18 @@ class TestOffloadOperationMiddleware:
         )
         state = {
             "messages": _make_dict_messages(4),
-            "dcode_operation": "offload",
         }
 
-        result = await middleware.abefore_agent(state, self._runtime())
+        execution = await middleware.execute(state, self._runtime())
 
-        assert result is not None
         compaction.arun_forced_compaction_update.assert_awaited_once()
         await_args = compaction.arun_forced_compaction_update.await_args
         assert await_args is not None
         state_arg = await_args.args[0]
         assert state_arg is state
-        assert "messages" not in result
-        assert result["_offload_result"]["status"] == "compacted"
-        assert result["_offload_result"]["messages_offloaded"] == 2
-        assert result["jump_to"] == "end"
+        assert "messages" not in execution.update
+        assert execution.result["status"] == "compacted"
+        assert execution.result["messages_offloaded"] == 2
 
     async def test_hook_denial_skips_compaction(self) -> None:
         from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY
@@ -2029,17 +1888,12 @@ class TestOffloadOperationMiddleware:
             "deepagents_code.offload_middleware._forced_offload_call_id",
             return_value=forced_id,
         ):
-            result = await middleware.abefore_agent(
-                {
-                    "messages": _make_dict_messages(4),
-                    "dcode_operation": "offload",
-                },
-                self._runtime(),
+            execution = await middleware.execute(
+                {"messages": _make_dict_messages(4)}, self._runtime()
             )
 
-        assert result is not None
-        assert result["_offload_result"]["status"] == "denied"
-        assert result["_offload_result"]["error"] == "policy"
+        assert execution.result["status"] == "denied"
+        assert execution.result["error"] == "policy"
         compaction.arun_forced_compaction_update.assert_not_awaited()
 
     async def test_failure_returns_result_without_rewriting_messages(self) -> None:
@@ -2048,18 +1902,13 @@ class TestOffloadOperationMiddleware:
             side_effect=OSError("archive unavailable")
         )
 
-        result = await middleware.abefore_agent(
-            {
-                "messages": _make_dict_messages(4),
-                "dcode_operation": "offload",
-            },
-            self._runtime(),
+        execution = await middleware.execute(
+            {"messages": _make_dict_messages(4)}, self._runtime()
         )
 
-        assert result is not None
-        assert result["_offload_result"]["status"] == "failed"
-        assert "archive unavailable" in result["_offload_result"]["error"]
-        assert "messages" not in result
+        assert execution.result["status"] == "failed"
+        assert "archive unavailable" in (execution.result["error"] or "")
+        assert "messages" not in execution.update
 
 
 class TestForcedOffloadCallId:
@@ -2128,7 +1977,7 @@ class TestSeededDriverAgainstALocalAgent:
 
     Every other test in `TestDriveLocalSeededCompaction` builds its agent with
     `MagicMock(spec=RemoteAgent)`, but `_handle_offload` now routes remote
-    agents to the operation graph — so the driver is exercised exclusively in
+    agents to the server operation — so the driver is exercised exclusively in
     the shape it no longer serves. These use a non-`RemoteAgent` double.
     """
 

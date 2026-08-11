@@ -553,7 +553,7 @@ class TestStartServerAndGetAgent:
     def test_builtin_server_registers_only_the_agent_graph(
         self, tmp_path: Path
     ) -> None:
-        """Operations live inside `agent`, not in client-addressable siblings."""
+        """Operations use an authenticated route, not addressable siblings."""
         import json
 
         from deepagents_code.client.launch.server import generate_langgraph_json
@@ -563,6 +563,10 @@ class TestStartServerAndGetAgent:
         generate_langgraph_json(tmp_path)
         config = json.loads((tmp_path / "langgraph.json").read_text())
         assert config["graphs"] == {"agent": "deepagents_code.server_graph:make_graph"}
+        assert config["http"] == {
+            "app": "deepagents_code.offload_api:app",
+            "enable_custom_route_auth": True,
+        }
 
     def test_custom_graph_does_not_require_an_offload_factory(
         self, tmp_path: Path
@@ -576,6 +580,7 @@ class TestStartServerAndGetAgent:
 
         config = json.loads((tmp_path / "langgraph.json").read_text())
         assert config["graphs"] == {"agent": "custom_graph:make_graph"}
+        assert "http" not in config
 
 
 class TestWritePyproject:

@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HOST = "127.0.0.1"
 
 _EPHEMERAL_PORT = 0
+_DCODE_GRAPH_REF = "deepagents_code.server_graph:make_graph"
 """Sentinel port meaning "let `start()` pick a free ephemeral port".
 
 The server is internal and ephemeral — callers reach it via `ServerProcess.url`,
@@ -161,21 +162,22 @@ def _extract_startup_error_marker(output: str) -> str | None:
 def generate_langgraph_json(
     output_dir: str | Path,
     *,
-    graph_ref: str = "deepagents_code.server_graph:make_graph",
+    graph_ref: str = _DCODE_GRAPH_REF,
     env_file: str | None = None,
     checkpointer_path: str | None = None,
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
 
-    Registers the interactive `agent` graph. The built-in graph owns operations
-    such as `/offload`; they are not separately addressable graphs.
+    Registers the interactive `agent` graph and dcode's authenticated custom
+    HTTP operations. `/offload` is served by that backend boundary rather than
+    exposed as another client-addressable graph.
 
     Args:
         output_dir: Directory to write the config file.
         graph_ref: Python "module:attribute" reference to the graph, where the
             attribute is a graph factory (e.g. `make_graph`) or a graph object.
-            Custom graphs may omit the built-in offload operation; the client
-            discovers that capability and uses its local seeded fallback.
+            Custom graphs may omit the built-in offload service; the client
+            discovers the HTTP capability and uses its seeded fallback.
         env_file: Optional path to an env file.
         checkpointer_path: Import path to an async context manager that yields a
             `BaseCheckpointSaver`. When set, the server persists checkpoint data
@@ -188,6 +190,11 @@ def generate_langgraph_json(
         "dependencies": ["."],
         "graphs": {"agent": graph_ref},
     }
+    if graph_ref == _DCODE_GRAPH_REF:
+        config["http"] = {
+            "app": "deepagents_code.offload_api:app",
+            "enable_custom_route_auth": True,
+        }
     if env_file:
         config["env"] = env_file
     if checkpointer_path:

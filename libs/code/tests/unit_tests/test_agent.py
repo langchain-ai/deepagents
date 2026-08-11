@@ -152,9 +152,9 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
-def test_agent_input_allows_operation_without_messages(tmp_path: Path) -> None:
-    """The built-in graph accepts an operation intent without state replay."""
-    agent, _backend = create_cli_agent(
+def test_agent_publishes_server_offload_operation(tmp_path: Path) -> None:
+    """The backend exposes offload without adding graph input fields."""
+    agent, backend = create_cli_agent(
         model=_make_fake_chat_model(),
         assistant_id="test-agent",
         enable_memory=False,
@@ -164,10 +164,11 @@ def test_agent_input_allows_operation_without_messages(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
 
-    schema = agent.get_input_jsonschema()
+    from deepagents_code.offload_middleware import offload_operation_from
 
-    assert "dcode_operation" in schema["properties"]
-    assert "messages" not in schema.get("required", [])
+    schema = agent.get_input_jsonschema()
+    assert "dcode_operation" not in schema["properties"]
+    assert offload_operation_from(backend) is not None
 
 
 def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:

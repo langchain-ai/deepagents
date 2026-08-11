@@ -1076,102 +1076,86 @@ class TestAgentErrorType:
         assert agent_error_type(ValueError("boom")) == "ValueError"
 
 
-# ---------------------------------------------------------------------------
-# RemoteAgent.for_graph
-# ---------------------------------------------------------------------------
-
-
-class TestForGraph:
-    """Sibling clients for other graphs served by the same runtime."""
-
-    def _agent(self) -> RemoteAgent:
-        return RemoteAgent(
-            "http://localhost:1234",
-            graph_name="agent",
-            api_key="secret-key",
-            headers={"x-proxy": "yes"},
-        )
-
-    def test_preserves_url_and_credentials(self) -> None:
-        """A dropped key would 401 only on authenticated deployments."""
-        sibling = self._agent().for_graph("offload")
-
-        assert sibling._graph_name == "offload"
-        assert sibling._url == "http://localhost:1234"
-        assert sibling._api_key == "secret-key"
-        assert sibling._headers == {"x-proxy": "yes"}
-
-    def test_repeated_calls_return_one_client(self) -> None:
-        """Each `RemoteGraph` opens an httpx async *and* sync client.
-
-        Neither is pooled by the SDK nor closed here, so building a client per
-        call would leak two connection pools on every `/offload`.
-        """
-        agent = self._agent()
-
-        assert agent.for_graph("offload") is agent.for_graph("offload")
-
-    def test_own_graph_name_returns_self(self) -> None:
-        """Asking for the graph this client already serves must not build a second.
-
-        `test_offload_server_side.py` takes exactly this path
-        (`agent.for_graph("agent")`), and without the short-circuit it creates
-        the duplicate httpx sync+async pair the cache exists to prevent.
-        """
-        agent = self._agent()
-
-        assert agent.for_graph("agent") is agent
-        assert agent._sibling_clients == {}
-
-    def test_distinct_names_get_distinct_clients(self) -> None:
-        agent = self._agent()
-
-        assert agent.for_graph("offload") is not agent.for_graph("agent")
-
-    def test_sibling_does_not_share_the_parents_graph(self) -> None:
-        """The cached `RemoteGraph` is per-graph-name, not shared."""
-        agent = self._agent()
-        with patch("langgraph.pregel.remote.RemoteGraph") as remote_graph:
-            remote_graph.side_effect = lambda name, **_kwargs: SimpleNamespace(
-                name=name
-            )
-            parent_graph = agent._get_graph()
-            sibling_graph = agent.for_graph("offload")._get_graph()
-
-        assert parent_graph is not sibling_graph
-        assert parent_graph.name == "agent"
-        assert sibling_graph.name == "offload"
-
-
-# ---------------------------------------------------------------------------
-# RemoteAgent.arebind_thread
-# ---------------------------------------------------------------------------
-
-
 class TestSupportsOffload:
-    """Capability discovery protects custom graphs from operation input."""
+    """Capability discovery uses only the dcode HTTP boundary."""
 
-    async def test_detects_operation_node_and_caches_result(self) -> None:
+    async def test_detects_route_and_caches_result(self) -> None:
         agent = RemoteAgent("http://localhost:1234", graph_name="agent")
-        graph = MagicMock()
-        graph.aget_graph = AsyncMock(
-            return_value=SimpleNamespace(
-                nodes={"OffloadOperationMiddleware.before_agent": object()}
-            )
+        http = SimpleNamespace(
+            get=AsyncMock(return_value={"offload": True, "version": 1})
         )
+        graph = SimpleNamespace(client=SimpleNamespace(http=http))
 
         with patch.object(agent, "_get_graph", return_value=graph):
             assert await agent.asupports_offload() is True
             assert await agent.asupports_offload() is True
 
-        graph.aget_graph.assert_awaited_once_with()
+        http.get.assert_awaited_once_with("/dcode/offload")
 
-    async def test_rejects_graph_without_operation_node(self) -> None:
+    async def test_missing_route_selects_fallback(self) -> None:
+        import httpx
+
         agent = RemoteAgent("http://localhost:1234", graph_name="custom")
-        graph = MagicMock()
-        graph.aget_graph = AsyncMock(
-            return_value=SimpleNamespace(nodes={"model": object()})
+        request = httpx.Request("GET", "http://localhost/dcode/offload")
+        response = httpx.Response(404, request=request)
+        http = SimpleNamespace(
+            get=AsyncMock(
+                side_effect=httpx.HTTPStatusError(
+                    "missing", request=request, response=response
+                )
+            )
         )
+        graph = SimpleNamespace(client=SimpleNamespace(http=http))
 
         with patch.object(agent, "_get_graph", return_value=graph):
             assert await agent.asupports_offload() is False
+
+
+class TestServerOffload:
+    """The remote client transports operation data without graph state."""
+
+    async def test_fulfills_hook_and_returns_typed_result(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 2,
+            "messages_kept": 3,
+            "tokens_before": 100,
+            "tokens_after": 40,
+            "archive_path": "/conversation_history/thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        http = SimpleNamespace(
+            post=AsyncMock(
+                side_effect=[
+                    {
+                        "status": "interrupt",
+                        "request": {
+                            "type": "hook_invocation",
+                            "request": {"invocation_id": "hook-1"},
+                        },
+                    },
+                    {"status": "complete", "result": result},
+                ]
+            )
+        )
+        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        fulfill = AsyncMock(return_value={"decision": "allow"})
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            actual = await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={"model": "test:model"},
+                fulfill_hook=fulfill,
+            )
+
+        assert actual == result
+        assert http.post.await_count == 2
+        first = http.post.await_args_list[0].kwargs["json"]
+        second = http.post.await_args_list[1].kwargs["json"]
+        assert first["context"] == {"model": "test:model"}
+        assert "messages" not in first
+        assert first["operation_id"] == second["operation_id"]
+        assert second["hook_responses"] == {"hook-1": {"decision": "allow"}}
+        fulfill.assert_awaited_once()

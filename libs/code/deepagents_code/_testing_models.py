@@ -103,7 +103,18 @@ class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
                 content = "integration reply"
 
         return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=content))]
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content=content,
+                        usage_metadata={
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_tokens": 120,
+                        },
+                    )
+                )
+            ]
         )
 
     @property

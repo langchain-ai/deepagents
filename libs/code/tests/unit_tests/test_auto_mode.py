@@ -953,9 +953,9 @@ async def test_plan_less_forced_compaction_always_reaches_review(
 ) -> None:
     """A plan-less forced `compact_conversation` always reaches human review.
 
-    There is no seed-based approval bypass any more -- `/offload` runs the
-    server-side operation graph instead -- so `plan is None` routes to manual
-    review no matter what the run context claims. Every case here therefore
+    There is no seed-based approval bypass any more -- built-in servers own
+    `/offload` behind their HTTP operation boundary -- so `plan is None` routes
+    to manual review no matter what the run context claims. Every case here therefore
     expects the same outcome by design; the parameters are not each individually
     load-bearing. They are retained as a regression guard: each varies one of the
     signals the removed bypass keyed on (trusted tool, offload context, seed

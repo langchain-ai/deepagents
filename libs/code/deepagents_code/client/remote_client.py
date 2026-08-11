@@ -13,7 +13,9 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+
+    from deepagents_code.offload_middleware import OffloadResult
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,9 @@ finish its in-flight tool call.
 Concurrent cancels keep aggregate wall time bounded by this value regardless of
 how many runs are active.
 """
+
+_OFFLOAD_MAX_RESUME_ROUNDS = 32
+"""Bound hook transport rounds for a single server operation."""
 
 
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:
@@ -136,7 +141,6 @@ class RemoteAgent:
         self._api_key = api_key
         self._headers = headers
         self._graph: Any = None
-        self._sibling_clients: dict[str, RemoteAgent] = {}
         self._supports_offload: bool | None = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
@@ -156,51 +160,102 @@ class RemoteAgent:
             )
         return self._graph
 
-    def for_graph(self, graph_name: str) -> RemoteAgent:
-        """Return a client for another graph served by the same runtime.
-
-        Cached per graph name, mirroring the `_graph` cache: each `RemoteGraph`
-        builds its own `httpx` async *and* sync client, neither of which is
-        pooled by the SDK or closed here, so constructing one per call would
-        leak two connection pools on every use.
-
-        Args:
-            graph_name: Registered LangGraph graph name.
-
-        Returns:
-            A client that preserves this connection's URL and credentials. The
-                same instance is returned for repeated calls with one name, and
-                `self` when asked for the graph this client already serves.
-        """
-        if graph_name == self._graph_name:
-            # Otherwise this builds a second client for the graph the receiver
-            # already serves -- the exact duplicate-connection-pool leak the
-            # cache exists to prevent.
-            return self
-        cached = self._sibling_clients.get(graph_name)
-        if cached is None:
-            cached = RemoteAgent(
-                self._url,
-                graph_name=graph_name,
-                api_key=self._api_key,
-                headers=self._headers,
-            )
-            self._sibling_clients[graph_name] = cached
-        return cached
-
     async def asupports_offload(self) -> bool:
-        """Return whether this graph exposes the server-owned offload operation.
+        """Return whether this server exposes dcode's offload HTTP operation.
 
-        Capability discovery is read-only and cached. It prevents an empty
-        operation input from being sent to an arbitrary custom graph, where it
-        could otherwise be interpreted as a normal model turn.
+        Capability discovery is read-only and cached. A missing route identifies
+        a custom or older server and selects the compatibility fallback without
+        inspecting graph nodes or checkpoint schemas.
+
+        Raises:
+            HTTPStatusError: If capability discovery fails for any status other
+                than a missing route.
         """
         if self._supports_offload is None:
-            from deepagents_code._cli_context import OFFLOAD_OPERATION_NODE
+            import httpx
 
-            graph = await self._get_graph().aget_graph()
-            self._supports_offload = OFFLOAD_OPERATION_NODE in graph.nodes
+            graph = self._get_graph()
+            try:
+                response = await graph.client.http.get("/dcode/offload")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == httpx.codes.NOT_FOUND:
+                    self._supports_offload = False
+                else:
+                    raise
+            else:
+                self._supports_offload = bool(
+                    isinstance(response, dict) and response.get("offload") is True
+                )
         return self._supports_offload
+
+    async def aoffload(
+        self,
+        *,
+        config: Mapping[str, Any],
+        context: Mapping[str, Any],
+        fulfill_hook: Callable[[object], Awaitable[dict[str, object]]],
+    ) -> OffloadResult:
+        """Request server-owned offload and fulfill its hook callbacks.
+
+        Args:
+            config: Runnable config identifying the thread.
+            context: Runtime model and Hooks v2 context.
+            fulfill_hook: Client hook executor for server requests.
+
+        Returns:
+            Typed offload result from the server operation.
+
+        Raises:
+            TypeError: If the server response is not a JSON object.
+            RuntimeError: If the server returns an invalid protocol response or
+                exceeds the hook round limit.
+        """
+        from uuid import uuid4
+
+        from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+
+        thread_id = _require_thread_id(config)
+        operation_id = str(uuid4())
+        hook_responses: dict[str, object] = {}
+        graph = self._get_graph()
+        for _round in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
+            response = await graph.client.http.post(
+                f"/dcode/threads/{thread_id}/offload",
+                json={
+                    "operation_id": operation_id,
+                    "context": dict(context),
+                    "hook_responses": hook_responses,
+                },
+            )
+            if not isinstance(response, dict):
+                msg = "Offload server returned a non-object response."
+                raise TypeError(msg)
+            status = response.get("status")
+            if status == "complete":
+                result = response.get("result")
+                if isinstance(result, dict):
+                    return result  # ty: ignore[invalid-return-type]
+                msg = "Offload server completed without a typed result."
+                raise RuntimeError(msg)
+            request = response.get("request")
+            if status != "interrupt" or not is_hook_interrupt_payload(request):
+                msg = "Offload server returned an invalid operation response."
+                raise RuntimeError(msg)
+            invocation = request.get("request")
+            invocation_id = (
+                invocation.get("invocation_id")
+                if isinstance(invocation, dict)
+                else None
+            )
+            if not isinstance(invocation_id, str) or not invocation_id:
+                msg = "Offload hook request has no invocation id."
+                raise RuntimeError(msg)
+            hook_responses[invocation_id] = await fulfill_hook(request)
+        msg = (
+            "Offload could not complete because configured hooks kept "
+            f"interrupting after {_OFFLOAD_MAX_RESUME_ROUNDS} rounds."
+        )
+        raise RuntimeError(msg)
 
     async def astream(
         self,

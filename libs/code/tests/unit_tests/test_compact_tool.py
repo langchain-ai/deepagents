@@ -243,10 +243,10 @@ class TestCLICompactionMiddleware:
         assert not hasattr(write_backend, "artifacts_root")
 
     async def test_operation_path_writes_through_the_archive_guard(self) -> None:
-        """The `/offload` operation graph's write path has the same invariant.
+        """The server `/offload` operation's write path has the same invariant.
 
         The guard is applied per write site rather than by the backend's type, so
-        the operation graph's entry point does not inherit it from the tool paths
+        the server operation entry point does not inherit it from the tool paths
         — it has to apply it itself, and nothing but a test says so.
         """
         summarization = self._summarization()
@@ -343,17 +343,16 @@ class TestCLICompactionMiddleware:
     async def test_operation_path_rejects_an_empty_conversation(self) -> None:
         """An empty `messages` must raise rather than report a clean no-op.
 
-        On a real server the run input *replaces* this channel, so the node
-        seeing no messages means the client already truncated the thread.
-        Returning `None` would render that wipe to the user as "your
-        conversation is already compact".
+        The server operation normally handles an empty thread before invoking
+        compaction. A direct caller that bypasses that service check still gets
+        an explicit error instead of a misleading successful no-op.
         """
         summarization = self._summarization()
         middleware = CLICompactionMiddleware(summarization)
         runtime = MagicMock()
         runtime.context = None
 
-        with pytest.raises(ValueError, match="empty conversation"):
+        with pytest.raises(ValueError, match="checkpointed conversation"):
             await middleware.arun_forced_compaction_update(
                 cast("Any", {"messages": [], "_summarization_event": None}), runtime
             )

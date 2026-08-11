@@ -9,13 +9,7 @@ middleware stack.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
-
-OFFLOAD_OPERATION = "offload"
-"""Runtime operation name used to request server-owned thread compaction."""
-
-OFFLOAD_OPERATION_NODE = "OffloadOperationMiddleware.before_agent"
-"""Main-graph node that implements the server-owned offload operation."""
+from typing import Any, TypedDict
 
 INHERIT_CLASSIFIER_MODEL = "__dcode_inherit_classifier__"
 """Per-run `classifier_model` value meaning "review with the main agent model".
@@ -77,8 +71,6 @@ class CLIContextSchema:
     turn_id: str | None = None
 
     offload_tool_call_id: str | None = None
-
-    operation: Literal["offload"] | None = None
 
     hooks_snapshot_id: str | None = None
 
@@ -154,12 +146,8 @@ class CLIContext(TypedDict, total=False):
     grant themselves permission to execute during the hidden compaction turn.
 
     Only the seeded driver sets it (local in-process agents). A server-backed
-    A server-backed `/offload` runs as a main-graph operation with no tool node,
-    so it leaves this `None`.
+    `/offload` uses the dcode HTTP operation and leaves this `None`.
     """
-
-    operation: Literal["offload"]
-    """Optional server operation requested without writing graph input state."""
 
     hooks_snapshot_id: str | None
     """Canonical Hooks v2 configuration hash for this session.
@@ -177,15 +165,3 @@ class CLIContext(TypedDict, total=False):
 
     prompt_id: str | None
     """Optional per-turn prompt id projected into hook context."""
-
-
-def is_offload_operation(context: object) -> bool:
-    """Return whether runtime context requests server-owned offload."""
-    value = (
-        context.operation
-        if isinstance(context, CLIContextSchema)
-        else context.get("operation")
-        if isinstance(context, dict)
-        else None
-    )
-    return value == OFFLOAD_OPERATION

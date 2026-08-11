@@ -67,6 +67,7 @@ from deepagents_code.hooks.models.transport import (
 from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import (
+    HookTransportInterruptError,
     ServerHooksMiddleware,
     ServerHooksState,
     _append_message_text,
@@ -81,6 +82,7 @@ from deepagents_code.hooks.server_middleware import (
     _session_gate,
     _tool_result_error,
     _tool_result_text,
+    operation_hook_responses,
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
@@ -567,6 +569,56 @@ def test_hook_resume_value_validates_identity() -> None:
             invocation_id=uuid4(),
             snapshot_id=request.snapshot_id,
         )
+
+
+def test_operation_hook_transport_requests_then_consumes_response() -> None:
+    """HTTP operations replay a deterministic hook from supplied responses."""
+    request = _request()
+    event = request.invocation.event
+    assert isinstance(event, PreToolUseEvent)
+    gate = _session_gate(
+        {
+            "hooks_snapshot_id": request.snapshot_id,
+            "hooks_server_events": [HookEvent.PRE_TOOL_USE.value],
+        }
+    )
+    assert gate is not None
+
+    with (
+        operation_hook_responses({}),
+        pytest.raises(HookTransportInterruptError) as exc_info,
+    ):
+        _invoke_hook(
+            request.invocation.context,
+            event,
+            gate=gate,
+            config={"configurable": {"thread_id": "thread-1"}},
+            deadline=timedelta(seconds=1),
+        )
+
+    pending = exc_info.value.request
+    resume = build_hook_resume_value(
+        HookInvocationResponse(
+            protocol_version=1,
+            invocation_id=pending.invocation_id,
+            snapshot_id=pending.snapshot_id,
+            decision=PreToolUseDecision(
+                event=HookEvent.PRE_TOOL_USE,
+                permission=PermissionEffect(behavior="allow"),
+            ),
+        )
+    )
+    with operation_hook_responses({str(pending.invocation_id): resume}):
+        decision = _invoke_hook(
+            request.invocation.context,
+            event,
+            gate=gate,
+            config={"configurable": {"thread_id": "thread-1"}},
+            deadline=timedelta(seconds=1),
+        )
+
+    assert isinstance(decision, PreToolUseDecision)
+    assert decision.permission.behavior == "allow"
 
 
 def _invoke_pre_tool_hook(

@@ -1,7 +1,7 @@
 """Integration coverage for the server-side `/offload` path.
 
-For a server-backed agent `/offload` runs the dedicated `offload` operation
-graph, which compacts without a model node or a synthetic tool call. Either way
+For a server-backed agent `/offload` runs through dcode's server HTTP operation,
+which compacts without a model node or a synthetic tool call. Either way
 the offloaded archive lands in the agent's composite backend and is readable via
 `read_file` in every run mode — not in a client-local directory the server can
 never read. These tests construct the app the PRODUCTION way (`backend=None`)
@@ -40,6 +40,25 @@ models = ["fake"]
 
 [models.providers.itest.profile]
 max_input_tokens = 32000
+""".strip()
+        + "\n"
+    )
+    (config_dir / "prices.json").write_text(
+        """
+[
+  {
+    "id": "itest",
+    "name": "Integration Test",
+    "api_pattern": "itest",
+    "models": [
+      {
+        "id": "fake",
+        "match": {"equals": "fake"},
+        "prices": {"input_mtok": 1.0, "output_mtok": 2.0}
+      }
+    ]
+  }
+]
 """.strip()
         + "\n"
     )
@@ -104,12 +123,9 @@ async def _read_file_through_agent(agent, *, thread_id: str, file_path: str) -> 
             {"name": "read_file", "args": {"file_path": file_path}, "id": tool_call_id}
         ],
     )
-    # `/offload` restores the thread's main-graph association before returning,
-    # so this seeds the read straight through the interactive `agent` graph's
-    # model node. Seeding against that client (rather than the app's default
-    # graph) also keeps the test pinned to the interactive graph `/offload`
-    # shares its checkpoint with.
-    agent_graph = agent.for_graph("agent")
+    # Offload never changes the thread's graph association, so the same client
+    # can immediately seed a read through the interactive graph.
+    agent_graph = agent
     await agent_graph.aensure_thread(config)
     await agent_graph.aupdate_state(config, {"messages": [seed]}, as_node="model")
 
@@ -158,7 +174,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
     enough content, runs `/offload`, and asserts:
 
     - no `ErrorMessage` and an "Offloaded " success message,
-    - no HITL interrupt is surfaced, the operation graph having no tool node,
+    - the operation succeeds through the custom server route,
     - a persisted `_summarization_event` with `cutoff > 0` and
       `file_path == /conversation_history/<thread>.md`,
     - the archive is readable THROUGH THE AGENT (via its own `read_file` tool),
@@ -212,11 +228,16 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
             config = {"configurable": {"thread_id": thread_id}}
 
-            # Captured before the run to prove the empty operation input does
-            # not replay, replace, or otherwise rewrite conversation messages.
+            # Captured before the operation to prove its state-only commit does
+            # not replace or otherwise rewrite conversation messages.
             before_state = await agent.aget_state(config)
             messages_before = list(
                 (getattr(before_state, "values", None) or {}).get("messages", [])
+            )
+            cost_before = float(
+                (getattr(before_state, "values", None) or {}).get(
+                    "_session_cost_usd", 0.0
+                )
             )
             assert messages_before
 
@@ -229,20 +250,6 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                 thread_id=thread_id,
             )
 
-            offload_interrupts: list[object] = []
-            recorded_chunks: list[object] = []
-            plain_astream = agent.astream
-
-            async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-                """Record the current graph stream `/offload` actually uses."""
-                async for chunk in plain_astream(*args, **kwargs):
-                    recorded_chunks.append(chunk)
-                    if isinstance(chunk, tuple) and len(chunk) == 3:
-                        _ns, mode, data = chunk
-                        if mode == "updates" and isinstance(data, dict):
-                            offload_interrupts.extend(data.get("__interrupt__") or [])
-                    yield chunk
-
             async with app.run_test() as pilot:
                 for _ in range(120):
                     await pilot.pause(0.1)
@@ -251,28 +258,15 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
                 assert app._message_store.total_count > 0
 
-                agent.astream = _recording_astream  # ty: ignore
-                try:
-                    await app._handle_offload()
+                await app._handle_offload()
 
-                    for _ in range(120):
-                        await pilot.pause(0.1)
-                        if any(
-                            "Offloaded " in str(widget._content)
-                            for widget in app.query(AppMessage)
-                        ):
-                            break
-                finally:
-                    agent.astream = plain_astream  # ty: ignore
-
-                # The operation graph has no HITL middleware and manufactures no
-                # tool call, so the slash command is the whole authorization
-                # boundary: there is nothing left to approve in any approval
-                # mode (this app runs the default Manual mode).
-                assert offload_interrupts == []
-                # Positive control: the recorder must have seen chunks, so the
-                # empty-interrupt assertion above cannot pass vacuously.
-                assert recorded_chunks
+                for _ in range(120):
+                    await pilot.pause(0.1)
+                    if any(
+                        "Offloaded " in str(widget._content)
+                        for widget in app.query(AppMessage)
+                    ):
+                        break
 
                 app_messages = [
                     str(widget._content) for widget in app.query(AppMessage)
@@ -281,18 +275,14 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                     str(widget._content) for widget in app.query(ErrorMessage)
                 ]
 
-            operation_chunks = [
-                chunk
-                for chunk in recorded_chunks
-                if "OffloadOperationMiddleware" in repr(chunk)
-            ]
-            assert not error_messages, operation_chunks
+            assert not error_messages
             assert "Nothing to offload" not in "\n".join(app_messages)
             assert any("Offloaded " in content for content in app_messages)
 
             # The summarization event must be visible through server state.
             state = await agent.aget_state(config)
             values = getattr(state, "values", None) or {}
+            assert float(values.get("_session_cost_usd", 0.0)) > cost_before
 
             # `/offload` frees context by advancing the summarization cutoff,
             # not by deleting messages: raw history stays checkpointed. Assert

@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
     from deepagents.backends.composite import CompositeBackend
 
+    from deepagents_code.offload_middleware import OffloadOperation
+
 logger = logging.getLogger(__name__)
 
 _sandbox_cm: Any = None
@@ -200,6 +202,9 @@ class ServerRuntime(NamedTuple):
 
     backend: CompositeBackend
     """Composite backend the agent and its operations were built with."""
+
+    offload: OffloadOperation
+    """Server-owned thread offload operation bound to `backend`."""
 
 
 async def _make_graphs() -> ServerRuntime:
@@ -380,27 +385,40 @@ async def _make_graphs() -> ServerRuntime:
             goal_criteria_tools=read_only_context_tools,
             rubric_grader_tools=read_only_context_tools,
         )
-        return ServerRuntime(agent=agent, backend=composite_backend)
+        from deepagents_code.offload_middleware import offload_operation_from
+
+        offload = offload_operation_from(composite_backend)
+        if offload is None:
+            msg = (
+                "Agent backend did not publish its offload operation; "
+                "/offload has no server implementation."
+            )
+            raise RuntimeError(msg)
+        return ServerRuntime(
+            agent=agent,
+            backend=composite_backend,
+            offload=offload,
+        )
 
     return await asyncio.to_thread(_create_cli_graphs_sync)
 
 
-def _build_graph_factory(
+def _build_runtime_factory(
     builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
-) -> Callable[[], Awaitable[Any]]:
-    """Build the cached factory for the single server-owned agent graph.
+) -> Callable[[], Awaitable[ServerRuntime]]:
+    """Build the cached factory for all server-owned runtime resources.
 
     Args:
         builder: Optional alternate builder used by unit tests.
 
     Returns:
-        Async graph factory for `langgraph.json`.
+        Async runtime factory shared by the graph and custom operation API.
     """
     runtime: ServerRuntime | None = None
     lock = asyncio.Lock()
 
-    async def make_graph() -> Any:  # noqa: ANN401
-        """Return the cached interactive graph, including its operations."""
+    async def get_runtime() -> ServerRuntime:
+        """Return the cached interactive graph and operation resources."""
         nonlocal runtime
         if runtime is None:
             async with lock:
@@ -410,9 +428,38 @@ def _build_graph_factory(
                     except Exception as exc:  # noqa: BLE001  # startup barrier
                         emit_startup_failure(exc)
                         sys.exit(1)
-        return runtime.agent
+        return runtime
+
+    return get_runtime
+
+
+def _build_graph_factory(
+    builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
+) -> Callable[[], Awaitable[Any]]:
+    """Build a cached graph factory for `langgraph.json`.
+
+    Args:
+        builder: Optional alternate runtime builder used by unit tests.
+
+    Returns:
+        Async graph factory for the interactive `agent` graph.
+    """
+    get_runtime = _build_runtime_factory(builder)
+
+    async def make_graph() -> Any:  # noqa: ANN401
+        return (await get_runtime()).agent
 
     return make_graph
 
 
-make_graph = _build_graph_factory()
+_get_runtime = _build_runtime_factory()
+
+
+async def get_server_runtime() -> ServerRuntime:
+    """Return resources shared by the graph and dcode operation routes."""
+    return await _get_runtime()
+
+
+async def make_graph() -> Any:  # noqa: ANN401
+    """Return the cached interactive graph for `langgraph.json`."""
+    return (await get_server_runtime()).agent

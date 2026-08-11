@@ -15,10 +15,11 @@ import pytest
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
+from deepagents._models import get_model_provider
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__, _lc_version, _with_editable_local_version
 from deepagents.backends import StateBackend
@@ -182,6 +183,76 @@ class TestProfileForModel:
         model._get_ls_params = MagicMock(return_value={})
         result = _harness_profile_for_model(model, None)
         assert result == HarnessProfile()
+
+
+def _system_prompt_text(messages: list[Any]) -> str:
+    return "\n".join(str(m.content) for m in messages if isinstance(m, SystemMessage))
+
+
+class TestExplicitHarnessProfile:
+    """Tests for the `harness_profile` argument of `create_deep_agent`."""
+
+    def test_explicit_profile_is_applied(self) -> None:
+        """An explicit `harness_profile` drives the agent's system prompt."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        model.call_history.clear()
+
+        agent = create_deep_agent(
+            model=model,
+            harness_profile=HarnessProfile(base_system_prompt="EXPLICIT-PERSONA-MARKER"),
+        )
+        agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+        system_prompt = _system_prompt_text(model.call_history[-1]["messages"])
+        assert "EXPLICIT-PERSONA-MARKER" in system_prompt
+
+    def test_explicit_profile_overrides_registry_lookup(self) -> None:
+        """An explicit profile wins over the one registered for the model."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            provider = get_model_provider(model)
+            assert provider is not None
+            register_harness_profile(
+                provider,
+                HarnessProfile(base_system_prompt="REGISTERED-MARKER"),
+            )
+            model.call_history.clear()
+
+            agent = create_deep_agent(
+                model=model,
+                harness_profile=HarnessProfile(base_system_prompt="EXPLICIT-MARKER"),
+            )
+            agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+            system_prompt = _system_prompt_text(model.call_history[-1]["messages"])
+            assert "EXPLICIT-MARKER" in system_prompt
+            assert "REGISTERED-MARKER" not in system_prompt
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_none_falls_back_to_registry_lookup(self) -> None:
+        """Without an explicit profile, the model-registered profile is used."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            provider = get_model_provider(model)
+            assert provider is not None
+            register_harness_profile(
+                provider,
+                HarnessProfile(base_system_prompt="REGISTERED-MARKER"),
+            )
+            model.call_history.clear()
+
+            agent = create_deep_agent(model=model)
+            agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+            system_prompt = _system_prompt_text(model.call_history[-1]["messages"])
+            assert "REGISTERED-MARKER" in system_prompt
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
 
 class TestToolName:

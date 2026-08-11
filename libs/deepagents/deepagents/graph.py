@@ -60,6 +60,7 @@ from deepagents.middleware.subagents import (
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
+    HarnessProfile,
     _apply_profile_prompt,
     _harness_profile_for_model,
 )
@@ -285,6 +286,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    harness_profile: HarnessProfile | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
@@ -561,6 +563,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
 
+        harness_profile: Explicit
+            [`HarnessProfile`][deepagents.HarnessProfile] to apply, bypassing
+            registry lookup by model identity. Use this to select a profile
+            independently of the model — e.g. to route between several personas
+            that share one pre-built model instance, without aliasing the
+            model's identifier. When `None` (the default) the profile is resolved
+            from the model as before.
+
     Returns:
         A configured deep agent.
 
@@ -602,7 +612,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         model = _build_default_model()
     else:
         model = resolve_model(model)
-    _profile = _harness_profile_for_model(model, _model_spec)
+    _profile = harness_profile if harness_profile is not None else _harness_profile_for_model(model, _model_spec)
     # Validate profile-level invariants (required scaffolding, private names)
     _validate_excluded_middleware_config(
         _profile,

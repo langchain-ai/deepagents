@@ -5282,7 +5282,7 @@ class TestSummaryTargetCounting:
                     ("fetch_url", {"url": "http://x/y"}),
                     ("fetch_url", {"url": "http://x/y"}),
                 ],
-                "Fetched 1 URL",
+                "Fetched 1 URL (2 calls)",
             ),
             # A URL is compared exactly, never with path rules: a server can
             # answer each of these differently, so collapsing would undercount.
@@ -5400,8 +5400,9 @@ class TestRepeatOperationCounts:
             ),
             # Reads repeat for pagination, where the count is noise.
             ([("read_file", {"file_path": "a.py"})] * 3, "Read 1 file"),
-            # A repeated fetch of one URL is not a mutation either.
-            ([("fetch_url", {"url": "http://x"})] * 2, "Fetched 1 URL"),
+            # A repeated fetch of one URL is a deliberate re-request, so the
+            # call count stays visible.
+            ([("fetch_url", {"url": "http://x"})] * 2, "Fetched 1 URL (2 calls)"),
         ],
     )
     def test_repeat_counts(self, calls: list[tuple[str, dict]], expected: str) -> None:

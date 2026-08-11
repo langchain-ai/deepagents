@@ -3984,15 +3984,18 @@ def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
 # category -> plural noun for the operation, used to report repeat work on one
 # target alongside the target count, e.g. "Edited 1 file (3 edits)".
 #
-# Only mutations qualify. Each one is an event that changed the tree and owns a
+# Mutations qualify: each one is an event that changed the tree and owns a
 # diff, so collapsing three edits of a file to a bare "Edited 1 file" hides work
-# the reader wants. A repeat read is usually pagination, where the count is
-# noise, so reads collapse silently. "delete" is absent because a second
-# successful delete of one path cannot happen — a failed retry is evicted from
-# the group before it is summarized.
+# the reader wants. "fetch" qualifies too — a repeated fetch of one URL is a
+# deliberate re-request, not pagination, and "Fetched 1 URL" for two requests
+# reads like the second one vanished. A repeat read is usually pagination,
+# where the count is noise, so reads collapse silently. "delete" is absent
+# because a second successful delete of one path cannot happen — a failed retry
+# is evicted from the group before it is summarized.
 _REPEAT_COUNT_NOUNS: dict[str, str] = {
     "edit": "edits",
     "write": "writes",
+    "fetch": "calls",
 }
 
 

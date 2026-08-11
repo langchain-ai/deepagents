@@ -13699,6 +13699,11 @@ class DeepAgentsApp(App):
             cli_profile_override=self._profile_override,
             title=title,
             description=description,
+            # Grader models have no persistent config key yet, so there is
+            # nothing for Ctrl+S to own here. `None` disables it; the main-model
+            # scope would persist `[models].default` and retarget the model the
+            # agent itself runs on.
+            default_scope=None,
         )
         self.push_screen(screen, handle_result)
 
@@ -19339,11 +19344,12 @@ class DeepAgentsApp(App):
             "  /auto model <provider:model>\n"
             "  /auto model clear          Reuse the main agent model\n\n"
             "Auto reviews gated actions with a classifier model. It currently "
-            f"uses {self._auto_classifier_model_label()}. Actions it cannot "
-            "review are denied, and repeated review failures fall back to your "
-            "approval.\n\n"
-            "Changes here apply to this session only. Set "
-            "`[models].auto_classifier` in config.toml for a persistent choice."
+            f"uses {self._auto_classifier_model_label()}. A weaker model makes "
+            "that review weaker; actions it cannot review are denied, and "
+            "repeated review failures fall back to your approval.\n\n"
+            "Changes here apply to this session only. For a persistent choice, "
+            "press Ctrl+S in the `/auto model` picker or set "
+            "`[models].auto_classifier` in config.toml."
         )
 
     async def _handle_auto_command(self, command: str) -> None:
@@ -19378,7 +19384,10 @@ class DeepAgentsApp(App):
         """Open the model selector for choosing the Auto classifier model."""
         from deepagents_code.config import detect_provider, settings
         from deepagents_code.model_config import ModelSpec
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         current_provider = settings.model_provider
         current_model = settings.model_name
@@ -19402,6 +19411,9 @@ class DeepAgentsApp(App):
         def handle_result(result: tuple[str, str] | None) -> None:
             model_spec = result[0] if result is not None else None
             extra = screen.pending_install_extra if result is not None else None
+            persisted_as_default = model_spec is not None and screen.is_stored_default(
+                model_spec
+            )
 
             async def apply_selection() -> None:
                 if model_spec is None:
@@ -19413,7 +19425,9 @@ class DeepAgentsApp(App):
                     return
                 if extra and not await self._install_extra(extra, auto_restart=True):
                     return
-                await self._set_auto_classifier_model(model_spec)
+                await self._set_auto_classifier_model(
+                    model_spec, persisted_as_default=persisted_as_default
+                )
 
             def start_selection_worker() -> None:
                 # The coroutine is built here, not above, so a callback dropped
@@ -19477,10 +19491,16 @@ class DeepAgentsApp(App):
             include_recent_models=False,
             title="Choose the Auto classifier model",
             description=description,
+            default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )
         self.push_screen(screen, handle_result)
 
-    async def _set_auto_classifier_model(self, model_spec: str | None) -> None:
+    async def _set_auto_classifier_model(
+        self,
+        model_spec: str | None,
+        *,
+        persisted_as_default: bool = False,
+    ) -> None:
         """Set the model the Auto approval classifier reviews actions with.
 
         The value rides on the per-run graph context, so it applies from the
@@ -19492,6 +19512,7 @@ class DeepAgentsApp(App):
 
         Args:
             model_spec: `provider:model` spec, or `None` to reuse the main model.
+            persisted_as_default: Whether the selector already stored this spec.
         """
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
@@ -19584,14 +19605,38 @@ class DeepAgentsApp(App):
 
         if display:
             revalidated = " (revalidated)" if unchanged else ""
-            await self._mount_message(
-                AppMessage(
+            if persisted_as_default:
+                # "Stored" rather than "the default for future sessions" when a
+                # launch override is present: the resolver consults the export
+                # (and `--auto-classifier-model`) before `[models].auto_classifier`,
+                # so the stored spec would not actually run on the next launch.
+                # Presence, not truthiness — the resolver treats a blank export
+                # as an explicit (rejected) value that still outranks config.
+                from deepagents_code import _env_vars
+
+                if _env_vars.AUTO_CLASSIFIER_MODEL in os.environ:
+                    message = (
+                        f"Auto classifier model set to {display}{revalidated}; it "
+                        "reviews gated actions from the next turn in this session. "
+                        "Saved as the default classifier model. "
+                        f"{_env_vars.AUTO_CLASSIFIER_MODEL} is currently set; if it "
+                        "remains set, it overrides the new default at next launch."
+                    )
+                else:
+                    message = (
+                        f"Auto classifier model set to {display}{revalidated}; it "
+                        "reviews gated actions from the next turn and is already "
+                        "the default for future sessions."
+                    )
+            else:
+                message = (
                     f"Auto classifier model set to {display}{revalidated}; it "
                     "reviews gated actions from the next turn, for this session. "
-                    "Set `[models].auto_classifier` in config.toml to make it "
-                    "the default."
+                    "Press Ctrl+S in the `/auto model` picker, or set "
+                    "`[models].auto_classifier` in config.toml, to make it the "
+                    "default."
                 )
-            )
+            await self._mount_message(AppMessage(message))
         else:
             await self._mount_message(
                 AppMessage(
@@ -20112,7 +20157,10 @@ class DeepAgentsApp(App):
             Configured model selector modal.
         """
         from deepagents_code.config import settings
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         return ModelSelectorScreen(
             current_model=settings.model_name,
@@ -20128,6 +20176,11 @@ class DeepAgentsApp(App):
                 if curated
                 else None
             ),
+            # Onboarding advertises no Ctrl+S hint, so give it no scope either:
+            # the binding is unconditional and `action_set_default` has no
+            # curated guard, so a scope here would let Ctrl+S silently write
+            # `[models].default` with nothing on screen saying it did.
+            default_scope=None if curated else MAIN_MODEL_DEFAULT_SCOPE,
             result_callback=result_callback,
         )
 

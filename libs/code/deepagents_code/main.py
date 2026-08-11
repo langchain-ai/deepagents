@@ -3979,17 +3979,6 @@ def cli_main() -> None:
     if "--acp" not in sys.argv[1:]:
         check_cli_dependencies()
 
-    # Warn (never block) when an editable dev venv's installed dependencies
-    # are older than the floors the checkout's pyproject.toml declares.
-    # Editable installs resolve deps once at install time, so nothing else
-    # surfaces this drift; released installs skip the check entirely. A TTY
-    # means the interactive TUI is about to claim the screen, so stash the
-    # advisory for a startup toast there instead of printing to stderr where
-    # the alternate screen would hide it; non-TTY launches print to stderr.
-    from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
-
-    warn_if_editable_deps_stale(announce=not sys.stdout.isatty())
-
     # The app-owned server runs in a detached session so terminal job-control
     # signals do not suspend or kill it. Replace terminating signals' immediate
     # default behavior with an exception so the app/server cleanup finally
@@ -4171,6 +4160,24 @@ def cli_main() -> None:
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         apply_stdin_pipe(args)
+
+        # Warn (never block) when an editable dev venv's installed
+        # dependencies are older than the floors the checkout's
+        # pyproject.toml declares. Choose the channel from the launch mode,
+        # not from `sys.stdout.isatty()`: a TTY does not imply the
+        # interactive TUI. This runs after `apply_stdin_pipe` so
+        # `non_interactive_message` is final. Only the bare interactive
+        # launch mounts `DeepAgentsApp` (which consumes the stashed notice as
+        # a startup toast), so stash it there; headless (`-n`/piped stdin)
+        # and every subcommand never mount the app and would silently drop a
+        # stashed notice, so they print to stderr instead. (ACP exits above,
+        # before this point.)
+        from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
+
+        interactive_tui = (
+            not getattr(args, "command", None) and not args.non_interactive_message
+        )
+        warn_if_editable_deps_stale(announce=not interactive_tui)
 
         # Validated here, before mode dispatch and any heavy session setup:
         # `apply_stdin_pipe` has finalized `non_interactive_message` (the same

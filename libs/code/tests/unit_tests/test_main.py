@@ -40,6 +40,7 @@ from deepagents_code.main import (
     run_textual_cli_async,
 )
 from deepagents_code.mcp_tools import ProjectServerSummary
+from deepagents_code.update_check import update_install_lock
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
@@ -294,6 +295,154 @@ class TestStartupAutoUpdate:
         # this session stays on the old version.
         assert "Continuing with v" not in printed
         assert "Launching..." in printed
+
+    def test_update_held_by_another_session_is_skipped(self) -> None:
+        """A terminal that loses the update race launches on the old version.
+
+        The install must not run, the process must not restart, and — because
+        nothing actually failed — no failure cooldown may be recorded, or the
+        winning session's upgrade would suppress this one's next few attempts.
+        """
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.update_check.mark_startup_auto_update_failed"
+            ) as mark_failed,
+            patch("deepagents_code.main._restart_current_process") as restart,
+            # Holds the lock the same way a second dcode process would. Taken
+            # in-process for determinism, so it is `_UPDATE_INSTALL_THREAD_LOCK`
+            # that refuses here; genuine cross-process exclusion is covered by
+            # `TestUpdateInstallLock::test_other_process_is_refused_while_lock_is_held`.
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_awaited()
+        restart.assert_not_called()
+        mark_failed.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Another dcode session is updating to v9.9.9" in printed
+
+    def test_install_runs_while_holding_the_update_lock(self) -> None:
+        """The install itself must be inside the lock, not merely after a check.
+
+        Every other test here would still pass if the `with` block were shrunk
+        to cover only the boolean check, which would leave the install entirely
+        unguarded — the exact bug this lock exists to prevent. Re-entering from
+        inside `perform_upgrade` proves the lock is held for the real work: the
+        lock is not reentrant, so a held lock refuses.
+        """
+        console = MagicMock()
+        held_during_install: list[bool] = []
+
+        # Async to match the `perform_upgrade` it replaces, which is awaited.
+        async def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:  # noqa: RUF029
+            with update_install_lock() as holding:
+                held_during_install.append(holding)
+            return True, "updated"
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", _record_lock_state),
+            patch("deepagents_code.update_check.clear_startup_auto_update_failure"),
+            patch(
+                "deepagents_code.update_check.detect_shadowed_dcode",
+                return_value=None,
+            ),
+            patch("deepagents_code.main._restart_current_process"),
+        ):
+            _run_startup_auto_update(console)
+
+        assert held_during_install == [False], (
+            "the install ran without holding the update lock"
+        )
+
+    def test_update_lock_is_released_before_restart(self) -> None:
+        """The lock must not survive into the re-exec.
+
+        `os.execv` would drop it anyway — filelock's fd is non-inheritable under
+        PEP 446 — but correctness here must not depend on the fd-inheritance
+        behavior of a dependency, and the release also has to happen on the path
+        where the restart raises and this process keeps running.
+        """
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+        held_during_restart: list[bool] = []
+
+        def _record_lock_state() -> None:
+            with update_install_lock() as holding:
+                held_during_restart.append(holding)
+            raise SystemExit(0)
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=_record_lock_state,
+            ),
+            pytest.raises(SystemExit),
+        ):
+            _run_startup_auto_update(console)
+
+        assert held_during_restart == [True]
 
     def test_disabled_update_does_not_check_pypi(self) -> None:
         """Disabled auto-update should not perform network or install work."""

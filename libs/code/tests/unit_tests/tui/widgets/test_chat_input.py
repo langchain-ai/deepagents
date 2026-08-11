@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import html
 from typing import TYPE_CHECKING
 
@@ -248,6 +249,32 @@ def _capture_notifications(
 
     monkeypatch.setattr(app, "notify", _record)
     return calls
+
+
+def _deny_stat_for(monkeypatch: pytest.MonkeyPatch, target: Path) -> None:
+    """Make `stat` raise `EACCES` for `target` only.
+
+    Textual stats its own files while running, so a blanket denial would break
+    the app rather than the one probe under test.
+    """
+    import pathlib
+
+    denied = str(target.resolve())
+    original_stat = pathlib.Path.stat
+
+    def _stat(self: pathlib.Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if str(self) == denied:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return original_stat(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(pathlib.Path, "stat", _stat)
+
+
+def _register_command(chat: ChatInput, name: str) -> None:
+    """Register a single stub slash command named `name`."""
+    from deepagents_code.command_registry import CommandEntry
+
+    chat.update_slash_commands([CommandEntry(name, "stub", "", "")])
 
 
 async def _noop() -> None:
@@ -4153,29 +4180,14 @@ class TestDroppedFolderPaste:
         so without failure tracking an unreadable folder would flip to command
         mode, lose its leading `/`, and let Enter run a fuzzy-matched command.
         """
-        import pathlib
-
         folder = tmp_path / "assets"
         folder.mkdir()
-
-        # Deny only the dropped path; Textual stats its own files while running.
-        denied = str(folder.resolve())
-
-        original_stat = pathlib.Path.stat
-
-        def _stat(
-            self: pathlib.Path, *, follow_symlinks: bool = True
-        ) -> os.stat_result:
-            if str(self) == denied:
-                msg = "permission denied"
-                raise PermissionError(msg)
-            return original_stat(self, follow_symlinks=follow_symlinks)
-
-        monkeypatch.setattr(pathlib.Path, "stat", _stat)
+        _deny_stat_for(monkeypatch, folder)
 
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
             assert chat._text_area is not None
 
             chat._text_area.text = str(folder)
@@ -4184,17 +4196,272 @@ class TestDroppedFolderPaste:
             assert chat.mode == "normal"
             assert chat._text_area.text == str(folder)
             assert chat._dropped_path_draft == str(folder)
+            assert notifications
+            message, kwargs = notifications[0]
+            # The path and the reason both have to reach the user; a bare
+            # "couldn't read that path" is not actionable.
+            assert str(folder) in message
+            assert "permission denied" in message.lower()
+            assert kwargs["severity"] == "warning"
+
+    async def test_unreadable_dropped_path_warns_once_per_drop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-detection over the same unreadable drop must not re-toast."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        _deny_stat_for(monkeypatch, folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+            # A second bulk edit re-runs detection over the same payload.
+            chat._text_area.text = f"{folder} and more"
+            await _pause_for_strip(pilot)
+
+            assert len(notifications) == 1
+
+    async def test_readable_drop_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A drop that probes cleanly must not toast anything."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert notifications == []
+
+    async def test_ordinary_slash_prose_does_not_warn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A clean miss is not a probe failure, so `/nope/nope` stays quiet."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "/nope/nope"
+            await _pause_for_strip(pilot)
+
+            assert notifications == []
+
+    async def test_unreadable_path_recalled_from_history_stays_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """History recall must classify through the probe tracker too.
+
+        Submitting a path and then recalling it after the mount died (or its
+        permissions were revoked) is the same "cannot stat" case as the drop
+        itself, and must not silently eat the leading `/`.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        _deny_stat_for(monkeypatch, folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
+
+            mode, display_text = chat._history_entry_mode_and_text(str(folder))
+
+            assert mode == "normal"
+            assert display_text == str(folder)
+            assert chat._dropped_path_draft == str(folder)
+            assert notifications
+
+    async def test_unreadable_path_submitted_without_draft_stays_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Submission-time revalidation must use the probe tracker as well."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        _deny_stat_for(monkeypatch, folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            _capture_notifications(monkeypatch, app)
+            chat._dropped_path_draft = None
+
+            assert chat._is_dropped_path_submission(str(folder)) is True
+
+    async def test_mixed_drop_with_unreadable_entry_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A readable first entry must not hide an unreadable second one."""
+        readable = tmp_path / "readable"
+        readable.mkdir()
+        denied = tmp_path / "denied"
+        denied.mkdir()
+        _deny_stat_for(monkeypatch, denied)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
+            assert chat._text_area is not None
+
+            chat._text_area.text = f"{readable} {denied}"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert notifications
+            assert str(denied) in notifications[0][0]
+
+    async def test_backspacing_to_root_slash_restores_command_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """A draft worn down to `/` must not shield later slash commands.
+
+        The draft tracks the buffer, so backspacing a dropped path leaves it at
+        `/`. If that bare slash still counted as a drop, every command typed
+        afterwards would skip the popup and submit to the model as chat text.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            chat._text_area.move_cursor_to_end()
+            await _pause_for_strip(pilot)
+            assert chat.mode == "normal"
+
+            for _ in range(len(str(folder)) - 1):
+                await pilot.press("backspace")
+            await pilot.pause()
+            # The path is gone, so the trailing `/` is a mode trigger again and
+            # is stripped into the command prompt rather than left in the buffer.
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+            for char in "help":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+
+    async def test_replacing_drop_with_short_shared_prefix_restores_command_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Sharing a character or two with the drop is not an in-place edit.
+
+        A select-all replacement whose first characters happen to match the
+        dropped path (`/h` of `/home/...` against `/help`) must still reach
+        command mode.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        dropped = str(folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = dropped
+            await _pause_for_strip(pilot)
+            assert chat.mode == "normal"
+
+            chat._text_area.text = f"{dropped[:2]}zzz"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._dropped_path_draft is None
+
+    async def test_dropped_folder_with_spaces_and_prose_submits_verbatim(
+        self, tmp_path: Path
+    ) -> None:
+        """An unquoted spaced folder plus a question submits exactly as typed."""
+        folder = tmp_path / "my assets"
+        folder.mkdir()
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            chat._text_area.move_cursor_to_end()
+            await _pause_for_strip(pilot)
+
+            for char in " what is in here":
+                await pilot.press("space" if char == " " else char)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "normal"
+            assert app.submitted[0].value == f"{folder} what is in here"
+
+    async def test_command_with_arguments_wins_over_existing_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """The command check splits off arguments, so `/dir args` stays a command."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._completion_manager is not None
+            _register_command(chat, str(folder))
+            assert chat._text_area is not None
+
+            chat._text_area.text = f"{folder} some question"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+
+    async def test_recalled_command_that_is_also_a_directory_enters_command_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """History recall applies the command-beats-directory rule too."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            _register_command(chat, str(folder))
+
+            mode, display_text = chat._history_entry_mode_and_text(str(folder))
+
+            assert mode == "command"
+            assert display_text == str(folder)[1:]
 
 
 class TestPathPayloadDetectionGating:
     """Single-keystroke edits should skip the blocking path-detection helpers.
 
     `_detect_dropped_path_draft` and `_apply_inline_dropped_path_replacement`
-    reach `Path.exists()` / `Path.is_file()` via
-    `deepagents_code.input.parse_pasted_path_payload`, which are synchronous
-    stat syscalls on the event-loop thread. They are only meaningful when a
-    text change inserts more than one character (drag-drop / bracketed paste);
-    on normal typing they cost real wall-clock time for no possible match.
+    both bottom out in synchronous `Path.stat()` syscalls on the event-loop
+    thread, by different routes: the former through `_classify_dropped_path`,
+    the latter through `parse_pasted_path_payload`. They are only meaningful
+    when a text change inserts more than one character (drag-drop / bracketed
+    paste); on normal typing they cost real wall-clock time for no possible
+    match.
     """
 
     async def test_typing_does_not_invoke_path_detection(self) -> None:

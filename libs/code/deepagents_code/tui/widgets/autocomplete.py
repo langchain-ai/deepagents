@@ -161,16 +161,19 @@ class SlashCommandController:
         return text.startswith("/")
 
     def has_command(self, name: str) -> bool:
-        """Return whether `name` is a registered command name.
+        """Return whether `name` is a registered command name or alias.
 
         Lets callers distinguish a real command from a same-looking absolute
-        path without reaching into the command list.
+        path without reaching into the command list. Aliases count: they are
+        just as typeable as the canonical name, so a directory sharing one must
+        lose to the command exactly as it would for the name itself.
 
         Args:
             name: Candidate command name, including the leading `/`.
 
         Returns:
-            `True` when a registered command has exactly this name.
+            `True` when a registered command has exactly this name or lists it
+            as an alias.
         """
         return any(
             entry.name == name or name in entry.aliases for entry in self._commands

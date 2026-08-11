@@ -1,5 +1,7 @@
 """Unit tests for input parsing utilities."""
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
@@ -320,6 +322,33 @@ def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
     result = parse_pasted_file_paths(f"<{img}>")
 
     assert result == [img.resolve()]
+
+
+def test_parse_pasted_file_paths_still_rejects_a_directory(tmp_path: Path) -> None:
+    """The narrow parser must not widen to folders alongside the entry parser.
+
+    `parse_pasted_file_paths` feeds the attachment/image flows, so a folder
+    reaching it would be read as something to attach.
+    """
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    assert parse_pasted_file_paths(str(folder)) == []
+
+
+def test_parse_pasted_file_paths_prefers_a_file_over_a_space_variant_dir(
+    tmp_path: Path,
+) -> None:
+    """The Unicode-space fallback must keep its file-only preference."""
+    folder = tmp_path / "my assets"
+    folder.mkdir()
+
+    # Non-breaking space in the payload, ASCII space on disk: the variant walk
+    # finds the directory, and the file-only predicate must still reject it.
+    # Written as an escape so the whitespace-normalizing hook cannot silently
+    # turn this back into an ASCII space and retire the case it covers.
+    payload = f"'{tmp_path}/my\u00a0assets'"
+    assert parse_pasted_file_paths(payload) == []
 
 
 def test_parse_pasted_any_entry_paths_resolves_dropped_folder(tmp_path: Path) -> None:
@@ -682,24 +711,57 @@ def test_track_probe_failures_records_unreadable_path(
     # The Unicode-space fallback re-walks parent segments, so more than one
     # probe can fail; what matters is that the caller learns at least one did.
     assert failures
-    assert all("permission denied" in failure for failure in failures)
+    assert all("permission denied" in failure.describe() for failure in failures)
 
 
-def test_track_probe_failures_records_os_rejected_path() -> None:
+def test_track_probe_failures_records_os_rejected_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A path the OS refuses outright is a failure, not a clean miss.
 
     Python 3.14 routes `Path.exists()` through `os.path.*`, which swallows
-    every `OSError` — including the `ENAMETOOLONG` from an overlong component —
-    and answers `False`. The probes must stat directly so such rejections
-    still reach the tracker instead of looking like "not a path".
+    every `OSError` — including an `ENAMETOOLONG` — and answers `False`. The
+    probes must stat directly so such rejections still reach the tracker
+    instead of looking like "not a path".
+
+    The rejection is injected rather than provoked with an overlong component:
+    `NAME_MAX` is a filesystem property, so a real 300-character segment tests
+    the host rather than the code.
     """
     overlong = "/" + "x" * 300
+
+    def _too_long(self: Path, *args: object, **kwargs: object) -> object:  # noqa: ARG001  # Replaces the stat probe signature
+        raise OSError(errno.ENAMETOOLONG, "File name too long")
+
+    monkeypatch.setattr(Path, "stat", _too_long)
 
     with track_probe_failures() as failures:
         assert parse_pasted_any_entry_paths(overlong) == []
 
     assert failures
-    assert all("x" * 40 in failure for failure in failures)
+    assert all("File name too long" in failure.describe() for failure in failures)
+
+
+@pytest.mark.parametrize("clean_errno", [errno.ENOENT, errno.ENOTDIR])
+def test_track_probe_failures_empty_for_clean_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_errno: int
+) -> None:
+    """`ENOENT` and `ENOTDIR` are clean negatives, not probe failures.
+
+    Both mean "there is definitively nothing here". Recording either would make
+    ordinary prose shaped like a path — `/nope/nope` — warn the user and count
+    as a drop.
+    """
+
+    def _miss(self: Path, *args: object, **kwargs: object) -> object:  # noqa: ARG001  # Replaces the stat probe signature
+        raise OSError(clean_errno, os.strerror(clean_errno))
+
+    monkeypatch.setattr(Path, "stat", _miss)
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
+
+    assert failures == []
 
 
 def test_track_probe_failures_empty_for_merely_missing_path(tmp_path: Path) -> None:
@@ -710,13 +772,64 @@ def test_track_probe_failures_empty_for_merely_missing_path(tmp_path: Path) -> N
     assert failures == []
 
 
-def test_track_probe_failures_nests_independently(tmp_path: Path) -> None:
-    """Each block sees only the failures raised inside it."""
+def test_track_probe_failures_records_dangling_symlink_target_as_clean_miss(
+    tmp_path: Path,
+) -> None:
+    """A dangling symlink is a miss, not a refusal — its target is just absent."""
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "nowhere")
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(str(link)) == []
+
+    assert failures == []
+
+
+def test_track_probe_failures_records_symlink_loop(tmp_path: Path) -> None:
+    """A symlink loop is a refusal, not a miss.
+
+    Non-strict `resolve()` no longer raises on loops, so the `ELOOP` arrives
+    from the stat that follows it. Either way the caller must learn the path
+    could not be probed rather than reading it as ordinary text.
+    """
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    first.symlink_to(second)
+    second.symlink_to(first)
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(str(first)) == []
+
+    assert failures
+    assert any(
+        getattr(failure.error, "errno", None) == errno.ELOOP for failure in failures
+    )
+
+
+def test_track_probe_failures_nests_independently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each block sees only the failures raised inside it.
+
+    The inner block must raise a *real* failure: a merely-missing path records
+    nothing, so both lists would be empty however badly nesting leaked.
+    """
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
     with track_probe_failures() as outer:
+        real_stat = Path.stat
+
+        def _deny(self: Path, *args: object, **kwargs: object) -> object:  # noqa: ARG001  # Replaces the stat probe signature
+            raise PermissionError(errno.EACCES, "Permission denied")
+
         with track_probe_failures() as inner:
-            assert parse_pasted_any_entry_paths(str(tmp_path / "missing")) == []
-        assert inner == []
-    assert outer == []
+            monkeypatch.setattr(Path, "stat", _deny)
+            assert parse_pasted_any_entry_paths(str(folder)) == []
+            monkeypatch.setattr(Path, "stat", real_stat)
+        assert inner
+        # The inner failures must not have leaked outward.
+        assert outer == []
 
 
 def test_dropped_payload_paths_ignores_plain_text() -> None:

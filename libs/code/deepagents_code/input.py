@@ -6,13 +6,13 @@ import os
 import re
 import shlex
 import stat as stat_mod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 from urllib.parse import unquote, urlparse
 
 from rich.markup import escape as escape_markup
@@ -726,10 +726,7 @@ def parse_single_pasted_file_path(text: str) -> Path | None:
     Returns:
         Resolved path when payload is a single existing file, otherwise `None`.
     """
-    candidate = normalize_pasted_path(text)
-    if candidate is None:
-        return None
-    return _resolve_existing_pasted_path(candidate)
+    return _parse_single_pasted_path(text, _resolve_existing_pasted_path)
 
 
 def extract_leading_pasted_file_path(text: str) -> tuple[Path, int] | None:
@@ -1045,7 +1042,25 @@ def _normalize_posix_pasted_path(text: str) -> Path | None:
     return None
 
 
-_probe_failures: ContextVar[list[str] | None] = ContextVar(
+class ProbeFailure(NamedTuple):
+    """A filesystem probe that raised rather than answering."""
+
+    path: Path
+    """Path whose probe raised. May be an ancestor of the caller's payload."""
+
+    error: Exception
+    """Exception the probe raised."""
+
+    def describe(self) -> str:
+        """Return a human-readable `path: reason` description.
+
+        Returns:
+            Description suitable for a log line or a user-facing message.
+        """
+        return f"{self.path}: {self.error}"
+
+
+_probe_failures: ContextVar[list[ProbeFailure] | None] = ContextVar(
     "_probe_failures", default=None
 )
 """Collector for filesystem probes that raised, when a caller is tracking them.
@@ -1055,10 +1070,10 @@ _probe_failures: ContextVar[list[str] | None] = ContextVar(
 
 
 @contextmanager
-def track_probe_failures() -> Iterator[list[str]]:
+def track_probe_failures() -> Iterator[list[ProbeFailure]]:
     """Collect filesystem probe failures raised inside the block.
 
-    The probe helpers below deliberately answer `False` when a stat raises, so
+    The probe helpers below deliberately answer `False` when a probe raises, so
     "this is not a path" and "I could not find out" are indistinguishable to
     their callers. That is fine for callers that only want a usable path, but
     wrong for callers that reclassify the payload on a negative answer — for
@@ -1066,17 +1081,49 @@ def track_probe_failures() -> Iterator[list[str]]:
     Wrapping the classification in this block lets such a caller tell the two
     apart and fail toward the safe direction.
 
+    Every filesystem operation in this module participates, not only `stat`:
+    `resolve()` and the `iterdir()` walk in the Unicode-space fallback record
+    too. That fallback probes ancestor segments, so a recorded failure may
+    describe a *parent directory* rather than the caller's payload — see
+    `select_probe_failure_for` for picking the most relevant one.
+
     Nesting is supported; each block sees only its own failures.
 
     Yields:
-        List that accumulates one description per failed probe.
+        List that accumulates one `ProbeFailure` per failed probe.
     """
-    failures: list[str] = []
+    failures: list[ProbeFailure] = []
     token = _probe_failures.set(failures)
     try:
         yield failures
     finally:
         _probe_failures.reset(token)
+
+
+def select_probe_failure_for(
+    failures: Sequence[ProbeFailure], payload: str
+) -> ProbeFailure | None:
+    """Return the recorded failure most likely to describe `payload`.
+
+    The Unicode-space fallback re-walks ancestor segments, so the first
+    recorded failure can name a parent directory the user never dropped.
+    Prefer a failure whose path the payload actually mentions, longest first,
+    so the message names the dropped entry rather than one of its ancestors.
+
+    Args:
+        failures: Failures recorded by `track_probe_failures`.
+        payload: Raw text the caller was classifying.
+
+    Returns:
+        Best-matching failure, the first recorded one when none match, or
+        `None` when nothing was recorded.
+    """
+    if not failures:
+        return None
+    mentioned = [failure for failure in failures if str(failure.path) in payload]
+    if mentioned:
+        return max(mentioned, key=lambda failure: len(str(failure.path)))
+    return failures[0]
 
 
 def _record_probe_failure(path: Path, error: Exception) -> None:
@@ -1088,10 +1135,10 @@ def _record_probe_failure(path: Path, error: Exception) -> None:
     """
     failures = _probe_failures.get()
     if failures is not None:
-        failures.append(f"{path}: {error}")
+        failures.append(ProbeFailure(path, error))
 
 
-def _stat_path(path: Path) -> os.stat_result[str] | None:
+def _stat_path(path: Path) -> os.stat_result | None:
     """Stat `path`, preserving probe failures instead of folding them to misses.
 
     The `pathlib` probes (`exists`/`is_file`/`is_dir`) hide stat errors from
@@ -1128,6 +1175,8 @@ def _stat_path(path: Path) -> os.stat_result[str] | None:
 def _safe_exists(path: Path) -> bool:
     """Return whether `path` exists, treating OS rejections as non-existent.
 
+    See `_stat_path` for why probes preserve and record failures.
+
     Args:
         path: Path candidate to probe.
 
@@ -1138,7 +1187,7 @@ def _safe_exists(path: Path) -> bool:
 
 
 def _safe_is_file(path: Path) -> bool:
-    """Return whether `path` is an existing file, ignoring stat failures.
+    """Return whether `path` is a regular file, recording any stat failure.
 
     See `_stat_path` for why probes preserve and record failures.
 
@@ -1153,7 +1202,7 @@ def _safe_is_file(path: Path) -> bool:
 
 
 def _safe_is_dir(path: Path) -> bool:
-    """Return whether `path` is an existing directory, ignoring stat failures.
+    """Return whether `path` is a directory, recording any stat failure.
 
     See `_stat_path` for why probes preserve and record failures.
 
@@ -1212,8 +1261,11 @@ def _resolve_existing_pasted_entry(
         # ValueError covers an embedded NUL, which `resolve()` rejects outright.
         logger.debug("Path resolution failed for %r: %s", path, e)
         if not isinstance(e, ValueError):
-            # An embedded NUL is a definitive "not a path"; an OSError or a
-            # symlink-loop RuntimeError only means we could not find out.
+            # An embedded NUL is a definitive "not a path"; an OSError only
+            # means we could not find out. `RuntimeError` is kept for older
+            # interpreters: non-strict `resolve()` stopped raising it on
+            # symlink loops, which now surface as `ELOOP` from the `matches`
+            # stat below instead.
             _record_probe_failure(path, e)
         return None
     if matches(resolved):
@@ -1264,7 +1316,16 @@ def _resolve_with_unicode_space_variants(
         current = Path(expanded.anchor)
         parts = expanded.parts[1:]
     else:
-        current = Path.cwd()
+        try:
+            current = Path.cwd()
+        except OSError as e:
+            # Reachable on POSIX for Windows-shaped payloads (`C:/x`,
+            # `\\server\share`), which `looks_like_dropped_payload` accepts but
+            # `Path` treats as relative. A deleted working directory must not
+            # escape a function whose whole premise is that probes are guarded.
+            logger.debug("Cannot resolve relative candidate %r: %s", path, e)
+            _record_probe_failure(path, e)
+            return None
         parts = expanded.parts
 
     for index, part in enumerate(parts):

@@ -33,7 +33,7 @@ dependencies = [
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.5.3,<2.0.0",
+    "langchain-anthropic>=1.5.4,<2.0.0",
     "langchain-baseten>=0.2.1,<0.3.0",
     "langchain-deepseek>=1.1.0,<1.2.0",
     "langchain-fireworks>=1.4.4,<1.5.0",
@@ -98,7 +98,17 @@ deepagents_evals = ["categories.json"]
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # linux/aarch64 is the `research` (DRBench) category's runner: its task images are
+    # published for arm64 only, and they run on the runner via `sandbox_env: docker`, so
+    # the eval harness itself has to install there. Without this, `uv sync --locked`
+    # refuses with "current Python platform is not compatible with the lockfile's
+    # supported environments".
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
+# Deliberately NOT listing linux/aarch64 here. `required-environments` makes uv insist a
+# prebuilt wheel exists for every dependency on that platform; several transitive deps
+# ship none for aarch64 and would have to build from sdist, which locks fine but would
+# fail this check. Resolution coverage above is what the runner needs.
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -203,4 +213,8 @@ known-first-party = ["deepagents_evals", "deepagents_harbor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+]
 asyncio_mode = "auto"

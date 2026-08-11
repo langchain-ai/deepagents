@@ -371,3 +371,69 @@ def test_main_writes_diagnostic_report_for_invalid_inputs(tmp_path: Path) -> Non
     assert result["comparisons"] == []
     assert result["issues"][0]["code"] == "comparison_input_error"
     assert "## Analysis warnings" in (out / "comparison.md").read_text()
+
+
+# --- graded ("continuous") categories -------------------------------------------------
+
+
+def test_read_tasks_prefers_the_graded_per_task_field(tmp_path: Path):
+    # A graded leaf writes both columns. pass@K is 0.0 for every task (nothing scores a
+    # perfect 1.0), so ranking on it would make every task a tie; mean_reward@K must win.
+    path = tmp_path / "per_task.jsonl"
+    path.write_text(
+        json.dumps(
+            {"task": "DR0001", f"pass@{ROLLOUTS}": 0.0, f"mean_reward@{ROLLOUTS}": 0.37}
+        )
+        + "\n"
+        + json.dumps(
+            {"task": "DR0002", f"pass@{ROLLOUTS}": 0.0, f"mean_reward@{ROLLOUTS}": 0.62}
+        )
+        + "\n"
+    )
+    tasks, present = compare._read_tasks(path, ROLLOUTS)
+    assert present is True
+    assert tasks == {"DR0001": 0.37, "DR0002": 0.62}
+
+
+def test_read_tasks_still_uses_pass_at_k_when_no_graded_field(tmp_path: Path):
+    path = tmp_path / "per_task.jsonl"
+    path.write_text(json.dumps({"task": "t1", f"pass@{ROLLOUTS}": 1.0}) + "\n")
+    tasks, present = compare._read_tasks(path, ROLLOUTS)
+    assert present is True
+    assert tasks == {"t1": 1.0}
+
+
+def test_graded_tasks_produce_wins_rather_than_ties(tmp_path: Path):
+    # Two runs of a graded category whose per-task pass@K is identically 0.0. Ranking on
+    # pass@K would call every task a tie; ranking on mean_reward@K sees the real change.
+    def write(root: Path, scores: dict[str, float]) -> Path:
+        leaf = root / "research"
+        leaf.mkdir(parents=True)
+        (leaf / "per_task.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "task": task,
+                        f"pass@{ROLLOUTS}": 0.0,
+                        f"mean_reward@{ROLLOUTS}": score,
+                    }
+                )
+                + "\n"
+                for task, score in scores.items()
+            )
+        )
+        return leaf / "per_task.jsonl"
+
+    base, _ = compare._read_tasks(
+        write(tmp_path / "base", {"DR0001": 0.30, "DR0002": 0.50}), ROLLOUTS
+    )
+    head, _ = compare._read_tasks(
+        write(tmp_path / "head", {"DR0001": 0.45, "DR0002": 0.50}), ROLLOUTS
+    )
+
+    wins = [t for t in head if t in base and head[t] > base[t]]
+    losses = [t for t in head if t in base and head[t] < base[t]]
+    ties = [t for t in head if t in base and head[t] == base[t]]
+    assert wins == ["DR0001"]
+    assert losses == []
+    assert ties == ["DR0002"]

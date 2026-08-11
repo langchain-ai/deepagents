@@ -114,7 +114,7 @@ def test_main_prints_actionable_error_on_lock_failure(monkeypatch, capsys) -> No
         assert cwd == REPO_ROOT
         return SimpleNamespace(returncode=1)
 
-    monkeypatch.setattr(check_lockfiles_pre_commit, "_package_dirs", lambda: [package])
+    monkeypatch.setattr(check_lockfiles_pre_commit, "package_dirs", lambda: [package])
     monkeypatch.setattr(check_lockfiles_pre_commit.subprocess, "run", fake_run)
 
     assert main(["libs/evals/pyproject.toml"]) == 1

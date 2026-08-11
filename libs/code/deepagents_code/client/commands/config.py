@@ -2,10 +2,13 @@
 
 Bare `config` resolves each option against the app credential store (for
 credentials), the live environment, and `config.toml`, reporting the effective
-value and which source provided it. Adding `--verbose`/`--all` folds in each
-option's description and where it can be set (the static catalog). `config get
-<key>` does the same for a single option, while `config path` prints the on-disk
-config locations.
+value and which source provided it. `config get <key>` reports the same for a
+single option, and `config get <section>` — a dotted key prefix such as
+`credentials`, matched case-insensitively — renders every option under that
+prefix using the same grouped view as bare
+`config`. Adding `--verbose`/`--all` to any of the three folds in each option's
+description and where it can be set (the static catalog). `config path` prints
+the on-disk config locations.
 
 Secret-flagged options (API keys and other credentials) are never printed by
 value — `config`/`config get` report only whether they are set and from which
@@ -65,6 +68,8 @@ def setup_config_parser(
             help screens from `deepagents_code.ui`.
         add_output_args: Helper that adds the shared `--json` flag.
     """
+    from argparse import SUPPRESS
+
     config_parser = subparsers.add_parser(
         "config",
         help="Inspect configuration options and their sources",
@@ -88,7 +93,7 @@ def setup_config_parser(
 
     get_parser = config_sub.add_parser(
         "get",
-        help="Show the effective value and source for one option",
+        help="Show the effective value and source for one option or section",
         add_help=False,
     )
     # Optional so a bare `config get` reaches our handler with a useful hint
@@ -98,12 +103,27 @@ def setup_config_parser(
         "key",
         nargs="?",
         default=None,
-        help="Option key (e.g. interpreter.memory_limit_mb)",
+        help=(
+            "Option key (e.g. interpreter.memory_limit_mb) or key prefix "
+            "(e.g. credentials)"
+        ),
     )
     get_parser.add_argument(
         "-h",
         "--help",
         action=make_help_action(_lazy_ui_help("show_config_help")),
+    )
+    # `SUPPRESS` so `config --verbose get <key>` keeps the parent value: argparse
+    # copies every key of the subparser namespace over the parent's, so a
+    # `store_true` default here would reset it to `False`.
+    get_parser.add_argument(
+        "-v",
+        "--verbose",
+        "--all",
+        dest="verbose",
+        action="store_true",
+        default=SUPPRESS,
+        help="Also show each option's description and how to set it",
     )
     add_output_args(get_parser)
 
@@ -210,7 +230,10 @@ def _resolve(
         `(is_set, source, value)`, where `is_set` is `False` when the value
         came from the typed default.
     """
-    from deepagents_code.config_manifest import resolve_scalar
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_timeout_with_source,
+        resolve_scalar,
+    )
     from deepagents_code.model_config import ProviderAuthSource
 
     if (
@@ -223,6 +246,15 @@ def _resolve(
         key = stored.keys.get(option.provider)
         if key is not None:
             return True, ProviderAuthSource.STORED.value, key
+
+    if option.key == "models.auto_classifier_timeout":
+        # `resolve_scalar` alone would credit an out-of-range env value that the
+        # runtime rejects; use the bounded resolver so the display matches what
+        # the middleware actually enforces.
+        timeout, source = resolve_auto_classifier_timeout_with_source(
+            toml_data=toml_data
+        )
+        return source != "default", source, timeout
 
     value, source = resolve_scalar(option, toml_data=toml_data)
     return source != "default", source, value
@@ -340,6 +372,25 @@ class ResolvedOption(NamedTuple):
 # --- Commands ---------------------------------------------------------------
 
 
+def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
+    """Return the static catalog fields `--verbose` folds into a JSON payload.
+
+    Shared by the bare-`config`/section rows and the single-key payload so the
+    two shapes cannot drift apart.
+
+    Returns:
+        The option's description and where it can be set.
+    """
+    return {
+        "summary": option.summary,
+        "type": option.type,
+        "default": option.default,
+        "env_var": option.env_var,
+        "toml_path": option.toml_path,
+        "cli_flag": option.cli_flag,
+    }
+
+
 def _config_json_row(
     option: ConfigOption,
     *,
@@ -369,16 +420,7 @@ def _config_json_row(
         "value": None if option.redacted else value,
     }
     if include_catalog:
-        row.update(
-            {
-                "summary": option.summary,
-                "type": option.type,
-                "default": option.default,
-                "env_var": option.env_var,
-                "toml_path": option.toml_path,
-                "cli_flag": option.cli_flag,
-            }
-        )
+        row.update(_catalog_fields(option))
     if store_error and option.group == "Credentials":
         row["store_error"] = store_error
     return row
@@ -467,7 +509,12 @@ def _print_config_table(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(row.option for row in resolved):
+    groups = list(iter_groups(row.option for row in resolved))
+    for index, group in enumerate(groups):
+        if index:
+            # Blank line separates groups but never trails the last one, so the
+            # output ends on content rather than an empty line.
+            console.print()
         console.print(f"[bold]{group}[/bold]")
         table = Table.grid(padding=(0, 2))
         table.add_column()
@@ -485,7 +532,6 @@ def _print_config_table(
                 Text(_source_label(row.source, option=row.option)),
             )
         console.print(table, highlight=False)
-        console.print()
 
 
 def _print_config_verbose(
@@ -501,7 +547,10 @@ def _print_config_verbose(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(row.option for row in resolved):
+    groups = list(iter_groups(row.option for row in resolved))
+    for index, group in enumerate(groups):
+        if index:
+            console.print()
         console.print(f"[bold]{group}[/bold]")
         for row in resolved:
             if row.option.group != group:
@@ -517,7 +566,6 @@ def _print_config_verbose(
             console.print(
                 f"    {_sources_line(row.option)}", highlight=False, style="dim"
             )
-        console.print()
 
 
 _GET_KEY_EXAMPLE = "interpreter.memory_limit_mb"
@@ -557,29 +605,153 @@ def _report_missing_get_key(output_format: OutputFormat) -> int:
     return 2
 
 
-def _run_get(key: str | None, output_format: OutputFormat) -> int:
-    """Resolve and print a single option by key.
+class _Selection(NamedTuple):
+    """What a `config get` argument resolved to.
+
+    Attributes:
+        options: The named options, in manifest order.
+        is_exact: Whether the argument was a full option key. A section can hold
+            exactly one option, so the caller cannot infer this from `options`
+            alone — hence carrying it rather than re-deriving it.
+    """
+
+    options: tuple[ConfigOption, ...]
+    is_exact: bool
+
+
+def _select_options(key: str) -> _Selection | None:
+    """Resolve a `config get` argument to the options it names.
+
+    Priority is exact key, then dotted key prefix (`credentials`, with an
+    optional trailing dot, case-insensitively). Display group titles are
+    deliberately not accepted: `Models` and `Tools` name a different set of
+    options than the same word as a prefix, so titles would make one argument
+    resolve to two different sections depending on which tier matched. Key
+    prefixes are the single section namespace.
+
+    Args:
+        key: The raw argument passed to `config get`.
 
     Returns:
-        Process exit code (`0` on success, `1` for an unknown key, `2` when no
-        key was given).
+        The matched options and whether the match was an exact key, or `None`
+        when nothing matches.
+    """
+    from deepagents_code.config_manifest import get_option, options_with_key_prefix
+
+    exact = get_option(key)
+    if exact is not None:
+        return _Selection((exact,), is_exact=True)
+
+    matched = options_with_key_prefix(key.removesuffix("."))
+    return _Selection(matched, is_exact=False) if matched else None
+
+
+def _report_unknown_get_key(key: str, output_format: OutputFormat) -> int:
+    """Report that `key` names neither an option nor a section.
+
+    Returns:
+        Exit code `1`.
+    """
+    if output_format == "json":
+        write_json("config get", {"key": key, "error": "unknown option or section"})
+    else:
+        print(  # noqa: T201
+            f"Unknown config option or section: {key!r}. Run "
+            "`dcode config` to list keys, then "
+            "`dcode config get <key>` or `dcode config get <section>`.",
+            file=sys.stderr,
+        )
+    return 1
+
+
+def _run_get_section(
+    options: Sequence[ConfigOption], output_format: OutputFormat, *, verbose: bool
+) -> int:
+    """Resolve and print every option in a matched section.
+
+    Redaction and source resolution reuse `_config_json_row`/`_resolve` and the
+    grouped table/verbose printers rather than reimplementing them, so a section
+    renders exactly as the same rows do under bare `config`. JSON is always a
+    list here — even for a one-option section — so consumers can tell a section
+    response from the single-key object.
+
+    Args:
+        options: The section's options, in manifest order.
+        output_format: `text` for the rendered view, `json` for a machine-
+            readable payload.
+        verbose: Fold each option's description and how-to-set into the output.
+
+    Returns:
+        Process exit code (`0` on success).
+    """
+    from deepagents_code.config import _ensure_bootstrap
+    from deepagents_code.config_manifest import load_config_toml
+
+    _ensure_bootstrap()
+    toml_data = load_config_toml()
+    # Only credential options consult the store, so skip the read (and its
+    # warning) when the section holds none.
+    stored = (
+        _load_stored_credentials()
+        if any(opt.group == "Credentials" for opt in options)
+        else None
+    )
+    resolved = [
+        ResolvedOption(opt, *_resolve(opt, toml_data, stored=stored)) for opt in options
+    ]
+    store_error = stored.error if stored is not None else None
+
+    if output_format == "json":
+        write_json(
+            "config get",
+            [
+                _config_json_row(
+                    row.option,
+                    is_set=row.is_set,
+                    source=row.source,
+                    value=row.value,
+                    store_error=store_error,
+                    include_catalog=verbose,
+                )
+                for row in resolved
+            ],
+        )
+        return 0
+
+    if verbose:
+        _print_config_verbose(resolved, store_error=store_error)
+    else:
+        _print_config_table(resolved, store_error=store_error)
+    return 0
+
+
+def _run_get(
+    key: str | None, output_format: OutputFormat, *, verbose: bool = False
+) -> int:
+    """Resolve and print one option, or every option in a section.
+
+    Args:
+        key: Option key, dotted key prefix, or display group title.
+        output_format: `text` for the rendered view, `json` for a machine-
+            readable payload.
+        verbose: Fold the option's description and how-to-set into the output,
+            matching `config --verbose`. For an exact key this adds lines/fields
+            to the existing payload; the single-key JSON stays an object.
+
+    Returns:
+        Process exit code (`0` on success, `1` for an unknown key or section,
+        `2` when no key was given).
     """
     if key is None:
         return _report_missing_get_key(output_format)
 
-    from deepagents_code.config_manifest import get_option
+    selection = _select_options(key)
+    if selection is None:
+        return _report_unknown_get_key(key, output_format)
+    if not selection.is_exact:
+        return _run_get_section(selection.options, output_format, verbose=verbose)
 
-    option = get_option(key)
-    if option is None:
-        if output_format == "json":
-            write_json("config get", {"key": key, "error": "unknown option"})
-        else:
-            print(  # noqa: T201
-                f"Unknown config option: {key!r}. Run "
-                "`dcode config --verbose` to see available keys.",
-                file=sys.stderr,
-            )
-        return 1
+    option = selection.options[0]
 
     from deepagents_code.config import _ensure_bootstrap
     from deepagents_code.config_manifest import load_config_toml
@@ -600,6 +772,10 @@ def _run_get(key: str | None, output_format: OutputFormat) -> int:
             "redacted": option.redacted,
             "value": None if option.redacted else value,
         }
+        # No `group` key even under `--verbose`: an object without one is how
+        # consumers tell a single-key response from a section list.
+        if verbose:
+            payload.update(_catalog_fields(option))
         if store_error:
             payload["store_error"] = store_error
         write_json("config get", payload)
@@ -615,6 +791,11 @@ def _run_get(key: str | None, output_format: OutputFormat) -> int:
         f"{option.key} = {escape(display)}  [dim]({escape(source_label)})[/dim]",
         highlight=False,
     )
+    if verbose:
+        # Static manifest text, so no markup escaping needed — same as the
+        # detail lines `_print_config_verbose` emits.
+        console.print(f"  {option.summary}", highlight=False, style="dim")
+        console.print(f"  {_sources_line(option)}", highlight=False, style="dim")
     if store_error:
         console.print(
             f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False
@@ -664,7 +845,7 @@ def run_config_command(args: argparse.Namespace) -> int:
     if command is None:
         return _run_config(output_format, verbose=verbose)
     if command == "get":
-        return _run_get(args.key, output_format)
+        return _run_get(args.key, output_format, verbose=verbose)
     if command == "path":
         return _run_path(output_format)
 

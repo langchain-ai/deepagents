@@ -28,7 +28,7 @@ import tomllib
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TextIO
@@ -38,7 +38,11 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
-from deepagents_code.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
+from deepagents_code.model_config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_STATE_DIR,
+    default_cache_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,8 +186,15 @@ _TERMINATE_WAIT_TIMEOUT = 5  # seconds
 INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 """Promoted public install command for Deep Agents Code."""
 
-UPDATE_LOG_DIR: Path = DEFAULT_STATE_DIR / "update_logs"
-"""Directory for persisted update command logs."""
+UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
+"""Directory for persisted update command logs.
+
+Lives under the OS cache directory (`default_cache_dir()`), since these are
+ephemeral `uv`/`pip` diagnostics rather than app state. Note the install
+script's `<cache>/deepagents-code/install.log` follows
+`${XDG_CACHE_HOME:-~/.cache}` unconditionally, so on macOS the two logs land
+under different roots.
+"""
 
 UPDATE_LOG_RETENTION_DAYS = 14
 """Delete update logs older than this many days."""
@@ -347,6 +358,26 @@ def get_last_update_check_time() -> float | None:
         logger.debug("Failed to read last update check time", exc_info=True)
         return None
     return _coerce_checked_at(checked_at)
+
+
+def is_update_cache_fresh(checked_at: float | None) -> bool:
+    """Return whether a recorded check stamp is still within `CACHE_TTL`.
+
+    Lets status surfaces tell "the cache expired" apart from "the cache is
+    current but holds no usable answer for this install" — states that
+    `get_cached_update_available` collapses into the same `(False, None)`
+    result. Takes the stamp instead of reading it so a caller that already
+    called `get_last_update_check_time` does not read `CACHE_FILE` twice and
+    risk straddling a concurrent refresh.
+
+    Args:
+        checked_at: Epoch time of the last recorded check, as returned by
+            `get_last_update_check_time`.
+
+    Returns:
+        `True` when `checked_at` is set and younger than `CACHE_TTL`.
+    """
+    return checked_at is not None and time.time() - checked_at < CACHE_TTL
 
 
 def _canonical_prerelease_pin(raw: object) -> str | None:
@@ -1436,12 +1467,61 @@ def dependency_refresh_supported(
     return False, _DEPENDENCY_REFRESH_UNSUPPORTED[method]
 
 
+def _is_windows() -> bool:
+    """Return whether the current platform uses Windows executable suffixes."""
+    return os.name == "nt"
+
+
+def _upgraded_entry_point(upgraded_bin_dir: Path, name: str) -> Path:
+    """Find a console-script shim without searching outside uv's bin directory.
+
+    On Windows, a console-script name without a suffix can refer to any
+    executable extension in `PATHEXT`. Construct the candidate paths directly
+    instead of using `shutil.which`: Python may include the current directory
+    in a Windows `which` lookup even when a `path` argument is supplied.
+
+    Args:
+        upgraded_bin_dir: Directory containing uv's console-script shims.
+        name: Console-script name to resolve.
+
+    Returns:
+        The first existing executable candidate in `upgraded_bin_dir`, or the
+        suffixless candidate when no shim can be found.
+    """
+    filename = Path(name).name
+    candidates = [filename]
+    if _is_windows() and not Path(filename).suffix:
+        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        candidates = [
+            f"{filename}{suffix}"
+            for suffix in pathext.split(";")
+            if suffix.startswith(".") and Path(suffix).name == suffix
+        ]
+
+    for candidate_name in candidates:
+        candidate = upgraded_bin_dir / candidate_name
+        # Keep the selection lexical: resolving a legitimate uv shim follows
+        # its symlink into the tool environment, while this check only guards
+        # against a malformed name or PATHEXT escaping uv's bin directory.
+        if candidate.parent != upgraded_bin_dir:
+            continue
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            logger.debug("Could not inspect upgraded shim candidate %s", candidate)
+
+    return upgraded_bin_dir / filename
+
+
 @dataclass(frozen=True)
 class ShadowedDcode:
     """A different dcode entry point is winning on PATH than the one we upgraded.
 
-    Returned by `detect_shadowed_dcode` after a successful upgrade so the TUI can
-    warn the user that re-launching will pick up the wrong binary. The most
+    Returned by `detect_shadowed_dcode` after a successful upgrade so the user
+    can be warned that a *manually* launched `dcode` will pick up the wrong
+    binary. The startup auto-update's own restart is unaffected: it re-execs
+    `upgraded_bin` directly rather than going through a `PATH` lookup. The most
     common cause is a pre-uv install (e.g. a leftover from a previous
     `pipx`/`pip`-based install) earlier on `PATH` than the uv tool shims.
 
@@ -1468,6 +1548,14 @@ class ShadowedDcode:
     `_uv_tool_bin_dir`).
     """
 
+    entry_point: str | None = field(default=None, compare=False)
+    """Console-script name requested from `PATH`.
+
+    Kept separately from `shadowing_bin` because Windows `PATHEXT` can make
+    the latter end in `.cmd` or `.bat`, even though uv installed an `.exe`
+    shim for the same entry point.
+    """
+
     def __post_init__(self) -> None:
         """Reject a non-conflict instance — the type's namesake invariant.
 
@@ -1488,12 +1576,15 @@ class ShadowedDcode:
 
     @property
     def upgraded_bin(self) -> Path:
-        """Absolute path to the upgraded `dcode` shim uv installed.
+        """Absolute path to the upgraded console-script shim uv installed.
 
-        Keeps the `dcode` entry-point name owned by the type rather than
-        re-derived at each call site (mirrors `DependencyChange.kind`).
+        Resolves the requested entry point within uv's bin directory so
+        Windows `PATHEXT` selects uv's actual executable suffix instead of
+        reusing a shadowing `.cmd` or `.bat` suffix. On other platforms, this
+        resolves the normal shim name directly.
         """
-        return self.upgraded_bin_dir / "dcode"
+        entry_point = self.entry_point or self.shadowing_bin.name
+        return _upgraded_entry_point(self.upgraded_bin_dir, entry_point)
 
 
 def _uv_tool_bin_dir() -> Path | None:
@@ -1563,31 +1654,80 @@ def _uv_tool_bin_dir() -> Path | None:
     return None
 
 
+def _resolves_to_upgraded_entry_point(
+    path_entry: str,
+    *,
+    upgraded_bin_dir: Path,
+    name: str,
+) -> bool:
+    """Report whether a PATH entry point resolves to the upgraded shim.
+
+    Complements the directory comparison in `detect_shadowed_dcode`: a symlink
+    outside uv's bin dir that points at uv's own shim runs the upgraded install,
+    so warning about it would send the user chasing a conflict that does not
+    exist.
+
+    Args:
+        path_entry: Un-followed `shutil.which` result for *name*.
+        upgraded_bin_dir: Bin directory uv installed the upgraded shim into.
+        name: Console-script name being checked.
+
+    Returns:
+        `True` when both paths resolve to the same file. `False` when they
+            differ or either side cannot be resolved — the caller then reports
+            the shadow, since an unverifiable alias is better surfaced than
+            silently dismissed.
+    """
+    try:
+        return (
+            Path(path_entry).resolve()
+            == _upgraded_entry_point(upgraded_bin_dir, name).resolve()
+        )
+    except OSError:
+        # `Path.resolve` is non-strict, so a merely missing path does not land
+        # here — an `OSError` means something abnormal (`ELOOP`, `EACCES` on a
+        # path component, `ENAMETOOLONG`). The consequence is user-visible: a
+        # false-positive warning telling them to fix a PATH conflict that may
+        # not exist. Log at `warning` for the same reason the sibling
+        # `path_dir.resolve()` guard in `detect_shadowed_dcode` does — an
+        # indeterminate result is worth surfacing to a developer, not masking.
+        logger.warning(
+            "Could not compare %s at %s against the upgraded shim",
+            name,
+            path_entry,
+            exc_info=True,
+        )
+        return False
+
+
 def detect_shadowed_dcode() -> ShadowedDcode | None:
     """Return the shadowing dcode entry point on the user's PATH, if any.
 
     After a successful `uv tool upgrade`, the upgraded binary only takes effect
-    on the next launch if the user's `PATH` resolves to uv's tool bin dir for
-    `dcode` (and `deepagents-code`). A pre-uv install earlier on `PATH` will
-    silently win and report the old version, which looks like "the upgrade
+    on the next manual launch if the user's `PATH` resolves to uv's tool bin dir
+    for `dcode` (and `deepagents-code`) — or to a link into it, which the
+    resolved-target check below also accepts. A pre-uv install earlier on `PATH`
+    will silently win and report the old version, which looks like "the upgrade
     didn't work" to the user.
 
     This compares each supported console script against uv's tool bin dir. A
-    mismatch means a different binary will run next launch for that entry point.
+    mismatch means a different binary will run the next time the user launches
+    that entry point themselves.
 
-    Caveat: a `dcode` symlink that lives in some unrelated bin dir but
-    points *into* the upgraded tool venv (e.g. a manually-created
-    convenience symlink) is reported as shadowing even though the next
-    launch would actually run the upgraded entry point. Comparing
-    directories rather than resolved targets is intentional — see the
-    inline note below for why — and this edge is rare enough that we
-    accept a benign false positive over a class of false negatives.
+    The primary comparison is between *directories* rather than resolved
+    symlink targets (see the inline note below for why), but a directory
+    mismatch alone would misreport a `dcode` symlink that lives in an
+    unrelated bin dir and points *into* the upgraded tool venv (e.g. a
+    manually-created convenience symlink, or a package manager that
+    re-exposes uv's shim). Those launches do run the upgraded entry point, so
+    a second check compares resolved targets before reporting a conflict.
 
     Returns:
         A `ShadowedDcode` describing the conflict, or `None` when there is no
-            shadowing binary (the common case) or when detection is not
-            applicable (non-uv install, uv bin dir unknown, no supported entry
-            point on `PATH` at all).
+            shadowing binary (the common case), when every entry point found on
+            `PATH` resolves into the upgraded install despite living elsewhere,
+            or when detection is not applicable (non-uv install, uv bin dir
+            unknown, no supported entry point on `PATH` at all).
     """
     if detect_install_method() != "uv":
         return None
@@ -1634,9 +1774,19 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
             # Keep checking the other supported entry point before declaring
             # there is no shadow.
             continue
+        if _resolves_to_upgraded_entry_point(
+            resolved,
+            upgraded_bin_dir=upgraded_bin_dir,
+            name=name,
+        ):
+            # A symlink outside uv's bin dir that still points at uv's own
+            # shim. PATH wins, but it wins *into* the upgraded install, so
+            # there is nothing for the user to fix.
+            continue
         return ShadowedDcode(
             shadowing_bin=Path(resolved),
             upgraded_bin_dir=upgraded_bin_dir,
+            entry_point=name,
         )
     return None
 
@@ -1680,7 +1830,7 @@ def format_shadowed_dcode_warning(shadow: ShadowedDcode) -> str:
     indented_command = fix_command.replace("\n", "\n  ")
     return (
         "Update installed, but another `dcode` is earlier on your PATH and "
-        "will keep running the old version on relaunch:\n"
+        "will run the old version the next time you launch it yourself:\n"
         f"  Shadowing binary: {shadow.shadowing_bin}\n"
         f"  Upgraded shim:    {shadow.upgraded_bin}\n"
         "After closing dcode, run this to make the upgraded shim win in this "

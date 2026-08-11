@@ -45,6 +45,7 @@ from deepagents.backends.utils import (
     compile_grep_include_glob,
     compile_recursive_glob,
     perform_string_replacement,
+    slice_read_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -421,7 +422,15 @@ class FilesystemBackend(BackendProtocol):
         Args:
             file_path: Absolute or relative file path.
             offset: Line offset to start reading from (0-indexed).
+
+                Only applied to text files, and clamped to the start of the file
+                when negative.
             limit: Maximum number of lines to read.
+
+                Only applied to text files with content: a non-positive value
+                returns empty content with no pagination metadata. Empty and
+                whitespace-only files return the empty-file reminder regardless
+                of `limit`, and binary files return their full payload.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -456,39 +465,19 @@ class FilesystemBackend(BackendProtocol):
                 if fd >= 0:
                     os.close(fd)
 
-            total_lines: int | None = None
-            start_line: int | None = None
-            end_line: int | None = None
-            next_offset: int | None = None
             if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")
                 else:
-                    # `splitlines(keepends=True)` preserves whether the final line
-                    # has a terminator; joining with `""` round-trips the file's
-                    # trailing-newline state. Required so `edit()` can detect
-                    # EOF-newline mismatches in the model's `old_string`.
-                    lines = content.splitlines(keepends=True)
-                    start_idx = offset
-                    end_idx = min(start_idx + limit, len(lines))
-                    total_lines = len(lines)
+                    # Reuse the shared slicer so local reads paginate, clamp
+                    # degenerate bounds, and preserve trailing-newline state
+                    # exactly like the state and store backends. `edit()`
+                    # depends on that last property to detect EOF-newline
+                    # mismatches in the model's `old_string`.
+                    return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit)
 
-                    if start_idx >= total_lines:
-                        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
-
-                    file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
-                    start_line = start_idx + 1
-                    end_line = end_idx
-                    next_offset = end_idx if end_idx < total_lines else None
-
-            return ReadResult(
-                file_data=file_data,
-                total_lines=total_lines,
-                start_line=start_line,
-                end_line=end_line,
-                next_offset=next_offset,
-            )
+            return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

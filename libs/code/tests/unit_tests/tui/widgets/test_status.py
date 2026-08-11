@@ -378,6 +378,34 @@ class TestResizePriority:
             assert model.display is True
 
 
+class TestEdgeAlignment:
+    """Tests that the status bar spans the full terminal width."""
+
+    async def test_model_label_is_flush_with_the_right_edge(self) -> None:
+        """The model name should end on the last column, not short of it."""
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="fireworks", model="kimi-k3")
+            await pilot.pause()
+            model = pilot.app.query_one("#model-display", ModelLabel)
+            assert model.styles.padding.right == 0
+            assert model.content_region.right == bar.region.right
+
+    async def test_approval_pill_is_flush_with_the_left_edge(self) -> None:
+        """The pill's background starts on column 0; only its text is inset.
+
+        The pill keeps its horizontal padding — that padding is filled with the
+        pill's background color, so it reads as part of the badge rather than as
+        a gap that narrows the bar.
+        """
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_approval_mode("auto")
+            await pilot.pause()
+            pill = pilot.app.query_one("#auto-approve-indicator", Static)
+            assert pill.region.x == bar.region.x
+
+
 class TestTokenDisplay:
     """Tests for the token count display in the status bar."""
 
@@ -442,6 +470,46 @@ class TestTokenDisplay:
             display = pilot.app.query_one("#tokens-display")
             assert str(display.render()) == "... tokens"
 
+    async def test_cost_update_while_pending_keeps_the_placeholder(self) -> None:
+        """A mid-turn cost update must not resurrect the stale token count.
+
+        Cost and tokens share one display slot, so setting the cost re-renders
+        both. Without latching the pending state that re-render would show the
+        *previous* turn's count -- exactly what the placeholder hides.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+
+            bar.set_cost(1.25)
+            await pilot.pause()
+
+            display = str(pilot.app.query_one("#tokens-display").render())
+            assert "... tokens" in display
+            assert "5.0K" not in display
+            assert "$1.25" in display
+
+    async def test_accurate_count_replaces_the_placeholder_with_cost(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+            bar.set_cost(1.25)
+            await pilot.pause()
+
+            bar.set_tokens(7500)
+            await pilot.pause()
+
+            display = str(pilot.app.query_one("#tokens-display").render())
+            assert "7.5K" in display
+            assert "... tokens" not in display
+            assert "$1.25" in display
+
     def test_show_pending_tokens_without_mount_is_noop(self) -> None:
         bar = StatusBar()
         bar.show_pending_tokens()
@@ -500,6 +568,68 @@ class TestTokenDisplay:
             bar.set_tokens(0)
             await pilot.pause()
             assert display.display is False
+
+
+class TestCostDisplay:
+    """Tests for cumulative cost rendered inline with context tokens."""
+
+    async def test_tokens_and_cost_share_one_slot(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(12_500)
+            bar.set_cost(0.42)
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "12.5K tokens" in rendered
+            assert "$0.42" in rendered
+
+    async def test_cost_displays_without_tokens(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(1.25)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "$1.25"
+            assert display.display is True
+
+    async def test_zero_cost_is_hidden(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(0.0)
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert rendered == "5.0K tokens"
+            assert "$" not in rendered
+
+    async def test_sub_cent_cost_uses_display_floor(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(0.0045)
+            await pilot.pause()
+            assert str(pilot.app.query_one("#tokens-display").render()) == "<$0.01"
+
+    async def test_approximate_token_marker_survives_cost_update(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000, approximate=True)
+            bar.set_cost(0.42)
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "5.0K+ tokens" in rendered
+            assert "$0.42" in rendered
+
+    async def test_pending_tokens_keep_cost_visible(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(0.42)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "... tokens" in rendered
+            assert "$0.42" in rendered
 
 
 class TestStatusMessageVisibility:
@@ -653,9 +783,9 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 2 -> content width = 9, fits "kimi-k2p6" but not the
-            # full "fireworks:kimi-k2p6" (19 chars).
-            label.styles.width = 13
+            # padding 0 0 0 2 -> content width = 9, fits "kimi-k2p6" but not
+            # the full "fireworks:kimi-k2p6" (19 chars).
+            label.styles.width = 11
             await pilot.pause()
             assert str(label.render()) == "kimi-k2p6"
 
@@ -665,8 +795,8 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 2 -> content width = 5, smaller than "kimi-k2p6" (9).
-            label.styles.width = 9
+            # padding 0 0 0 2 -> content width = 5, smaller than "kimi-k2p6" (9).
+            label.styles.width = 7
             await pilot.pause()
             rendered = str(label.render())
             assert rendered == "…k2p6"
@@ -760,9 +890,9 @@ class TestModelLabelPrefixStripping:
             label.provider = ""
             label.model = "o1"
             label.effort = "medium"
-            # padding 0 2 -> content width = 6: too narrow for "o1 medium" (9)
-            # and below len("medium") + 2, but wide enough for bare "o1".
-            label.styles.width = 10
+            # padding 0 0 0 2 -> content width = 6: too narrow for "o1 medium"
+            # (9) and below len("medium") + 2, but wide enough for bare "o1".
+            label.styles.width = 8
             await pilot.pause()
             assert str(label.render()) == "o1"
 

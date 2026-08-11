@@ -27,6 +27,9 @@ drift guards in `test_main_args` and `test_tool_catalog` pin it so a new or
 renamed SDK filesystem tool fails a test instead of silently diverging.
 """
 
+SESSION_END_DRAIN_TIMEOUT_SECONDS: Final[float] = 2.0
+"""Maximum time to drain Hooks v2 `SessionEnd` during session teardown."""
+
 SDK_DEFAULT_RUBRIC_MAX_ITERATIONS: Final[int] = 3
 """Default `RubricMiddleware.max_iterations`, shown without importing the SDK.
 
@@ -54,6 +57,16 @@ re-enabled but whose agent has not yet reconnected.
 Set as `MCPServerInfo.error` by `app._apply_optimistic_disabled_state` (alongside
 `pending_reconnect=True`, which is what `/tools` actually keys off). Named here
 so the producer and the tests asserting the message share one literal.
+"""
+
+FILE_NOT_FOUND: Final[str] = "file_not_found"
+"""Mirror of the SDK's `deepagents.backends.protocol.FILE_NOT_FOUND` sentinel.
+
+Hardcoded here rather than imported because `file_ops` is on the TUI import
+path and importing `deepagents` at module scope violates the
+startup-performance rule (see AGENTS.md); this module is dependency-free.
+`test_file_ops.py::test_file_not_found_matches_sdk` is the drift guard that
+fails if the SDK renames the sentinel.
 """
 
 SYSTEM_MESSAGE_PREFIX: Final[str] = "[SYSTEM]"

@@ -36,7 +36,7 @@ Those names resolve against the *live* tool registry, which mixes both worlds:
 agent = create_deep_agent(
     model="openai:gpt-5.6-luna",
     tools=[generate_readings],
-    backend=LangSmithSandbox(raw_sandbox),
+    backend=LangSmithSandbox(sandbox),
     middleware=[
         CodeInterpreterMiddleware(
             tool_name="js_eval",

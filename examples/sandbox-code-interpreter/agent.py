@@ -60,17 +60,17 @@ def generate_readings(count: int) -> str:
 
 def main() -> None:
     client = SandboxClient()
-    raw_sandbox = client.create_sandbox(timeout=180, wait_for_ready=True)
+    sandbox = client.create_sandbox()
 
     try:
-        sandbox = LangSmithSandbox(raw_sandbox)
-        print(f"sandbox: {sandbox.id}")
-        sandbox.execute(f"mkdir -p {WORKDIR}")
+        backend = LangSmithSandbox(sandbox)
+        print(f"sandbox: {backend.id}")
+        backend.execute(f"mkdir -p {WORKDIR}")
 
         agent = create_deep_agent(
             model="openai:gpt-5.6-luna",
             tools=[generate_readings],
-            backend=sandbox,
+            backend=backend,
             middleware=[
                 CodeInterpreterMiddleware(
                     tool_name="js_eval",
@@ -88,7 +88,7 @@ def main() -> None:
         for message in result["messages"]:
             message.pretty_print()
     finally:
-        client.delete_sandbox(raw_sandbox.name)
+        client.delete_sandbox(sandbox.name)
 
 
 if __name__ == "__main__":

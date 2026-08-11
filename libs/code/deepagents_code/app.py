@@ -7644,17 +7644,19 @@ class DeepAgentsApp(App):
             self._status_bar.show_pending_tokens()
 
     def _refresh_cache_display(self) -> None:
-        """Show active-thread cache totals, including the in-flight turn."""
+        """Show active-thread cache totals and hit rate, including in-flight use."""
         if self._status_bar is None:
             return
+        inputs = self._thread_stats.input_tokens
         reads = self._thread_stats.cache_read_tokens
         writes = self._thread_stats.cache_write_tokens
         if self._inflight_turn_stats is not None and (
             self._inflight_thread_id == self._lc_thread_id
         ):
+            inputs += self._inflight_turn_stats.input_tokens
             reads += self._inflight_turn_stats.cache_read_tokens
             writes += self._inflight_turn_stats.cache_write_tokens
-        self._status_bar.set_cache_tokens(reads, writes)
+        self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(
         self,

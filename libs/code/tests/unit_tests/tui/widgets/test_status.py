@@ -37,22 +37,89 @@ class TestTwoLineMetrics:
     async def test_layout_and_metrics(self) -> None:
         async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="openai", model="gpt-5.6", effort="high")
+            bar.set_cache_tokens(12_500, 750, input_tokens=15_625)
+            bar.set_context_limit(200_000)
+            bar.set_tokens(12_500)
+            bar.set_cost(0.42)
+            bar.branch = "main"
+            await pilot.pause()
+
+            session = pilot.app.query_one(".status-session")
+            metrics = pilot.app.query_one(".status-metrics")
+            model = pilot.app.query_one("#model-display")
+            cwd = pilot.app.query_one("#cwd-display")
+            cache = pilot.app.query_one("#cache-display")
+            context = pilot.app.query_one("#tokens-display")
+            assert bar.size.height == 2
+            assert metrics.region.y == session.region.y + 1
+            assert model.region.x == session.region.x
+            assert cwd.region.y == session.region.y
+            assert cwd.region.x == model.region.right
+            assert pilot.app.query_one("#branch-display").region.y == session.region.y
+            assert cache.region.x == metrics.region.x
+            assert context.region.right == metrics.region.right
+            assert str(cache.render()) == ("Cache 80% hit • 12.5K read / 750 write")
+            assert str(context.render()) == "6%  12.5K/200K • $0.42"
+
+    async def test_narrow_width_keeps_context_right_aligned(self) -> None:
+        """The context/cost group stays anchored right when cache space shrinks."""
+        async with StatusBarApp().run_test(size=(48, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_cache_tokens(12_500, 750)
             bar.set_context_limit(200_000)
             bar.set_tokens(12_500)
             bar.set_cost(0.42)
             await pilot.pause()
 
-            top = pilot.app.query_one(".status-top")
+            context = pilot.app.query_one("#tokens-display")
             metrics = pilot.app.query_one(".status-metrics")
-            assert bar.size.height == 2
-            assert metrics.region.y == top.region.y + 1
-            assert str(pilot.app.query_one("#cache-display").render()) == (
-                "Cache: 12.5K read / 750 write"
-            )
-            rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert "Context: 6% / 12.5K tokens" in rendered
-            assert "$0.42" in rendered
+            assert str(context.render()) == "6%  12.5K/200K • $0.42"
+            assert context.region.right == metrics.region.right
+
+
+class TestCacheMetrics:
+    """Tests for prompt-cache totals and hit rates."""
+
+    async def test_zero_state_is_visible_on_mount(self) -> None:
+        """The lower-left metric should not be blank before the first request."""
+        async with StatusBarApp().run_test() as pilot:
+            await pilot.pause()
+
+            rendered = str(pilot.app.query_one("#cache-display").render())
+            assert rendered == "Cache 0% hit • 0 read / 0 write"
+
+    async def test_unknown_input_total_omits_hit_rate(self) -> None:
+        """Restored cache totals without a denominator should remain useful."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(800, 100)
+            await pilot.pause()
+
+            rendered = str(pilot.app.query_one("#cache-display").render())
+            assert rendered == "Cache 800 read / 100 write"
+
+    async def test_hit_rate_is_clamped_to_one_hundred_percent(self) -> None:
+        """Malformed provider totals must not produce a rate above 100%."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(1_200, 0, input_tokens=1_000)
+            await pilot.pause()
+
+            rendered = str(pilot.app.query_one("#cache-display").render())
+            assert rendered == "Cache 100% hit • 1.2K read / 0 write"
+
+    async def test_input_only_update_refreshes_hit_rate(self) -> None:
+        """A denominator correction should update the rate with stable cache totals."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(500, 0, input_tokens=1_000)
+            await pilot.pause()
+            assert "50% hit" in str(pilot.app.query_one("#cache-display").render())
+
+            bar.set_cache_tokens(500, 0, input_tokens=2_000)
+            await pilot.pause()
+            assert "25% hit" in str(pilot.app.query_one("#cache-display").render())
 
 
 class TestApprovalModeDisplay:
@@ -71,6 +138,7 @@ class TestApprovalModeDisplay:
             indicator = pilot.app.query_one("#auto-approve-indicator", Static)
             assert str(indicator.render()) == label
             assert indicator.has_class(mode)
+            assert indicator.styles.background.a == 0
 
 
 class TestCwdDisplay:
@@ -101,10 +169,10 @@ class TestCwdDisplay:
             branch = pilot.app.query_one("#branch-display")
             assert cwd.display is False
             assert branch.display is True
-            assert branch.styles.padding.left == 1
+            assert branch.styles.padding.left == 0
 
-    async def test_cwd_owns_left_gap_after_auto_approve_pill(self) -> None:
-        """The cwd keeps visible spacing when transient status slots are hidden."""
+    async def test_cwd_follows_model_without_a_leading_gap(self) -> None:
+        """The cwd owns only its trailing gap on the model/workspace line."""
         async with StatusBarApp().run_test() as pilot:
             cwd = pilot.app.query_one("#cwd-display")
             connection = pilot.app.query_one("#connection-indicator")
@@ -112,7 +180,7 @@ class TestCwdDisplay:
 
             assert connection.display is False
             assert status.display is False
-            assert cwd.styles.padding.left == 1
+            assert cwd.styles.padding.left == 0
             assert cwd.styles.padding.right == 1
 
 
@@ -334,14 +402,14 @@ class TestResizePriority:
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
             assert branch.display is True
-            assert branch.styles.padding.left == 1
+            assert branch.styles.padding.left == 0
 
-    async def test_branch_removes_fallback_gap_when_cwd_returns(self) -> None:
-        """Resizing wide again restores branch spacing to the cwd-visible layout."""
+    async def test_branch_keeps_alignment_when_cwd_returns(self) -> None:
+        """Resizing wide again does not introduce a leading branch gap."""
         async with StatusBarApp().run_test(size=(50, 24)) as pilot:
             branch = pilot.app.query_one("#branch-display")
             await pilot.pause()
-            assert branch.styles.padding.left == 1
+            assert branch.styles.padding.left == 0
 
             await pilot.resize_terminal(120, 24)
             await pilot.pause()
@@ -403,29 +471,42 @@ class TestResizePriority:
 class TestEdgeAlignment:
     """Tests that the status bar spans the full terminal width."""
 
-    async def test_model_label_is_flush_with_the_right_edge(self) -> None:
-        """The model name should end on the last column, not short of it."""
+    async def test_model_label_is_flush_with_the_left_edge(self) -> None:
+        """The model should align with the workspace row's left edge."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_model(provider="fireworks", model="kimi-k3")
             await pilot.pause()
             model = pilot.app.query_one("#model-display", ModelLabel)
-            assert model.styles.padding.right == 0
-            assert model.content_region.right == bar.region.right
+            assert model.styles.padding.left == 0
+            assert model.content_region.x == bar.region.x
 
-    async def test_approval_pill_is_flush_with_the_left_edge(self) -> None:
-        """The pill's background starts on column 0; only its text is inset.
-
-        The pill keeps its horizontal padding — that padding is filled with the
-        pill's background color, so it reads as part of the badge rather than as
-        a gap that narrows the bar.
-        """
+    async def test_approval_text_is_flush_with_the_right_edge(self) -> None:
+        """The approval mode should occupy the session row's rightmost columns."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_approval_mode("auto")
             await pilot.pause()
-            pill = pilot.app.query_one("#auto-approve-indicator", Static)
-            assert pill.region.x == bar.region.x
+            indicator = pilot.app.query_one("#auto-approve-indicator", Static)
+            assert indicator.content_region.right == bar.region.right
+
+    async def test_narrow_session_keeps_approval_text_on_the_right(self) -> None:
+        """Long model details must not displace the right-aligned approval mode."""
+        async with StatusBarApp().run_test(size=(40, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(
+                provider="anthropic",
+                model="claude-sonnet-4-5-20250929",
+                effort="xhigh",
+            )
+            bar.set_context_limit(200_000)
+            bar.set_tokens(150_000)
+            await pilot.pause()
+
+            model = pilot.app.query_one("#model-display", ModelLabel)
+            indicator = pilot.app.query_one("#auto-approve-indicator", Static)
+            assert indicator.content_region.right == bar.region.right
+            assert model.region.right <= indicator.region.x
 
 
 class TestTokenDisplay:
@@ -437,7 +518,7 @@ class TestTokenDisplay:
             bar.set_tokens(5000)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert "5.0K" in str(display.render())
+            assert "5K" in str(display.render())
 
     async def test_show_pending_tokens_shows_unknown_placeholder(self) -> None:
         async with StatusBarApp().run_test() as pilot:
@@ -447,15 +528,15 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens"
+            assert str(display.render()) == "... tokens • $0.00"
 
-    async def test_show_pending_tokens_before_count_leaves_display_empty(self) -> None:
+    async def test_show_pending_tokens_before_count_keeps_zero_state(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == ""
+            assert str(display.render()) == "0 tokens • $0.00"
 
     async def test_set_tokens_after_pending_restores_display(self) -> None:
         """Regression: set_tokens must refresh even when value is unchanged.
@@ -474,7 +555,7 @@ class TestTokenDisplay:
             bar.set_tokens(5000)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert "5.0K" in str(display.render())
+            assert "5K" in str(display.render())
 
     async def test_show_pending_tokens_after_count_change_keeps_placeholder(
         self,
@@ -490,7 +571,7 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens"
+            assert str(display.render()) == "... tokens • $0.00"
 
     async def test_cost_update_while_pending_keeps_the_placeholder(self) -> None:
         """A mid-turn cost update must not resurrect the stale token count.
@@ -511,7 +592,7 @@ class TestTokenDisplay:
 
             display = str(pilot.app.query_one("#tokens-display").render())
             assert "... tokens" in display
-            assert "5.0K" not in display
+            assert "5K" not in display
             assert "$1.25" in display
 
     async def test_accurate_count_replaces_the_placeholder_with_cost(self) -> None:
@@ -544,7 +625,7 @@ class TestTokenDisplay:
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             rendered = str(display.render())
-            assert "5.0K+" in rendered
+            assert "5K+" in rendered
 
     async def test_approximate_after_pending_restores_with_plus(self) -> None:
         """Interrupted restore: same value + approximate should show count with '+'."""
@@ -558,7 +639,7 @@ class TestTokenDisplay:
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             rendered = str(display.render())
-            assert "5.0K+" in rendered
+            assert "5K+" in rendered
 
     async def test_exact_count_clears_plus(self) -> None:
         """A non-approximate set_tokens after an approximate one should drop '+'."""
@@ -570,17 +651,18 @@ class TestTokenDisplay:
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             rendered = str(display.render())
-            assert "8.0K" in rendered
+            assert "8K" in rendered
             assert "+" not in rendered
 
-    async def test_empty_tokens_hidden_on_mount(self) -> None:
-        """An empty token slot is hidden so its padding adds no gap."""
+    async def test_zero_context_and_cost_are_visible_on_mount(self) -> None:
+        """The lower-right metrics should not be blank before the first request."""
         async with StatusBarApp().run_test() as pilot:
             display = pilot.app.query_one("#tokens-display")
-            assert display.display is False
+            assert display.display is True
+            assert str(display.render()) == "0 tokens • $0.00"
 
-    async def test_set_tokens_shows_then_zero_hides(self) -> None:
-        """A positive count reveals the token slot; zeroing hides it again."""
+    async def test_set_tokens_then_zero_restores_zero_state(self) -> None:
+        """Zeroing a positive count restores visible placeholders."""
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
@@ -589,7 +671,8 @@ class TestTokenDisplay:
             assert display.display is True
             bar.set_tokens(0)
             await pilot.pause()
-            assert display.display is False
+            assert display.display is True
+            assert str(display.render()) == "0 tokens • $0.00"
 
 
 class TestCostDisplay:
@@ -611,25 +694,26 @@ class TestCostDisplay:
             bar.set_cost(1.25)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "$1.25"
+            assert str(display.render()) == "0 tokens • $1.25"
             assert display.display is True
 
-    async def test_zero_cost_is_hidden(self) -> None:
+    async def test_zero_cost_is_visible(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
             bar.set_cost(0.0)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert rendered == "Context: 5.0K tokens"
-            assert "$" not in rendered
+            assert rendered == "5K tokens • $0.00"
 
     async def test_sub_cent_cost_uses_display_floor(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_cost(0.0045)
             await pilot.pause()
-            assert str(pilot.app.query_one("#tokens-display").render()) == "<$0.01"
+            assert str(pilot.app.query_one("#tokens-display").render()) == (
+                "0 tokens • <$0.01"
+            )
 
     async def test_approximate_token_marker_survives_cost_update(self) -> None:
         async with StatusBarApp().run_test() as pilot:
@@ -638,7 +722,7 @@ class TestCostDisplay:
             bar.set_cost(0.42)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert "5.0K+ tokens" in rendered
+            assert "5K+ tokens" in rendered
             assert "$0.42" in rendered
 
     async def test_pending_tokens_keep_cost_visible(self) -> None:
@@ -805,8 +889,8 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 0 0 2 -> content width = 9, fits "kimi-k2p6" but not
-            # the full "fireworks:kimi-k2p6" (19 chars).
+            # This width fits "kimi-k2p6" but not the full
+            # "fireworks:kimi-k2p6" (19 chars).
             label.styles.width = 11
             await pilot.pause()
             assert str(label.render()) == "kimi-k2p6"
@@ -817,7 +901,7 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 0 0 2 -> content width = 5, smaller than "kimi-k2p6" (9).
+            # Two columns are padding, leaving five for truncated content.
             label.styles.width = 7
             await pilot.pause()
             rendered = str(label.render())
@@ -912,15 +996,14 @@ class TestModelLabelPrefixStripping:
             label.provider = ""
             label.model = "o1"
             label.effort = "medium"
-            # padding 0 0 0 2 -> content width = 6: too narrow for "o1 medium"
-            # (9) and below len("medium") + 2, but wide enough for bare "o1".
-            label.styles.width = 8
+            # Six columns are too narrow for "o1 medium" but fit bare "o1".
+            label.styles.width = 6
             await pilot.pause()
             assert str(label.render()) == "o1"
 
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = ""
             label.model = "accounts/fireworks/models/kimi-k2p6"

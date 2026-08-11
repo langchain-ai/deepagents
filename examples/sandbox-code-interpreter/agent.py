@@ -103,6 +103,9 @@ def main() -> None:
                 CodeInterpreterMiddleware(
                     tool_name="js_eval",
                     ptc=PTC_TOOLS,
+                    # One eval makes several round trips to the sandbox; the
+                    # 5s default covers local compute, not remote orchestration.
+                    timeout=120,
                 )
             ],
             system_prompt=SYSTEM_PROMPT,

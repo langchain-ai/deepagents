@@ -1,0 +1,48 @@
+# Close issues and prs after 10 days without activity while a maintainer awaits
+# the author response. On each scheduled run, the stale action removes the
+# waiting-on-author label from issues with activity, so this workflow never
+# marks issues stale.
+
+name: Close Stale Issues
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  close-stale-issues:
+    if: github.repository == 'langchain-ai/deepagents'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Close issues awaiting an author response
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          # Do not apply a stale label; only process issues that maintainers
+          # explicitly marked as waiting on their original author.
+          days-before-stale: -1
+          stale-issue-label: needs-response
+          stale-pr-label: needs-response
+          remove-stale-when-updated: true
+          days-before-issue-close: 10
+          days-before-pr-close: 10
+          close-issue-message: >
+            This issue has been automatically closed because we have not
+            received a response from the original author. Please
+            comment with any additional information if you would like us to
+            reopen it.
+          close-pr-message: >
+            This PR has been automatically closed because we have not
+            received a response from the original author. Please
+            comment with any additional information if you would like us to
+            reopen it.

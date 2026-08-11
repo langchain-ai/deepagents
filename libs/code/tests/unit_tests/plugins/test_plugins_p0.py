@@ -373,9 +373,7 @@ def test_plugin_auto_update_requires_global_and_manifest_enablement(
         "version": "2.0.0",
     }
     if manifest_enabled is not None:
-        manifest["extensions"] = {
-            "com.langchain.deepagents.code": {"autoUpdate": manifest_enabled}
-        }
+        manifest["autoUpdate"] = manifest_enabled
     _write_json(
         marketplace_root / "plugins" / "quality-review-plugin" / "plugin.json",
         manifest,

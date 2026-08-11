@@ -233,9 +233,6 @@ def load_manifest(
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
     display_name_value = raw.get("displayName")
-    auto_update_settings = raw.get("extensions")
-    if isinstance(auto_update_settings, dict):
-        auto_update_settings = auto_update_settings.get("com.langchain.deepagents.code")
     manifest = PluginManifest(
         name=name,
         version=version,
@@ -245,10 +242,7 @@ def load_manifest(
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
-        auto_update=(
-            isinstance(auto_update_settings, dict)
-            and auto_update_settings.get("autoUpdate") is True
-        ),
+        auto_update=raw.get("autoUpdate") is True,
     )
     return manifest, manifest_path, tuple(warnings)
 

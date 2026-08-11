@@ -4661,6 +4661,7 @@ class DiffMessage(Static):
                     path=self._file_path,
                     before=self._before,
                     after=self._after,
+                    show_numbers=self._tool_name != "edit_file",
                 )
 
     def _recount(self) -> DiffStats | None:

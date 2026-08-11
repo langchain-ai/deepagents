@@ -114,6 +114,9 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 Zero or negative disables the suggestion.
 """
 
+SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
+"""Default warning threshold in USD; zero or negative disables the warning."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -1541,6 +1544,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.session_cost_threshold_usd",
+        group="Warnings",
+        summary=(
+            "Warn once when estimated thread cost exceeds this USD amount (0 disables)."
+        ),
+        kind=OptionKind.FLOAT,
+        default=SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+        toml_keys=("warnings", "session_cost_threshold_usd"),
+    ),
+    ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary=(
@@ -1609,6 +1622,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="MCP server names disabled by the user from the server viewer.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
+    ),
+    # --- Plugins --------------------------------------------------------
+    ConfigOption(
+        key="plugins.auto_update",
+        group="Plugins",
+        summary="Update opted-in plugins after the first prompt; disable globally.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PLUGIN_AUTO_UPDATE,
+        toml_keys=("plugins", "auto_update"),
+        empty_env_is_false=True,
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(

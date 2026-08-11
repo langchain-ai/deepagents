@@ -97,23 +97,11 @@ on:
         type: string
         default: ""
       judge_models:
-        # Grader model(s) for LLM-judge verifiers (e.g. harbor-index), passed as
-        # JUDGE_MODELS with JUDGE_PROVIDER=openai. Prefer an independent grader,
-        # not the model under test, to avoid self-grading bias.
-        #
-        # The `research` (DRBench) verifier only drives `gpt-4o`/`gpt-4o-mini` directly,
-        # because upstream routes on the model name. To grade with any other model, pass an
-        # `openrouter/<vendor>/<model>` slug, which upstream resolves ahead of its own
-        # registries; that needs OPENROUTER_API_KEY in the `evals` environment.
+        # One grader for every LLM-judge verifier, including tau3 and DRBench. The DRBench
+        # adapter registers this default with upstream's OpenAI routing allowlists. Other
+        # non-native DRBench judges must use an `openrouter/<vendor>/<model>` slug.
         type: string
         default: "gpt-5.6-luna"
-      research_judge_models:
-        # Grader for the `research` (DRBench) verifier only, when it must differ from the
-        # suite-wide `judge_models`. Empty means: use `judge_models` if DRBench can drive
-        # it, otherwise fall back to `gpt-4o` with a warning. Set explicitly and DRBench
-        # must be able to drive the value, or the run fails rather than being rewritten.
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -314,19 +302,9 @@ jobs:
       HARBOR_CATEGORY: ${{ matrix.category || inputs.category }}
       HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
       HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
-      # DRBench's judge is tracked separately because it cannot use the suite-wide default:
-      # upstream routes on the model name and drives only `gpt-4o`/`gpt-4o-mini` directly.
-      # Sharing one variable would leave the verifier unable to tell that default from a
-      # deliberate override.
-      #
-      # `research_judge_models` wins, then `judge_models`, then `gpt-4o`. The middle case is
-      # why the preflight falls back rather than failing: the ordinary independent-grader
-      # flow sets one suite-wide `judge_models` for tau3 and harbor-index, and a value
-      # DRBench cannot drive must not take the whole research leaf down with it.
-      HARBOR_DRBENCH_JUDGE: ${{ inputs.research_judge_models || inputs.judge_models || 'gpt-4o' }}
-      # Empty unless the research judge was pinned deliberately, which is what lets the
-      # preflight tell an explicit wrong value (fail) from suite-wide spillover (fall back).
-      HARBOR_DRBENCH_JUDGE_EXPLICIT: ${{ inputs.research_judge_models }}
+      # Kept separately only so DRBench can resolve an unsupported suite-wide judge to its
+      # known-compatible default without changing the judge seen by other categories.
+      HARBOR_DRBENCH_JUDGE: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
@@ -347,9 +325,7 @@ jobs:
           # model even when its judge is routed through OpenRouter.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Granted when OpenRouter serves either side: the model under test
-          # (`openrouter:<vendor>/<model>`) or the verifier's judge, which upstream DRBench
-          # addresses with a slash (`judge_models: openrouter/<vendor>/<model>`). The two
-          # are independent, so a non-OpenRouter model can still need this key.
+          # (`openrouter:<vendor>/<model>`) or the suite-wide verifier judge (slash syntax).
           OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/')) && secrets.OPENROUTER_API_KEY || '' }}
           # Checked, not used, here: `research` agents lose their `web_search` tool
           # silently when this is absent, while the prompts still tell them to search.
@@ -404,31 +380,31 @@ jobs:
             missing+=("TAVILY_API_KEY")
           fi
 
-          # DRBench drives only gpt-4o/gpt-4o-mini directly, because upstream routes on the
-          # model name; anything else has to be an OpenRouter slug. The verifier enforces
-          # this too, but it only runs after the agent has, so a typo would cost a full
-          # trial before reporting.
+          # Pinned upstream DRBench knows gpt-4o/gpt-4o-mini directly; our verifier adds
+          # gpt-5.6-luna to the same three OpenAI routing allowlists. Anything else has to
+          # be an OpenRouter slug. Resolve an unsupported suite-wide judge loudly so a
+          # mixed dispatch keeps using its requested judge outside research.
           if [ "$HARBOR_CATEGORY" = "research" ]; then
             case "$HARBOR_DRBENCH_JUDGE" in
-              gpt-4o|gpt-4o-mini|openrouter/*) ;;
-              *)
-                if [ -n "$HARBOR_DRBENCH_JUDGE_EXPLICIT" ]; then
-                  echo "::error::research_judge_models must be gpt-4o, gpt-4o-mini, or openrouter/<vendor>/<model>; got '$HARBOR_DRBENCH_JUDGE'"
+              gpt-4o|gpt-4o-mini|gpt-5.6-luna) ;;
+              openrouter/*)
+                [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY")
+                if [[ ! "$HARBOR_DRBENCH_JUDGE" =~ ^openrouter/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?$ ]]; then
+                  echo "::error::judge_models must be a single openrouter/<vendor>/<model> slug: $HARBOR_DRBENCH_JUDGE"
                   exit 1
                 fi
-                # Suite-wide spillover, not a decision about DRBench. Fall back loudly:
-                # failing here would take the research leaf down on every mixed run that
-                # sets an independent grader for tau3 or harbor-index.
-                echo "::warning::DRBench cannot drive judge '$HARBOR_DRBENCH_JUDGE'; grading research with gpt-4o instead. Pass research_judge_models to choose explicitly (gpt-4o-mini, or openrouter/<vendor>/<model>)."
+                ;;
+              *)
+                echo "::warning::DRBench cannot drive judge '$HARBOR_DRBENCH_JUDGE'; grading research with gpt-5.6-luna instead."
                 {
-                  echo "> ⚠️ **research judge fell back to \`gpt-4o\`** — the suite-wide"
+                  echo "> ⚠️ **research judge fell back to \`gpt-5.6-luna\`** — the suite-wide"
                   echo "> \`judge_models: $HARBOR_DRBENCH_JUDGE\` is not one DRBench can drive."
                   echo "> Scores are not comparable to a run graded by another model."
                 } >> "$GITHUB_STEP_SUMMARY"
                 # A distinct name, not HARBOR_DRBENCH_JUDGE: job-level `env:` is
                 # reapplied to every step, so a GITHUB_ENV write of the same name is
                 # silently discarded. The run step prefers this when it is set.
-                echo "HARBOR_DRBENCH_JUDGE_RESOLVED=gpt-4o" >> "$GITHUB_ENV"
+                echo "HARBOR_DRBENCH_JUDGE_RESOLVED=gpt-5.6-luna" >> "$GITHUB_ENV"
                 ;;
             esac
           fi
@@ -644,9 +620,7 @@ jobs:
           # model even when its judge is routed through OpenRouter.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Granted when OpenRouter serves either side: the model under test
-          # (`openrouter:<vendor>/<model>`) or the verifier's judge, which upstream DRBench
-          # addresses with a slash (`judge_models: openrouter/<vendor>/<model>`). The two
-          # are independent, so a non-OpenRouter model can still need this key.
+          # (`openrouter:<vendor>/<model>`) or the suite-wide verifier judge (slash syntax).
           OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/')) && secrets.OPENROUTER_API_KEY || '' }}
           # Open-web search for the deep-research category only; empty elsewhere, which
           # is what keeps the agent's `web_search` tool absent for every other category.

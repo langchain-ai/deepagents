@@ -355,6 +355,13 @@ option declares `empty_env_is_false`. Other tokens are parsed by
 user-supplied key is always preserved.
 """
 
+PLUGIN_AUTO_UPDATE = "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE"
+"""Toggle background updates for installed marketplace plugins.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to disable every plugin update regardless of its manifest setting.
+"""
+
 PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 

@@ -3869,7 +3869,7 @@ def _check_mcp_project_trust(
     return True
 
 
-_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this repo"
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this project"
 
 
 def _check_project_hooks_trust(
@@ -3931,8 +3931,7 @@ def _check_project_hooks_trust(
     prompt_console.print(f"Hooks file: {escape(str(config_path))}", highlight=False)
     prompt_console.print(
         f'Trusting "{escape(str(project_root))}" means its hooks run without '
-        "asking, including any future edits. Only trust repositories you "
-        "control.",
+        "asking, including any future edits. Only trust projects you control.",
         style="yellow",
         highlight=False,
     )

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deepagents_code.approval_mode import ApprovalMode
+from deepagents_code.hooks.loading import project_hooks_path
 from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
 from deepagents_code.hooks.models.domain import (
     HookContext,
@@ -234,13 +235,17 @@ def test_non_git_workspace_without_hooks_skips_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from deepagents_code.hooks import trust
     from deepagents_code.main import _check_project_hooks_trust
 
     # No .git or project hooks exist anywhere under tmp_path.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
+        trust, "_default_store_path", lambda: tmp_path / "state" / "hooks_trust.json"
+    )
+    monkeypatch.setattr(
         "deepagents_code.main._select_trust_action",
-        lambda *_args, **_kwargs: pytest.fail("prompt ran without a project root"),
+        lambda *_args, **_kwargs: pytest.fail("prompt ran without project hooks"),
     )
 
     decision = _check_project_hooks_trust()
@@ -270,12 +275,15 @@ def test_user_hooks_path_collision_skips_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from deepagents_code.hooks import loading
+    from deepagents_code.hooks import loading, trust
     from deepagents_code.main import _check_project_hooks_trust
 
     home = _write_project_hooks(tmp_path / "home", git=False)
     monkeypatch.chdir(home)
     monkeypatch.setattr(loading, "DEFAULT_CONFIG_DIR", home / ".deepagents")
+    monkeypatch.setattr(
+        trust, "_default_store_path", lambda: tmp_path / "state" / "hooks_trust.json"
+    )
     monkeypatch.setattr(
         "deepagents_code.main._select_trust_action",
         lambda *_args, **_kwargs: pytest.fail("prompt ran for user hooks"),
@@ -284,6 +292,34 @@ def test_user_hooks_path_collision_skips_prompt(
     decision = _check_project_hooks_trust(trust_flag=True)
     assert isinstance(decision, WorkspaceTrust)
     assert not decision.allows(home)
+
+
+def test_prompt_renders_paths_containing_markup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from deepagents_code.hooks import trust
+    from deepagents_code.main import _check_project_hooks_trust, _TrustAction
+
+    # Rich consumes `[bold]` as a style tag, so an unescaped path would render
+    # as "projx" — silently wrong in the prompt the trust decision rests on.
+    root = _write_project_hooks(tmp_path / "proj[bold]x")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("COLUMNS", "400")
+    monkeypatch.setattr(
+        trust, "_default_store_path", lambda: tmp_path / "state" / "hooks_trust.json"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.main._select_trust_action",
+        lambda *_args, **_kwargs: _TrustAction.REMEMBER,
+    )
+
+    _check_project_hooks_trust()
+
+    err = capsys.readouterr().err
+    assert "proj[bold]x" in err
+    assert str(project_hooks_path(root)) in err
 
 
 @pytest.mark.parametrize(

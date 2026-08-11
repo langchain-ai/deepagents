@@ -15559,16 +15559,16 @@ class TestDiffLineNumbersCommand:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._show_diff_line_numbers is True
+            assert app._show_diff_line_numbers is False
             with patch.object(app, "notify") as notify_mock:
                 await app._handle_command("/line-numbers")
                 await pilot.pause()
 
-            assert app._show_diff_line_numbers is False
+            assert app._show_diff_line_numbers is True
             assert app._ui_adapter is not None
-            assert app._ui_adapter._show_diff_line_numbers is False
+            assert app._ui_adapter._show_diff_line_numbers is True
             notify_mock.assert_called_once()
-            assert notify_mock.call_args.args[0] == "Diff line numbers hidden."
+            assert notify_mock.call_args.args[0] == "Diff line numbers shown."
             assert notify_mock.call_args.kwargs.get("severity") == "information"
             assert notify_mock.call_args.kwargs.get("markup") is False
 
@@ -15576,10 +15576,10 @@ class TestDiffLineNumbersCommand:
                 await app._handle_command("/line-numbers")
                 await pilot.pause()
 
-            assert app._show_diff_line_numbers is True
-            assert app._ui_adapter._show_diff_line_numbers is True
+            assert app._show_diff_line_numbers is False
+            assert app._ui_adapter._show_diff_line_numbers is False
             notify_mock.assert_called_once()
-            assert notify_mock.call_args.args[0] == "Diff line numbers shown."
+            assert notify_mock.call_args.args[0] == "Diff line numbers hidden."
 
 
 class TestDebugConsoleClickToCopyPreference:

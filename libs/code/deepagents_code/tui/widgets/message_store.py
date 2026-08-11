@@ -217,7 +217,7 @@ class MessageData:
     diff cannot come back holding counts it also declares fictional.
     """
 
-    diff_show_numbers: bool = True
+    diff_show_numbers: bool = False
     """Whether file-relative line numbers are shown in this DIFF message."""
 
     diff_show_caveat: bool = True

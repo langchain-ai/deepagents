@@ -222,6 +222,26 @@ async def test_runtime_refuses_loaded_project_hooks_without_trust(
         await runtime.invoke(invocation)
 
 
+def test_no_project_root_skips_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.main import _check_project_hooks_trust
+
+    # No .git anywhere under tmp_path, so the launch directory has no project
+    # root. There is no project hooks file to trust; prompting here would
+    # mislabel the user hooks file as project-scoped.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "deepagents_code.main._select_trust_action",
+        lambda *_args, **_kwargs: pytest.fail("prompt ran without a project root"),
+    )
+
+    decision = _check_project_hooks_trust()
+    assert isinstance(decision, WorkspaceTrust)
+    assert not decision.allows(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("action", "allowed", "persisted"),
     [("REMEMBER", True, True), ("ALLOW_ONCE", True, False), ("DENY", False, False)],

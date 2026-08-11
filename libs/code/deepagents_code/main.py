@@ -3869,7 +3869,7 @@ def _check_mcp_project_trust(
     return True
 
 
-_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this repo"
 
 
 def _check_project_hooks_trust(
@@ -3891,7 +3891,6 @@ def _check_project_hooks_trust(
         abort startup.
     """
     from rich.console import Console
-    from rich.text import Text
 
     from deepagents_code.hooks.loading import project_hooks_path
     from deepagents_code.hooks.trust import (
@@ -3903,7 +3902,17 @@ def _check_project_hooks_trust(
 
     try:
         context = ProjectContext.from_user_cwd(Path.cwd())
-        project_root = context.project_root or context.user_cwd
+        if context.project_root is None:
+            # No git root: hooks are only ever loaded from the user config
+            # (~/.deepagents/hooks.json), which needs no trust decision. Skipping
+            # here also keeps a home directory that happens to be a git repo from
+            # turning `~` into a trusted "workspace" — the user hooks path would
+            # otherwise double as the project hooks path (`~/` is the project
+            # root, so the project path resolves to `~/.deepagents/hooks.json`),
+            # and allowing once would execute user hooks thinking they were
+            # project-scoped.
+            return WorkspaceTrust.none()
+        project_root = context.project_root
         config_path = project_hooks_path(project_root)
         if not config_path.is_file():
             return WorkspaceTrust.none()
@@ -3917,12 +3926,16 @@ def _check_project_hooks_trust(
 
     prompt_console = Console(stderr=True)
     prompt_console.print()
-    title = Text("Project hooks can execute commands from ", style="bold yellow")
-    title.append(str(config_path))
-    prompt_console.print(title, highlight=False)
     prompt_console.print(
-        "Only allow hooks for projects you trust. Future edits to this file "
-        "will run without asking again if you always allow.",
+        "[bold yellow]Project hooks can run arbitrary shell commands on your "
+        "machine.[/bold yellow]",
+        highlight=False,
+    )
+    prompt_console.print(f"Hooks file: {config_path}", highlight=False)
+    prompt_console.print(
+        f'Trusting "{project_root}" lets the hooks it defines now and any '
+        "future edits to them run without asking. Only trust repositories you "
+        "control.",
         style="yellow",
         highlight=False,
     )
@@ -3949,7 +3962,8 @@ def _check_project_hooks_trust(
             )
         else:
             prompt_console.print(
-                "[dim]Project hooks trusted for this workspace.[/dim]",
+                f'[dim]Hooks for "{project_root}" will run without asking from '
+                "now on.[/dim]",
                 highlight=False,
             )
         return granted

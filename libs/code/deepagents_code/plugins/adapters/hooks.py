@@ -46,7 +46,7 @@ def _plugin_documents(
     documents: list[tuple[Path, JsonValue]] = []
     diagnostics: list[HookDiagnostic] = []
     for path in plugin.inventory.hook_files:
-        decoded, document, read_diagnostics = read_hooks_json(path)
+        decoded, document, read_diagnostics, _fingerprint = read_hooks_json(path)
         diagnostics.extend(read_diagnostics)
         if decoded:
             documents.append((path, document))

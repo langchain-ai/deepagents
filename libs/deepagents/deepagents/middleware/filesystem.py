@@ -41,12 +41,15 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     EditResult,
+    ExecuteArtifact,
     ExecuteOffloadResult,
+    ExecuteResponse,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
     GrepMatch,
     GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -87,6 +90,24 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
+# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
+# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
+# support today, so these providers get a hard-coded pass until profiles can
+# describe support for other office and document formats.
+try:
+    from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
+except ImportError:
+    _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
+else:
+    _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
+
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI as _ChatGoogleGenerativeAI
+except ImportError:
+    _GOOGLE_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
+else:
+    _GOOGLE_FILE_MODEL_TYPES = (_ChatGoogleGenerativeAI,)
+
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
 
@@ -124,17 +145,6 @@ since it's `_get_file_type`'s default for unmapped extensions).
 """
 
 _PDF_MIME_TYPE: Final = "application/pdf"
-
-_NON_PDF_FILE_TOLERANT_LLM_TYPES: Final = frozenset({"openai-chat", "azure-openai-chat", "chat-google-generative-ai"})
-"""Exact `_llm_type` values for chat models known to accept non-PDF `file`
-blocks (e.g. `.docx`, `.pptx`) today: `ChatOpenAI`, `AzureChatOpenAI`, and
-`ChatGoogleGenerativeAI`.
-
-[`ModelProfile`][langchain_core.language_models.model_profile.ModelProfile] only
-encodes PDF support (`pdf_inputs`/`pdf_tool_message`); it has no field yet for
-other office/document formats. Until it does, these providers get a hard-coded
-pass for non-PDF `file` blocks instead of being blocked by that profile gap.
-"""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -180,20 +190,15 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
 
 _PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
 """`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
-file types have no field yet and are handled separately via `_NON_PDF_FILE_TOLERANT_LLM_TYPES`."""
+file types have no field yet and are handled separately via provider class checks."""
 
 _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
 def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
-    """Whether `model` is known to accept non-PDF `file` blocks.
-
-    Checks `_llm_type`, a property every `BaseChatModel` implements
-    """
-    if model is None:
-        return False
-    return model._llm_type in _NON_PDF_FILE_TOLERANT_LLM_TYPES
+    """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
+    return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
 
 
 def _multimodal_block_supported(
@@ -474,15 +479,102 @@ def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
     )
 
 
-def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
+def _leaf_from_parent_listing(ls_result: LsResult, target: str) -> bool:
+    """Resolve the ambiguous "empty `ls(target)`, no error" case.
+
+    On flat/virtual backends, an exact file and an empty directory produce the
+    same `ls(target)` result. Use `target`'s `FileInfo.is_dir` from the parent
+    listing, which is consistent across backends.
+    """
+    if ls_result.error is not None:
+        return True
+    target_norm = target.rstrip("/")
+    matches = [entry for entry in ls_result.entries or [] if entry["path"].rstrip("/") == target_norm]
+    if not matches:
+        return True
+    return any(entry.get("is_dir") for entry in matches)
+
+
+def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Whether `delete` should use the conservative recursive permission check.
+
+    Falls back to the conservative check when no permission rules are configured
+    or the backend doesn't implement `ls`. Non-empty `ls(target)` results indicate
+    descendants, and `not_a_directory` confirms a plain file. Only an empty result
+    with no error is ambiguous and requires `_leaf_from_parent_listing`.
+    """
+    if not permissions_configured:
+        return False
+    try:
+        ls_result = backend.ls(target)
+    except NotImplementedError:
+        return True
+    if ls_result.error is not None:
+        return "not_a_directory" not in ls_result.error
+    if ls_result.entries:
+        return True
+    try:
+        parent_result = backend.ls(str(PurePosixPath(target).parent))
+    except NotImplementedError:
+        return True
+    return _leaf_from_parent_listing(parent_result, target)
+
+
+async def _adelete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Async counterpart to `_delete_target_may_have_descendants`."""
+    if not permissions_configured:
+        return False
+    try:
+        ls_result = await backend.als(target)
+    except NotImplementedError:
+        return True
+    if ls_result.error is not None:
+        return "not_a_directory" not in ls_result.error
+    if ls_result.entries:
+        return True
+    try:
+        parent_result = await backend.als(str(PurePosixPath(target).parent))
+    except NotImplementedError:
+        return True
+    return _leaf_from_parent_listing(parent_result, target)
+
+
+def _find_delete_deny_patterns_for_leaf(rules: list[FilesystemPermission], target: str) -> list[str]:
+    """Resolve delete permission for a confirmed plain file: first matching rule wins.
+
+    Mirrors `_check_fs_permission`'s ordering, but returns the matched
+    pattern(s) so the delete tool's error message can cite them.
+    """
+    for rule in rules:
+        if "write" not in rule.operations:
+            continue
+        matched = [pattern for pattern in rule.paths if wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS)]
+        if not matched:
+            continue
+        return matched if rule.mode == "deny" else []
+    return []
+
+
+def _find_delete_deny_patterns(
+    rules: list[FilesystemPermission],
+    target: str,
+    *,
+    has_descendants: bool = True,
+) -> list[str]:
     """Return deny-write patterns that block deleting `target`.
 
-    A recursive delete removes `target` and all descendants, so a deny-write
-    pattern blocks the operation when it could match `target` or anything in
-    its subtree. Sibling file globs that cannot match anything inside the
-    deleted subtree (e.g. deny `/work/*.log` when deleting `/work/notes.txt`)
-    do not block. The check is based only on permission rules and returns all
-    matching patterns.
+    A recursive delete removes `target` and all descendants, so when
+    `has_descendants` is `True` a deny-write pattern blocks the operation
+    when it could match `target` or anything in its subtree, regardless of
+    rule order -- an earlier allow rule can't guarantee every descendant is
+    safe, since a later, more specific deny could still apply to one of them.
+    Sibling file globs that cannot match anything inside the deleted subtree
+    (e.g. deny `/work/*.log` when deleting `/work/notes.txt`) do not block.
+
+    When `has_descendants` is `False` (a confirmed plain file, see
+    `_delete_target_may_have_descendants`), there's no subtree to protect, so
+    `target` is resolved the same way `write_file`/`edit_file` resolve
+    permissions: the first rule (in declaration order) that matches wins.
 
     Literal (wildcard-free) deny patterns use a subtree-overlap check: a deny
     on a directory blocks deleting anything inside it and blocks deleting an
@@ -495,10 +587,15 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
     Args:
         rules: Filesystem permission rules.
         target: Absolute, validated path being deleted.
+        has_descendants: Whether `target` may have entries nested under it.
+            Pass `False` only once the backend has confirmed it's a leaf.
 
     Returns:
         Matching deny-write patterns, or an empty list if the delete is allowed.
     """
+    if not has_descendants:
+        return _find_delete_deny_patterns_for_leaf(rules, target)
+
     denying: list[str] = []
     seen: set[str] = set()
     for rule in rules:
@@ -1445,7 +1542,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     If the backend implements
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol],
-    an `execute` tool is also added for running shell commands.
+    an `execute` tool is also added for running shell commands. Its results carry
+    [`ExecuteArtifact`][deepagents.backends.protocol.ExecuteArtifact] metadata on
+    `ToolMessage.artifact`.
 
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
@@ -2097,7 +2196,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path, has_descendants=has_descendants)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
@@ -2136,7 +2236,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            has_descendants = await _adelete_target_may_have_descendants(
+                resolved_backend, validated_path, permissions_configured=bool(self._permissions)
+            )
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path, has_descendants=has_descendants)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
@@ -2666,6 +2769,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             parts.append("\n[Output was truncated due to size limits]")
         return "".join(parts)
 
+    @staticmethod
+    def _execute_artifact(response: ExecuteResponse) -> ExecuteArtifact:
+        """Build the `ExecuteArtifact` for an execute result.
+
+        See `ExecuteArtifact` for why an unknown exit code is omitted rather
+        than published as `None`.
+        """
+        if response.exit_code is None:
+            return {}
+        return {"exit_code": response.exit_code}
+
     def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
         """Build `ToolMessage` content from an `execute_with_offload` result."""
         response = offload.response
@@ -2750,10 +2864,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
+                    response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
-                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
+                    response = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -2773,6 +2888,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
+                artifact=self._execute_artifact(response),
                 status="success",
             )
 
@@ -2836,10 +2952,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
+                    response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
-                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
+                    response = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -2859,6 +2976,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
+                artifact=self._execute_artifact(response),
                 status="success",
             )
 

@@ -61,7 +61,9 @@ class TestHandleThreadsCommand:
         app = _make_app()
         target = _ThreadsResumeTarget("thread-x", "agent")
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
-        await app._handle_threads_command("/threads -r")
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads -r")
+        await schedule.call_args.args[0]
         app._resolve_threads_resume_target.assert_awaited_once_with(None)  # ty: ignore
         app._resume_thread.assert_awaited_once_with("thread-x")  # ty: ignore
         app._show_thread_selector.assert_not_awaited()  # ty: ignore
@@ -70,7 +72,9 @@ class TestHandleThreadsCommand:
         app = _make_app()
         target = _ThreadsResumeTarget("abc", "agent")
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
-        await app._handle_threads_command("/threads -r abc")
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads -r abc")
+        await schedule.call_args.args[0]
         app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
         app._resume_thread.assert_awaited_once_with("abc")  # ty: ignore
 

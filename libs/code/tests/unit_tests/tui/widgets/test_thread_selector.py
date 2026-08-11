@@ -4778,6 +4778,37 @@ class TestConvertMessagesToData:
         formatted = widget._format_ask_user_output(str(widget._output), is_preview=True)
         assert formatted.content.plain == ASK_USER_FAILED_SUMMARY
 
+    def test_checkpoint_edit_restores_diff(self) -> None:
+        """Checkpointed edit arguments rebuild the diff omitted from graph state."""
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        tool, diff = DeepAgentsApp._convert_messages_to_data(
+            [
+                self._make_ai(
+                    tool_calls=[
+                        {
+                            "id": "tc-edit",
+                            "name": "edit_file",
+                            "args": {
+                                "file_path": "a.py",
+                                "old_string": "old\n",
+                                "new_string": "new\n",
+                            },
+                        }
+                    ]
+                ),
+                self._make_tool("Updated file", tool_call_id="tc-edit"),
+            ]
+        )
+
+        assert tool.tool_diff_superseded is True
+        assert diff.type == MessageType.DIFF
+        assert diff.diff_file_path == "a.py"
+        assert "-old" in diff.content
+        assert "+new" in diff.content
+        widget = diff.to_widget()
+        assert all(getattr(row, "selection_prefix", 2) == 2 for row in widget.compose())
+
     def test_tool_call_error_status(self) -> None:
         """ToolMessage with error status should set ERROR on the tool data."""
         from deepagents_code.tui.widgets.message_store import ToolStatus

@@ -192,8 +192,18 @@ def build_version_text() -> str:
     return text
 
 
-def _restart_current_process() -> NoReturn:
+def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
     """Replace the current process with a fresh `deepagents_code` invocation.
+
+    Propagates `OSError` from `os.execv` when the process cannot be replaced
+    (e.g. the target is missing, not executable, or the mount is `noexec`). It
+    is not listed under `Raises:` because it is not raised explicitly here, but
+    callers depend on it: the startup auto-update treats both it and the
+    `RuntimeError` below as "the upgrade landed but is not loaded".
+
+    Args:
+        restart_path: The upgraded console-script shim to execute. When omitted,
+            re-executes the current interpreter's `deepagents_code` module.
 
     Raises:
         RuntimeError: If process replacement unexpectedly returns.
@@ -201,15 +211,24 @@ def _restart_current_process() -> NoReturn:
     from deepagents_code._env_vars import INVOKED_AS
     from deepagents_code._invocation import invoked_name
 
-    argv = [sys.executable, "-m", "deepagents_code", *sys.argv[1:]]
+    if restart_path is None:
+        executable = sys.executable
+        argv = [executable, "-m", "deepagents_code", *sys.argv[1:]]
+    else:
+        # The PATH winner can be a shim into another uv tool environment.
+        # `perform_upgrade` updates uv's configured shim, not necessarily the
+        # interpreter that launched this process, so restart through that shim.
+        executable = str(restart_path)
+        argv = [executable, *sys.argv[1:]]
     # `-m` discards argv[0], so the launch name would be lost across the exec
     # and post-update resume hints would fall back to `dcode`. Hand it to the
     # next generation explicitly.
     os.environ[INVOKED_AS] = invoked_name()
-    # Re-exec the trusted interpreter with the user's own argv verbatim; the
-    # only "input" is the command the user already ran, so S606's concern
-    # (untrusted/unsanitized args to a spawned executable) does not apply.
-    os.execv(sys.executable, argv)  # noqa: S606
+    # Re-exec the trusted current interpreter or uv-managed shim with the
+    # user's own argv verbatim; the only "input" is the command the user
+    # already ran, so S606's concern (untrusted/unsanitized args to a spawned
+    # executable) does not apply.
+    os.execv(executable, argv)  # noqa: S606
     msg = "os.execv returned unexpectedly"
     raise RuntimeError(msg)
 
@@ -350,17 +369,126 @@ def _confirm_update_after_restart(console: "Console", version: str) -> None:
     console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
+def _mark_startup_auto_update_failed_safe(version: str) -> None:
+    """Record the auto-update cooldown for *version*, never raising.
+
+    Used by the paths that exit after a successful install, where the reason for
+    exiting can itself be an unwritable state directory — exactly what
+    `mark_startup_auto_update_failed` would trip over. A raise here would replace
+    the relaunch hint with an uncaught traceback, so the cooldown is best-effort:
+    it exists to break a retry loop, not to gate correctness.
+
+    Args:
+        version: Version whose upgrade should not be retried immediately.
+    """
+    from deepagents_code.update_check import mark_startup_auto_update_failed
+
+    try:
+        mark_startup_auto_update_failed(version)
+    except Exception:
+        logger.warning("Could not record auto-update cooldown", exc_info=True)
+
+
+def _exit_after_unrestartable_update(
+    console: "Console",
+    version: str,
+    *,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    """Report an installed-but-not-reloaded update and exit instead of launching.
+
+    Reached only when the startup auto-update installed *successfully* and the
+    re-exec that would load it did not happen — either because `os.execv` failed
+    (`cause` is `None`), or because an error after the install aborted the path
+    before the restart was reached (`cause` is that error). The install already
+    replaced the site-packages this process imports from, so launching now would
+    build the TUI out of the new code while keeping every already-imported module
+    (`_version` among them) on the old release. Exiting with a relaunch hint is
+    the only honest outcome.
+
+    Exit code follows whether anything actually broke. Without a `cause` the
+    install worked and the user need only run the command again, so this exits
+    `0`; a wrapper script should not see that as a failure. With a `cause` an
+    unexpected error was swallowed and will very likely recur next launch, so
+    exiting `0` would leave the failure invisible to the user, the terminal, the
+    log *and* the exit status at once — that path exits `1`.
+
+    Args:
+        console: Console to print the notice to.
+        version: Version that was installed but is not loaded in this process.
+        cause: Error that prevented the restart from being attempted, when the
+            caller has one. Summarized in the notice, since this process is
+            about to exit and the buffered traceback dies with it.
+
+    Raises:
+        SystemExit: Always, to stop the launch.
+    """
+    # Both are `sys.modules` cache hits by the time this runs — `_debug` from
+    # the package `__init__`, `_invocation` from `cli_main` — so neither pulls
+    # post-upgrade code into this mixed-version process. Anything imported here
+    # must keep that property; a fresh import could load the new release and
+    # raise the very `ImportError` this exit exists to avoid.
+    from rich.markup import escape
+
+    from deepagents_code._debug import installed_debug_log_path
+    from deepagents_code._invocation import invoked_name
+
+    if cause is None:
+        detail = (
+            "The automatic restart could not run, so this session would keep "
+            "using the previous version."
+        )
+    else:
+        detail = (
+            "The install succeeded, but an error afterwards stopped the restart, "
+            f"so this session would keep using the previous version: "
+            f"{escape(str(cause) or type(cause).__name__)}"
+        )
+    console.print(
+        f"[green]Updated to v{version}.[/green] {detail} Run "
+        f"[cyan]{invoked_name()}[/cyan] again to start on v{version}.",
+        highlight=False,
+        markup=True,
+    )
+    if cause is not None:
+        # The traceback went to the in-memory debug buffer, which is drained by
+        # the TUI's Debug Console — and this process never starts one. Point at
+        # the file log if one is attached, and at how to get one if not.
+        log_path = installed_debug_log_path()
+        console.print(
+            f"Full error: {log_path}"
+            if log_path is not None
+            else "For the full error, re-run with DEEPAGENTS_CODE_DEBUG=1.",
+            highlight=False,
+            markup=False,
+            style="dim",
+        )
+    raise SystemExit(0 if cause is None else 1)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
-    On a successful upgrade the process is re-exec'd so the new version is
-    loaded. Any failure is fail-soft: the installed version is launched and
+    On a successful upgrade the process is *always* re-exec'd so the new version
+    is loaded, and the process exits rather than launching when the re-exec
+    cannot happen. Continuing in-process is not fail-soft once the install has
+    landed: the upgrade rewrote the site-packages this process imports from, and
+    because startup deliberately defers most imports, the TUI would be loaded
+    from the new code while already-imported modules (including `_version`,
+    which the splash reads) stay on the old release. That mixed-version process
+    reports the pre-upgrade version at best and raises `ImportError` on a
+    renamed constant at worst.
+
+    A *failed* install stays fail-soft: the installed version is launched and
     the error is surfaced, never blocking startup.
 
     Raises:
-        SystemExit: Re-raised rather than suppressed by the fail-soft handler,
-            so a process-exit request is never swallowed (the `os.execv`
-            re-exec is simulated this way under test).
+        SystemExit: Raised after a successful install that could not re-exec, so
+            the user relaunches instead of running a mixed-version process —
+            with code `0` when only the re-exec failed and `1` when an error
+            after the install caused it. Also re-raised rather than suppressed
+            by the fail-soft handler, so a process-exit request is never
+            swallowed (the `os.execv` re-exec is simulated this way under test).
     """
     from rich.markup import escape
 
@@ -392,6 +520,10 @@ def _run_startup_auto_update(console: "Console") -> None:
     # failure, the fail-soft handler below records the cooldown from this so the
     # same broken target is not retried — and re-stalled — on every launch.
     pending_failure_version: str | None = None
+    # Set once the install has landed. From that point the on-disk code no
+    # longer matches the modules this process already imported, so the fail-soft
+    # handler must exit instead of launching a mixed-version TUI.
+    installed_version: str | None = None
     try:
         if (
             _is_editable_install()
@@ -520,16 +652,15 @@ def _run_startup_auto_update(console: "Console") -> None:
             )
         if success:
             pending_failure_version = None
+            installed_version = latest
             clear_startup_auto_update_failure(latest)
-            # If a stale `dcode` is earlier on PATH, the auto-restart would
-            # re-exec into the old binary and the user would silently keep
-            # running the pre-upgrade version. Detect that *before* the
-            # re-exec so the warning isn't immediately wiped by the new
-            # process's startup, and skip the restart — re-exec'ing into
-            # an unchanged version would also trip the `restarted_for`
-            # no-op loop guard on the next launch. Use the never-raises
-            # wrapper so a detector defect can't crash startup after an
-            # otherwise-successful upgrade.
+            # A stale PATH winner can be backed by a different uv tool
+            # environment than this process. In that case restart through the
+            # shim uv just upgraded, rather than this process's interpreter.
+            # Warn before the restart so the notice lands above the
+            # `Launching...` line that `_confirm_update_after_restart` rewrites.
+            # Use the never-raises wrapper so a detector defect can't crash
+            # startup after an otherwise-successful upgrade.
             shadow = detect_shadowed_dcode_safe()
             if shadow is not None:
                 # The warning embeds filesystem paths from `shutil.which`,
@@ -540,12 +671,10 @@ def _run_startup_auto_update(console: "Console") -> None:
                 # escapes its uv output the same way.
                 warning = format_shadowed_dcode_warning(shadow)
                 console.print(
-                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}\n"
-                    f"Continuing with v{cli_version}.",
+                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}",
                     highlight=False,
                     markup=True,
                 )
-                return
             console.print(
                 f"[green]Updated to v{latest}. Launching...[/green]",
                 highlight=False,
@@ -554,20 +683,25 @@ def _run_startup_auto_update(console: "Console") -> None:
             # no-op upgrade and break the loop (see the `restarted_for` guard).
             os.environ[RESTARTED_AFTER_UPDATE] = latest
             try:
-                _restart_current_process()
+                if shadow is None:
+                    _restart_current_process()
+                else:
+                    _restart_current_process(restart_path=shadow.upgraded_bin)
             except (OSError, RuntimeError):
                 # Upgrade succeeded but the re-exec did not happen (`os.execv`
-                # raised, or returned unexpectedly). Drop the sentinel and
-                # continue on the old in-memory code; the user must restart
-                # manually to load the new version.
+                # raised, or returned unexpectedly). Drop the sentinel and stop:
+                # this process can no longer launch safely, since the install
+                # replaced the code it imports from.
                 os.environ.pop(RESTARTED_AFTER_UPDATE, None)
                 logger.warning("Restart after update failed", exc_info=True)
-                console.print(
-                    f"[bold yellow]Warning:[/bold yellow] Updated to v{latest} but "
-                    "the automatic restart failed. Restart dcode manually to use "
-                    "the new version.",
-                    highlight=False,
-                )
+                # Exiting instead of re-exec'ing means the `restarted_for`
+                # sentinel never reaches a next generation, so the restart-loop
+                # guard cannot fire. Record the cooldown so a *successful but
+                # no-op* upgrade paired with a persistently failing `os.execv`
+                # can't re-upgrade and re-exit on every launch, leaving the TUI
+                # permanently unreachable.
+                _mark_startup_auto_update_failed_safe(latest)
+                _exit_after_unrestartable_update(console, latest)
             return
         persisted = mark_startup_auto_update_failed(latest)
         update_needs_prereleases = release_requires_prereleases(latest)
@@ -589,11 +723,21 @@ def _run_startup_auto_update(console: "Console") -> None:
             message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
         console.print(message, markup=True, highlight=False)
     except SystemExit:
-        # Process replacement (and test doubles that simulate it) must not be
-        # swallowed by the fail-soft handler below.
+        # Process replacement (and test doubles that simulate it), plus the
+        # deliberate post-install exit raised by
+        # `_exit_after_unrestartable_update`, must not be swallowed by the
+        # fail-soft handler below.
         raise
-    except Exception:
+    except Exception as exc:
         logger.warning("Startup auto-update failed", exc_info=True)
+        if installed_version is not None:
+            # The install landed and something after it raised, so this process
+            # is already mixed-version. Exit rather than describe the successful
+            # install as a failure and launch anyway. Record the cooldown for
+            # the same reason the re-exec failure path does: no sentinel reaches
+            # a next generation, so the restart-loop guard cannot cover this.
+            _mark_startup_auto_update_failed_safe(installed_version)
+            _exit_after_unrestartable_update(console, installed_version, cause=exc)
         message = (
             "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
             "continuing with the installed version."
@@ -1931,6 +2075,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--auto-classifier-model",
+        dest="auto_classifier_model",
+        metavar="MODEL",
+        help="Model the Auto approval classifier reviews actions with "
+        "(e.g. anthropic:claude-haiku-4-5). Interactive TUI only. Defaults to "
+        "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
+        "then the main agent model. A weaker model weakens Auto's review.",
+    )
+
+    parser.add_argument(
         "--default-model",
         metavar="MODEL",
         nargs="?",
@@ -2243,6 +2397,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
+    # distinct from an absent flag (just trimmed): an explicit blank is the
+    # "inherit the main agent model" instruction and must override a classifier
+    # configured via env var or `config.toml`, which collapsing it to `None`
+    # here would silently re-enable.
+    if getattr(args, "auto_classifier_model", None) is not None:
+        args.auto_classifier_model = args.auto_classifier_model.strip()
     _resolve_and_validate_sandbox(args, parser)
     return args
 
@@ -2331,6 +2492,55 @@ def _resolve_and_validate_sandbox(
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
+def _auto_classifier_spec_problem(spec: str) -> str | None:
+    """Return why a configured Auto classifier spec looks unusable, if it does.
+
+    `/auto model` validates by constructing the model and refuses a spec it
+    cannot build. The startup surfaces — `--auto-classifier-model`, the env var,
+    `[models].auto_classifier` — reached the middleware unchecked, so a typo was
+    announced as the active reviewer and only surfaced as a denied tool call
+    mid-turn.
+
+    This is the cheap half of what the slash command does: parse the spec and
+    check the provider's credentials. It deliberately does not call
+    `create_model`, which would pull LangChain onto the launch path (see
+    `AGENTS.md`), so it catches the two common mistakes — unknown provider and
+    missing credential — and leaves the rest to the middleware's fail-closed
+    path.
+
+    Args:
+        spec: Resolved `provider:model` specification.
+
+    Returns:
+        A one-line problem description, or `None` when the spec looks usable.
+    """
+    from deepagents_code.config import detect_provider
+    from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+    parsed = ModelSpec.try_parse(spec)
+    provider = parsed.provider if parsed else detect_provider(spec)
+    if not provider:
+        return (
+            f"Auto classifier model {spec!r} has no recognizable provider; "
+            "Auto will deny gated actions until it is fixed. Use "
+            "provider:model, e.g. anthropic:claude-haiku-4-5."
+        )
+    try:
+        status = get_provider_auth_status(provider)
+    except Exception:
+        # Advisory check only — a probe failure must never block startup.
+        logger.debug("Auto classifier provider auth probe failed", exc_info=True)
+        return None
+    if status.blocks_start:
+        env_var = f" Set {status.env_var}." if status.env_var else ""
+        return (
+            f"Auto classifier model {spec!r} has no credentials for provider "
+            f"{provider!r}; Auto will deny gated actions until it is "
+            f"fixed.{env_var}"
+        )
+    return None
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -2358,6 +2568,7 @@ async def run_textual_cli_async(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     allow_fs_tools: "list[FsToolName] | None" = None,
+    auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
@@ -2427,6 +2638,13 @@ async def run_textual_cli_async(
             from `--allow-fs-tools`.
 
             `None` leaves the SDK default (all tools).
+        auto_classifier_model: Model spec the Auto approval classifier reviews
+            with, from `--auto-classifier-model`.
+
+            `None` resolves from env / `config.toml` and then reuses the main
+            agent model. A blank string means the flag was explicitly supplied
+            with no value: it overrides any env / `config.toml` classifier so
+            reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
 
@@ -2440,6 +2658,7 @@ async def run_textual_cli_async(
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
+        resolve_auto_classifier_model_with_problem,
         settings,
     )
     from deepagents_code.model_config import (
@@ -2485,6 +2704,43 @@ async def run_textual_cli_async(
         settings.model_provider = ""
         settings.model_name = ""
 
+    # Distinguish "flag absent" from "flag explicitly blank": `--auto-classifier-
+    # model ""` is the "inherit the main agent model" instruction and overrides
+    # any env / `config.toml` classifier, while an absent flag defers to those
+    # sources. Map the explicit blank to `INHERIT_CLASSIFIER_MODEL`, the sentinel
+    # the server and Auto middleware already understand as inherit, so the
+    # override survives the trip to the agent server (a bare `""` would collapse
+    # to `None` in `ServerConfig.from_env` and silently re-enable a configured
+    # classifier there).
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+    flag_supplied = auto_classifier_model is not None
+    flag_classifier_model = (auto_classifier_model or "").strip() or None
+    auto_classifier_problem: str | None = None
+    if flag_classifier_model is not None:
+        resolved_auto_classifier_model = flag_classifier_model
+    elif flag_supplied:
+        resolved_auto_classifier_model = INHERIT_CLASSIFIER_MODEL
+    else:
+        (
+            resolved_auto_classifier_model,
+            auto_classifier_problem,
+        ) = resolve_auto_classifier_model_with_problem()
+    if (
+        resolved_auto_classifier_model is not None
+        and resolved_auto_classifier_model != INHERIT_CLASSIFIER_MODEL
+    ):
+        auto_classifier_problem = _auto_classifier_spec_problem(
+            resolved_auto_classifier_model
+        )
+    if auto_classifier_problem is not None:
+        from rich.console import Console as _WarnConsole
+        from rich.markup import escape
+
+        _WarnConsole(stderr=True).print(
+            f"[bold yellow]Warning:[/bold yellow] {escape(auto_classifier_problem)}"
+        )
+
     model_kwargs: dict[str, Any] | None = None
     if not defer_server_start:
         model_kwargs = {
@@ -2509,6 +2765,7 @@ async def run_textual_cli_async(
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
         "allow_fs_tools": allow_fs_tools,
+        "auto_classifier_model": resolved_auto_classifier_model,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -3616,14 +3873,11 @@ def _check_project_hooks_trust(
     Returns:
         The trust policy to run the session under, `INTERRUPTED` when the user
         presses Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to
-        abort startup. Nothing is trusted, and no prompt is shown, unless
-        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy, since hooks stay off without
-        it.
+        abort startup.
     """
     from rich.console import Console
     from rich.text import Text
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
     from deepagents_code.hooks.loading import project_hooks_path
     from deepagents_code.hooks.trust import (
         WorkspaceTrust,
@@ -3632,8 +3886,6 @@ def _check_project_hooks_trust(
     )
     from deepagents_code.project_utils import ProjectContext
 
-    if not is_env_truthy(EXPERIMENTAL):
-        return WorkspaceTrust.none()
     try:
         context = ProjectContext.from_user_cwd(Path.cwd())
         project_root = context.project_root or context.user_cwd
@@ -3868,6 +4120,12 @@ def cli_main() -> None:
                     f"Error: {flag} is only supported by the interactive Textual TUI.\n"
                 )
                 sys.exit(2)
+            if getattr(args, "auto_classifier_model", None) is not None:
+                sys.stderr.write(
+                    "Error: --auto-classifier-model is only supported by the "
+                    "interactive Textual TUI.\n"
+                )
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -4051,6 +4309,28 @@ def cli_main() -> None:
                 "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
                 "  dcode -n 'implement X' --rubric 'tests pass'"
+            )
+            sys.exit(2)
+
+        # Auto approval mode (and therefore its classifier) requires the
+        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
+        # Auto for either. Accepting the flag in those runs would silently do
+        # nothing to a setting that governs action authorization.
+        if getattr(args, "auto_classifier_model", None) is not None and (
+            args.non_interactive_message or args.sandbox not in {"none", None}
+        ):
+            from rich.console import Console as _Console
+
+            unavailable_because = (
+                "a sandbox is in use"
+                if not args.non_interactive_message
+                else "it runs headlessly"
+            )
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --auto-classifier-model is only "
+                "supported in the interactive TUI, where Auto approval mode "
+                f"runs; {unavailable_because}.\n"
+                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
             )
             sys.exit(2)
 
@@ -4701,6 +4981,9 @@ def cli_main() -> None:
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                         allow_fs_tools=allow_fs_tools,
+                        auto_classifier_model=getattr(
+                            args, "auto_classifier_model", None
+                        ),
                         recursion_limit=getattr(args, "recursion_limit", None),
                     )
                 )

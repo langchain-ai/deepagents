@@ -340,6 +340,14 @@ class ServerConfig:
     rubric_max_iterations: int | None = None
     """Explicit grader iterations per rubric attempt; `None` uses the SDK default."""
 
+    auto_classifier_model: str | None = None
+    """Classifier model spec for Auto mode (e.g. `'anthropic:claude-haiku-4-5'`).
+
+    `None` falls through to `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, then
+    `[models].auto_classifier`, and then to the main agent model. An empty value
+    round-trips to `None`, so it means "inherit", never "empty spec".
+    """
+
     recursion_limit: int | None = None
     """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
 
@@ -477,6 +485,7 @@ class ServerConfig:
                 else None
             ),
             "RUBRIC_MODEL": self.rubric_model,
+            "AUTO_CLASSIFIER_MODEL": self.auto_classifier_model,
             "RUBRIC_MAX_ITERATIONS": (
                 str(self.rubric_max_iterations)
                 if self.rubric_max_iterations is not None
@@ -536,6 +545,7 @@ class ServerConfig:
             ),
             allow_fs_tools=_read_env_allow_fs_tools(),
             rubric_model=_read_env_str("RUBRIC_MODEL") or None,
+            auto_classifier_model=_read_env_str("AUTO_CLASSIFIER_MODEL") or None,
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
             recursion_limit=_read_env_int("RECURSION_LIMIT", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
@@ -577,6 +587,7 @@ class ServerConfig:
         allow_fs_tools: list[FsToolName] | None = None,
         rubric_model: str | None = None,
         rubric_max_iterations: int | None = None,
+        auto_classifier_model: str | None = None,
         recursion_limit: int | None = None,
         mcp_config_path: str | None,
         no_mcp: bool,
@@ -618,6 +629,8 @@ class ServerConfig:
             rubric_model: Grader model spec; `None` reuses the main model.
             rubric_max_iterations: Explicit grader iterations per rubric attempt;
                 `None` uses the SDK default.
+            auto_classifier_model: Auto classifier model spec; `None` resolves from
+                env / `config.toml` and then reuses the main model.
             recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
                 from env / `config.toml` / default at agent-build time.
             mcp_config_path: Path to MCP config.
@@ -651,6 +664,7 @@ class ServerConfig:
             allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            auto_classifier_model=auto_classifier_model,
             recursion_limit=recursion_limit,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,

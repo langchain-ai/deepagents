@@ -67,6 +67,16 @@ class TestTwoLineMetrics:
             assert bar._percent_color(80.0) == colors.warning
             assert bar._percent_color(80.1) == colors.error
 
+    async def test_cache_hit_color_thresholds(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            colors = theme.get_theme_colors(bar)
+
+            assert bar._cache_hit_color(59.9) == colors.error
+            assert bar._cache_hit_color(60.0) == colors.warning
+            assert bar._cache_hit_color(89.9) == colors.warning
+            assert bar._cache_hit_color(90.0) == colors.muted
+
 
 class TestApprovalModeDisplay:
     """Tests for the three-state approval indicator."""

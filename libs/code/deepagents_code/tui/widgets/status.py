@@ -806,12 +806,27 @@ class StatusBar(Vertical):
     _CONTEXT_CRITICAL_PERCENT = 80.0
     """Context usage at which the percentage turns to alert."""
 
+    _CACHE_WARNING_PERCENT = 90.0
+    """Cache hit rate below which the percentage turns to caution."""
+
+    _CACHE_CRITICAL_PERCENT = 60.0
+    """Cache hit rate below which the percentage turns to alert."""
+
     def _percent_color(self, percent: float) -> str:
         """Return the color that encodes how full the context window is."""
         colors = theme.get_theme_colors(self)
         if percent > self._CONTEXT_CRITICAL_PERCENT:
             return colors.error
         if percent > self._CONTEXT_WARNING_PERCENT:
+            return colors.warning
+        return colors.muted
+
+    def _cache_hit_color(self, percent: float) -> str:
+        """Return the color that encodes cache hit-rate health."""
+        colors = theme.get_theme_colors(self)
+        if percent < self._CACHE_CRITICAL_PERCENT:
+            return colors.error
+        if percent < self._CACHE_WARNING_PERCENT:
             return colors.warning
         return colors.muted
 
@@ -851,12 +866,15 @@ class StatusBar(Vertical):
         Returns:
             Styled cache usage.
         """
-        hit_rate = ""
+        hit_rate = Content("")
         if self.cache_input_tokens:
             cached = min(self.cache_read_tokens, self.cache_input_tokens)
-            hit_rate = f"{cached / self.cache_input_tokens * 100:.0f}% hit"
+            percent = cached / self.cache_input_tokens * 100
+            hit_rate = Content.styled(
+                f"{percent:.0f}% hit", self._cache_hit_color(percent)
+            )
         elif not self.cache_read_tokens and not self.cache_write_tokens:
-            hit_rate = "0% hit"
+            hit_rate = Content.styled("0% hit", self._cache_hit_color(0))
         details = (
             f"{_compact_tokens(self.cache_read_tokens)} read"
             f" / {_compact_tokens(self.cache_write_tokens)} write"
@@ -864,7 +882,8 @@ class StatusBar(Vertical):
         return Content.assemble(
             Content.styled("Cache", theme.get_theme_colors(self).muted),
             " ",
-            f"{hit_rate} {get_glyphs().bullet} " if hit_rate else "",
+            hit_rate,
+            f" {get_glyphs().bullet} " if hit_rate.plain else "",
             details,
         )
 

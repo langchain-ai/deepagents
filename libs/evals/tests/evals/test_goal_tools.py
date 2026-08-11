@@ -6,11 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from deepagents_code.goal_state_notice import build_goal_state_notice
-from deepagents_code.goal_tools import (
-    GOAL_TOOL_NAMES,
-    REMOVED_GOAL_TOOL_NAMES,
-    GoalToolsMiddleware,
-)
+from deepagents_code.goal_tools import GOAL_TOOL_NAMES, GoalToolsMiddleware
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
@@ -61,15 +57,17 @@ def _make_agent(
     )
 
 
-def _goal_tools_not_called() -> tuple[ToolNotCalled, ...]:
-    """Assert no goal tool is called, including the removed read tools.
+# Read tools removed from the tool surface. A resumed thread can still carry a
+# schema-version-1 notice telling the model to call them, so the absence gates
+# below assert the model does not try; checking only the live `update_goal`
+# would not catch that.
+_REMOVED_READ_TOOL_NAMES = ("get_goal", "get_rubric")
 
-    The removed names are included because a resumed thread can still carry a
-    schema-version-1 notice telling the model to call them; asserting only the
-    live `update_goal` would not catch the model trying.
-    """
+
+def _goal_tools_not_called() -> tuple[ToolNotCalled, ...]:
+    """Assert no goal tool is called, including the removed read tools."""
     return tuple(
-        tool_not_called(name) for name in sorted(GOAL_TOOL_NAMES | REMOVED_GOAL_TOOL_NAMES)
+        tool_not_called(name) for name in sorted([*GOAL_TOOL_NAMES, *_REMOVED_READ_TOOL_NAMES])
     )
 
 

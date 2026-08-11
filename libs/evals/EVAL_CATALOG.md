@@ -52,12 +52,12 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 
 - [`test_nexus`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L75) — `tests/evals/test_external_benchmarks.py:75`
 - [`test_bfcl_v3`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L83) — `tests/evals/test_external_benchmarks.py:83`
-- [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L91) — `tests/evals/test_goal_tools.py:91`
-- [`test_no_goal_multistep_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L109) — `tests/evals/test_goal_tools.py:109`
-- [`test_latest_inactive_notice_supersedes_stale_active_notice`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L140) — `tests/evals/test_goal_tools.py:140`
-- [`test_inactive_goal_status_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L174) — `tests/evals/test_goal_tools.py:174`
-- [`test_active_goal_followed_without_read_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L206) — `tests/evals/test_goal_tools.py:206`
-- [`test_active_rubric_followed_without_read_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L241) — `tests/evals/test_goal_tools.py:241`
+- [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L89) — `tests/evals/test_goal_tools.py:89`
+- [`test_no_goal_multistep_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L107) — `tests/evals/test_goal_tools.py:107`
+- [`test_latest_inactive_notice_supersedes_stale_active_notice`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L138) — `tests/evals/test_goal_tools.py:138`
+- [`test_inactive_goal_status_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L172) — `tests/evals/test_goal_tools.py:172`
+- [`test_active_goal_followed_without_read_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L204) — `tests/evals/test_goal_tools.py:204`
+- [`test_active_rubric_followed_without_read_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L239) — `tests/evals/test_goal_tools.py:239`
 - [`test_write_todos_sequential_updates_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L27) — `tests/evals/test_todos.py:27`
 - [`test_write_todos_three_steps_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L53) — `tests/evals/test_todos.py:53`
 - [`test_direct_request_slack_dm`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L117) — `tests/evals/test_tool_selection.py:117`

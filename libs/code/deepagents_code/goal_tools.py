@@ -52,16 +52,6 @@ if TYPE_CHECKING:
 GOAL_TOOL_NAMES = frozenset({"update_goal"})
 """Tool names used by behavioral absence gates and middleware contract tests."""
 
-REMOVED_GOAL_TOOL_NAMES = frozenset({"get_goal", "get_rubric"})
-"""Goal/rubric read tools that were removed from the agent tool surface.
-
-Kept named on purpose. A resumed thread can still hold a schema-version-1
-goal-state notice whose text tells the model to call these, so the behavioral
-evals assert it does not, and the middleware contract test asserts they are never
-re-registered. Without this set, shrinking `GOAL_TOOL_NAMES` to just
-`update_goal` would have left neither check in place.
-"""
-
 
 def _goal_state_notice_for(
     state: dict[str, Any],

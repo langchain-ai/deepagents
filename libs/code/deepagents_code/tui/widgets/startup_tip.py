@@ -20,6 +20,7 @@ _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
     "Use /offload to summarize older messages and free up the context window": 2,
+    "Use /context to see context window usage and remaining space": 1,
     "Use /copy to copy the latest message": 3,
     "Use /cost to see a breakdown of estimated spend": 1,
     "Use /tools to list the tools available to the agent": 1,

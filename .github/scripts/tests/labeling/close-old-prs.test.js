@@ -3,15 +3,84 @@ const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const closeOldPrs = require('../../labeling/close-old-prs.js');
+
 const {
   run,
   closeBody,
   ageInDays,
   COMMENT_MARKER,
   RELEASE_PLEASE_BRANCH_PREFIX,
-} = require('../../labeling/close-old-prs.js');
+  DEFAULT_BYPASS_LABEL,
+  DEFAULT_PENDING_DELETION_LABEL,
+} = closeOldPrs;
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
+const CLEAR_PENDING_DELETION_YML = path.join(
+  REPO_ROOT, '.github/workflows/clear_pending_deletion.yml',
+);
+
+// clear_pending_deletion.yml destructures helpers out of close-old-prs.js at
+// runtime. Nothing else connects the two: a helper that is not exported
+// destructures to undefined, and the step dies with a TypeError on every run
+// after its label removal has already succeeded — a job that goes red on
+// success, which is exactly the shape of failure maintainers learn to ignore.
+test('clear_pending_deletion.yml only requires exported symbols', () => {
+  const workflow = fs.readFileSync(CLEAR_PENDING_DELETION_YML, 'utf8');
+  const requires = [...workflow.matchAll(
+    /const \{([^}]*)\} = require\('\.\/\.github\/scripts\/labeling\/close-old-prs\.js'\)/g,
+  )];
+  assert.ok(requires.length > 0, 'expected the workflow to require close-old-prs.js');
+
+  for (const [, destructured] of requires) {
+    const names = destructured
+      .split(',')
+      .map(entry => entry.split(':')[0].trim())
+      .filter(Boolean);
+    assert.ok(names.length > 0, 'expected at least one destructured name');
+    for (const name of names) {
+      assert.ok(
+        Object.hasOwn(closeOldPrs, name),
+        `clear_pending_deletion.yml requires ${name}, which close-old-prs.js does not export`,
+      );
+    }
+  }
+});
+
+// The workflow's `if:` expression cannot call into JS, so these two label names
+// are necessarily duplicated there. Drift makes the workflow a permanent no-op:
+// the trigger condition simply stops matching, with no failing run to say so.
+test('clear_pending_deletion.yml gates on the label names this script uses', () => {
+  const workflow = fs.readFileSync(CLEAR_PENDING_DELETION_YML, 'utf8');
+  const condition = workflow.match(/if: >-\n([\s\S]*?)\n {4}runs-on:/);
+  assert.ok(condition, 'expected to find the job-level if: expression');
+
+  assert.match(
+    condition[1],
+    new RegExp(`github\\.event\\.label\\.name == '${DEFAULT_BYPASS_LABEL}'`),
+    `expected the trigger to gate on ${DEFAULT_BYPASS_LABEL}`,
+  );
+  assert.match(
+    condition[1],
+    new RegExp(`labels\\.\\*\\.name, '${DEFAULT_PENDING_DELETION_LABEL}'`),
+    `expected the trigger to require ${DEFAULT_PENDING_DELETION_LABEL}`,
+  );
+});
+
+// A job-level permissions block replaces the workflow-level one rather than
+// merging, so every scope the job needs must be listed on the job itself.
+// Omitting contents:read fails the checkout before the script ever runs.
+test('clear_pending_deletion.yml grants the scopes its steps need', () => {
+  const workflow = fs.readFileSync(CLEAR_PENDING_DELETION_YML, 'utf8');
+  const jobPermissions = workflow.match(
+    /runs-on: ubuntu-latest\n[\s\S]*?permissions:\n([\s\S]*?)\n\n/,
+  );
+  assert.ok(jobPermissions, 'expected job-level permissions');
+
+  for (const scope of ['contents: read', 'issues: write', 'pull-requests: write']) {
+    assert.match(jobPermissions[1], new RegExp(scope));
+  }
+});
 
 // RELEASE_PLEASE_BRANCH_PREFIX is a hardcoded literal, not derived, and the
 // same string is duplicated in five other workflows. Nothing else notices when
@@ -185,7 +254,9 @@ function makeGithub({
     graphql: async (query, variables) => {
       calls.graphql.push({ query, variables });
       if (graphqlError) throw graphqlError;
-      return {};
+      // Mirror the real mutation's response shape rather than `{}`, so code
+      // that starts reading isMinimized cannot pass here on an undefined.
+      return { minimizeComment: { minimizedComment: { isMinimized: true } } };
     },
   };
 
@@ -216,6 +287,18 @@ function makeGithub({
 const context = { repo: { owner: 'langchain-ai', repo: 'deepagents' } };
 const now = new Date('2026-05-08T00:00:00Z');
 const workflowBot = { login: 'github-actions[bot]', type: 'Bot' };
+
+// Asserts both which comments were minimized and that the mutation itself is
+// well-formed. The variables alone are not enough: a typo in the field name or
+// the wrong classifier is a GraphQL validation error at runtime, and
+// minimizeMarkerComment deliberately swallows those, so a broken mutation would
+// otherwise look identical to a working one in every test here.
+function assertMinimized(calls, nodeIds) {
+  assert.deepEqual(calls.graphql.map(call => call.variables.id), nodeIds);
+  for (const { query } of calls.graphql) {
+    assert.match(query, /minimizeComment\(input: \{subjectId: \$id, classifier: OUTDATED\}\)/);
+  }
+}
 
 // A genuine release-please PR. `overrides` spoils exactly one provenance
 // attribute at a time so each conjunct in isReleasePr is independently
@@ -256,6 +339,7 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
 
   assert.deepEqual(summary, {
     checked: 4, warned: 1, closed: 1, skipped: 2, skippedRelease: 0,
+    skippedRaced: 0,
     staleCleared: 0, sweepNotFound: 0, sweepTruncated: false, sweepFailure: null,
     incomplete: false, truncated: false, errors: [],
   });
@@ -298,15 +382,40 @@ test('does not add pending-deletion when do-not-close is applied during warning'
 
   assert.equal(summary.warned, 0);
   assert.equal(summary.skipped, 1);
+  // Counted apart from a plain skip: the warning comment did post, so this PR
+  // is visibly warned while carrying no label.
+  assert.equal(summary.skippedRaced, 1);
   assert.deepEqual(calls.addLabels, []);
   assert.deepEqual(calls.get, [106, 106]);
   // The mid-warning race leaves no pending-deletion behind, so the
-  // clear_pending_deletion workflow never fires for this PR; the warning just
-  // posted above would stay visible forever without this minimization.
-  assert.deepEqual(calls.graphql.map(call => call.variables), [{ id: 'node-new' }]);
+  // clear_pending_deletion workflow never fires for this PR. The daily bypass
+  // branch would retry the minimization tomorrow; doing it here is what
+  // retracts the just-posted warning promptly instead of a day late.
+  assertMinimized(calls, ['node-new']);
   assert.ok(core.infos.some(message => message.includes('gained do-not-close')));
   assert.equal(core.failed, null);
+  // minimizeMarkerComment downgrades every failure to a warning or an error, so
+  // without these a broken minimize path would look exactly like a healthy one.
+  assert.deepEqual(core.warnings, []);
+  assert.deepEqual(core.errors, []);
 });
+
+// Models a label race by returning a different label set on each pulls.get.
+// `onCreateComment` cannot express this on paths that post no comment, and the
+// boundary re-check is defined by making a *second* fetch, so the fixture has to
+// distinguish the two calls. Throws a named error rather than a bare TypeError
+// if the code makes more fetches than the fixture describes.
+function liveLabelSequence(...labelSets) {
+  const remaining = [...labelSets];
+  return {
+    get labels() {
+      if (remaining.length === 0) {
+        throw new Error('pulls.get called more times than the fixture describes');
+      }
+      return remaining.shift();
+    },
+  };
+}
 
 // Same race as the warning path, one branch later: an already-warned PR (no
 // label yet, e.g. warned before the label existed) gains do-not-close between
@@ -317,18 +426,41 @@ test('minimizes the warning when do-not-close lands before the label backfill', 
   const comments = new Map([
     [107, [{ id: 92, node_id: 'node-92', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
-  // No createComment happens on this path, so onCreateComment cannot model the
-  // race; instead do-not-close appears on the second live fetch (the boundary
-  // re-check in canAddPendingDeletionLabel).
-  const liveFetches = [
-    { labels: [] },
-    { labels: ['do-not-close'] },
-  ];
-  const live = new Map([[107, { get labels() { return liveFetches.shift().labels; } }]]);
   const { github, calls } = makeGithub({
     items: [{ number: 107, created_at: '2026-04-23T00:00:00Z' }],
     comments,
-    live,
+    live: new Map([[107, liveLabelSequence([], ['do-not-close'])]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  // Plain skip, not skippedRaced: this path posts no comment, so bailing leaves
+  // the PR exactly as it was found.
+  assert.equal(summary.skippedRaced, 0);
+  assert.deepEqual(calls.addLabels, []);
+  assertMinimized(calls, ['node-92']);
+  assert.equal(core.failed, null);
+  assert.deepEqual(core.warnings, []);
+  assert.deepEqual(core.errors, []);
+});
+
+// The same boundary, but with the label already applied — so the removal arm of
+// refreshLabelsUnlessBypassed actually runs. Reachable in production whenever a
+// PR was warned and labeled on an earlier day, passes the initial bypass check,
+// and gains do-not-close mid-run.
+test('removes an already-applied pending-deletion at the label boundary', async () => {
+  const comments = new Map([
+    [108, [{ id: 94, node_id: 'node-94', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 108, created_at: '2026-04-23T00:00:00Z' }],
+    comments,
+    live: new Map([[108, liveLabelSequence(
+      ['pending-deletion'],
+      ['pending-deletion', 'do-not-close'],
+    )]]),
   });
   const core = makeCore();
 
@@ -336,8 +468,74 @@ test('minimizes the warning when do-not-close lands before the label backfill', 
 
   assert.equal(summary.skipped, 1);
   assert.deepEqual(calls.addLabels, []);
-  assert.deepEqual(calls.graphql.map(call => call.variables), [{ id: 'node-92' }]);
+  assert.deepEqual(
+    calls.removeLabel.map(call => [call.issue_number, call.name]),
+    [[108, 'pending-deletion']],
+  );
+  assertMinimized(calls, ['node-94']);
   assert.equal(core.failed, null);
+});
+
+// The close is the widest and most consequential boundary: unlike a spurious
+// label it is never reverted. A maintainer applying do-not-close after the
+// initial fetch but before the close must stop it, and must not leave the
+// warning rewritten into a close notice for a PR that stays open.
+test('does not close when do-not-close lands before the close boundary', async () => {
+  const comments = new Map([
+    [109, [{ id: 95, node_id: 'node-95', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 109, created_at: '2026-04-08T00:00:00Z' }],
+    comments,
+    live: new Map([[109, liveLabelSequence(
+      ['pending-deletion'],
+      ['pending-deletion', 'do-not-close'],
+    )]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.closed, 0);
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(calls.close, []);
+  // The comment must still read as the warning, not the close notice.
+  assert.deepEqual(calls.updateComment, []);
+  assert.deepEqual(
+    calls.removeLabel.map(call => [call.issue_number, call.name]),
+    [[109, 'pending-deletion']],
+  );
+  assertMinimized(calls, ['node-95']);
+  assert.ok(core.infos.some(message => message.includes('gained do-not-close; skipping close')));
+  assert.equal(core.failed, null);
+});
+
+// A PR deleted or transferred between the initial fetch and the boundary is the
+// same benign condition the initial fetch already tolerates. Treating it as
+// fatal here would turn one deleted PR into a red daily sweep.
+test('treats a 404 at the label boundary as benign', async () => {
+  const comments = new Map([
+    [110, [{ id: 96, node_id: 'node-96', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  let fetches = 0;
+  const { github, calls } = makeGithub({
+    items: [{ number: 110, created_at: '2026-04-23T00:00:00Z' }],
+    comments,
+    live: new Map([[110, { get labels() {
+      fetches += 1;
+      if (fetches > 1) throw httpError('Not Found', 404);
+      return [];
+    } }]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(summary.errors, []);
+  assert.deepEqual(calls.addLabels, []);
+  assert.equal(core.failed, null);
+  assert.ok(core.infos.some(message => message.includes('not found at the label boundary')));
 });
 
 test('minimizes the warning comment on an already-bypassed PR', async () => {
@@ -354,8 +552,65 @@ test('minimizes the warning comment on an already-bypassed PR', async () => {
   const summary = await run({ github, context, core, options: { now } });
 
   assert.equal(summary.skipped, 1);
-  assert.deepEqual(calls.graphql.map(call => call.variables), [{ id: 'node-93' }]);
+  assertMinimized(calls, ['node-93']);
   assert.equal(core.failed, null);
+  assert.deepEqual(core.warnings, []);
+  assert.deepEqual(core.errors, []);
+});
+
+// The entire design premise of minimizeMarkerComment is that a minimize failure
+// must not disturb the label decisions around it. Nothing verified that, so
+// removing the try/catch passed the whole suite.
+test('a fatal minimize failure is escalated but does not fail the run', async () => {
+  const comments = new Map([
+    [124, [{ id: 97, node_id: 'node-97', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 124, created_at: '2026-04-08T00:00:00Z' }],
+    comments,
+    live: new Map([[124, { labels: ['do-not-close', 'pending-deletion'] }]]),
+    graphqlError: httpError('Resource not accessible by integration', 403),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  // The label decisions still land, and the run stays green.
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(summary.errors, []);
+  assert.equal(core.failed, null);
+  assert.deepEqual(
+    calls.removeLabel.map(call => [call.issue_number, call.name]),
+    [[124, 'pending-deletion']],
+  );
+  // 403 means the token lacks the scope: permanent, so it must not read as a
+  // routine warning that will sort itself out tomorrow.
+  assert.deepEqual(core.warnings, []);
+  assert.equal(core.errors.length, 1);
+  assert.match(core.errors[0], /HTTP 403, fatal/);
+  assert.match(core.errors[0], /Resource not accessible by integration/);
+});
+
+test('a transient minimize failure is only a warning', async () => {
+  const comments = new Map([
+    [125, [{ id: 98, node_id: 'node-98', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github } = makeGithub({
+    items: [{ number: 125, created_at: '2026-04-08T00:00:00Z' }],
+    comments,
+    live: new Map([[125, { labels: ['do-not-close'] }]]),
+    graphqlError: httpError('Bad gateway', 502),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.equal(core.failed, null);
+  // The daily bypass branch retries this tomorrow, so it self-heals.
+  assert.deepEqual(core.errors, []);
+  assert.equal(core.warnings.length, 1);
+  assert.match(core.warnings[0], /HTTP 502, transient/);
 });
 
 test('skips genuine release-please PRs without warning or closing', async () => {

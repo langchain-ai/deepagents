@@ -251,10 +251,14 @@ async function findMarkerComment({ github, owner, repo, issueNumber }) {
 // warning comment posted alongside it keeps claiming the PR will be
 // auto-closed. Minimize it so the PR does not keep advertising a fate that no
 // longer applies. Minimization (rather than deletion) preserves the audit
-// trail. Best-effort everywhere it is called: the label decisions around it
-// are the load-bearing part, and processPr already locates the marker comment
-// when it needs the warning's date, so leaving the comment visible is
-// cosmetic, not a close-correctness bug.
+// trail.
+//
+// Best-effort everywhere it is called: the label decisions around it are the
+// load-bearing part, and minimization is display-only — it does not touch the
+// body, so findMarkerComment still recognizes the comment on later runs.
+// Leaving it visible is cosmetic, not a close-correctness bug. Idempotent too:
+// re-minimizing an already-minimized comment is a no-op, which is what makes
+// the unconditional daily retry in processPr's bypass branch safe.
 async function minimizeMarkerComment({ github, core, owner, repo, issueNumber }) {
   try {
     const marker = await findMarkerComment({ github, owner, repo, issueNumber });
@@ -268,9 +272,20 @@ async function minimizeMarkerComment({ github, core, owner, repo, issueNumber })
     `, { id: marker.node_id });
     core.info(`Minimized stale auto-close warning ${marker.id} on PR #${issueNumber}`);
   } catch (error) {
-    core.warning(
-      `Could not minimize stale auto-close warning on PR #${issueNumber}: ${error.message}`,
-    );
+    // Swallowing keeps the run green, but "retry tomorrow" and "this will
+    // never work" must not look identical. A fatal status here — 403
+    // `Resource not accessible by integration` above all, which means the
+    // token lacks the scope minimizeComment needs — is permanent: every
+    // bypassed PR keeps advertising a close that will not happen, on every
+    // run, silently. Escalate so it surfaces as an annotation rather than one
+    // more warning line. (GraphQL errors arrive as HTTP 200 with no `status`,
+    // so those fall through to 'unknown' and are treated as fatal.)
+    const status = error.status ?? 'unknown';
+    const message =
+      `Could not minimize stale auto-close warning on PR #${issueNumber} ` +
+      `(HTTP ${status}, ${isTransient(status) ? 'transient' : 'fatal'}): ${error.message}`;
+    if (isTransient(status)) core.warning(message);
+    else core.error(message);
   }
 }
 
@@ -318,9 +333,15 @@ async function getLivePr({ github, owner, repo, number }) {
 // In the mid-warning variant of that race (bypass applied after the warning
 // comment posts but before the label does) the PR never carries
 // pending-deletion, so the clear_pending_deletion workflow's trigger condition
-// is never met and nothing else would minimize the just-posted warning.
-// Minimize it here as well; this branch is the only remaining event.
-async function canAddPendingDeletionLabel({
+// is never met. Minimize the just-posted warning here so it is retracted
+// promptly: the bypass branch in processPr gates on bypassLabel alone and
+// would retry this, but not until the next daily run, leaving a PR the
+// maintainer just exempted advertising its own closure for up to a day.
+//
+// Returns the refreshed label list for the caller to mutate against, or null
+// when the caller must abandon its mutation entirely. `action` names the
+// abandoned mutation in the log line.
+async function refreshLabelsUnlessBypassed({
   github,
   core,
   owner,
@@ -328,8 +349,20 @@ async function canAddPendingDeletionLabel({
   number,
   bypassLabel,
   pendingDeletionLabel,
+  action,
 }) {
-  const latest = await getLivePr({ github, owner, repo, number });
+  let latest;
+  try {
+    latest = await getLivePr({ github, owner, repo, number });
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    // Deleted or transferred since the first fetch — the same benign condition
+    // processPr's initial getLivePr already tolerates. Treating it as fatal
+    // here would turn one maintainer deleting a stale PR mid-run into a red
+    // daily sweep. There is nothing left to label either way.
+    core.info(`PR #${number} not found at the label boundary; skipping`);
+    return null;
+  }
   if (!latest.labels.includes(bypassLabel)) return latest.labels;
 
   await removeIssueLabel({
@@ -341,7 +374,7 @@ async function canAddPendingDeletionLabel({
     existingLabels: latest.labels,
   });
   await minimizeMarkerComment({ github, core, owner, repo, issueNumber: number });
-  core.info(`PR #${number} gained ${bypassLabel}; skipping pending-deletion`);
+  core.info(`PR #${number} gained ${bypassLabel}; skipping ${action}`);
   return null;
 }
 
@@ -467,8 +500,11 @@ async function processPr({
     });
     // The clear_pending_deletion workflow handles the common case, but it only
     // triggers when pending-deletion is in the labeled-event payload — a PR
-    // whose label was already gone (e.g. removed by hand) would keep showing
-    // the warning. Belt-and-braces: this runs at most once per PR per day.
+    // whose label was already gone (e.g. removed by hand), or that raced past
+    // the label entirely, would keep showing the warning. Belt-and-braces:
+    // gated on bypassLabel alone, so this is the catch-all retry for every
+    // path that failed to minimize earlier. Safe to run unconditionally
+    // because minimization is idempotent (see minimizeMarkerComment).
     await minimizeMarkerComment({ github, core, owner, repo, issueNumber: number });
     core.info(`PR #${number} has ${bypassLabel}; skipping`);
     return 'skipped';
@@ -493,7 +529,7 @@ async function processPr({
     // Re-check the bypass label immediately before this mutation. The first
     // live fetch above can be stale if a maintainer applied do-not-close while
     // this run was posting the warning comment.
-    const labels = await canAddPendingDeletionLabel({
+    const labels = await refreshLabelsUnlessBypassed({
       github,
       core,
       owner,
@@ -501,8 +537,13 @@ async function processPr({
       number,
       bypassLabel,
       pendingDeletionLabel,
+      action: 'pending-deletion',
     });
-    if (labels === null) return 'skipped';
+    // Not plain 'skipped': the warning comment above already posted, so this PR
+    // is visibly warned despite carrying no label. Counting it as an untouched
+    // skip would hide that a comment was left behind (minimized, if that
+    // succeeded) from anyone reading the run summary.
+    if (labels === null) return 'skippedRaced';
 
     // Apply at warning time so the PR is filterable until it stops being a
     // close candidate (closed, draft, release, or bypassed).
@@ -521,6 +562,26 @@ async function processPr({
   const noticeDays = closeDays - warningDays;
   const warningAge = ageInDays(existing.created_at, now);
   if (age >= closeDays && warningAge >= noticeDays) {
+    // Re-check the bypass at this boundary too, and before the comment rewrite
+    // rather than just before the close. This window is the widest in the
+    // function — findMarkerComment's paginated listComments sits between it and
+    // the initial live fetch — and by far the most consequential: a spurious
+    // label is cosmetic and self-heals on the next run, whereas a wrong close
+    // posts "is being closed automatically", is never reverted, and then has
+    // its label stripped below so nothing records why. Guarding only the two
+    // benign label boundaries while leaving this one open would invert that.
+    const labels = await refreshLabelsUnlessBypassed({
+      github,
+      core,
+      owner,
+      repo,
+      number,
+      bypassLabel,
+      pendingDeletionLabel,
+      action: 'close',
+    });
+    if (labels === null) return 'skipped';
+
     // Upgrade the existing warning to the close notice in place, skipping the
     // API call if it already says exactly that (e.g. a retried run).
     const body = closeBody({ closeDays, bypassLabel });
@@ -544,7 +605,7 @@ async function processPr({
       repo,
       issueNumber: number,
       name: pendingDeletionLabel,
-      existingLabels: live.labels,
+      existingLabels: labels,
     });
     core.info(`Closed PR #${number} after ${age} day(s)`);
     return 'closed';
@@ -554,7 +615,7 @@ async function processPr({
   // when a prior run posted the comment but failed before labeling. As above,
   // check do-not-close at the mutation boundary rather than relying only on
   // the earlier live fetch.
-  const labels = await canAddPendingDeletionLabel({
+  const labels = await refreshLabelsUnlessBypassed({
     github,
     core,
     owner,
@@ -562,7 +623,10 @@ async function processPr({
     number,
     bypassLabel,
     pendingDeletionLabel,
+    action: 'pending-deletion',
   });
+  // Plain 'skipped' is honest here: this path posts no comment, so a bail
+  // leaves the PR exactly as it was found.
   if (labels === null) return 'skipped';
   await ensureIssueLabel({
     github,
@@ -744,6 +808,12 @@ async function run({ github, context, core, options = {} }) {
     closed: 0,
     skipped: 0,
     skippedRelease: 0,
+    // PRs that were warned (comment posted) and then lost the label to a
+    // mid-run do-not-close. Broken out because the end state is unusual — a
+    // visible warning with no pending-deletion label — and because a sustained
+    // 0 is the expected reading: a non-zero value is evidence the label race
+    // refreshLabelsUnlessBypassed guards against actually occurs.
+    skippedRaced: 0,
     staleCleared: 0,
     incomplete,
     truncated,
@@ -764,9 +834,9 @@ async function run({ github, context, core, options = {} }) {
         warningDays,
         closeDays,
       });
-      if (result === 'skippedRelease') {
+      if (result === 'skippedRelease' || result === 'skippedRaced') {
         summary.skipped += 1;
-        summary.skippedRelease += 1;
+        summary[result] += 1;
       } else if (Object.hasOwn(summary, result)) {
         summary[result] += 1;
       } else {
@@ -803,7 +873,7 @@ async function run({ github, context, core, options = {} }) {
   core.info(
     `Checked ${summary.checked}; warned ${summary.warned}; ` +
     `closed ${summary.closed}; skipped ${summary.skipped} ` +
-    `(${summary.skippedRelease} release); ` +
+    `(${summary.skippedRelease} release, ${summary.skippedRaced} raced); ` +
     `cleared stale ${pendingDeletionLabel} ${summary.staleCleared} ` +
     `(${summary.sweepNotFound} not found); ` +
     `errors ${summary.errors.length}`,
@@ -828,8 +898,12 @@ async function run({ github, context, core, options = {} }) {
 // against release-please-config.json; nothing at runtime reads it.
 module.exports = {
   run,
-  // Required by clear_pending_deletion.yml, which shares this helper.
+  // Required by clear_pending_deletion.yml, which shares this helper and this
+  // label name. The workflow's `if:` expression cannot reference JS, so the
+  // literal there is still duplicated — a test pins the two together.
   minimizeMarkerComment,
+  DEFAULT_PENDING_DELETION_LABEL,
+  DEFAULT_BYPASS_LABEL,
   warningBody,
   closeBody,
   ageInDays,

@@ -5271,9 +5271,18 @@ class TestSummaryTargetCounting:
                 ],
                 "Read 1 file, edited 1 file",
             ),
-            # The `path` fallback is honored for tools that use it.
+            # `path` is accepted as a fallback spelling, mirroring the tolerance
+            # `_filtered_args` already shows for either key.
             (
                 [("read_file", {"path": "a.py"}), ("read_file", {"file_path": "a.py"})],
+                "Read 1 file",
+            ),
+            # `file_path` wins when a call carries both spellings.
+            (
+                [
+                    ("read_file", {"file_path": "a.py", "path": "b.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
                 "Read 1 file",
             ),
             # URLs collapse on exact match.
@@ -5317,14 +5326,61 @@ class TestSummaryTargetCounting:
                 [("grep", {"pattern": "x"}), ("grep", {"pattern": "x"})],
                 "Searched for 2 patterns",
             ),
-            # A bare `ls()` means "the working directory", which `execute` can
-            # change mid-step, so identical calls are not assumed identical.
-            ([("ls", {}), ("ls", {})], "Listed 2 directories"),
+            # A listing is a snapshot, not a durable object: a group spans a
+            # whole step, so an intervening write can make the second listing of
+            # one directory show something different.
+            (
+                [("ls", {"path": "/repo"}), ("ls", {"path": "/repo"})],
+                "Listed 2 directories",
+            ),
+            # `web_search` phrases its own repeats, so it never collapses either.
+            (
+                [("web_search", {"query": "x"}), ("web_search", {"query": "x"})],
+                "Searched the web 2 times",
+            ),
+            # A `..` segment disables normalization: resolving it lexically would
+            # merge `d/../a.py` with `a.py`, which differ when `d` is a symlink.
+            (
+                [
+                    ("read_file", {"file_path": "d/../a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                "Read 2 files",
+            ),
+            # Every mutating category reports repeats, deletes included: a group
+            # spans a step, so delete/write/delete is two real deletions.
+            (
+                [
+                    ("delete", {"file_path": "a.py"}),
+                    ("write_file", {"file_path": "a.py"}),
+                    ("delete", {"file_path": "a.py"}),
+                ],
+                "Deleted 1 file (2 deletions), wrote 1 file",
+            ),
             # Unidentifiable targets fail open: counting each merely restores the
             # old count, while collapsing would invent a repeat.
             ([("read_file", {}), ("read_file", {})], "Read 2 files"),
             (
                 [("read_file", {"file_path": ""}), ("read_file", {"file_path": None})],
+                "Read 2 files",
+            ),
+            # Empty is rejected before normalizing, which would turn it into "."
+            # and collapse two unknown paths into one.
+            (
+                [("read_file", {"file_path": ""}), ("read_file", {"file_path": ""})],
+                "Read 2 files",
+            ),
+            (
+                [("read_file", {"file_path": ""}), ("read_file", {"file_path": "."})],
+                "Read 2 files",
+            ),
+            # Backend paths are compared with POSIX rules wherever the TUI runs:
+            # `a\b` is a legal POSIX filename, not a spelling of `a/b`.
+            (
+                [
+                    ("read_file", {"file_path": "a\\b"}),
+                    ("read_file", {"file_path": "a/b"}),
+                ],
                 "Read 2 files",
             ),
             (
@@ -5340,6 +5396,60 @@ class TestSummaryTargetCounting:
         from deepagents_code.tui.widgets.messages import summarize_tool_group
 
         assert summarize_tool_group(calls) == expected
+
+    def test_repeat_detection_is_scoped_per_category(self) -> None:
+        """One category's targets never mask another's.
+
+        The tally shares a single `seen` set, so identities must be namespaced by
+        category. Without that, `b.py` is already seen from the read when the
+        second edit arrives, and the edits collapse to "edited 1 file".
+        """
+        from deepagents_code.tui.widgets.messages import summarize_tool_group
+
+        calls = [
+            ("read_file", {"file_path": "a.py"}),
+            ("read_file", {"file_path": "b.py"}),
+            ("edit_file", {"file_path": "b.py"}),
+            ("edit_file", {"file_path": "a.py"}),
+        ]
+        assert summarize_tool_group(calls) == "Read 2 files, edited 2 files"
+
+    def test_backend_paths_use_posix_rules_on_every_platform(self) -> None:
+        r"""Backend paths never pick up the client's path rules.
+
+        The first assertion is the hazard, not a behavior under test: Windows
+        rules treat a backslash as a separator, so `os.path` on a Windows client
+        would merge `a\\b` — a legal POSIX filename — with `a/b`. This can only
+        fail on a Windows runner, where it is exactly the regression that matters.
+        """
+        import ntpath
+
+        from deepagents_code.tui.widgets.messages import _normalize_path_target
+
+        assert ntpath.normpath("a\\b") == ntpath.normpath("a/b")
+        assert _normalize_path_target("a\\b") != _normalize_path_target("a/b")
+
+    def test_repeat_nouns_require_a_target_arg(self) -> None:
+        """A repeat noun is dead unless its category also names a target.
+
+        `calls` can only exceed `targets` for a category that has a target, so a
+        noun added without one would silently never render.
+        """
+        from deepagents_code.tui.widgets.messages import (
+            _REPEAT_COUNT_NOUNS,
+            _TOOL_SUMMARY_TARGET_ARGS,
+        )
+
+        assert _REPEAT_COUNT_NOUNS.keys() <= _TOOL_SUMMARY_TARGET_ARGS.keys()
+
+    def test_path_compared_categories_all_name_a_target(self) -> None:
+        """Path normalization is unreachable for a category with no target arg."""
+        from deepagents_code.tui.widgets.messages import (
+            _PATH_TARGET_CATEGORIES,
+            _TOOL_SUMMARY_TARGET_ARGS,
+        )
+
+        assert _TOOL_SUMMARY_TARGET_ARGS.keys() >= _PATH_TARGET_CATEGORIES
 
     def test_category_order_follows_first_call(self) -> None:
         """Collapsing a repeat does not disturb first-appearance ordering."""
@@ -5580,6 +5690,31 @@ class TestSummarizeLiveToolGroup:
 
         assert summarize_live_tool_group([], []) == ""
 
+    def test_one_target_across_the_split_counts_in_both_halves(self) -> None:
+        """A file whose second read is still running stays visible as reading.
+
+        The two halves are tallied independently on purpose: collapsing across
+        the split would drop the file from the present-tense half and the line
+        would stop reporting the step as reading at all.
+        """
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        one_read = [("read_file", {"file_path": "a.py"})]
+        assert (
+            summarize_live_tool_group(one_read, one_read)
+            == "Read 1 file, reading 1 file"
+        )
+
+    def test_repeats_within_a_half_still_collapse(self) -> None:
+        """Independent tallies do not disable collapsing inside either half."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        two_edits = [("edit_file", {"file_path": "a.py"})] * 2
+        assert (
+            summarize_live_tool_group(two_edits, two_edits)
+            == "Edited 1 file (2 edits), editing 1 file (2 edits)"
+        )
+
 
 class _LiveToolGroupApp(App[None]):
     """Minimal app with an empty live group and two tools to add to it."""
@@ -5615,8 +5750,53 @@ class _LiveToolGroupSameCategoryApp(App[None]):
         yield t2
 
 
+class _LiveToolGroupOnePathApp(App[None]):
+    """Live group whose two reads name the same file."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("read_file", {"file_path": "a.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
 class TestLiveToolGroupSummary:
     """Eager/live group: collapsed from the start, running -> ran transition."""
+
+    async def test_live_line_reads_targets_not_just_names(self) -> None:
+        """The live path collapses repeats, and re-renders when one finishes.
+
+        Without args reaching the live render path both reads would count as two
+        files; without the target in the cache key the line would keep the stale
+        text once the first read finished.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupOnePathApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            first = pilot.app.query_one("#t1", ToolCallMessage)
+
+            summary.add_member(first)
+            summary.add_member(pilot.app.query_one("#t2", ToolCallMessage))
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Reading 1 file" in rendered.plain
+            assert "2 files" not in rendered.plain
+
+            # One read finishes: the line must rebuild, counting the file in both
+            # halves so the step still reads as reading.
+            first.set_success("done")
+            summary._render_line()
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file, reading 1 file" in rendered.plain
 
     async def test_present_tense_while_running_then_past_on_close(self) -> None:
         from deepagents_code.tui.widgets.messages import ToolGroupSummary

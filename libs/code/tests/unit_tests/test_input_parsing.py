@@ -790,9 +790,10 @@ def test_track_probe_failures_records_dangling_symlink_target_as_clean_miss(
 def test_track_probe_failures_records_symlink_loop(tmp_path: Path) -> None:
     """A symlink loop is a refusal, not a miss.
 
-    Non-strict `resolve()` no longer raises on loops, so the `ELOOP` arrives
-    from the stat that follows it. Either way the caller must learn the path
-    could not be probed rather than reading it as ordinary text.
+    Python 3.11 and 3.12 raise `RuntimeError` from non-strict `resolve()`, while
+    newer versions continue to the following stat and raise `ELOOP`. Either way
+    the caller must learn the path could not be probed rather than reading it as
+    ordinary text.
     """
     first = tmp_path / "a"
     second = tmp_path / "b"
@@ -804,7 +805,9 @@ def test_track_probe_failures_records_symlink_loop(tmp_path: Path) -> None:
 
     assert failures
     assert any(
-        getattr(failure.error, "errno", None) == errno.ELOOP for failure in failures
+        isinstance(failure.error, RuntimeError)
+        or getattr(failure.error, "errno", None) == errno.ELOOP
+        for failure in failures
     )
 
 

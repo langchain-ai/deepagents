@@ -3609,10 +3609,11 @@ class ToolCallMessage(Vertical):
         """This row as `(tool name, args)` for the group summary line.
 
         Unlike `args` this does not copy: the group rebuilds its cache key from
-        every member on each spinner tick, and a copy per member per tick is pure
-        waste on a path that otherwise avoids all per-tick work. Safe because the
-        `Mapping` return type is read-only and `_args` never changes after
-        construction — do not widen this to a caller that mutates.
+        every member on each spinner tick, so a copy per member per tick buys
+        nothing the caller uses. Safe because the `Mapping` return type is
+        read-only and this widget never mutates `_args` after construction — the
+        dict is the caller's, though, so do not widen this to a caller that
+        mutates.
         """
         return (self._tool_name, self._args)
 
@@ -3943,12 +3944,13 @@ _TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
 # their counts claim "N distinct things", so repeat calls on one target must
 # collapse (see `_tally_categories`).
 #
-# Deliberately absent: "shell", "js", "task", and "search" count attempts, not
-# objects — running one command or grepping one pattern twice is genuinely two
-# pieces of work. "web_search" phrases its own repeats ("Searched the web 2
-# times"). "ls" is excluded because a listing is a snapshot, not a durable
-# object: a group spans a whole step, so an intervening write can make the
-# second listing of one directory show different contents.
+# Every other category is absent on purpose. "shell", "js", "task", and "search"
+# count attempts, not objects — running one command or grepping one pattern twice
+# is genuinely two pieces of work. "web_search" phrases its own repeats
+# ("Searched the web 2 times") and "todos" carries no count at all. "ls" is
+# excluded because a listing is a snapshot, not a durable object: a group spans a
+# whole step, so an intervening write can make the second listing of one
+# directory show different contents.
 _TOOL_SUMMARY_TARGET_ARGS: dict[str, tuple[str, ...]] = {
     "read": ("file_path", "path"),
     "write": ("file_path", "path"),
@@ -3989,8 +3991,8 @@ def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
         value = args.get(arg_name)
         if isinstance(value, str) and value:
             if category not in _PATH_TARGET_CATEGORIES:
-                # Not a path, so compare it exactly — see the type's docstring
-                # for why path rules would undercount a URL.
+                # Not a path, so compare it exactly — see
+                # `_PATH_TARGET_CATEGORIES` for why path rules undercount a URL.
                 return f"{category}:{value}"
             # The category prefix is load-bearing: `_tally_categories` shares one
             # `seen` set across categories, so identities must be namespaced or
@@ -4028,8 +4030,9 @@ def _normalize_path_target(value: str) -> str:
 # genuinely be mutated twice — `delete a.py`, `write_file a.py`, `delete a.py`
 # is two real deletions. "fetch" qualifies too: a repeated fetch of one URL is a
 # deliberate re-request, not pagination, and "Fetched 1 URL" for two requests
-# reads like the second one vanished. Only "read" is absent — a repeat read is
-# usually pagination, where the count is noise, so reads collapse silently.
+# reads like the second one vanished. Of the categories that name a target, only
+# "read" is absent — a repeat read is usually pagination, where the count is
+# noise, so reads collapse silently.
 #
 # A category here has no effect unless it is also in `_TOOL_SUMMARY_TARGET_ARGS`:
 # without a target, `calls` can never exceed `targets`.
@@ -4138,9 +4141,9 @@ _Tense = Literal["present", "past"]
 def _summary_segment(tally: _CategoryTally, tense: _Tense) -> str:
     """Phrase one category's segment, e.g. "Read 2 files" / "Reading 2 files".
 
-    The lead noun counts distinct targets. When a mutating category repeated
-    work on one of them, the operation count trails in parentheses ("Edited 1
-    file (3 edits)") so neither number is lost.
+    The lead noun counts distinct targets. When a category in
+    `_REPEAT_COUNT_NOUNS` repeated work on one of them, the operation count
+    trails in parentheses ("Edited 1 file (3 edits)") so neither number is lost.
 
     Args:
         tally: The category's distinct-target and total-call counts.
@@ -4255,12 +4258,12 @@ def _summary_cache_key(
     """Build a cache key capturing everything a summary line depends on.
 
     The line is a function of each call's `(name, target)`, so the key is too.
-    A names-only key would in fact be sufficient today — membership is
-    append-only and every mutation clears the cache outright, so two successive
-    states cannot share a name list while differing in targets. Deriving the key
-    from the summarizer's real inputs instead of relying on that argument keeps
-    it correct if grouping ever changes. Over-invalidation is the only cost:
-    reordering calls within a category rebuilds identical text.
+    A names-only key would in fact be sufficient today — every membership
+    mutation, append and eviction alike, clears the cache outright, so two
+    cached states cannot share a name list while differing in targets. Deriving
+    the key from the summarizer's real inputs instead of relying on that
+    argument keeps it correct if grouping ever changes. Over-invalidation is the
+    only cost: reordering calls within a category rebuilds identical text.
 
     Args:
         calls: `(raw tool name, parsed args)` for each call, in call order.

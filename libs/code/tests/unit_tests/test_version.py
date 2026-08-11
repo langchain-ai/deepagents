@@ -1801,11 +1801,12 @@ async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
 
 
 async def test_perform_app_upgrade_defers_to_another_session() -> None:
-    """`/update` must not install while another dcode process is installing.
+    """`/update` must not install while an install is already running.
 
-    `_environment_mutation_lock` only serializes this process, so the
-    cross-process lock is what stops two terminals from racing one tool
-    environment.
+    `_environment_mutation_lock` only serializes this process, so the update
+    lock is what stops two terminals from racing one tool environment. Held
+    in-process here for determinism, which exercises the caller's response to
+    a refusal; `TestUpdateInstallLock` covers the cross-process guarantee.
     """
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -1833,9 +1834,46 @@ async def test_perform_app_upgrade_defers_to_another_session() -> None:
 
         upgrade_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert "Another dcode session is already installing" in str(
-            app_msgs[-1]._content
-        )
+        assert "An update is already being installed" in str(app_msgs[-1]._content)
+
+
+async def test_perform_app_upgrade_holds_the_lock_during_install() -> None:
+    """`/update` must run the install inside the lock, not after a check.
+
+    Shrinking the `with` to cover only the boolean check would leave the
+    install unguarded while the deferral test above still passed. The lock is
+    not reentrant, so re-entering from inside `perform_upgrade` proves it is
+    held for the real work.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.update_check import update_install_lock
+
+    held_during_install: list[bool] = []
+
+    async def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:  # noqa: RUF029
+        with update_install_lock() as holding:
+            held_during_install.append(holding)
+        return True, ""
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.update_check.perform_upgrade",
+            new=_record_lock_state,
+        ):
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version=None,
+            )
+            await pilot.pause()
+
+    assert held_during_install == [False], (
+        "the install ran without holding the update lock"
+    )
 
 
 async def test_perform_app_upgrade_skips_install_in_debug_mode(

@@ -8,6 +8,7 @@ import pytest
 
 from deepagents_code.input import (
     ParsedPastedPathPayload,
+    ProbeFailure,
     dropped_payload_paths,
     extract_leading_pasted_entry_path,
     extract_leading_pasted_file_path,
@@ -17,6 +18,7 @@ from deepagents_code.input import (
     parse_pasted_file_paths,
     parse_pasted_path_payload,
     parse_single_pasted_file_path,
+    select_probe_failure_for,
     track_probe_failures,
 )
 
@@ -830,6 +832,61 @@ def test_track_probe_failures_nests_independently(
         assert inner
         # The inner failures must not have leaked outward.
         assert outer == []
+
+
+def test_unreadable_working_directory_is_recorded_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused `Path.cwd()` must not escape the guarded resolution helpers.
+
+    A Windows-shaped payload is drop-shaped but relative to `Path`, so it reaches
+    the `Path.cwd()` call in the Unicode-space fallback. If the working directory
+    has been deleted, the `OSError` would otherwise propagate out of a
+    synchronous text-change handler and take down input handling.
+    """
+
+    def _deny() -> Path:
+        raise OSError(errno.ENOENT, "No such file or directory")
+
+    monkeypatch.setattr(Path, "cwd", _deny)
+
+    with track_probe_failures() as failures:
+        assert parse_pasted_any_entry_paths(r"C:\Users\x\shot.png") == []
+
+    assert failures
+    assert isinstance(failures[0].error, OSError)
+
+
+def test_select_probe_failure_for_returns_none_without_failures() -> None:
+    """No recorded failures means there is nothing to report."""
+    assert select_probe_failure_for([], "/srv/assets") is None
+
+
+def test_select_probe_failure_for_prefers_longest_mentioned_path() -> None:
+    """The dropped entry must win over the ancestor the fallback also probed.
+
+    The Unicode-space fallback walks ancestor segments, so the first recorded
+    failure is often a parent the user never dropped.
+    """
+    parent = ProbeFailure(Path("/srv"), PermissionError("denied"))
+    entry = ProbeFailure(Path("/srv/assets"), PermissionError("denied"))
+
+    assert select_probe_failure_for([parent, entry], "/srv/assets") is entry
+    # Recording order must not decide the answer.
+    assert select_probe_failure_for([entry, parent], "/srv/assets") is entry
+
+
+def test_select_probe_failure_for_falls_back_to_first_when_unmentioned() -> None:
+    """A failure whose path is absent from the payload is still reported.
+
+    A `~/` or percent-encoded drop records the expanded path, which is not a
+    substring of what the user dropped. Returning `None` there would silently
+    drop the warning this machinery exists to produce.
+    """
+    first = ProbeFailure(Path("/Users/x/assets"), PermissionError("denied"))
+    second = ProbeFailure(Path("/Users/x"), PermissionError("denied"))
+
+    assert select_probe_failure_for([first, second], "~/assets") is first
 
 
 def test_dropped_payload_paths_ignores_plain_text() -> None:

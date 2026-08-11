@@ -193,6 +193,17 @@ class TestSlashCommandController:
         assert controller.has_command("help") is False
         assert controller.has_command("/tmp") is False
 
+    def test_has_command_matches_aliases(self, controller):
+        """An alias is as typeable as the canonical name, so it counts too.
+
+        A directory sharing an alias must lose to the command exactly as it
+        would for the command's own name.
+        """
+        assert controller.has_command("/connect") is True
+        assert controller.has_command("/compact") is True
+        assert controller.has_command("/q") is True
+        assert controller.has_command("/connec") is False
+
     def test_cannot_handle_non_slash(self, controller):
         """Does not handle text not starting with /."""
         assert controller.can_handle("hello", 5) is False

@@ -152,7 +152,7 @@ class SlashCommandController:
         self.reset()
 
     @staticmethod
-    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
+    def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by CompletionController protocol
         """Handle input that starts with /.
 
         Returns:

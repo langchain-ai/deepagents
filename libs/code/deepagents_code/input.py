@@ -565,7 +565,8 @@ def parse_pasted_any_entry_paths(text: str) -> list[Path]:
     attachable, so nothing is loaded from them.
 
     Tokenization is strict and shell-style, so a payload whose spaces are
-    unquoted resolves through `extract_leading_pasted_entry_path` instead.
+    unquoted returns empty here; callers fall back to
+    `extract_leading_pasted_entry_path` for that shape.
 
     Args:
         text: Raw paste payload from the terminal.
@@ -1081,11 +1082,16 @@ def track_probe_failures() -> Iterator[list[ProbeFailure]]:
     Wrapping the classification in this block lets such a caller tell the two
     apart and fail toward the safe direction.
 
-    Every filesystem operation in this module participates, not only `stat`:
-    `resolve()` and the `iterdir()` walk in the Unicode-space fallback record
-    too. That fallback probes ancestor segments, so a recorded failure may
-    describe a *parent directory* rather than the caller's payload — see
-    `select_probe_failure_for` for picking the most relevant one.
+    Every filesystem operation in the pasted-path resolution helpers below
+    participates, not only `stat`: `resolve()` and the `iterdir()` walk in the
+    Unicode-space fallback record too. That fallback probes ancestor segments,
+    so a recorded failure may describe a *parent directory* rather than the
+    caller's payload — see `select_probe_failure_for` for picking the most
+    relevant one.
+
+    Mention parsing (`parse_file_mentions`) deliberately does *not* participate;
+    it reports unusable paths to the console itself, so an empty failure list is
+    not evidence that its probes all succeeded.
 
     Nesting is supported; each block sees only its own failures.
 
@@ -1168,12 +1174,18 @@ def _stat_path(path: Path) -> os.stat_result | None:
         # An embedded NUL raised here (rather than inside pathlib's probes) on
         # every supported interpreter; callers only want usable paths, so it
         # folds into a clean miss exactly as `path.exists()` would answer.
+        #
+        # Unreachable through the pasted-path entry points as written:
+        # `_resolve_existing_pasted_entry` calls `resolve()` first, which
+        # rejects the NUL before any `matches()` stat runs. Kept so a future
+        # caller that stats without resolving first cannot reintroduce the
+        # crash; do not read its absence from coverage as dead code.
         logger.debug("stat() check failed for %r: %s", path, e)
         return None
 
 
 def _safe_exists(path: Path) -> bool:
-    """Return whether `path` exists, treating OS rejections as non-existent.
+    """Return whether `path` exists, recording any stat failure.
 
     See `_stat_path` for why probes preserve and record failures.
 
@@ -1250,7 +1262,7 @@ def _resolve_existing_pasted_entry(
     Args:
         path: Parsed path candidate.
         matches: Predicate deciding whether a resolved path is the shape the
-            caller wants — a file, a directory, or any existing entry.
+            caller wants — a file, or any existing entry.
 
     Returns:
         Resolved existing path, otherwise `None`.
@@ -1319,10 +1331,15 @@ def _resolve_with_unicode_space_variants(
         try:
             current = Path.cwd()
         except OSError as e:
-            # Reachable on POSIX for Windows-shaped payloads (`C:/x`,
-            # `\\server\share`), which `looks_like_dropped_payload` accepts but
-            # `Path` treats as relative. A deleted working directory must not
-            # escape a function whose whole premise is that probes are guarded.
+            # This *branch* is reached on POSIX for Windows-shaped payloads
+            # (`C:/x`, `\\server\share`), which `looks_like_dropped_payload`
+            # accepts but `Path` treats as relative.
+            #
+            # The guard is separate: a deleted working directory would usually
+            # already have raised out of the `resolve()` above, so reaching here
+            # takes a race between the two calls. It is still guarded because a
+            # function whose whole premise is that probes never raise must not
+            # let one escape.
             logger.debug("Cannot resolve relative candidate %r: %s", path, e)
             _record_probe_failure(path, e)
             return None

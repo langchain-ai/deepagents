@@ -16,6 +16,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Size
 from textual.message import Message
+from textual.message_pump import NoActiveAppError
 from textual.reactive import reactive
 from textual.strip import Strip
 from textual.widgets import Static, TextArea
@@ -105,6 +106,27 @@ The cache is pre-warmed on mount and re-warmed on cwd switches, but files
 created or deleted mid-session would otherwise stay stale until the next switch.
 A periodic refresh keeps `@` suggestions current; the walk runs off the event
 loop and swaps in atomically, so it never blocks typing."""
+
+_MIN_DROPPED_ORIGIN_OVERLAP = 3
+"""Characters of a dropped path that must survive an edit to keep its context.
+
+Backs up the proportional test in `ChatInput._retains_dropped_origin`, which on
+its own is satisfied by coincidence at the two ends: every absolute path and
+every slash command share a leading `/`, so a short origin needs only one more
+equal character to clear half its length. An ordinary edit to a real dropped
+path leaves whole segments intact, so three costs nothing real.
+
+Short root-level origins are handled separately -- see that method -- because no
+overlap threshold can separate `/opt` from `/output`."""
+
+_AMBIGUOUS_ORIGIN_MAX_LEN = 6
+"""Longest root-level dropped path treated as ambiguous with a slash command.
+
+Covers every single-segment directory short enough for end coincidence to clear
+half its length -- `/tmp`, `/var`, `/etc`, `/opt`, `/usr`, `/dev`, `/proc`,
+`/home` -- while leaving longer root folders such as `/Volumes` and
+`/Applications` on the edit-tolerant proportional test, where a coincidence
+would have to survive four or more characters to matter."""
 
 if TYPE_CHECKING:
     from textual import events
@@ -1533,7 +1555,8 @@ class ChatInput(Vertical):
         # Because it tracks the buffer, this span can legitimately shrink to a
         # bare `/` (editing immediately after the root slash). A bare `/` on its
         # own would make every later `/command` look like a drop, so it is only
-        # trusted while `_dropped_path_origin` is still present in the buffer.
+        # trusted while enough of `_dropped_path_origin` survives in the buffer
+        # -- see `_retains_dropped_origin` for what "enough" means.
         self._dropped_path_draft: str | None = None
 
         # The token detection originally accepted, frozen for the life of the
@@ -1541,8 +1564,9 @@ class ChatInput(Vertical):
         # whether the dropped path is still in the buffer at all; this can.
         self._dropped_path_origin: str | None = None
 
-        # Payload already reported by `_warn_unreadable_dropped_path`, so a
-        # re-detection pass over the same unreadable drop does not re-toast.
+        # Failing path already reported by `_warn_unreadable_dropped_path` (not
+        # the whole payload -- see that method), so a re-detection pass over the
+        # same unreadable drop does not re-toast.
         self._warned_unreadable_path: str | None = None
 
         # Track current suggestions for click handling
@@ -1795,7 +1819,9 @@ class ChatInput(Vertical):
                 # current text prefix so a truncation that leaves the path
                 # missing from disk still submits as text. Skip the refresh
                 # when there is no shared prefix (e.g. history recall, where
-                # the previous text is empty) to avoid clearing the draft.
+                # the previous text is empty): assigning an empty draft would
+                # make `_starts_with_dropped_path` match every submission,
+                # which is worse than keeping the existing draft.
                 shared_prefix = self._longest_common_prefix(previous_text, text)
                 if shared_prefix:
                     self._dropped_path_draft = shared_prefix
@@ -1931,7 +1957,12 @@ class ChatInput(Vertical):
         self._warned_unreadable_path = None
 
     def _retains_dropped_origin(self, text: str) -> bool:
-        """Return whether `text` still contains most of the dropped path.
+        """Return whether enough of the dropped path survives in `text`.
+
+        Not a containment test: this measures the original token's shared prefix
+        and suffix against the buffer, so an origin re-typed in the *middle* of
+        the buffer does not count. Simplifying it to `origin in text` would
+        change behavior.
 
         The draft follows the buffer, so after an edit next to the root slash
         it can legitimately be just `/` -- and a bare `/` matches every slash
@@ -1944,12 +1975,32 @@ class ChatInput(Vertical):
             text: Current buffer text.
 
         Returns:
-            `True` when at least half the original token survives, or when no
+            `True` when enough of the original token survives, or when no
             origin is recorded (nothing to contradict the draft).
         """
         origin = self._dropped_path_origin
         if origin is None:
             return True
+
+        # A short root-level origin (`/tmp`, `/opt`, `/etc`) is the same shape as
+        # a slash command and too small for the proportional test below to tell
+        # the two apart: `/opt` shares `/o` with `/output` plus a final `t`, or
+        # three of its four characters, by pure coincidence. Require the buffer
+        # to still lead with the origin, or to be a straight truncation of it --
+        # an edit *inside* a four-character root path is vanishingly rare next to
+        # replacing it with a command, and guessing wrong there silently sends
+        # the command to the model as chat text.
+        #
+        # Deliberately narrow. Deeper paths and Windows-shaped ones are not
+        # command-shaped, and a long root folder (`/Applications`) needs far more
+        # than a coincidence to clear the ratio, so all of them keep the
+        # edit-tolerant test below.
+        is_command_shaped = origin.startswith("/") and origin.count("/") == 1
+        if is_command_shaped and len(origin) <= _AMBIGUOUS_ORIGIN_MAX_LEN:
+            kept_whole = text.startswith(origin)
+            truncated = len(text) > 1 and origin.startswith(text)
+            return kept_whole or truncated
+
         prefix_len = len(self._longest_common_prefix(origin, text))
         suffix_len = 0
         max_suffix_len = min(len(origin), len(text)) - prefix_len
@@ -1958,22 +2009,26 @@ class ChatInput(Vertical):
             and origin[-(suffix_len + 1)] == text[-(suffix_len + 1)]
         ):
             suffix_len += 1
+        overlap = prefix_len + suffix_len
         # Halving is deliberately forgiving: trimming a trailing segment is
         # ordinary editing, while the failure this guards against (`/help`
-        # after a drop) retains only a character or two.
-        return (prefix_len + suffix_len) * 2 >= len(origin)
+        # after a drop) retains only a character or two. The absolute floor
+        # stops a two-character coincidence at the ends from carrying a
+        # mid-length origin on the ratio alone.
+        return overlap >= _MIN_DROPPED_ORIGIN_OVERLAP and overlap * 2 >= len(origin)
 
     @staticmethod
-    def _longest_common_prefix(previous_text: str, text: str) -> str:
-        """Return the longest shared prefix between two strings."""
+    def _longest_common_prefix(left: str, right: str) -> str:
+        """Return the longest shared prefix between two strings.
+
+        Order-independent: callers pass a before/after buffer pair in some
+        places and an origin/buffer pair in others.
+        """
         prefix_len = 0
-        max_prefix_len = min(len(previous_text), len(text))
-        while (
-            prefix_len < max_prefix_len
-            and previous_text[prefix_len] == text[prefix_len]
-        ):
+        max_prefix_len = min(len(left), len(right))
+        while prefix_len < max_prefix_len and left[prefix_len] == right[prefix_len]:
             prefix_len += 1
-        return previous_text[:prefix_len]
+        return left[:prefix_len]
 
     @classmethod
     def _edit_preserves_dropped_path_context(
@@ -2273,34 +2328,53 @@ class ChatInput(Vertical):
     def _warn_unreadable_dropped_path(self, failure: ProbeFailure) -> None:
         """Tell the user which dropped path could not be read, and why.
 
-        Fires once per payload: detection re-runs on every bulk edit, and a
-        toast per keystroke would be worse than the problem it reports.
+        Fires once per failing path: detection re-runs on every bulk edit, and a
+        toast per keystroke would be worse than the problem it reports. The key
+        is the failing path rather than the whole payload because that is what
+        the message names -- `select_probe_failure_for` may pick an ancestor, so
+        two drops under the same unreadable parent deliberately share a toast.
 
         Args:
             failure: The probe failure most relevant to the payload.
         """
-        payload = str(failure.path)
-        if self._warned_unreadable_path == payload:
+        failing_path = str(failure.path)
+        if self._warned_unreadable_path == failing_path:
             return
-        self._warned_unreadable_path = payload
+        self._warned_unreadable_path = failing_path
         # Warning, not debug: "my folder drop did nothing" is otherwise
         # unreportable, since the default log level hides the reason entirely.
         logger.warning(
             "Dropped path could not be probed, keeping as text: %s",
             failure.describe(),
         )
-        notify = getattr(self.app, "notify", None)
-        if notify is None:
-            logger.warning("No app available to report unreadable dropped path")
-            return
         # `strerror` is the short, user-legible half ("Permission denied");
-        # non-OSError probes (a symlink-loop RuntimeError) have none.
-        reason = getattr(failure.error, "strerror", None) or failure.error
-        notify(
-            f"Couldn't read {failure.path} ({reason}). Sent as text; not attached.",
-            severity="warning",
-            markup=False,
+        # probe failures that are not `OSError` have none, and an exception with
+        # an empty message would otherwise render as empty parentheses.
+        reason = (
+            getattr(failure.error, "strerror", None)
+            or str(failure.error)
+            or type(failure.error).__name__
         )
+        # Describes state rather than claiming an action: detection also runs on
+        # history recall and on bulk edits, where nothing has been sent yet.
+        message = (
+            f"Couldn't read {failure.path} ({reason}) -- kept as text, not attached."
+        )
+        try:
+            self.app.notify(
+                message,
+                severity="warning",
+                timeout=5,
+                markup=False,
+            )
+        except NoActiveAppError:
+            # `MessagePump.app` raises rather than returning something falsy, so
+            # this is the only way the "no app" case can be handled -- and it
+            # must be, since this runs inside a synchronous text-change handler.
+            logger.warning(
+                "No app available to report unreadable dropped path: %s",
+                failing_path,
+            )
 
     def _is_dropped_path_submission(self, value: str) -> bool:
         """Return whether a submission begins with -- or wholly is -- a path.
@@ -2308,8 +2382,14 @@ class ChatInput(Vertical):
         The transient draft is authoritative when present: it records a token
         that path detection already accepted, and trusting it means a folder
         that was renamed or deleted since the drop still submits as text rather
-        than being re-tagged as a command. Revalidation covers the cases where
-        the draft is gone, such as a submission driven straight from history.
+        than being re-tagged as a command.
+
+        The revalidation fallback is belt-and-braces and has no known natural
+        caller: every route that reaches submission with a leading path installs
+        a draft first, history recall included (`_history_entry_mode_and_text`
+        calls `_set_dropped_path`). It is kept because the cost of being wrong
+        here -- silently converting a dropped path into a command -- is much
+        higher than one extra classification pass.
 
         Args:
             value: Text about to be submitted.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import html
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -31,7 +32,6 @@ from deepagents_code.tui.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
-    import os
     from collections.abc import Coroutine
     from pathlib import Path
 
@@ -4003,7 +4003,11 @@ class TestDroppedFolderPaste:
 
             assert chat.mode == "normal"
             assert chat._text_area.text == f"{dropped[:-2]}yx{dropped[-2:]}"
-            assert chat._dropped_path_draft is not None
+            # The draft must track the edited buffer, not merely be non-empty:
+            # it is what `_starts_with_dropped_path` matches at submission. Both
+            # edits landed at the same offset, so the draft settles on the run of
+            # the path that precedes them.
+            assert chat._dropped_path_draft == dropped[:-2]
 
             await pilot.press("enter")
             await pilot.pause()
@@ -4389,6 +4393,158 @@ class TestDroppedFolderPaste:
 
             assert chat.mode == "command"
             assert chat._dropped_path_draft is None
+
+    @pytest.mark.skipif(
+        not os.path.isdir("/tmp"),  # noqa: PTH112  # Probing, not writing.
+        reason="needs a short absolute directory to drop",
+    )
+    async def test_replacing_short_root_drop_with_command_restores_command_mode(
+        self,
+    ) -> None:
+        """A four-character origin must not be retained by end coincidence.
+
+        `/tmp` and `/help` share the leading `/` every absolute path carries
+        plus an incidentally equal final `p`, which is half of `/tmp`. The
+        proportional retention test alone therefore kept the drop context alive,
+        leaving a bare `/` draft that suppressed the command popup and submitted
+        `/help` to the model as chat text.
+        """
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "/tmp"  # A drop, not a temp file.
+            await _pause_for_strip(pilot)
+            assert chat.mode == "normal"
+            assert chat._dropped_path_draft == "/tmp"  # Same.
+
+            chat._text_area.text = "/help"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._dropped_path_draft is None
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "command"
+
+    @pytest.mark.parametrize(
+        ("origin", "replacement"),
+        [
+            ("/tmp", "/help"),
+            ("/tmp", "/theme"),
+            ("/var", "/version"),
+            ("/etc", "/effort"),
+            ("/dev", "/docs"),
+            ("/usr", "/undo"),
+            ("/opt", "/output"),
+        ],
+    )
+    async def test_short_origin_is_not_retained_by_shared_ends(
+        self, origin: str, replacement: str
+    ) -> None:
+        """Root-level origins must not survive replacement by a slash command.
+
+        Every pair here shares the leading `/` and one further character at one
+        end, which cleared the proportional test for a four-character origin.
+        None of these directories is a registered command, so the
+        command-beats-path rule does not rescue them.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            chat._dropped_path_origin = origin
+
+            assert chat._retains_dropped_origin(replacement) is False
+
+    async def test_trimming_a_trailing_segment_still_retains_origin(self) -> None:
+        """The stricter overlap rule must not break ordinary trailing edits."""
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            chat._dropped_path_origin = "/srv/media/assets"
+
+            assert chat._retains_dropped_origin("/srv/media") is True
+            assert chat._retains_dropped_origin("/srv/media/assets x") is True
+
+    async def test_short_root_origin_retained_by_prefix_or_truncation(self) -> None:
+        """The strict rule still accepts the ordinary ways of editing a drop."""
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            chat._dropped_path_origin = "/tmp"
+
+            assert chat._retains_dropped_origin("/tmp what is in here") is True
+            assert chat._retains_dropped_origin("/tm") is True
+            # Backspacing to the bare root slash releases the drop, so `/`
+            # works as a mode trigger again.
+            assert chat._retains_dropped_origin("/") is False
+
+    @pytest.mark.parametrize(
+        ("origin", "text"),
+        [
+            # A long root folder has enough characters that a coincidental
+            # overlap cannot clear the ratio, so it keeps in-place edits.
+            ("/Applications", "/xApplications"),
+            # Deeper paths were never command-shaped.
+            ("/srv/media/assets", "/xsrv/media/assets"),
+            # Windows-shaped payloads reach detection on POSIX but are not
+            # command-shaped either.
+            (r"C:\Users\x", r"C:\Users\xy"),
+        ],
+    )
+    async def test_non_command_shaped_origins_keep_in_place_edits(
+        self, origin: str, text: str
+    ) -> None:
+        """The strict rule must stay scoped to short root-level origins.
+
+        Applying it more widely would clear the draft on an ordinary in-place
+        edit, handing the still-leading `/` to command mode mid-edit.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            chat._dropped_path_origin = origin
+
+            assert chat._retains_dropped_origin(text) is True
+
+    async def test_folder_drop_while_in_command_mode_returns_to_normal(
+        self, tmp_path: Path
+    ) -> None:
+        """A folder dropped into a `/`-primed input must leave command mode.
+
+        Typing `/` strips the slash into the prompt and flips to command mode.
+        Dropping a folder then has to undo that, or the path is submitted as a
+        bogus slash command -- the submit-time recovery uses the file-only
+        extractor, so a directory never triggers its mode reset.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("slash")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "normal"
+            assert app.submitted[0].value == str(folder)
 
     async def test_dropped_folder_with_spaces_and_prose_submits_verbatim(
         self, tmp_path: Path

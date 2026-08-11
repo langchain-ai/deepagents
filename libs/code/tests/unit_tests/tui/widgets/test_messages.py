@@ -5178,18 +5178,18 @@ class TestSummarizeToolGroup:
             (["execute"], "Ran 1 shell command"),
             (
                 ["read_file", "read_file", "execute", "execute", "execute"],
-                "2 file reads, ran 3 shell commands",
+                "Read 2 files, ran 3 shell commands",
             ),
             (["grep"], "Searched for 1 pattern"),
             (["grep", "glob", "glob"], "Searched for 3 patterns"),
-            (["read_file"], "1 file read"),
+            (["read_file"], "Read 1 file"),
             (["web_search", "web_search"], "Searched the web 2 times"),
             (["web_search"], "Searched the web"),
             (["write_todos"], "Updated todos"),
             (["task", "task"], "Ran 2 agents"),
             (
                 ["edit_file", "write_file", "read_file"],
-                "Edited 1 file, wrote 1 file, 1 file read",
+                "Edited 1 file, wrote 1 file, read 1 file",
             ),
             (["mystery", "mystery"], "Ran 2 mystery calls"),
         ],
@@ -5205,6 +5205,134 @@ class TestSummarizeToolGroup:
         from deepagents_code.tui.widgets.messages import summarize_tool_group
 
         assert summarize_tool_group([]) == "Ran tools"
+
+
+class TestDedupeRepeatTargets:
+    """Repeat calls on one target collapse before the summary counts nouns."""
+
+    @pytest.mark.parametrize(
+        ("calls", "expected"),
+        [
+            # The bug this guards: one file read twice is one file.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                ["read_file"],
+            ),
+            # Distinct paths are distinct work.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("read_file", {"file_path": "b.py"}),
+                ],
+                ["read_file", "read_file"],
+            ),
+            # Lexically equal paths collapse; `normpath` needs no filesystem.
+            (
+                [
+                    ("read_file", {"file_path": "./a.py"}),
+                    ("read_file", {"file_path": "a.py"}),
+                ],
+                ["read_file"],
+            ),
+            (
+                [
+                    ("read_file", {"file_path": "d//a.py"}),
+                    ("read_file", {"file_path": "d/a.py"}),
+                ],
+                ["read_file"],
+            ),
+            # Same path, different category: reading then editing is two acts.
+            (
+                [
+                    ("read_file", {"file_path": "a.py"}),
+                    ("edit_file", {"file_path": "a.py"}),
+                ],
+                ["read_file", "edit_file"],
+            ),
+            # The `path` fallback is honored for tools that use it.
+            (
+                [("read_file", {"path": "a.py"}), ("read_file", {"file_path": "a.py"})],
+                ["read_file"],
+            ),
+            # URLs collapse on exact match.
+            (
+                [
+                    ("fetch_url", {"url": "http://x/y"}),
+                    ("fetch_url", {"url": "http://x/y"}),
+                ],
+                ["fetch_url"],
+            ),
+            # Attempt-counting categories never collapse: two runs of one
+            # command are genuinely two runs.
+            (
+                [("execute", {"command": "ls"}), ("execute", {"command": "ls"})],
+                ["execute", "execute"],
+            ),
+            (
+                [("grep", {"pattern": "x"}), ("grep", {"pattern": "x"})],
+                ["grep", "grep"],
+            ),
+            # A bare `ls()` means "the working directory", which `execute` can
+            # change mid-step, so identical calls are not assumed identical.
+            ([("ls", {}), ("ls", {})], ["ls", "ls"]),
+            # Unidentifiable targets fail open — counting twice merely restores
+            # the pre-dedup count, while collapsing would invent a repeat.
+            (
+                [("read_file", {}), ("read_file", {})],
+                ["read_file", "read_file"],
+            ),
+            (
+                [("read_file", {"file_path": ""}), ("read_file", {"file_path": None})],
+                ["read_file", "read_file"],
+            ),
+            (
+                [("read_file", {"file_path": 42}), ("read_file", {"file_path": 42})],
+                ["read_file", "read_file"],
+            ),
+            ([], []),
+        ],
+    )
+    def test_dedupe(self, calls: list[tuple[str, dict]], expected: list[str]) -> None:
+        """Repeat targets collapse; distinct and unidentifiable ones do not."""
+        from deepagents_code.tui.widgets.messages import dedupe_repeat_targets
+
+        assert dedupe_repeat_targets(calls) == expected
+
+    def test_first_appearance_order_is_preserved(self) -> None:
+        """The kept call is the first one, so category ordering is unchanged."""
+        from deepagents_code.tui.widgets.messages import (
+            dedupe_repeat_targets,
+            summarize_tool_group,
+        )
+
+        calls = [
+            ("execute", {"command": "ls"}),
+            ("read_file", {"file_path": "a.py"}),
+            ("read_file", {"file_path": "a.py"}),
+        ]
+        assert dedupe_repeat_targets(calls) == ["execute", "read_file"]
+        assert (
+            summarize_tool_group(dedupe_repeat_targets(calls))
+            == "Ran 1 shell command, read 1 file"
+        )
+
+    def test_repeated_read_reports_one_file_in_both_tenses(self) -> None:
+        """The user-visible payoff: neither tense claims two files."""
+        from deepagents_code.tui.widgets.messages import (
+            dedupe_repeat_targets,
+            summarize_tool_group,
+        )
+
+        calls = [
+            ("read_file", {"file_path": "a.py"}),
+            ("read_file", {"file_path": "a.py"}),
+        ]
+        names = dedupe_repeat_targets(calls)
+        assert summarize_tool_group(names, tense="past") == "Read 1 file"
+        assert summarize_tool_group(names, tense="present") == "Reading 1 file"
 
 
 class _ToolGroupApp(App[None]):
@@ -5241,7 +5369,7 @@ class TestToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "1 file read, ran 1 shell command" in rendered.plain
+            assert "Read 1 file, ran 1 shell command" in rendered.plain
 
     async def test_toggle_expands_and_recollapses_members(self) -> None:
         """Toggling flips member visibility and the disclosure glyph."""
@@ -5263,6 +5391,29 @@ class TestToolGroupSummary:
             assert summary._collapsed is True
             assert t1.display is False
             assert t2.display is False
+
+    async def test_repeated_read_of_one_file_counts_once(self) -> None:
+        """A file read twice renders as one file, not two."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        class _RepeatReadApp(App[None]):
+            def compose(self) -> ComposeResult:
+                t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+                t1.id = "t1"
+                t2 = ToolCallMessage("read_file", {"file_path": "a.py"})
+                t2.id = "t2"
+                summary = ToolGroupSummary(tools=[t1, t2], collapsible=[t1, t2])
+                summary.id = "summary"
+                yield summary
+                yield t1
+                yield t2
+
+        async with _RepeatReadApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file" in rendered.plain
+            assert "2 files" not in rendered.plain
 
     async def test_has_attached_members_tracks_removal(self) -> None:
         """`has_attached_members` flips to False once members are removed."""
@@ -5531,7 +5682,7 @@ class TestLiveToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "1 file read" in rendered.plain
+            assert "Read 1 file" in rendered.plain
 
     async def test_close_waits_for_pending_member_terminal_status(self) -> None:
         """A stream boundary must not report a still-pending tool as having run."""
@@ -5562,7 +5713,7 @@ class TestLiveToolGroupSummary:
             assert read.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "1 file read" in rendered.plain
+            assert "Read 1 file" in rendered.plain
             assert "shell command" not in rendered.plain
 
     async def test_open_group_accepts_member_after_current_members_settle(self) -> None:
@@ -5654,7 +5805,7 @@ class TestLiveToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "1 file read" in rendered.plain
+            assert "Read 1 file" in rendered.plain
 
     async def test_skipped_member_is_evicted_and_uncounted_on_close(self) -> None:
         """A skipped tool stays visible and is left out of the summary count.
@@ -5683,7 +5834,7 @@ class TestLiveToolGroupSummary:
             assert t2.display is False
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "1 file read" in rendered.plain
+            assert "Read 1 file" in rendered.plain
             # The skipped execute must not be summarized as if it had run.
             assert "shell command" not in rendered.plain
 

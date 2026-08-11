@@ -35825,7 +35825,7 @@ class TestToolGroupCollapse:
             assert all(tool.display is False for tool in tools)
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
-            assert "1 file read, ran 1 shell command" in rendered.plain
+            assert "Read 1 file, ran 1 shell command" in rendered.plain
 
     @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
     async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
@@ -36024,7 +36024,7 @@ class TestToolGroupCollapse:
             assert t2.display is False
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
-            assert "2 file reads" in rendered.plain
+            assert "Read 2 files" in rendered.plain
 
             summaries[0].toggle()
             await pilot.pause()
@@ -36165,7 +36165,7 @@ class TestToolGroupCollapse:
             assert app._active_tool_group is None
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
-            assert "1 file read" in rendered.plain
+            assert "Read 1 file" in rendered.plain
             assert tool.display is False
             assert footer.display is False
 
@@ -36285,7 +36285,7 @@ class TestToolGroupCollapse:
             assert summaries[0].is_attached
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
-            assert "Ran 1 shell command, 1 file read" in rendered.plain
+            assert "Ran 1 shell command, read 1 file" in rendered.plain
 
 
 class TestForcedGoalCriteriaSync:

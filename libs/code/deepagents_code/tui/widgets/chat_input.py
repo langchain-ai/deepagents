@@ -942,10 +942,12 @@ class ChatTextArea(PasteBurstTextArea):
             # `_promote_paste_burst_run`.
             space_now = time.monotonic()
             if self._paste_burst_buffer:
-                self._append_paste_burst(" ", space_now)
-            else:
-                self.insert(" ")
-                self._note_printable_burst_keystroke(" ", space_now)
+                if self._append_recent_paste_burst_text(" ", space_now):
+                    self.post_message(self.Typing())
+                    return
+                await self._flush_paste_burst()
+            self.insert(" ")
+            self._note_printable_burst_keystroke(" ", space_now)
             self.post_message(self.Typing())
             return
 

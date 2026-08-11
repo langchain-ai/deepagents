@@ -220,6 +220,21 @@ class PasteBurstTextArea(TextArea):
         self._paste_burst_window_until = now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._schedule_paste_burst_flush()
 
+    def _append_recent_paste_burst_text(self, text: str, now: float) -> bool:
+        """Append text only when it continues an active rapid burst.
+
+        Returns:
+            `True` when the text was appended, or `False` when there is no
+            active burst or it has gone idle.
+        """
+        if not self._paste_burst_buffer:
+            return False
+        last_time = self._paste_burst_last_char_time
+        if last_time is None or (now - last_time) > PASTE_BURST_CHAR_GAP_SECONDS:
+            return False
+        self._append_paste_burst(text, now)
+        return True
+
     def _note_paste_burst_keystroke(self, char: str, now: float) -> None:
         """Track text and timing for consecutive rapid keystrokes."""
         last = self._paste_burst_last_key_time
@@ -260,14 +275,12 @@ class PasteBurstTextArea(TextArea):
         grouped. Returns `False` immediately in slash-command context (see
         `_in_slash_command_context`).
 
-        A run that already reached `PASTE_BURST_MIN_CHARS` is trusted for the
-        whole window: the newline of a key-event paste can arrive well after the
-        surrounding characters when it lands across a terminal read boundary
-        (~50 ms is ordinary over SSH), and requiring it within
-        `PASTE_BURST_CHAR_GAP_SECONDS` would submit mid-paste. A run only
-        reaches that count at machine speed, so this cannot swallow a human's
-        deliberate `enter`; the char-gap fallback below covers the case where a
-        window is open without a qualifying run (e.g. just after a flush).
+        The first suppressed `enter` must remain within the character gap. A
+        completed single-line burst followed by a deliberate `enter` is
+        otherwise indistinguishable from a delayed pasted newline, and submit
+        behavior takes priority once the rapid stream has gone idle. After one
+        `enter` is suppressed, the wider window keeps consecutive pasted blank
+        lines grouped.
         """
         if self._in_slash_command_context():
             return False
@@ -286,8 +299,6 @@ class PasteBurstTextArea(TextArea):
         last_key = self._paste_burst_last_key_time
         if last_key is None:
             return False
-        if self._paste_burst_run >= PASTE_BURST_MIN_CHARS:
-            return True
         return (now - last_key) <= PASTE_BURST_CHAR_GAP_SECONDS
 
     def _should_start_paste_burst(self, char: str) -> bool:
@@ -387,14 +398,12 @@ class PasteBurstTextArea(TextArea):
         if event.key == "enter":
             self._append_paste_burst("\n", now)
             return True
-        if event.is_printable and event.character is not None:
-            last_time = self._paste_burst_last_char_time
-            if (
-                last_time is not None
-                and (now - last_time) <= PASTE_BURST_CHAR_GAP_SECONDS
-            ):
-                self._append_paste_burst(event.character, now)
-                return True
+        if (
+            event.is_printable
+            and event.character is not None
+            and self._append_recent_paste_burst_text(event.character, now)
+        ):
+            return True
         await self._flush_paste_burst()
         return False
 

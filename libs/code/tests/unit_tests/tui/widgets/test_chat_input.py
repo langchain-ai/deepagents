@@ -4562,6 +4562,8 @@ class TestPasteBurstEnterSuppression:
 
             ta.text = "abc"
             now = chat_input_module.time.monotonic()
+            ta._paste_burst_run = paste_textarea_module.PASTE_BURST_MIN_CHARS
+            ta._paste_burst_run_text = "abc"
             ta._paste_burst_last_key_time = (
                 now - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS - 0.01
             )
@@ -4658,15 +4660,10 @@ class TestPasteBurstEnterSuppression:
 
             assert len(app.submitted) == 1
 
-    async def test_late_newline_in_burst_does_not_submit(
+    async def test_late_enter_after_qualifying_run_still_submits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A newline arriving after the char gap still groups with its burst.
-
-        A key-event paste's `enter` can land in a later terminal read than the
-        characters around it (~50 ms is ordinary over SSH). The suppression
-        window, not the much tighter char gap, is what bounds the burst.
-        """
+        """A qualifying run does not swallow deliberate enter after going idle."""
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
         monkeypatch.setattr(
             paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
@@ -4690,7 +4687,8 @@ class TestPasteBurstEnterSuppression:
             await ta._on_key(events.Key("enter", None))
             await pilot.pause()
 
-            assert len(app.submitted) == 0
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "abc"
 
 
 class TestPasteBurstPromotion:
@@ -4886,6 +4884,35 @@ class TestPasteBurstPromotion:
             assert ta.text == ""
             assert ta._paste_burst_buffer == "ab cd\n"
             assert len(app.submitted) == 0
+
+    async def test_vscode_space_workaround_flushes_stale_buffer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delayed CSI-u space starts normal input after a completed burst."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("abc", stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta._paste_burst_buffer == ""
+            assert ta.text == "abc "
+            assert ta._paste_burst_run_text == " "
 
     async def test_flushed_run_is_not_re_promoted_by_a_later_enter(
         self, monkeypatch: pytest.MonkeyPatch

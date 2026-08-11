@@ -16,6 +16,7 @@ from deepagents_code._dep_floor_check import (
     _find_floor_violations,
     _load_cli_requirements,
     _quote_arg,
+    consume_dep_floor_full_warning,
     consume_dep_floor_notice,
     warn_if_editable_deps_stale,
 )
@@ -32,8 +33,9 @@ def _editable_install(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_dep_floor_notice() -> None:
-    """Reset the stashed TUI notice so one test's warning cannot leak."""
+    """Reset the stashed TUI notices so one test's warning cannot leak."""
     dep_floor_check._dep_floor_notice = None
+    dep_floor_check._dep_floor_full_warning = None
 
 
 def _patch_versions(monkeypatch: pytest.MonkeyPatch, versions: dict[str, str]) -> None:
@@ -278,11 +280,12 @@ class TestAnnounceVsStash:
 
         assert "Warning" in capsys.readouterr().err
         assert consume_dep_floor_notice() is None
+        assert consume_dep_floor_full_warning() is None
 
     def test_no_announce_stashes_and_does_not_print(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Interactive launches stash a plain-text notice and print nothing."""
+        """Interactive launches stash summary + full warning and print nothing."""
         self._stale(monkeypatch)
 
         warn_if_editable_deps_stale(announce=False)
@@ -290,23 +293,34 @@ class TestAnnounceVsStash:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""
+
+        # The toast is a one-sentence pointer — small auto-dismissing cards
+        # cannot carry the full per-dependency listing and refresh command.
         notice = consume_dep_floor_notice()
         assert notice is not None
-        assert "Warning" in notice
-        assert "quickjs-rs" in notice
-        assert "0.2.4" in notice
-        assert "0.2.5" in notice
-        assert "uv pip install --python" in notice
+        assert "quickjs-rs" not in notice
+        assert "uv pip install" not in notice
         # The TUI toast renders markup=False, so no Rich tags survive.
         assert "[bold yellow]" not in notice
 
+        # The full advisory stays stashed for the teardown stderr print.
+        full = consume_dep_floor_full_warning()
+        assert full is not None
+        assert "quickjs-rs" in full
+        assert "0.2.4" in full
+        assert "0.2.5" in full
+        assert "uv pip install --python" in full
+        assert "[bold yellow]" not in full
+
     def test_consume_clears_the_notice(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The stashed notice is returned once, then cleared."""
+        """The stashed notices are returned once, then cleared."""
         self._stale(monkeypatch)
         warn_if_editable_deps_stale(announce=False)
 
         assert consume_dep_floor_notice() is not None
         assert consume_dep_floor_notice() is None
+        assert consume_dep_floor_full_warning() is not None
+        assert consume_dep_floor_full_warning() is None
 
     def test_no_violations_stashes_nothing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -320,3 +334,4 @@ class TestAnnounceVsStash:
         warn_if_editable_deps_stale(announce=False)
 
         assert consume_dep_floor_notice() is None
+        assert consume_dep_floor_full_warning() is None

@@ -4167,11 +4167,13 @@ def cli_main() -> None:
         # not from `sys.stdout.isatty()`: a TTY does not imply the
         # interactive TUI. This runs after `apply_stdin_pipe` so
         # `non_interactive_message` is final. Only the bare interactive
-        # launch mounts `DeepAgentsApp` (which consumes the stashed notice as
-        # a startup toast), so stash it there; headless (`-n`/piped stdin)
-        # and every subcommand never mount the app and would silently drop a
-        # stashed notice, so they print to stderr instead. (ACP exits above,
-        # before this point.)
+        # launch mounts `DeepAgentsApp` (which toasts the stashed one-line
+        # summary at startup; `run_textual_app` prints the stashed full
+        # warning to stderr at teardown), so stash it there; headless
+        # (`-n`/piped stdin) and every subcommand never mount the app and
+        # would silently drop a stashed notice, so they print the full
+        # warning to stderr up front instead. (ACP exits above, before this
+        # point.)
         from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
 
         interactive_tui = (

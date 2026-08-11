@@ -181,23 +181,54 @@ def _version_key(version: str) -> tuple[int, ...]:
         return ()
 
 
+_TOAST_SUMMARY = (
+    "This editable dcode install has dependencies below the checkout's "
+    "declared floors; the full warning prints to the terminal on exit."
+)
+"""One-sentence TUI toast for stale editable deps.
+
+Kept deliberately short: Textual toasts render in the bottom-right corner
+(never top-right) and are brief, auto-dismissing cards, so they cannot carry
+the full per-dependency listing plus refresh command. The toast only points
+to the full warning, which `run_textual_app` drains to stderr at teardown via
+`consume_dep_floor_full_warning` once the alternate screen is restored.
+"""
+
 _dep_floor_notice: str | None = None
-"""Pending stale-dependency advisory for the TUI to consume, if any."""
+"""Pending stale-dependency toast summary for the TUI to consume, if any."""
+
+_dep_floor_full_warning: str | None = None
+"""Pending full stale-dependency advisory for TUI teardown, if any."""
 
 
 def consume_dep_floor_notice() -> str | None:
-    """Return and clear the pending stale-dependency notice, if any.
+    """Return and clear the pending stale-dependency toast summary, if any.
 
-    Mirrors `consume_orphaned_tracing_disabled_notice`: the notice is built
+    Mirrors `consume_orphaned_tracing_disabled_notice`: the summary is built
     pre-TUI in `cli_main` (where stdout is still the real terminal) and
-    consumed once by the mounted app, so the advisory surfaces exactly once
-    regardless of which channel renders it.
+    consumed once by the mounted app, so the toast surfaces exactly once.
     """
     global _dep_floor_notice  # noqa: PLW0603
 
     notice = _dep_floor_notice
     _dep_floor_notice = None
     return notice
+
+
+def consume_dep_floor_full_warning() -> str | None:
+    """Return and clear the pending full stale-dependency advisory, if any.
+
+    The full advisory (one line per offending distribution plus the refresh
+    command) is too long for a toast, so interactive launches hold it here and
+    `run_textual_app` drains it to stderr after Textual restores the terminal —
+    where it persists in the user's scrollback instead of vanishing with the
+    auto-dismissing toast.
+    """
+    global _dep_floor_full_warning  # noqa: PLW0603
+
+    warning = _dep_floor_full_warning
+    _dep_floor_full_warning = None
+    return warning
 
 
 def warn_if_editable_deps_stale(*, announce: bool = True) -> None:
@@ -211,12 +242,15 @@ def warn_if_editable_deps_stale(*, announce: bool = True) -> None:
     and never raises.
 
     Args:
-        announce: When `True` (non-interactive launches), print the warning
-            to stderr. When `False` (the interactive TUI, where the pre-TUI
-            stderr print is hidden behind the alternate screen), stash it for
-            `DeepAgentsApp._notify_dep_floor_stale` to toast instead.
+        announce: When `True` (non-interactive launches), print the full
+            warning to stderr. When `False` (the interactive TUI, where a
+            pre-TUI stderr print is hidden behind the alternate screen),
+            stash a one-sentence summary for
+            `DeepAgentsApp._notify_dep_floor_stale` to toast and hold the
+            full warning in `_dep_floor_full_warning` for `run_textual_app`
+            to print to stderr at teardown.
     """
-    global _dep_floor_notice  # noqa: PLW0603
+    global _dep_floor_notice, _dep_floor_full_warning  # noqa: PLW0603
     try:
         if not _is_editable_install():
             return
@@ -260,7 +294,10 @@ def warn_if_editable_deps_stale(*, announce: bool = True) -> None:
                 highlight=False,
             )
         else:
-            # Plain text (no Rich markup): the TUI toast renders markup=False.
-            _dep_floor_notice = f"Warning: {message}"
+            # The toast carries only the summary (toasts are small,
+            # auto-dismissing bottom-right cards that markup=False renders as
+            # plain text); the full warning is held for the teardown print.
+            _dep_floor_notice = _TOAST_SUMMARY
+            _dep_floor_full_warning = message
     except Exception:  # strictly best-effort: a check failure must never break startup
         logger.debug("Dependency floor check failed", exc_info=True)

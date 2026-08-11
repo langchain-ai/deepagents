@@ -4732,6 +4732,33 @@ class TestPasteBurstPromotion:
             assert chat._pasted_contents[1].content == payload
             assert len(app.submitted) == 0
 
+    async def test_key_event_paste_preserves_backslash_before_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A burst newline takes priority over the backslash+Enter fallback."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("backslash", "\\"))
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "abc\\\n"
+            assert len(app.submitted) == 0
+
     async def test_large_single_line_key_event_paste_collapses(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4912,6 +4939,36 @@ class TestPasteBurstPromotion:
 
             assert ta._paste_burst_buffer == ""
             assert ta.text == "abc "
+            assert ta._paste_burst_run_text == " "
+
+    async def test_vscode_space_follows_queued_stale_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale burst's queued placeholder is inserted before its space."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            payload = "x" * 900
+            ta._start_paste_burst(payload, stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1] "
+            assert chat._pasted_contents[1].content == payload
             assert ta._paste_burst_run_text == " "
 
     async def test_flushed_run_is_not_re_promoted_by_a_later_enter(

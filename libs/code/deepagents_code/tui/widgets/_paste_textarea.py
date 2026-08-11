@@ -560,6 +560,7 @@ class PasteBurstTextArea(TextArea):
             and enabled
             and self._backslash_pending_time is not None
             and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
+            and not self._enter_inserts_newline_during_burst(now)
         ):
             self._backslash_pending_time = None
             if self._delete_preceding_backslash():

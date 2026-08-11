@@ -502,6 +502,18 @@ class ChatTextArea(PasteBurstTextArea):
             self.text = text
             super().__init__()
 
+    class DeferredSpace(Message):
+        """Insert a synthetic space after an already-queued burst payload."""
+
+        def __init__(self, burst_time: float) -> None:
+            """Initialize with the original key-event timestamp.
+
+            Args:
+                burst_time: Monotonic time when the space key arrived.
+            """
+            self.burst_time = burst_time
+            super().__init__()
+
     class Typing(Message):
         """Posted when the user presses a printable key or backspace.
 
@@ -946,6 +958,12 @@ class ChatTextArea(PasteBurstTextArea):
                     self.post_message(self.Typing())
                     return
                 await self._flush_paste_burst()
+                # Large-paste and dropped-path dispatch posts a message to the
+                # owner. Queue the space behind that message so its insertion
+                # cannot move the cursor before the payload is handled.
+                self.post_message(self.DeferredSpace(space_now))
+                self.post_message(self.Typing())
+                return
             self.insert(" ")
             self._note_printable_burst_keystroke(" ", space_now)
             self.post_message(self.Typing())
@@ -2289,6 +2307,15 @@ class ChatInput(Vertical):
         if not self._text_area:
             return
         self._collapse_and_insert_paste(event.text)
+
+    def on_chat_text_area_deferred_space(
+        self, event: ChatTextArea.DeferredSpace
+    ) -> None:
+        """Insert a synthetic space after the preceding burst payload."""
+        if not self._text_area:
+            return
+        self._text_area.insert(" ")
+        self._text_area._note_printable_burst_keystroke(" ", event.burst_time)
 
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.

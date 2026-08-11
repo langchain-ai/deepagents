@@ -799,15 +799,15 @@ class StatusBar(Vertical):
     _CONTEXT_WARNING_PERCENT = 60.0
     """Context usage at which the percentage turns from calm to caution."""
 
-    _CONTEXT_CRITICAL_PERCENT = 85.0
+    _CONTEXT_CRITICAL_PERCENT = 80.0
     """Context usage at which the percentage turns to alert."""
 
     def _percent_color(self, percent: float) -> str:
         """Return the color that encodes how full the context window is."""
         colors = theme.get_theme_colors(self)
-        if percent >= self._CONTEXT_CRITICAL_PERCENT:
+        if percent > self._CONTEXT_CRITICAL_PERCENT:
             return colors.error
-        if percent >= self._CONTEXT_WARNING_PERCENT:
+        if percent > self._CONTEXT_WARNING_PERCENT:
             return colors.warning
         return colors.muted
 

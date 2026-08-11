@@ -10,6 +10,7 @@ from textual.app import App, ComposeResult
 from textual.geometry import Size
 from textual.widgets import Static
 
+from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
 from deepagents_code.config import reset_glyphs_cache
 from deepagents_code.tui.widgets.status import BranchLabel, ModelLabel, StatusBar
@@ -55,6 +56,16 @@ class TestTwoLineMetrics:
             assert context.region.right == metrics.region.right
             assert str(cache.render()) == ("Cache 80% hit • 12.5K read / 750 write")
             assert str(context.render()) == "Context 6%  12.5K/200K • $0.42"
+
+    async def test_context_percentage_color_thresholds(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            colors = theme.get_theme_colors(bar)
+
+            assert bar._percent_color(60.0) == colors.muted
+            assert bar._percent_color(60.1) == colors.warning
+            assert bar._percent_color(80.0) == colors.warning
+            assert bar._percent_color(80.1) == colors.error
 
 
 class TestApprovalModeDisplay:

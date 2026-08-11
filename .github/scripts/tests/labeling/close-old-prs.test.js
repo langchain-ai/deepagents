@@ -84,6 +84,7 @@ function makeGithub({
   incompleteResults = false,
   getErrors = new Map(),
   removeLabelErrors = new Map(),
+  graphqlError = null,
   onCreateComment = null,
 } = {}) {
   const calls = {
@@ -95,6 +96,7 @@ function makeGithub({
     close: [],
     queries: [],
     get: [],
+    graphql: [],
   };
   // When labels are presumed present, unknown names still succeed so tests do
   // not have to seed every label the workflow may ensure.
@@ -125,11 +127,22 @@ function makeGithub({
         listComments: async ({ issue_number }) => ({
           data: (comments.get(issue_number) ?? []).map(comment => ({
             created_at: '2026-04-22T00:00:00Z',
+            node_id: `node-${comment.id}`,
             ...comment,
           })),
         }),
         createComment: async params => {
           calls.createComment.push(params);
+          // Minimization re-lists the comments, so the posted warning must
+          // be visible there — as it would be for a real second API call.
+          const posted = comments.get(params.issue_number) ?? [];
+          posted.push({
+            id: 'new',
+            node_id: 'node-new',
+            body: params.body,
+            user: { login: 'github-actions[bot]', type: 'Bot' },
+          });
+          comments.set(params.issue_number, posted);
           onCreateComment?.(params);
         },
         updateComment: async params => { calls.updateComment.push(params); },
@@ -169,6 +182,11 @@ function makeGithub({
       search: { issuesAndPullRequests: async () => {} },
     },
     paginate: async (method, params) => (await method(params)).data,
+    graphql: async (query, variables) => {
+      calls.graphql.push({ query, variables });
+      if (graphqlError) throw graphqlError;
+      return {};
+    },
   };
 
   github.paginate.iterator = async function* iterator(_method, params) {
@@ -282,7 +300,61 @@ test('does not add pending-deletion when do-not-close is applied during warning'
   assert.equal(summary.skipped, 1);
   assert.deepEqual(calls.addLabels, []);
   assert.deepEqual(calls.get, [106, 106]);
+  // The mid-warning race leaves no pending-deletion behind, so the
+  // clear_pending_deletion workflow never fires for this PR; the warning just
+  // posted above would stay visible forever without this minimization.
+  assert.deepEqual(calls.graphql.map(call => call.variables), [{ id: 'node-new' }]);
   assert.ok(core.infos.some(message => message.includes('gained do-not-close')));
+  assert.equal(core.failed, null);
+});
+
+// Same race as the warning path, one branch later: an already-warned PR (no
+// label yet, e.g. warned before the label existed) gains do-not-close between
+// the initial live fetch and the backfill boundary. The label must stay off
+// and the stale warning must be minimized — the PR never carries
+// pending-deletion, so clear_pending_deletion.yml never fires for it.
+test('minimizes the warning when do-not-close lands before the label backfill', async () => {
+  const comments = new Map([
+    [107, [{ id: 92, node_id: 'node-92', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  // No createComment happens on this path, so onCreateComment cannot model the
+  // race; instead do-not-close appears on the second live fetch (the boundary
+  // re-check in canAddPendingDeletionLabel).
+  const liveFetches = [
+    { labels: [] },
+    { labels: ['do-not-close'] },
+  ];
+  const live = new Map([[107, { get labels() { return liveFetches.shift().labels; } }]]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 107, created_at: '2026-04-23T00:00:00Z' }],
+    comments,
+    live,
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(calls.addLabels, []);
+  assert.deepEqual(calls.graphql.map(call => call.variables), [{ id: 'node-92' }]);
+  assert.equal(core.failed, null);
+});
+
+test('minimizes the warning comment on an already-bypassed PR', async () => {
+  const comments = new Map([
+    [123, [{ id: 93, node_id: 'node-93', body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 123, created_at: '2026-04-08T00:00:00Z' }],
+    comments,
+    live: new Map([[123, { labels: ['do-not-close'] }]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(calls.graphql.map(call => call.variables), [{ id: 'node-93' }]);
   assert.equal(core.failed, null);
 });
 

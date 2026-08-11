@@ -44,6 +44,11 @@ jobs:
       pull-requests: write
 
     steps:
+      # The default branch is checked out (not the PR's head, which would be
+      # unsafe under pull_request_target) only so the step can require the
+      # shared minimizeMarkerComment helper from close-old-prs.js.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Remove pending-deletion label
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -87,26 +92,12 @@ jobs:
             // auto-closed. Minimize it so the PR does not keep advertising a
             // fate that no longer applies. Best-effort — the label removal
             // above is the load-bearing part.
-            // (marker synced w/ COMMENT_MARKER in close-old-prs.js)
-            try {
-              const marker = '<!-- old-pr-auto-close -->';
-              const comments = await github.paginate(
-                github.rest.issues.listComments,
-                { owner, repo, issue_number, per_page: 100 },
-              );
-              const stale = comments.find(c => c.body && c.body.includes(marker));
-              if (stale) {
-                await github.graphql(`
-                  mutation($id: ID!) {
-                    minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
-                      minimizedComment { isMinimized }
-                    }
-                  }
-                `, { id: stale.node_id });
-                console.log(`Minimized stale auto-close warning ${stale.id} as outdated`);
-              }
-            } catch (e) {
-              core.warning(
-                `Could not minimize stale auto-close warning on PR #${issue_number}: ${e.message}`,
-              );
-            }
+            //
+            // Shared with the daily script: canAddPendingDeletionLabel in
+            // close-old-prs.js calls the same helper when do-not-close lands
+            // between posting the warning and applying the label — a race in
+            // which the PR never carries pending-deletion, so this workflow's
+            // `if:` is never met and that branch is the only remaining event
+            // that can minimize the just-posted warning.
+            const { minimizeMarkerComment } = require('./.github/scripts/labeling/close-old-prs.js');
+            await minimizeMarkerComment({ github, core, owner, repo, issueNumber: issue_number });

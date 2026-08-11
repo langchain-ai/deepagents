@@ -247,6 +247,33 @@ async function findMarkerComment({ github, owner, repo, issueNumber }) {
   );
 }
 
+// Removing pending-deletion is only half of what a maintainer sees: the
+// warning comment posted alongside it keeps claiming the PR will be
+// auto-closed. Minimize it so the PR does not keep advertising a fate that no
+// longer applies. Minimization (rather than deletion) preserves the audit
+// trail. Best-effort everywhere it is called: the label decisions around it
+// are the load-bearing part, and processPr already locates the marker comment
+// when it needs the warning's date, so leaving the comment visible is
+// cosmetic, not a close-correctness bug.
+async function minimizeMarkerComment({ github, core, owner, repo, issueNumber }) {
+  try {
+    const marker = await findMarkerComment({ github, owner, repo, issueNumber });
+    if (!marker) return;
+    await github.graphql(`
+      mutation($id: ID!) {
+        minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
+          minimizedComment { isMinimized }
+        }
+      }
+    `, { id: marker.node_id });
+    core.info(`Minimized stale auto-close warning ${marker.id} on PR #${issueNumber}`);
+  } catch (error) {
+    core.warning(
+      `Could not minimize stale auto-close warning on PR #${issueNumber}: ${error.message}`,
+    );
+  }
+}
+
 function warningBody({ warningDays, closeDays, bypassLabel }) {
   const noticeDays = closeDays - warningDays;
   return [
@@ -287,6 +314,12 @@ async function getLivePr({ github, owner, repo, number }) {
 // A PR can gain do-not-close after processPr's initial live fetch but before
 // it adds pending-deletion. Fetch its labels again at that mutation boundary
 // so the label-removal workflow is not the only protection against that race.
+//
+// In the mid-warning variant of that race (bypass applied after the warning
+// comment posts but before the label does) the PR never carries
+// pending-deletion, so the clear_pending_deletion workflow's trigger condition
+// is never met and nothing else would minimize the just-posted warning.
+// Minimize it here as well; this branch is the only remaining event.
 async function canAddPendingDeletionLabel({
   github,
   core,
@@ -307,6 +340,7 @@ async function canAddPendingDeletionLabel({
     name: pendingDeletionLabel,
     existingLabels: latest.labels,
   });
+  await minimizeMarkerComment({ github, core, owner, repo, issueNumber: number });
   core.info(`PR #${number} gained ${bypassLabel}; skipping pending-deletion`);
   return null;
 }
@@ -431,6 +465,11 @@ async function processPr({
       name: pendingDeletionLabel,
       existingLabels: live.labels,
     });
+    // The clear_pending_deletion workflow handles the common case, but it only
+    // triggers when pending-deletion is in the labeled-event payload — a PR
+    // whose label was already gone (e.g. removed by hand) would keep showing
+    // the warning. Belt-and-braces: this runs at most once per PR per day.
+    await minimizeMarkerComment({ github, core, owner, repo, issueNumber: number });
     core.info(`PR #${number} has ${bypassLabel}; skipping`);
     return 'skipped';
   }

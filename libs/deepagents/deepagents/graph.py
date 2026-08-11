@@ -45,6 +45,7 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
+from deepagents.middleware._tool_errors import _create_tool_error_middleware
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -298,6 +299,28 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
     For non-sandbox backends, the `execute` tool will return an error message.
 
+    !!! note "Tool errors"
+
+        A tool that raises costs the model one step, not the whole run. Every
+        stack assembled here leads with a
+        [`ToolErrorMiddleware`][langchain.agents.middleware.ToolErrorMiddleware]
+        that turns tool-execution exceptions into an error `ToolMessage` and
+        lets the loop continue -- for built-in, caller-supplied, and MCP tools
+        alike, in subagents as well as the main agent. `ToolException` (what
+        `langchain-mcp-adapters` raises for an `isError` result) reaches the
+        model verbatim, since its message is written for the model; any other
+        exception is reported by type only, with the detail logged rather than
+        handed to the model.
+
+        Not converted, so they still end the run: LangGraph control-flow
+        signals (`interrupt()`, parent commands), recursion/cancellation/timeout
+        errors, and failures escaping the `task` tool -- a subagent whose *own*
+        tools fail already recovers inside its own loop, so anything still
+        surfacing there is that nested run breaking, not a tool misbehaving.
+
+        Pass your own `ToolErrorMiddleware` in `middleware` to replace the
+        default; an `on_error` returning `None` restores strict propagation.
+
     Args:
         model: The model to use.
 
@@ -363,6 +386,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Base stack:
 
+            - [`ToolErrorMiddleware`][langchain.agents.middleware.ToolErrorMiddleware]
+                (unconditional; first, so it is the outermost `wrap_tool_call`)
             - [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware] (if `skills` is provided)
             - [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
             - [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]
@@ -665,6 +690,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                # First entry, so it is the outermost `wrap_tool_call` and a
+                # raising tool costs the subagent one step instead of taking
+                # the parent run down with it.
+                _create_tool_error_middleware(),
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
@@ -750,6 +779,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            _create_tool_error_middleware(),
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
@@ -813,8 +843,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
         inline_subagents.insert(0, general_purpose_spec)
 
-    # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
+    # Build main agent middleware stack. Tool-error handling goes first so it
+    # wraps every other `wrap_tool_call` in the stack.
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [_create_tool_error_middleware()]
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.append(

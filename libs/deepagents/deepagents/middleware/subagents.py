@@ -282,6 +282,15 @@ class TaskToolSchema(BaseModel):
     subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
 
 
+TASK_TOOL_NAME = "task"
+"""Name of the delegation tool that runs a subagent in-process.
+
+Unlike a leaf tool, `task` nests an entire agent run, so failures reaching its
+boundary are the nested run's failures, not a tool's. Default tool-error
+handling skips it for that reason -- see
+[`deepagents.middleware._tool_errors`][deepagents.middleware._tool_errors].
+"""
+
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle a complex, multi-step task in an isolated context window.
 
 Available agent types and the tools they have access to:
@@ -596,7 +605,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
-        name="task",
+        name=TASK_TOOL_NAME,
         func=task,
         coroutine=atask,
         description=description,

@@ -1148,69 +1148,30 @@ class TestForGraph:
 # ---------------------------------------------------------------------------
 
 
-class TestArebindThread:
-    """Re-associating a thread with this client's graph after a sibling run."""
+class TestSupportsOffload:
+    """Capability discovery protects custom graphs from operation input."""
 
-    def _agent(self) -> RemoteAgent:
-        return RemoteAgent("http://localhost:1234", graph_name="agent")
-
-    async def test_writes_graph_id_into_thread_metadata(self) -> None:
-        """The rebind must go through thread *metadata*, not a state update.
-
-        The server resolves an out-of-run `as_node=` write from
-        `thread["metadata"]["graph_id"]`. `threads.update_state` sends no graph
-        id at all, so an empty state update resolves against whichever graph ran
-        last -- i.e. it cannot undo a sibling-graph run. Only a metadata write
-        rebinds the thread.
-        """
-        agent = self._agent()
-        client = MagicMock()
-        client.threads.update = AsyncMock()
-
-        graph = SimpleNamespace(_validate_client=lambda: client)
-        with patch.object(agent, "_get_graph", return_value=graph):
-            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})
-
-        client.threads.update.assert_awaited_once_with(
-            "t-1", metadata={"graph_id": "agent"}
+    async def test_detects_operation_node_and_caches_result(self) -> None:
+        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
+        graph = MagicMock()
+        graph.aget_graph = AsyncMock(
+            return_value=SimpleNamespace(
+                nodes={"OffloadOperationMiddleware.before_agent": object()}
+            )
         )
 
-    async def test_missing_thread_id_raises(self) -> None:
-        """A silent no-op would leave the thread bound to the sibling graph."""
-        agent = self._agent()
+        with patch.object(agent, "_get_graph", return_value=graph):
+            assert await agent.asupports_offload() is True
+            assert await agent.asupports_offload() is True
 
-        with pytest.raises(ValueError, match="thread_id"):
-            await agent.arebind_thread({"configurable": {}})
+        graph.aget_graph.assert_awaited_once_with()
 
-    async def test_missing_sdk_accessor_reports_the_real_cause(self) -> None:
-        """An SDK rename must not degrade into a generic rebind warning.
+    async def test_rejects_graph_without_operation_node(self) -> None:
+        agent = RemoteAgent("http://localhost:1234", graph_name="custom")
+        graph = MagicMock()
+        graph.aget_graph = AsyncMock(
+            return_value=SimpleNamespace(nodes={"model": object()})
+        )
 
-        `_validate_client` is private. If it disappears, the bare attribute
-        access would raise inside the caller's blanket rebind handler, which
-        downgrades everything to a warning -- `/offload` would keep "working"
-        while every later `/goal` and `/rubric` failed on a mis-bound thread,
-        permanently and with nothing connecting the two.
-        """
-        agent = self._agent()
-
-        with (
-            patch.object(agent, "_get_graph", return_value=SimpleNamespace()),
-            pytest.raises(AttributeError, match="_validate_client is unavailable"),
-        ):
-            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})
-
-    async def test_transport_failure_propagates(self) -> None:
-        """The caller decides whether a failed rebind is fatal, so re-raise."""
-        agent = self._agent()
-        client = MagicMock()
-        client.threads.update = AsyncMock(side_effect=RuntimeError("server gone"))
-
-        with (
-            patch.object(
-                agent,
-                "_get_graph",
-                return_value=SimpleNamespace(_validate_client=lambda: client),
-            ),
-            pytest.raises(RuntimeError, match="server gone"),
-        ):
-            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})
+        with patch.object(agent, "_get_graph", return_value=graph):
+            assert await agent.asupports_offload() is False

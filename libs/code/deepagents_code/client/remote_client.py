@@ -137,6 +137,7 @@ class RemoteAgent:
         self._headers = headers
         self._graph: Any = None
         self._sibling_clients: dict[str, RemoteAgent] = {}
+        self._supports_offload: bool | None = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -186,6 +187,20 @@ class RemoteAgent:
             )
             self._sibling_clients[graph_name] = cached
         return cached
+
+    async def asupports_offload(self) -> bool:
+        """Return whether this graph exposes the server-owned offload operation.
+
+        Capability discovery is read-only and cached. It prevents an empty
+        operation input from being sent to an arbitrary custom graph, where it
+        could otherwise be interpreted as a normal model turn.
+        """
+        if self._supports_offload is None:
+            from deepagents_code._cli_context import OFFLOAD_OPERATION_NODE
+
+            graph = await self._get_graph().aget_graph()
+            self._supports_offload = OFFLOAD_OPERATION_NODE in graph.nodes
+        return self._supports_offload
 
     async def astream(
         self,
@@ -498,56 +513,6 @@ class RemoteAgent:
             logger.warning(
                 "Failed to ensure thread %s exists on remote server",
                 thread_id,
-                exc_info=True,
-            )
-            raise
-
-    async def arebind_thread(self, config: Mapping[str, Any]) -> None:
-        """Associate an existing remote thread with this client's graph.
-
-        A run through a sibling graph changes the server-side thread's
-        `graph_id`. Restore it before a caller makes an out-of-run state
-        update, whose `as_node` is resolved against that association.
-
-        The metadata write merges server-side, so it does not clobber other
-        thread metadata.
-
-        Args:
-            config: Config with `configurable.thread_id`.
-
-        Raises:
-            ValueError: If `thread_id` is not present in `config`.
-            AttributeError: If the installed LangGraph SDK no longer exposes
-                `RemoteGraph._validate_client`.
-            Exception: Any transport or API failure from the metadata update,
-                logged at WARNING and re-raised for the caller to classify.
-        """  # noqa: DOC502 — `ValueError` raised by `_require_thread_id`
-        thread_id = _require_thread_id(config)
-        graph = self._get_graph()
-
-        # Private SDK accessor. Checked explicitly because the alternative is an
-        # `AttributeError` that the caller's blanket rebind handler downgrades
-        # to a warning -- `/offload` would keep "working" while every later
-        # `/goal` and `/rubric` failed on a mis-bound thread, permanently and
-        # with nothing connecting the two.
-        validate_client = getattr(graph, "_validate_client", None)
-        if validate_client is None:
-            msg = (
-                "RemoteGraph._validate_client is unavailable; the LangGraph SDK "
-                "changed and threads can no longer be rebound to their graph."
-            )
-            raise AttributeError(msg)
-
-        try:
-            client = validate_client()
-            await client.threads.update(
-                thread_id, metadata={"graph_id": self._graph_name}
-            )
-        except Exception:
-            logger.warning(
-                "Failed to associate thread %s with graph %s",
-                thread_id,
-                self._graph_name,
                 exc_info=True,
             )
             raise

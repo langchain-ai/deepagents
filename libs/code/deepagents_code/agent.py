@@ -12,11 +12,13 @@ import tomllib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents import FsToolName, create_deep_agent
+from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.graph import DeepAgentState
 from deepagents.middleware import (
     GRADER_SYSTEM_PROMPT,
     FilesystemMiddleware,
@@ -54,7 +56,11 @@ from langchain.tools import (
     BaseTool,
     ToolRuntime,  # LangChain inspects this annotation for runtime injection.
 )
+from langchain_core.messages import (
+    AnyMessage,  # noqa: TC002  # resolved from `_CLIState` at graph construction
+)
 from langchain_core.tools import StructuredTool, tool
+from langgraph.channels.delta import DeltaChannel
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
@@ -101,9 +107,8 @@ from deepagents_code.offload import (
     _offload_fallback_root,
 )
 from deepagents_code.offload_middleware import (
-    OffloadServerResources,
+    OffloadOperationMiddleware,
     _create_cli_compaction_middleware,
-    attach_offload_resources,
 )
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
@@ -119,6 +124,28 @@ from deepagents_code.unicode_security import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _CLIState(DeepAgentState):
+    """Dcode agent state that also accepts operation-only run input.
+
+    Normal agent turns still supply `messages`. Making the field optional lets
+    server-owned operations address an existing thread without replaying its
+    checkpointed conversation as authoritative input. The reducer must remain
+    identical to `DeepAgentState.messages` so checkpoint storage and ordinary
+    message updates retain the SDK's delta-channel behavior.
+    """
+
+    messages: NotRequired[
+        Annotated[
+            list[AnyMessage],
+            DeltaChannel(
+                _messages_delta_reducer,  # ty: ignore[invalid-argument-type]
+                snapshot_frequency=50,
+            ),
+        ]
+    ]  # ty: ignore[invalid-typed-dict-field]  # operation input is intentionally optional
+
 
 _MEMORY_READONLY_SYSTEM_PROMPT = (
     "<agent_memory>\n"
@@ -2894,17 +2921,13 @@ def create_cli_agent(
     server_hooks_middleware = ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
     agent_middleware.append(server_hooks_middleware)
 
-    # The dedicated server-side `/offload` graph has no model or tool nodes, so
-    # it reuses these exact instances through the shared composite backend: the
-    # same summarizer/backend setup, and the same lifecycle implementation for
-    # the `PreCompact`/`PreToolUse` dispatch it runs against an in-memory forced
-    # tool call.
-    attach_offload_resources(
-        composite_backend,
-        OffloadServerResources(
-            compaction=compaction_middleware,
-            hooks=server_hooks_middleware,
-        ),
+    # This must be the first `before_agent` hook: an offload request exits before
+    # ordinary turn setup, while normal turns receive `None` and continue. The
+    # operation reads the main graph's checkpoint directly, so no sibling graph,
+    # state replay, or thread re-association exists on this path.
+    agent_middleware.insert(
+        0,
+        OffloadOperationMiddleware(compaction_middleware, server_hooks_middleware),
     )
 
     if fs_tools is not None:
@@ -3088,6 +3111,7 @@ def create_cli_agent(
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
         context_schema=CLIContextSchema,
+        state_schema=_CLIState,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),

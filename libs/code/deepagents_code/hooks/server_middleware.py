@@ -45,6 +45,7 @@ from langgraph.types import Command, interrupt
 from pydantic import ValidationError
 from typing_extensions import TypedDict
 
+from deepagents_code._cli_context import is_offload_operation
 from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
 from deepagents_code.hooks.interrupt import (
     build_hook_interrupt_payload,
@@ -674,7 +675,14 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         state: ServerHooksState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
-        if not self._emit_stop:
+        # `/offload` uses the main graph's exit path so cost is checkpointed,
+        # but it is an operation rather than a conversational agent turn.
+        offload_result = cast("dict[str, Any]", state).get("_offload_result")
+        if (
+            not self._emit_stop
+            or is_offload_operation(runtime.context)
+            or offload_result is not None
+        ):
             return None
         gate = _session_gate(runtime.context)
         if not _event_enabled(gate, HookEvent.STOP):

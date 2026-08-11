@@ -212,13 +212,8 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
             config = {"configurable": {"thread_id": thread_id}}
 
-            # Captured before the run so the replay can be checked against it.
-            # The `/offload` run input is *authoritative* for the `messages`
-            # channel against a real server -- it replaces the conversation
-            # rather than merging into it (streaming `{"messages": []}` here
-            # empties the thread outright). No unit test can observe that: an
-            # in-process checkpointer honors the `add_messages` reducer and
-            # leaves the checkpointed list intact either way.
+            # Captured before the run to prove the empty operation input does
+            # not replay, replace, or otherwise rewrite conversation messages.
             before_state = await agent.aget_state(config)
             messages_before = list(
                 (getattr(before_state, "values", None) or {}).get("messages", [])
@@ -235,29 +230,18 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             )
 
             offload_interrupts: list[object] = []
-            recorded_chunks = 0
-            plain_for_graph = agent.for_graph
+            recorded_chunks: list[object] = []
+            plain_astream = agent.astream
 
-            def _recording_for_graph(graph_id: str):  # noqa: ANN202
-                """Instrument the `offload` client `/offload` actually streams."""
-                offload_client = plain_for_graph(graph_id)
-                plain_astream = offload_client.astream
-
-                async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-                    """Record every interrupt the server surfaces to the client."""
-                    nonlocal recorded_chunks
-                    async for chunk in plain_astream(*args, **kwargs):
-                        if isinstance(chunk, tuple) and len(chunk) == 3:
-                            recorded_chunks += 1
-                            _ns, mode, data = chunk
-                            if mode == "updates" and isinstance(data, dict):
-                                offload_interrupts.extend(
-                                    data.get("__interrupt__") or []
-                                )
-                        yield chunk
-
-                offload_client.astream = _recording_astream  # ty: ignore
-                return offload_client
+            async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                """Record the current graph stream `/offload` actually uses."""
+                async for chunk in plain_astream(*args, **kwargs):
+                    recorded_chunks.append(chunk)
+                    if isinstance(chunk, tuple) and len(chunk) == 3:
+                        _ns, mode, data = chunk
+                        if mode == "updates" and isinstance(data, dict):
+                            offload_interrupts.extend(data.get("__interrupt__") or [])
+                    yield chunk
 
             async with app.run_test() as pilot:
                 for _ in range(120):
@@ -267,7 +251,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
                 assert app._message_store.total_count > 0
 
-                agent.for_graph = _recording_for_graph  # ty: ignore
+                agent.astream = _recording_astream  # ty: ignore
                 try:
                     await app._handle_offload()
 
@@ -279,7 +263,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                         ):
                             break
                 finally:
-                    agent.for_graph = plain_for_graph  # ty: ignore
+                    agent.astream = plain_astream  # ty: ignore
 
                 # The operation graph has no HITL middleware and manufactures no
                 # tool call, so the slash command is the whole authorization
@@ -288,7 +272,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                 assert offload_interrupts == []
                 # Positive control: the recorder must have seen chunks, so the
                 # empty-interrupt assertion above cannot pass vacuously.
-                assert recorded_chunks > 0
+                assert recorded_chunks
 
                 app_messages = [
                     str(widget._content) for widget in app.query(AppMessage)
@@ -297,7 +281,12 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                     str(widget._content) for widget in app.query(ErrorMessage)
                 ]
 
-            assert not error_messages
+            operation_chunks = [
+                chunk
+                for chunk in recorded_chunks
+                if "OffloadOperationMiddleware" in repr(chunk)
+            ]
+            assert not error_messages, operation_chunks
             assert "Nothing to offload" not in "\n".join(app_messages)
             assert any("Offloaded " in content for content in app_messages)
 
@@ -305,11 +294,9 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             state = await agent.aget_state(config)
             values = getattr(state, "values", None) or {}
 
-            # `/offload` frees context by advancing the summarization cutoff, not
-            # by deleting messages: the raw conversation stays in the checkpoint
-            # so `/context` and resume still see it. Because the replay replaces
-            # this channel, a stale or empty input would silently truncate it
-            # here and still report success -- so assert identity, not count.
+            # `/offload` frees context by advancing the summarization cutoff,
+            # not by deleting messages: raw history stays checkpointed. Assert
+            # identity to prove the operation never supplied message input.
             messages_after = values.get("messages", [])
             assert len(messages_after) == len(messages_before)
             assert [getattr(m, "id", None) for m in messages_after] == [

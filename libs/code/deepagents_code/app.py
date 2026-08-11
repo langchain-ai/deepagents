@@ -460,23 +460,6 @@ otherwise wedge the thread with only a log warning; surfacing this tells the
 user why an unrelated next turn might fail and how to recover.
 """
 
-_OFFLOAD_REBIND_WARNING = (
-    "The thread could not be re-associated with the main agent. Commands that "
-    "write thread state (/goal, /rubric) may error until you send a new message."
-)
-"""Shown when the post-`/offload` graph rebind fails.
-
-Distinct from `_OFFLOAD_WEDGE_WARNING`: nothing is wedged, but the thread is
-still bound to the `offload` graph, so an out-of-run
-`aupdate_state(as_node="model")` resolves against a graph with no `model` node
-until the next agent turn rebinds it. Naming the affected commands beats letting
-an unrelated `/goal` fail with no explanation.
-
-Deliberately says nothing about whether the offload itself succeeded: it is
-mounted after a success, after a genuine no-op, and after an unconfirmed or
-hook-stopped attempt, and each of those mounts its own outcome line first.
-"""
-
 _OFFLOAD_MAX_RESUME_ROUNDS = 10
 """Bound on interrupt fulfill/resume rounds during an `/offload`.
 
@@ -496,8 +479,8 @@ messy tail.
 """
 
 
-class _MissingOffloadGraphError(Exception):
-    """The server does not expose the optional `offload` operation graph."""
+class _MissingOffloadOperationError(Exception):
+    """The configured graph does not expose server-owned offload."""
 
 
 def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
@@ -794,6 +777,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
+    from deepagents_code.offload_middleware import OffloadOperationInput, OffloadResult
     from deepagents_code.plugins.models import (
         PluginDiscoveryResult,
         PluginInstance,
@@ -2910,14 +2894,6 @@ class DeepAgentsApp(App):
 
     Hydration now runs on every scroll-offset delta, so a persistent failure
     would otherwise notify on every scroll tick."""
-
-    _offload_rebind_failed: bool = False
-    """Set when the post-`/offload` main-graph rebind failed.
-
-    Recorded by `_drive_offload_operation_graph` and consumed by
-    `_handle_offload`, because only the caller knows whether it is about to
-    report the offload as having finished -- `_OFFLOAD_REBIND_WARNING` says it
-    did, and pairing that with a failure message would contradict it."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -14881,6 +14857,91 @@ class DeepAgentsApp(App):
             logger.debug("Failed to retrieve conversation token count", exc_info=True)
             return None
 
+    async def _handle_server_offload(self, config: RunnableConfig) -> None:
+        """Request and render the built-in server-owned offload operation."""
+        self._set_agent_running(True)
+        try:
+            await self._set_spinner("Offloading")
+            result = await self._drive_server_offload_operation(config)
+            await self._sync_session_cost_from_checkpoint()
+
+            status = result.get("status")
+            if status == "empty":
+                await self._mount_message(
+                    AppMessage("Nothing to offload — start a conversation first")
+                )
+                return
+            if status == "noop":
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to offload — the conversation is already compact."
+                    )
+                )
+                return
+            if status in {"denied", "failed"}:
+                error = result.get("error") or "The server rejected the operation."
+                await self._mount_message(ErrorMessage(f"Offload failed: {error}"))
+                return
+            if status != "compacted":
+                await self._mount_message(
+                    ErrorMessage(
+                        "Offload failed: the server returned an invalid result."
+                    )
+                )
+                return
+
+            from deepagents_code.hooks.models.domain import SessionStartCause
+
+            await self._run_session_start_hook(SessionStartCause.COMPACT)
+            tokens_before = result["tokens_before"]
+            tokens_after = result["tokens_after"]
+            pct = (
+                round((tokens_before - tokens_after) / tokens_before * 100)
+                if tokens_before > 0
+                else 0
+            )
+            stats_line = (
+                f"Context: {format_token_count(tokens_before)} → "
+                f"{format_token_count(tokens_after)} tokens ({pct}% decrease), "
+                f"{result['messages_kept']} messages kept."
+            )
+            if result.get("archive_path"):
+                caveat = (
+                    "\nNote: history was saved to temporary storage and may not "
+                    "survive a restart."
+                    if result.get("archive_ephemeral")
+                    else ""
+                )
+                await self._mount_message(
+                    AppMessage(
+                        f"Offloaded {result['messages_offloaded']} older messages, "
+                        f"freeing up context window space.\n{stats_line}{caveat}"
+                    )
+                )
+            else:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Offloaded {result['messages_offloaded']} older messages "
+                        "and freed context, but the conversation history could not "
+                        "be saved to storage, so those messages are not recoverable. "
+                        f"Check logs for details.\n{stats_line}"
+                    )
+                )
+            self._on_tokens_update(tokens_after)
+        except Exception as exc:
+            from deepagents_code.client.remote_client import format_agent_exception
+
+            logger.exception("Server offload failed")
+            await self._mount_message(
+                ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
+            )
+        finally:
+            self._set_agent_running(False)
+            try:
+                await self._set_spinner(None)
+            except Exception:
+                logger.exception("Failed to dismiss spinner after offload")
+
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space.
 
@@ -14911,6 +14972,19 @@ class DeepAgentsApp(App):
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
+        remote = self._remote_agent()
+        if remote is not None:
+            try:
+                supports_offload = await remote.asupports_offload()
+            except Exception as exc:  # noqa: BLE001  # remote capability request
+                await self._mount_message(
+                    ErrorMessage(f"Failed to inspect server capabilities: {exc}")
+                )
+                return
+            if supports_offload:
+                await self._handle_server_offload(config)
+                return
+
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception as exc:  # noqa: BLE001
@@ -14935,51 +15009,20 @@ class DeepAgentsApp(App):
                 _effective_conversation(before_messages, prior_event)
             )
 
-            # Local `Pregel` agents have no server operation graph, so they
-            # drive the seeded `compact_conversation` tool call in-process
-            # instead. Custom server graphs likewise omit the optional
-            # operation graph and fall back to this established path when the
-            # server reports that `offload` is absent.
-            local_seeded = self._remote_agent() is None
+            # Only local agents and custom server graphs without the operation
+            # middleware reach this fallback. They retain the established
+            # seeded-tool behavior because no server-owned operation exists.
+            local_seeded = True
             # Own the seeded tool-call id here so a failed run can clean up the
             # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
-            seed_tool_call_id = str(uuid.uuid4()) if local_seeded else None
-            # Stale from a previous `/offload` otherwise; only the operation
-            # graph writes it, and only the reporting paths below read it.
-            self._offload_rebind_failed = False
+            seed_tool_call_id = str(uuid.uuid4())
 
             try:
-                if seed_tool_call_id is not None:
-                    tool_error = await self._drive_local_seeded_compaction(
-                        config, seed_tool_call_id
-                    )
-                else:
-                    try:
-                        tool_error = await self._drive_offload_operation_graph(
-                            config, state_values
-                        )
-                    except _MissingOffloadGraphError:
-                        # `generate_langgraph_json()` preserves custom graph
-                        # references without requiring an undocumented paired
-                        # operation graph. They used seeded compaction before
-                        # the operation graph existed, so retain that behavior
-                        # rather than making `/offload` depend on a graph the
-                        # custom server never registered.
-                        local_seeded = True
-                        seed_tool_call_id = str(uuid.uuid4())
-                        tool_error = await self._drive_local_seeded_compaction(
-                            config, seed_tool_call_id
-                        )
+                tool_error = await self._drive_local_seeded_compaction(
+                    config, seed_tool_call_id
+                )
             except ClientHookStopError:
-                # The seeded driver mounts the stop reason itself before
-                # raising; the operation graph's hook fulfillment has no such
-                # guarantee, so say something rather than clearing the spinner
-                # with no output at all.
-                if not local_seeded:
-                    await self._mount_message(
-                        ErrorMessage("Offload stopped by a hook.")
-                    )
-                    await self._warn_if_offload_rebind_failed()
+                # The seeded driver mounts the stop reason before raising.
                 return
             except Exception as stream_error:
                 # A server graph can checkpoint the tool-node update before a
@@ -15052,7 +15095,6 @@ class DeepAgentsApp(App):
                             "conversation was compacted."
                         )
                     )
-                    await self._warn_if_offload_rebind_failed()
                     return
             # The compaction run's summary model spend is priced and committed by
             # the graph, so the state just read is the complete total.
@@ -15098,7 +15140,6 @@ class DeepAgentsApp(App):
                         "compact.",
                     ),
                 )
-                await self._warn_if_offload_rebind_failed()
                 return
 
             if not local_seeded:
@@ -15195,7 +15236,6 @@ class DeepAgentsApp(App):
                     )
                 )
 
-            await self._warn_if_offload_rebind_failed()
             self._on_tokens_update(tokens_after)
 
         except Exception as exc:  # surface offload errors to user
@@ -15215,379 +15255,104 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _warn_if_offload_rebind_failed(self) -> None:
-        """Mount `_OFFLOAD_REBIND_WARNING` if the post-`/offload` rebind failed.
+    async def _drive_server_offload_operation(
+        self, config: RunnableConfig
+    ) -> OffloadResult:
+        """Request offload from the current server-owned agent graph.
 
-        Called from every path that returns after the operation graph has run
-        and does *not* already tell the user the thread may need to reset: a
-        success, a genuine no-op, an unconfirmed result, and a hook stop. The
-        drain-error paths are excluded because they say so themselves — and
-        because the rebind is deliberately skipped while the run is still
-        suspended, so the flag cannot be set on them.
-        """
-        if not self._offload_rebind_failed:
-            return
-        self._offload_rebind_failed = False
-        await self._mount_message(ErrorMessage(_OFFLOAD_REBIND_WARNING))
-
-    async def _drive_offload_operation_graph(
-        self, config: RunnableConfig, state_values: dict[str, Any]
-    ) -> str | None:
-        """Run the explicit server-side `/offload` operation graph.
-
-        The operation graph shares the interactive agent's checkpoint and
-        composite backend but has no model node or HITL middleware. The slash
-        command is the user's authorization, so what it persists is the
-        summarization event and the run's cost drain — never an assistant tool
-        call or tool result in the conversation. (It does build a forced tool
-        call for the hook dispatch, but only in memory.)
+        The request carries no checkpoint state. This driver only fulfills
+        standard hook interrupts and returns the typed operation result emitted
+        by the server.
 
         Args:
-            config: Config with `configurable.thread_id`.
-            state_values: Pre-run thread state, refreshed by the re-read below
-                before use. Only `messages` is replayed as run input, and that
-                replay *replaces* the channel on a real server (see the comment
-                at the `stream_input` construction), so it must be current.
-                Every other channel is deliberately withheld, because replaying
-                the cost channels corrupts them.
+            config: Config containing the current thread id.
 
         Returns:
-            An error string when the run could not be driven to completion
-                (an interrupt this client cannot answer, a hook that outlasted
-                `_OFFLOAD_MAX_RESUME_ROUNDS`, or a stream that ended without the
-                node ever reporting an update), otherwise `None`. Compaction
-                failures inside the node are *not* reported this way: the graph
-                has no tool node to carry a message, so it raises and the caller
-                reconciles against the checkpointed `_summarization_event`. The
-                `str | None` shape matches the seeded driver so
-                `_handle_offload` handles both paths uniformly.
+            The server's typed offload result.
 
         Raises:
-            _MissingOffloadGraphError: If a custom server graph does not
-                register the optional `offload` operation graph.
-            RuntimeError: If the app is not connected to its server graph, or if
-                current thread state could not be read before the run --
-                replaying the pre-run snapshot would delete messages committed
-                since it was taken.
+            _MissingOffloadOperationError: If a custom graph has no offload
+                operation middleware.
+            RuntimeError: If the stream ends without a valid result.
         """
         from langgraph.types import Command
-        from langgraph_sdk.errors import NotFoundError
 
+        from deepagents_code._cli_context import OFFLOAD_OPERATION, CLIContext
         from deepagents_code.config import settings
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
-        from deepagents_code.offload_middleware import (
-            OFFLOAD_GRAPH_NODE,
-            _OffloadInput,
-        )
 
         remote = self._remote_agent()
         if remote is None:
-            msg = "The explicit /offload operation requires the server graph."
+            msg = "The explicit /offload operation requires a server graph."
             raise RuntimeError(msg)
-        # Re-read rather than trusting the caller's snapshot. That snapshot is
-        # taken before `_set_agent_running(True)`, so a turn committed in
-        # between would be missing from it -- and because the replay below
-        # *replaces* the `messages` channel, a stale list is not a stale read
-        # but a destructive write. Do NOT fall back to the caller's copy when
-        # the re-read cannot produce current state: the gap that motivates the
-        # re-read (an externally managed/shared remote thread, or a turn
-        # completing concurrently with the initial read) is exactly when the
-        # caller's copy is missing messages, so replaying it would delete the
-        # messages the re-read was meant to preserve. Abort instead.
-        thread_id = self._lc_thread_id
-        if thread_id is None:
-            await remote.aensure_thread(dict(config))
-        else:
-            try:
-                fresh_values = await self._get_thread_state_values(thread_id)
-            except Exception as exc:
-                msg = (
-                    "Could not refresh thread state before /offload; not "
-                    "replaying the stale pre-run snapshot."
-                )
-                raise RuntimeError(msg) from exc
-            # `_get_thread_state_values` collapses a missing snapshot (a 404
-            # after a rebind, a server restart, an un-flushed checkpoint) to
-            # `{}`, and the fallback snapshot was read before this run marked
-            # the agent busy, so it cannot be trusted to fill in.
-            if not fresh_values:
-                msg = (
-                    "Could not read current thread state before /offload "
-                    "(the state read came back empty); not replaying the "
-                    "stale pre-run snapshot."
-                )
-                raise RuntimeError(msg)
-            state_values = fresh_values
+        if not await remote.asupports_offload():
+            raise _MissingOffloadOperationError
 
-        stream_context = CLIContext(
+        context = CLIContext(
             model=self._effective_model_spec(),
             model_params=self._model_params_override or {},
             profile_overrides=self._profile_override or {},
             model_context_limit=settings.model_context_limit,
             thread_id=self._lc_thread_id,
+            operation=OFFLOAD_OPERATION,
         )
-        self._hooks.apply_graph_context(stream_context)
-        # Replay the thread's messages -- and *only* the messages -- as the run
-        # input. Against a real server the run input is *authoritative* for this
-        # channel: it replaces the checkpointed conversation rather than merging
-        # into it. Measured, not assumed -- streaming `{"messages": []}` against
-        # a live server takes an 8-message thread to 0 and still reports
-        # "already compact", while replaying the list leaves all 8 intact.
-        # (`messages` carries the `add_messages` reducer, so a plain reducer
-        # reading predicts the opposite, and an in-process checkpointer does
-        # resolve it that way -- which is why unit tests alone cannot catch
-        # this. `test_offload_server_side.py` pins the real behavior.)
-        # `astream(None)` is not an option either -- it never starts a run on
-        # `RemoteAgent`.
-        #
-        # Two consequences follow, and both are defended rather than assumed:
-        # the snapshot must be *fresh* (a stale or partial read would be written
-        # back over the live conversation), so it is re-read here rather than
-        # reusing `_handle_offload`'s pre-run read; and an empty replay is
-        # destructive, so the node raises on an empty `messages` instead of
-        # reporting a no-op.
-        #
-        # Known cost of the replay, accepted rather than fixed: the round-trip
-        # is not byte-identical. Re-serializing each `AIMessage` adds
-        # `invalid_tool_calls` and `usage_metadata` keys inside
-        # `additional_kwargs`, which is also where provider-specific fields
-        # (Anthropic `cache_control`, thinking blocks, citations) live, and the
-        # rewrite compounds across repeated offloads. Removing it needs the node
-        # to read `messages` from the checkpoint the way it already reads
-        # `_summarization_event`, which this client cannot arrange alone.
-        #
-        # Nothing else may be replayed. Every other channel either reaches the
-        # node through the checkpoint anyway or is actively corrupted by a
-        # replay: `_session_cost_usd` reduces with `operator.add`, so echoing the
-        # checkpointed total back as input *doubles* the thread's persisted cost
-        # on every `/offload`, and `_session_cost_transfers` (`operator.or_`)
-        # resurrects already-settled subagent transfers. `_summarization_event`
-        # is private to the schema (see `offload_middleware._OffloadState`) and
-        # its embedded summary message is a shape the server cannot deserialize.
-        # Annotated with the graph's own input type so dropping `messages` is a
-        # type error here rather than a silent conversation wipe there.
-        replay_messages = state_values.get("messages", [])
-        if not replay_messages:
-            # `_handle_offload` already rejected an empty thread, so an empty
-            # list here means the state re-read above came back partial. Writing
-            # it would truncate the conversation and report success.
+        self._hooks.apply_graph_context(context)
+
+        stream_input: OffloadOperationInput | Command[Any] = {
+            "dcode_operation": OFFLOAD_OPERATION
+        }
+        result: OffloadResult | None = None
+        rounds = 0
+        while True:
+            pending: dict[str, Any] = {}
+            unresolvable: list[str] = []
+            async for _namespace, mode, data in remote.astream(
+                stream_input,
+                stream_mode=["updates"],
+                subgraphs=True,
+                config=config,
+                context=context,
+                durability="exit",
+            ):
+                if mode != "updates" or not isinstance(data, dict):
+                    continue
+                for update in data.values():
+                    if isinstance(update, dict):
+                        candidate = update.get("_offload_result")
+                        if isinstance(candidate, dict):
+                            result = cast("OffloadResult", candidate)
+                for interrupt_obj in data.get("__interrupt__") or []:
+                    iid = getattr(interrupt_obj, "id", None)
+                    value = getattr(interrupt_obj, "value", None)
+                    if iid and is_hook_interrupt_payload(value):
+                        pending[iid] = await self._hooks.fulfill_interrupt(value)
+                    else:
+                        unresolvable.append(f"id={iid!r} type={type(value).__name__}")
+            if unresolvable:
+                msg = (
+                    "Offload could not complete: the operation requested an "
+                    "approval it cannot answer. Check the PreToolUse/PreCompact "
+                    "hook configuration for `compact_conversation`."
+                )
+                raise RuntimeError(msg)
+            if not pending:
+                break
+            rounds += 1
+            if rounds > _OFFLOAD_MAX_RESUME_ROUNDS:
+                msg = (
+                    "Offload could not complete: a configured hook kept "
+                    f"interrupting after {_OFFLOAD_MAX_RESUME_ROUNDS} rounds."
+                )
+                raise RuntimeError(msg)
+            stream_input = Command(resume=pending)
+
+        if result is None:
             msg = (
-                "Offload aborted: the thread's messages could not be read back "
-                "before the run. Nothing was changed; try again."
+                "Offload could not complete: the server stream ended without "
+                "an operation result. Your conversation was not rewritten."
             )
             raise RuntimeError(msg)
-        stream_input: _OffloadInput = {"messages": replay_messages}
-
-        # `stream_mode=["updates"]` only: unlike the seeded driver, this path
-        # cannot itemize the offload under the `offload` kind in `/cost`. The
-        # summarizer runs as a direct model invoke inside the node and passes its
-        # own `config`, which replaces the ambient run config the `messages`
-        # stream is built from, so no message chunk ever reaches this client.
-        # The spend itself is not lost: the process-wide recorder captures the
-        # request and the graph's
-        # `CostTrackingMiddleware` prices it onto `_session_cost_usd`, which
-        # `_sync_session_cost_from_state` reads back. Only the per-kind token
-        # breakdown is unavailable, and recovering it needs a usage channel on
-        # the checkpoint that does not exist yet.
-        offload_agent = remote.for_graph("offload")
-        # Configured `PreCompact`/`PreToolUse` server hooks interrupt the graph
-        # at the hook boundary rather than returning a decision; fulfill each
-        # interrupt against the client hook engine and resume, mirroring the
-        # seeded driver's drain loop.
-        resume_input: Any = cast("Any", stream_input)
-        drain_error: str | None = None
-        # Interrupt detection is all this loop does, so a chunk shape it does
-        # not recognize is indistinguishable from a clean run: `pending` stays
-        # empty, the loop exits with no error, and the caller reads an
-        # unadvanced event as "already compact" while the run is still paused
-        # server-side. Track whether the node ever reported an update so that
-        # case becomes a reported failure instead.
-        saw_node_update = False
-        try:
-            rounds = 0
-            while True:
-                pending: dict[str, Any] = {}
-                unresolvable: list[str] = []
-                async for chunk in offload_agent.astream(
-                    resume_input,
-                    stream_mode=["updates"],
-                    # Load-bearing, despite this graph having no subgraphs.
-                    # `RemoteAgent.astream` only yields the documented
-                    # `(namespace, mode, data)` 3-tuple when it is set; without
-                    # it the chunk arrives as `("updates", {...}, None)`, so the
-                    # unpacking below binds `mode` to the payload dict and every
-                    # chunk falls through the `mode != "updates"` filter. That
-                    # discards interrupts silently: hook fulfillment never runs,
-                    # the run stays paused server-side, and the caller reads an
-                    # unadvanced event as "already compact". Unit tests cannot
-                    # see it -- they feed the loop chunks directly. The
-                    # `saw_node_update` check below is what makes a regression
-                    # here loud instead of silent.
-                    subgraphs=True,
-                    config=config,
-                    context=stream_context,
-                    # Accepted for signature parity and documented as ignored by
-                    # `RemoteAgent.astream` (the server owns durability), so
-                    # this is not a guarantee that the event is committed when
-                    # the stream ends. The caller re-reads committed state and
-                    # reconciles rather than trusting the stream.
-                    durability="exit",
-                ):
-                    if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
-                        logger.debug(
-                            "Ignoring unrecognized /offload stream chunk: "
-                            "type=%s len=%s",
-                            type(chunk).__name__,
-                            len(chunk) if isinstance(chunk, tuple) else "n/a",
-                        )
-                        continue
-                    _namespace, mode, data = chunk
-                    if mode != "updates" or not isinstance(data, dict):
-                        logger.debug(
-                            "Ignoring /offload stream chunk: mode=%r data=%s",
-                            mode,
-                            type(data).__name__,
-                        )
-                        continue
-                    if OFFLOAD_GRAPH_NODE in data:
-                        saw_node_update = True
-                    for interrupt_obj in data.get("__interrupt__") or []:
-                        iid = getattr(interrupt_obj, "id", None)
-                        value = getattr(interrupt_obj, "value", None)
-                        if iid and is_hook_interrupt_payload(value):
-                            pending[iid] = await self._hooks.fulfill_interrupt(value)
-                        else:
-                            # Two distinct conditions share this branch and the
-                            # user-facing message below only fits one, so record
-                            # which it was: a hook payload with no id is a
-                            # transport bug, while a non-hook payload is the
-                            # `ask`-permission `HITLRequest` case.
-                            unresolvable.append(
-                                f"id={iid!r} "
-                                f"hook_payload={is_hook_interrupt_payload(value)} "
-                                f"type={type(value).__name__}"
-                            )
-                if unresolvable:
-                    # Not every interrupt this graph can raise is a hook
-                    # invocation this client can answer: a `PreToolUse` hook
-                    # returning an `ask` permission makes the hook middleware
-                    # itself raise a plain `HITLRequest`, and the operation graph
-                    # has no HITL middleware to route it. Report rather than
-                    # break silently -- the run stays paused either way, and the
-                    # caller would otherwise see an unchanged event and tell the
-                    # user the conversation is already compact.
-                    logger.warning(
-                        "Offload received %d interrupt(s) this client cannot "
-                        "answer; leaving the run paused. Unanswerable: %s. "
-                        "Discarding %d already-executed hook fulfillment(s): %s",
-                        len(unresolvable),
-                        "; ".join(unresolvable),
-                        len(pending),
-                        ", ".join(pending) or "none",
-                    )
-                    drain_error = (
-                        "Offload could not complete: the run requested an "
-                        "approval that /offload cannot answer. Check your "
-                        "PreToolUse/PreCompact hook configuration for "
-                        "`compact_conversation`. Any hooks that already ran for "
-                        "this attempt will run again on the next one. Send a "
-                        "new message to continue; the thread may need to reset."
-                    )
-                    break
-                if not pending:
-                    break
-                rounds += 1
-                if rounds > _OFFLOAD_MAX_RESUME_ROUNDS:
-                    # Nothing has committed yet -- the hook boundary runs before
-                    # compaction -- so unlike the seeded driver's equivalent
-                    # this is a failure, not a completed offload with a messy
-                    # tail. Report it rather than letting the caller read the
-                    # unchanged event as "nothing to offload".
-                    logger.warning(
-                        "Offload exceeded %d resume rounds; leaving %d "
-                        "interrupt(s) unresolved and discarding their "
-                        "already-executed fulfillment(s): %s",
-                        _OFFLOAD_MAX_RESUME_ROUNDS,
-                        len(pending),
-                        ", ".join(pending),
-                    )
-                    drain_error = (
-                        "Offload could not complete: a configured hook kept "
-                        f"interrupting after {_OFFLOAD_MAX_RESUME_ROUNDS} "
-                        "rounds. Any hooks that already ran for this attempt "
-                        "will run again on the next one. Send a new message to "
-                        "continue; the thread may need to reset."
-                    )
-                    break
-                resume_input = Command(resume=pending)
-            if drain_error is None and not saw_node_update:
-                # The stream ended cleanly, raised nothing, and never carried an
-                # update from the graph's only node. Either the node did not run
-                # or the SDK's chunk shape drifted out from under the filters
-                # above; both leave the run paused server-side, and reporting
-                # success would surface as the actively-wrong "already compact".
-                logger.warning(
-                    "Offload stream completed without any %r node update; "
-                    "treating the run as incomplete",
-                    OFFLOAD_GRAPH_NODE,
-                )
-                drain_error = (
-                    "Offload could not complete: the server finished the run "
-                    "without reporting a result. Your conversation is "
-                    "unchanged. Run /context to confirm, then try again."
-                )
-        except NotFoundError as exc:
-            # The named graph is optional: custom `graph_ref` configurations
-            # intentionally register only `agent`. Keep the HTTP detail out of
-            # the driver-selection policy in `_handle_offload` and fall back to
-            # the seeded path there.
-            raise _MissingOffloadGraphError from exc
-        finally:
-            # A run on the named `offload` graph rebinds the server thread's
-            # `graph_id`, so a later out-of-run `aupdate_state(as_node="model")`
-            # through the main client (e.g. `_aupdate_thread_state` for
-            # goal/rubric commands) would resolve against a graph with no
-            # `model` node and fail. Restore the binding through the main
-            # client's own graph so those writes persist again. This must
-            # update the thread metadata; an empty state update still resolves
-            # against the current (offload) graph.
-            #
-            # Never fatal: the offload result must not be misreported when only
-            # this bookkeeping fails. But it is not silent either -- the failure
-            # leaves an unrelated later command (`/goal`, `/rubric`) to fail
-            # confusingly, so `_OFFLOAD_REBIND_WARNING` is mounted alongside the
-            # offload's own result rather than replacing it.
-            #
-            # Skipped entirely when `drain_error` is set: the run is still
-            # suspended server-side in that case, and rebinding would re-point
-            # the thread away from the graph the paused run belongs to. The
-            # drain-error text already tells the user the thread may need to
-            # reset, and the next agent turn rebinds anyway.
-            #
-            # Recorded here and mounted by `_handle_offload`, not mounted here:
-            # this message says the offload finished, and only the caller knows
-            # whether it is about to report that. A stream error that still
-            # committed the compaction is reconciled into a success, and a
-            # `drain_error` is reported as a failure -- neither is visible from
-            # inside this `finally`.
-            if drain_error is not None:
-                logger.info(
-                    "Leaving the thread bound to the offload graph: the run is "
-                    "still suspended server-side"
-                )
-            else:
-                try:
-                    await remote.arebind_thread(config)
-                except Exception:
-                    logger.warning(
-                        "Failed to restore the thread's main graph association "
-                        "after /offload; the next agent turn will rebind it",
-                        exc_info=True,
-                    )
-                    self._offload_rebind_failed = True
-                else:
-                    self._offload_rebind_failed = False
-        return drain_error
+        return result
 
     async def _drive_local_seeded_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None
@@ -15595,8 +15360,8 @@ class DeepAgentsApp(App):
         """Drive a local agent's `compact_conversation` tool with `force=True`.
 
         This is `/offload`'s sole implementation for local in-process `Pregel`
-        agents, including ACP mode — not a deprecated path. Server-backed agents
-        take `_drive_offload_operation_graph` instead.
+        agents, including ACP mode, and the compatibility fallback for custom
+        server graphs that do not expose the built-in operation middleware.
 
         Seeds an assistant `compact_conversation` tool call attributed to the
         model node, then advances the graph so the agent's own `ToolNode`

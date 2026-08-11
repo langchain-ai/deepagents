@@ -4108,11 +4108,15 @@ def cli_main() -> None:
                     "Textual TUI.\n"
                 )
                 sys.exit(2)
-            if getattr(args, "yolo", False) and not _ensure_yolo_acknowledged(console):
-                sys.stderr.write(
-                    "Error: YOLO acknowledgement is required for ACP mode.\n"
-                )
-                sys.exit(2)
+            if getattr(args, "yolo", False):
+                from deepagents_code.approval_mode import has_yolo_acknowledgement
+
+                if not has_yolo_acknowledgement():
+                    sys.stderr.write(
+                        "Error: acknowledge YOLO in the interactive TUI before "
+                        "using it in ACP mode.\n"
+                    )
+                    sys.exit(2)
             if getattr(args, "auto_classifier_model", None) is not None:
                 sys.stderr.write(
                     "Error: --auto-classifier-model is only supported by the "

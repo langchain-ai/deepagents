@@ -53,6 +53,31 @@ def test_acp_mode_rejects_auto_classifier_model(
     resolve_agent.assert_not_called()
 
 
+def test_acp_mode_rejects_unacknowledged_yolo_without_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ACP protocol stdout must stay clean when YOLO was not acknowledged."""
+    args = _make_acp_args(yolo=True)
+
+    with (
+        patch.object(sys, "argv", ["deepagents", "--acp", "--yolo"]),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch(
+            "deepagents_code.approval_mode.has_yolo_acknowledgement",
+            return_value=False,
+        ),
+        patch("deepagents_code.main._resolve_agent_arg") as resolve_agent,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "acknowledge YOLO" in captured.err
+    resolve_agent.assert_not_called()
+
+
 def test_acp_mode_loads_tools_and_mcp_and_runs_server_in_yolo() -> None:
     """`--acp --yolo` should build the ACP agent without approval prompts."""
     args = _make_acp_args(
@@ -110,8 +135,8 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server_in_yolo() -> None:
     with (
         patch.object(sys, "argv", ["deepagents", "--acp", "--yolo"]),
         patch(
-            "deepagents_code.main._ensure_yolo_acknowledged", return_value=True
-        ) as ensure_yolo,
+            "deepagents_code.approval_mode.has_yolo_acknowledgement", return_value=True
+        ) as has_yolo_acknowledgement,
         patch(
             "deepagents_code.main.check_cli_dependencies",
             side_effect=AssertionError("check_cli_dependencies should be skipped"),
@@ -151,7 +176,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server_in_yolo() -> None:
         cli_main()
 
     assert exc_info.value.code == 0
-    ensure_yolo.assert_called_once()
+    has_yolo_acknowledgement.assert_called_once()
     mock_create_model.assert_called_once_with(
         None,
         extra_kwargs={"temperature": 0.2},

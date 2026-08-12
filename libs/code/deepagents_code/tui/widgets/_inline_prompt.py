@@ -313,6 +313,10 @@ class InlinePromptOption(Horizontal):
         width: 1fr;
         height: auto;
     }
+
+    InlinePromptOption.inline-prompt-option-selected > .inline-prompt-option-label {
+        color: $primary;
+    }
     """
 
     def __init__(
@@ -321,7 +325,7 @@ class InlinePromptOption(Horizontal):
         index: int,
         *,
         selected: bool = False,
-        selected_class: str | None = None,
+        selected_class: str | None = "inline-prompt-option-selected",
         **kwargs: Any,
     ) -> None:
         """Initialize an option.
@@ -386,8 +390,13 @@ class InlinePromptOption(Horizontal):
 
     def _cursor_content(self) -> Content:
         glyphs = get_glyphs()
-        prefix = f"{glyphs.cursor} " if self._cursor_visible else "  "
-        return Content(prefix)
+        marker = glyphs.cursor if self._cursor_visible else self._unselected_marker
+        return Content(f"{marker} ")
+
+    @property
+    def _unselected_marker(self) -> str:
+        """Marker shown in the cursor gutter when this option is not selected."""
+        return " "
 
     def _sync_selected_class(self) -> None:
         if self._selected_class is None:

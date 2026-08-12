@@ -35,6 +35,11 @@ runs:
         version: "0.12.1"
         python-version: ${{ inputs.python-version }}
         enable-cache: ${{ inputs.enable-cache }}
+        # setup-uv v9 flipped this default from `true` to `false` (its one
+        # breaking change). Unpruned caches are much larger, and this action
+        # backs nearly every CI job, so leaving it off would multiply eviction
+        # pressure against the repo's 10 GB cache limit. Keep v7 behavior.
+        prune-cache: "true"
         cache-dependency-glob: |
           ${{ inputs.working-directory }}/pyproject.toml
           ${{ inputs.working-directory }}/uv.lock

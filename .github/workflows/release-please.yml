@@ -783,8 +783,18 @@ jobs:
         with:
           ref: ${{ matrix.pr.headBranchName }}
 
+      # Use the composite action rather than calling setup-uv directly: it is
+      # the single place the uv `version:` pin lives, and `bump_uv_pin.yml`
+      # only rewrites that file. A direct setup-uv call here would pass no
+      # `version:` and silently resolve latest uv on every release run, racing
+      # the `releases.astral.sh` mirror on fresh releases.
       - name: Setup uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          # Only `uv lock` runs below, which leaves the cache dir empty and
+          # makes setup-uv's post-job save throw. See `check_lockfiles.yml`.
+          enable-cache: "false"
 
       - name: Update lockfiles
         id: update-lockfiles

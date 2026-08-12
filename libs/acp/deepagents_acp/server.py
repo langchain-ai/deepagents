@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard
 from uuid import uuid4
 
 from acp import (
@@ -84,15 +84,6 @@ SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
 McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
 """Type alias for ACP MCP server configuration variants."""
 
-PromptBlock: TypeAlias = (
-    TextContentBlock
-    | ImageContentBlock
-    | AudioContentBlock
-    | ResourceContentBlock
-    | EmbeddedResourceContentBlock
-)
-"""Content blocks accepted by an ACP prompt."""
-
 _MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
 """Runtime MCP server classes used to detect legacy positional `new_session` calls."""
 
@@ -152,9 +143,6 @@ class AgentServerACP(ACPAgent):
         *,
         modes: SessionModeState | None = None,
         models: list[dict[str, str]] | None = None,
-        context_factory: Callable[[str, list[PromptBlock]], object] | None = None,
-        message_factory: Callable[[str, list[PromptBlock], Sequence[str | dict[Any, Any]]], object]
-        | None = None,
     ) -> None:
         """Initialize the ACP agent server with the given agent factory or compiled graph.
 
@@ -163,14 +151,10 @@ class AgentServerACP(ACPAgent):
             modes: Optional mode configuration (deprecated, use config_options instead)
             models: Optional list of available models with 'value', 'name', and optionally
               'description'
-            context_factory: Optional per-prompt LangGraph context builder.
-            message_factory: Optional LangGraph user-message builder.
         """
         super().__init__()
         self._cwd = ""
         self._agent_factory = agent
-        self._context_factory = context_factory
-        self._message_factory = message_factory
         self._agent: CompiledStateGraph | None = None
 
         if isinstance(agent, CompiledStateGraph):
@@ -650,7 +634,13 @@ class AgentServerACP(ACPAgent):
 
     async def prompt(  # noqa: C901, PLR0912, PLR0915  # Complex streaming protocol handler with many branches
         self,
-        prompt: list[PromptBlock],
+        prompt: list[
+            TextContentBlock
+            | ImageContentBlock
+            | AudioContentBlock
+            | ResourceContentBlock
+            | EmbeddedResourceContentBlock
+        ],
         session_id: str,
         message_id: str | None = None,  # noqa: ARG002  # ACP protocol interface parameter
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
@@ -688,12 +678,6 @@ class AgentServerACP(ACPAgent):
                 content_blocks.extend(convert_embedded_resource_block_to_content_blocks(block))
         # Stream the deep agent response with multimodal content
         config: RunnableConfig = {"configurable": {"thread_id": session_id}}
-        context = self._context_factory(session_id, prompt) if self._context_factory else None
-        user_message = (
-            self._message_factory(session_id, prompt, content_blocks)
-            if self._message_factory
-            else {"role": "user", "content": content_blocks}
-        )
 
         # Track active tool calls and accumulate chunks by index
         active_tool_calls = {}
@@ -712,9 +696,8 @@ class AgentServerACP(ACPAgent):
             async for stream_chunk in agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
-                else {"messages": [user_message]},
+                else {"messages": [{"role": "user", "content": content_blocks}]},
                 config=config,
-                context=cast("Any", context),
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
             ):

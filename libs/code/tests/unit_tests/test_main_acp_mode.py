@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from acp.schema import TextContentBlock
 
 from deepagents_code.main import _preload_session_mcp_server_info, cli_main
 
@@ -202,9 +201,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server_in_yolo() -> None:
     assert call_kwargs["auto_approve"] is True
     assert call_kwargs["memory_auto_save"] is False
     mock_memory_auto_save.assert_called_once_with()
-    mock_server_cls.assert_called_once_with(
-        "graph", context_factory=None, message_factory=None
-    )
+    mock_server_cls.assert_called_once_with("graph")
     run_agent.assert_awaited_once_with(server)
     mcp_manager.cleanup.assert_awaited_once_with()
 
@@ -223,6 +220,7 @@ def test_acp_mode_auto_wires_classifier_context() -> None:
     )
     server = object()
     server_cls = MagicMock(return_value=server)
+    auto_server_cls = MagicMock(return_value=server)
     run_agent = AsyncMock(return_value=None)
 
     with (
@@ -242,6 +240,7 @@ def test_acp_mode_auto_wires_classifier_context() -> None:
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
         ) as create_agent,
         patch("deepagents_acp.server.AgentServerACP", server_cls),
+        patch("deepagents_code.acp.AgentServerACP", auto_server_cls),
         patch("acp.run_agent", run_agent),
         pytest.raises(SystemExit) as exc_info,
     ):
@@ -253,22 +252,8 @@ def test_acp_mode_auto_wires_classifier_context() -> None:
     assert kwargs["auto_approve"] is False
     assert kwargs["auto_classifier_model"] == "openai:gpt-5.5-mini"
     assert kwargs["store"] is not None
-    server_kwargs = server_cls.call_args.kwargs
-    context_factory = server_kwargs["context_factory"]
-    message_factory = server_kwargs["message_factory"]
-    prompt = [TextContentBlock(type="text", text="Update parser.py")]
-    context = context_factory("session-1", prompt)
-    message = message_factory("session-1", prompt, [{"type": "text", "text": "x"}])
-    assert context.approval_mode == "auto"
-    assert context.approval_mode_key
-    assert context.thread_id == "session-1"
-    stored = kwargs["store"].get(
-        ("deepagents_code", "approval_mode"), context.approval_mode_key
-    )
-    assert stored.value == {"mode": "auto"}
-    metadata = message.additional_kwargs["deepagents_code_user_prompt"]
-    assert metadata["literal_user_text"] == "Update parser.py"
-    assert metadata["turn_id"] == context.turn_id
+    auto_server_cls.assert_called_once_with("graph", store=kwargs["store"])
+    server_cls.assert_not_called()
 
 
 def test_acp_mode_omits_web_search_without_tavily() -> None:

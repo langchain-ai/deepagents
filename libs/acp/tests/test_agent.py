@@ -127,44 +127,6 @@ async def test_acp_agent_prompt_streams_text() -> None:
     assert texts == ["Hello!"]
 
 
-async def test_acp_agent_forwards_custom_context_and_message() -> None:
-    class Graph:
-        checkpointer = MemorySaver()
-
-        def __init__(self) -> None:
-            self.calls: list[dict[str, Any]] = []
-
-        async def astream(self, value: Any, **kwargs: Any):
-            self.calls.append({"value": value, **kwargs})
-            return
-            yield
-
-        async def aget_state(self, config: Any) -> Any:
-            return type("State", (), {"next": (), "interrupts": []})()
-
-    graph = Graph()
-    context = object()
-    message = object()
-    agent = AgentServerACP(
-        agent=create_deep_agent(
-            model=GenericFakeChatModel(
-                messages=iter([AIMessage(content="ok")]), stream_delimiter=None
-            ),
-            checkpointer=MemorySaver(),
-        ),
-        context_factory=lambda _session_id, _prompt: context,
-        message_factory=lambda _session_id, _prompt, _content: message,
-    )
-    agent._agent = graph  # type: ignore[assignment]
-    agent.on_connect(FakeACPClient())  # type: ignore[arg-type]
-    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
-
-    await agent.prompt([TextContentBlock(type="text", text="Hi")], session_id=session.session_id)
-
-    assert graph.calls[0]["value"] == {"messages": [message]}
-    assert graph.calls[0]["context"] is context
-
-
 async def test_acp_agent_cancel_stops_prompt() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="Should not appear")]))
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())

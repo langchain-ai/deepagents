@@ -2955,88 +2955,15 @@ async def _run_acp_cli_async(
         logger.debug("ACP agent creation failed", exc_info=True)
         return 1
 
-    context_factory = message_factory = None
     if auto:
-        from uuid import uuid4
-
-        from acp.schema import (
-            AudioContentBlock,
-            EmbeddedResourceContentBlock,
-            ImageContentBlock,
-            ResourceContentBlock,
-            TextContentBlock,
-        )
-        from langchain_core.messages import HumanMessage
-
-        from deepagents_code._cli_context import CLIContextSchema
-        from deepagents_code.approval_mode import (
-            APPROVAL_MODE_NAMESPACE,
-            ApprovalMode,
-            approval_mode_key,
-            approval_mode_payload,
-        )
-        from deepagents_code.auto_mode import (
-            USER_PROMPT_METADATA_KEY,
-            user_prompt_metadata,
-        )
+        from deepagents_code.acp import AgentServerACP
 
         if store is None:
             msg = "Auto mode requires an approval Store"
             raise RuntimeError(msg)
-        turns: dict[str, str] = {}
-
-        def context_factory(
-            session_id: str,
-            _prompt: list[
-                TextContentBlock
-                | ImageContentBlock
-                | AudioContentBlock
-                | ResourceContentBlock
-                | EmbeddedResourceContentBlock
-            ],
-        ) -> CLIContextSchema:
-            turn_id = uuid4().hex
-            turns[session_id] = turn_id
-            key = approval_mode_key(session_id)
-            store.put(
-                APPROVAL_MODE_NAMESPACE,
-                key,
-                dict(approval_mode_payload(mode=ApprovalMode.AUTO)),
-            )
-            return CLIContextSchema(
-                approval_mode=ApprovalMode.AUTO.value,
-                auto_approve=True,
-                approval_mode_key=key,
-                thread_id=session_id,
-                turn_id=turn_id,
-            )
-
-        def message_factory(
-            session_id: str,
-            prompt: list[
-                TextContentBlock
-                | ImageContentBlock
-                | AudioContentBlock
-                | ResourceContentBlock
-                | EmbeddedResourceContentBlock
-            ],
-            content_blocks: Sequence[str | dict[Any, Any]],
-        ) -> HumanMessage:
-            text = "\n".join(block.text for block in prompt)
-            return HumanMessage(
-                content=list(content_blocks),
-                additional_kwargs={
-                    USER_PROMPT_METADATA_KEY: user_prompt_metadata(
-                        text, [], turn_id=turns[session_id]
-                    )
-                },
-            )
-
-    server = agent_server_cls(
-        agent_graph,
-        context_factory=context_factory,
-        message_factory=message_factory,
-    )  # Pregel is a CompiledStateGraph at runtime
+        server = AgentServerACP(agent_graph, store=store)
+    else:
+        server = agent_server_cls(agent_graph)
     exit_code = 0
     try:
         await run_acp_agent(server)

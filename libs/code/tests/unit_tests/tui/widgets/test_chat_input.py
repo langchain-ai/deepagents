@@ -3704,6 +3704,30 @@ class TestDroppedFolderPaste:
             assert chat.mode == "command"
             assert chat._text_area.text == "help"
 
+    async def test_registered_command_clears_overlapping_drop_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pasted command wins before stale drop-overlap heuristics run."""
+        folder = tmp_path / "help"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+            assert chat._dropped_path_draft == str(folder)
+            monkeypatch.setattr(chat, "_retains_dropped_origin", lambda _text: True)
+
+            chat._text_area.text = "/help"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+            assert chat._dropped_path_draft is None
+
     async def test_mixed_folder_then_file_drop_keeps_normal_mode(
         self, tmp_path: Path
     ) -> None:
@@ -3745,6 +3769,27 @@ class TestDroppedFolderPaste:
 
             assert chat.mode == "normal"
             assert chat._text_area.text == str(folder)
+
+    async def test_recalled_deleted_dropped_path_uses_persisted_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """A recalled drop stays normal after its filesystem entry disappears."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history.add(str(folder), mode="normal")
+            folder.rmdir()
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+            assert chat._dropped_path_draft == str(folder)
 
     async def test_bulk_folder_and_prose_edit_keeps_normal_mode(
         self, tmp_path: Path
@@ -4132,6 +4177,16 @@ class TestDroppedFolderPaste:
 
             assert chat.mode == "command"
             assert chat._dropped_path_draft is None
+
+    @pytest.mark.parametrize("command", ["/debug", "/debug-error"])
+    async def test_hidden_command_wins_over_path(self, command: str) -> None:
+        """Hidden registry commands participate in path disambiguation."""
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+
+            assert chat._matches_known_command(command) is True
+            assert chat._matches_known_command(f"{command} details") is True
 
     async def test_command_alias_wins_over_existing_directory(
         self, tmp_path: Path

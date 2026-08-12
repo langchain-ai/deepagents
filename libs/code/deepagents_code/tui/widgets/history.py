@@ -29,6 +29,7 @@ class HistoryManager:
         self.history_file = history_file
         self.max_entries = max_entries
         self._entries: list[str] = []
+        self._entry_modes: list[str | None] = []
         self._current_index: int = -1
         self._temp_input: str = ""
         self._query: str = ""
@@ -41,7 +42,8 @@ class HistoryManager:
 
         try:
             with self.history_file.open("r", encoding="utf-8") as f:
-                entries = []
+                entries: list[str] = []
+                modes: list[str | None] = []
                 for raw_line in f:
                     line = raw_line.rstrip("\n\r")
                     if not line:
@@ -50,8 +52,15 @@ class HistoryManager:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         entry = line
-                    entries.append(entry if isinstance(entry, str) else str(entry))
+                    if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                        entries.append(entry["text"])
+                        mode = entry.get("mode")
+                        modes.append(mode if isinstance(mode, str) else None)
+                    else:
+                        entries.append(entry if isinstance(entry, str) else str(entry))
+                        modes.append(None)
                 self._entries = entries[-self.max_entries :]
+                self._entry_modes = modes[-self.max_entries :]
         except (OSError, UnicodeDecodeError):
             logger.warning(
                 "Failed to load history from %s; starting with empty history",
@@ -59,13 +68,17 @@ class HistoryManager:
                 exc_info=True,
             )
             self._entries = []
+            self._entry_modes = []
 
-    def _append_to_file(self, text: str) -> None:
+    def _append_to_file(self, text: str, mode: str | None) -> None:
         """Append a single entry to history file (concurrent-safe)."""
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
             with self.history_file.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(text) + "\n")
+                entry: str | dict[str, str] = text
+                if mode is not None:
+                    entry = {"text": text, "mode": mode}
+                f.write(json.dumps(entry) + "\n")
         except OSError:
             logger.warning(
                 "Failed to append history entry to %s",
@@ -81,7 +94,15 @@ class HistoryManager:
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
             with self.history_file.open("w", encoding="utf-8") as f:
-                for entry in self._entries:
+                for index, text in enumerate(self._entries):
+                    mode = (
+                        self._entry_modes[index]
+                        if index < len(self._entry_modes)
+                        else None
+                    )
+                    entry: str | dict[str, str] = text
+                    if mode is not None:
+                        entry = {"text": text, "mode": mode}
                     f.write(json.dumps(entry) + "\n")
         except OSError:
             logger.warning(
@@ -114,14 +135,20 @@ class HistoryManager:
         if self._entries and self._entries[-1] == text:
             return
 
+        if len(self._entry_modes) < len(self._entries):
+            self._entry_modes.extend(
+                [None] * (len(self._entries) - len(self._entry_modes))
+            )
         self._entries.append(text)
+        self._entry_modes.append(mode)
 
         # Append to file (fast, concurrent-safe)
-        self._append_to_file(text)
+        self._append_to_file(text, mode)
 
         # Compact only when we have 2x max entries (rare operation)
         if len(self._entries) > self.max_entries * 2:
             self._entries = self._entries[-self.max_entries :]
+            self._entry_modes = self._entry_modes[-self.max_entries :]
             self._compact_history()
 
         self.reset_navigation()
@@ -189,6 +216,13 @@ class HistoryManager:
     def in_history(self) -> bool:
         """Whether currently navigating history entries."""
         return self._current_index >= 0
+
+    @property
+    def current_mode(self) -> str | None:
+        """Submission mode recorded for the current history entry, if any."""
+        if 0 <= self._current_index < len(self._entry_modes):
+            return self._entry_modes[self._current_index]
+        return None
 
     def reset_navigation(self) -> None:
         """Reset navigation state."""

@@ -142,6 +142,18 @@ class TestSkillInvocationHistory:
         mgr.add("/tmp/assets what is in here", mode="normal")
 
         assert mgr.get_previous("") == "/tmp/assets what is in here"
+        assert mgr.current_mode == "normal"
+
+    def test_normal_mode_persists_across_reload(self, tmp_path: Path) -> None:
+        """Reloaded path history retains its original submission mode."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("/tmp/assets", mode="normal")
+
+        reloaded = HistoryManager(history_file)
+
+        assert reloaded.get_previous("") == "/tmp/assets"
+        assert reloaded.current_mode == "normal"
 
 
 class TestSubstringMatch:

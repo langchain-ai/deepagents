@@ -22,7 +22,11 @@ from textual.strip import Strip
 from textual.widgets import Static, TextArea
 
 from deepagents_code import theme
-from deepagents_code.command_registry import CommandEntry, get_slash_commands
+from deepagents_code.command_registry import (
+    HIDDEN_COMMANDS,
+    CommandEntry,
+    get_slash_commands,
+)
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
@@ -1813,6 +1817,17 @@ class ChatInput(Vertical):
         # `_clear_dropped_path` has just reset.
         detected_draft: str | None = None
         detection_ran = False
+        prefix_len = self._common_prefix_len(previous_text, text)
+        suffix_len = self._common_suffix_len(
+            previous_text, text, after_prefix_len=prefix_len
+        )
+        removed_len = len(previous_text) - prefix_len - suffix_len
+        is_bulk_change = should_check_path_payload or removed_len > 1
+        if is_bulk_change and draft is not None and self._matches_known_command(text):
+            # A registered command is definitive. Do not let a coincidental
+            # overlap with the previous drop keep stale path state alive.
+            self._clear_dropped_path()
+            draft = None
         if not text:
             self._clear_dropped_path()
         elif draft is not None and not self._retains_dropped_origin(text):
@@ -2212,11 +2227,14 @@ class ChatInput(Vertical):
         Returns:
             `True` when the first whitespace-delimited token names a command.
         """
-        controller = self._slash_controller
-        if controller is None:
-            return False
         tokens = text.strip().split(maxsplit=1)
-        return bool(tokens) and controller.has_command(tokens[0])
+        if not tokens:
+            return False
+        name = tokens[0].lower()
+        if name in HIDDEN_COMMANDS:
+            return True
+        controller = self._slash_controller
+        return controller is not None and controller.has_command(name)
 
     def _resolve_dropped_path_prefix(self, text: str) -> str | None:
         """Return the leading substring of `text` that resolves as a drop.
@@ -2708,7 +2726,9 @@ class ChatInput(Vertical):
         """Handle history previous request."""
         entry = self._history.get_previous(event.current_text, query=event.current_text)
         if entry is not None and self._text_area:
-            mode, display_text = self._history_entry_mode_and_text(entry)
+            mode, display_text = self._history_entry_mode_and_text(
+                entry, stored_mode=self._history.current_mode
+            )
             self.mode = mode
             # Cursor at top so pressing up again continues backward through
             # history without the user having to navigate to the first row.
@@ -2725,7 +2745,9 @@ class ChatInput(Vertical):
         """Handle history next request."""
         entry = self._history.get_next()
         if entry is not None and self._text_area:
-            mode, display_text = self._history_entry_mode_and_text(entry)
+            mode, display_text = self._history_entry_mode_and_text(
+                entry, stored_mode=self._history.current_mode
+            )
             self.mode = mode
             # Cursor at end so pressing down again continues forward through
             # history.
@@ -2995,10 +3017,15 @@ class ChatInput(Vertical):
             return replacement.strip()
         return value
 
-    def _history_entry_mode_and_text(self, entry: str) -> tuple[str, str]:
+    def _history_entry_mode_and_text(
+        self, entry: str, *, stored_mode: str | None = None
+    ) -> tuple[str, str]:
         """Return mode and stripped display text for a history entry.
 
-        A leading `/` is only treated as a mode trigger when the entry does not
+        Persisted submission mode takes precedence, so a dropped path remains
+        normal text even if it was deleted or renamed after submission. For
+        legacy history entries without mode metadata, a leading `/` is only
+        treated as a mode trigger when the entry does not
         begin with a resolvable dropped path -- and a path that is itself a
         registered command name still wins for the command, which is why this
         defers to `_classify_dropped_path` rather than testing the filesystem
@@ -3014,11 +3041,22 @@ class ChatInput(Vertical):
 
         Args:
             entry: Raw entry value read from history storage.
+            stored_mode: Submission mode persisted with the entry, if present.
 
         Returns:
             Tuple of `(mode, display_text)` where mode-trigger prefixes are
                 removed from `display_text`.
         """
+        if stored_mode == "normal":
+            if entry.startswith("/"):
+                self._set_dropped_path(entry)
+            else:
+                self._clear_dropped_path()
+            return "normal", entry
+        if stored_mode in MODE_PREFIXES:
+            prefix = MODE_PREFIXES[stored_mode]
+            self._clear_dropped_path()
+            return stored_mode, entry.removeprefix(prefix)
         if mode_match := detect_mode_prefix(entry):
             prefix, mode = mode_match
             if prefix == "/":

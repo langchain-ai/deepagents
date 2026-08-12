@@ -38029,3 +38029,88 @@ class TestColdCacheWarningFlow:
         assert app._last_model_request_at == "2026-08-11T12:30:00+00:00"
         assert app._last_cache_model_spec == "anthropic:claude-sonnet-4-6"
         assert app._last_cache_model_params == {"cache_control": {"ttl": "1h"}}
+
+    def test_checkpoint_sync_warns_on_malformed_request_time(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        app = DeepAgentsApp()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            app._sync_cache_state_from_state(
+                {
+                    "_last_model_request_at": "not-a-timestamp",
+                    "_last_cache_model_spec": "anthropic:claude-sonnet-4-6",
+                    "_model_params": None,
+                }
+            )
+
+        assert app._last_model_request_at is None
+        assert app._last_cache_model_spec == "anthropic:claude-sonnet-4-6"
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "_last_model_request_at" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "not-a-timestamp" not in warnings[0].getMessage()
+
+    def test_checkpoint_sync_warns_on_malformed_model_identity(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        app = DeepAgentsApp()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            app._sync_cache_state_from_state(
+                {
+                    "_last_model_request_at": "2026-08-11T12:30:00+00:00",
+                    "_last_cache_model_spec": 42,
+                    "_model_spec": None,
+                    "_model_params": None,
+                }
+            )
+
+        assert app._last_model_request_at == "2026-08-11T12:30:00+00:00"
+        assert app._last_cache_model_spec == ""
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "_last_cache_model_spec" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "int" in warnings[0].getMessage()
+
+    async def test_unparseable_in_session_request_time_logs_debug(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        app = DeepAgentsApp()
+        app._model_override = "anthropic:claude-sonnet-4-6"
+        app._last_cache_model_spec = "anthropic:claude-sonnet-4-6"
+        # `_sync_cache_state_from_state` never leaves a malformed value behind;
+        # set one directly to simulate state written between sync and send.
+        app._last_model_request_at = "garbage"  # ty: ignore
+        app._context_tokens = 50_000
+        app._cold_cache_warning_threshold_usd = 0.10
+        config = MagicMock()
+        config.get_base_url.return_value = None
+        with (
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.app"),
+            patch(
+                "deepagents_code.model_config.ModelConfig.load",
+                return_value=config,
+            ),
+        ):
+            warning = await app._cold_cache_warning_for(
+                QueuedMessage("continue", "normal")
+            )
+
+        assert warning is None
+        assert any(
+            record.levelno == logging.DEBUG
+            and "_last_model_request_at" in record.getMessage()
+            for record in caplog.records
+        )

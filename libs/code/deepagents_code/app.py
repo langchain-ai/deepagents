@@ -8492,11 +8492,32 @@ class DeepAgentsApp(App):
             return
         from deepagents_code.cold_cache import parse_cache_timestamp
 
-        timestamp = parse_cache_timestamp(state_values.get("_last_model_request_at"))
+        raw_timestamp = state_values.get("_last_model_request_at")
+        timestamp = parse_cache_timestamp(raw_timestamp)
+        if timestamp is None:
+            # Without a parseable request time, cold-cache warnings stay off
+            # until the next successful model request writes a fresh one.
+            logger.warning(
+                "Discarding checkpointed _last_model_request_at "
+                "(%s); cold-cache warnings will not fire until the next "
+                "successful model request",
+                type(raw_timestamp).__name__,
+            )
         self._last_model_request_at = timestamp.isoformat() if timestamp else None
         raw_spec = state_values.get("_last_cache_model_spec")
         if not isinstance(raw_spec, str):
             raw_spec = state_values.get("_model_spec")
+        if not isinstance(raw_spec, str):
+            # Neither `_last_cache_model_spec` nor the `_model_spec` fallback
+            # gave us a string. Storing "" means the next send never matches
+            # the current model, so it is treated as a model change.
+            logger.warning(
+                "Discarding checkpointed _last_cache_model_spec (%s) and "
+                "_model_spec (%s); the next send is treated as a model change "
+                "for cold-cache warnings",
+                type(state_values.get("_last_cache_model_spec")).__name__,
+                type(state_values.get("_model_spec")).__name__,
+            )
         self._last_cache_model_spec = raw_spec if isinstance(raw_spec, str) else ""
         raw_params = state_values.get("_model_params")
         self._last_cache_model_params = (
@@ -10943,6 +10964,15 @@ class DeepAgentsApp(App):
                 return None
             timestamp = parse_cache_timestamp(timestamp_value)
             if timestamp is None:
+                # Reaching here means the in-memory value went bad after the
+                # sync path already checked it (or already warned about it at
+                # resume), so keep this at debug to avoid a second warning for
+                # the same condition.
+                logger.debug(
+                    "Skipping cold-cache warning: _last_model_request_at "
+                    "(%s) could not be parsed",
+                    type(timestamp_value).__name__,
+                )
                 return None
             age_seconds = max((datetime.now(UTC) - timestamp).total_seconds(), 0.0)
             identity_changed = model_spec != last_spec or current_params != last_params

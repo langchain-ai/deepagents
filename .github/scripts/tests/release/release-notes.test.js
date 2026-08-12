@@ -1667,6 +1667,9 @@ test('re-drafting posts a refreshed notice after editing the override comment in
   const notice = run.calls.createComment[0].body;
   assert.match(notice, /regenerated in place/);
   assert.match(notice, /release-notes-refreshed/);
+  // The pointer links directly to the edited comment so one click jumps to the
+  // new draft (the mocked comment has no html_url, so the fallback is used).
+  assert.ok(notice.includes('[that comment](https://github.com/langchain-ai/deepagents/pull/123#issuecomment-55)'));
   // The pointer must never re-trigger the command flow.
   assert.ok(!notice.includes('@release-bot'));
   assert.equal(core.warnings.length, 0);

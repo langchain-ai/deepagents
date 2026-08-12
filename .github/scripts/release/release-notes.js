@@ -541,18 +541,20 @@ async function upsertOwnMarkedComment({ github, owner, repo, number, comments, l
 // the refresh shows up in the timeline. Best-effort: a failure here must not
 // turn an already-successful draft post into a job failure. The pointer body
 // must never include COMMAND_MENTION, or it would re-trigger the command flow.
-async function announceRefresh({ github, owner, repo, number, core, refreshedCommentId, component, version }) {
+async function announceRefresh({ github, owner, repo, number, core, refreshedComment, component, version }) {
+  const url = refreshedComment.html_url
+    ?? `https://github.com/${owner}/${repo}/pull/${number}#issuecomment-${refreshedComment.id}`;
   try {
     await createComment(
       github,
       owner,
       repo,
       number,
-      `${REFRESH_MARKER} for ${component} ${version} -->\nThe curated release-notes comment on this PR was regenerated in place; review the latest draft in that comment.`,
+      `${REFRESH_MARKER} for ${component} ${version} -->\nThe curated release-notes comment on this PR was regenerated in place; review the latest draft in [that comment](${url}).`,
     );
   } catch (error) {
     core.warning(
-      `Draft comment ${refreshedCommentId} was updated but posting the refreshed notice failed: ${error instanceof Error ? error.message : String(error)}`,
+      `Draft comment ${refreshedComment.id} was updated but posting the refreshed notice failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }
@@ -796,7 +798,7 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
       repo,
       number: state.number,
       core,
-      refreshedCommentId: comment.id,
+      refreshedComment: comment,
       component: state.component,
       version: state.version,
     });

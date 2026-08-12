@@ -13,25 +13,18 @@
 # the label persists.
 #
 # Because `remove-stale-when-updated: false` stops the stale action from
-# clearing the label on activity, the `remove-label` job below is the *only*
-# path that clears it. It therefore has to cover every way an author can
+# clearing the label on activity, the trusted follow-up workflow is the *only*
+# path that clears it. This workflow records every way an author can
 # respond: conversation comments (`issue_comment`, which covers issues and PR
 # conversations), review-thread replies (`pull_request_review_comment`),
 # submitted reviews (`pull_request_review`), and pushing commits
 # (`pull_request_target` / `synchronize`). Missing any of these would auto-close
 # a PR with "we have not received a response" *after* the author responded.
 #
-# `pull_request_target` runs in the base-branch context, which is what grants a
-# write token on fork PRs. Nothing here checks out or executes PR code, so the
-# usual `pull_request_target` injection risk does not apply.
-#
-# Both jobs use the default GITHUB_TOKEN so their mutations do NOT re-trigger
-# workflows: GitHub does not start new runs from actions performed by the
-# default token (narrow exceptions like `workflow_dispatch` aside). That matters
-# more here than it did in the predecessor workflow, because this one both
-# triggers on `issue_comment` and posts its own close comments — under a PAT,
-# `close-issue-message` would feed straight back into `remove-label`. The
-# `user.type != 'Bot'` guards below are the second line of defense.
+# The follow-up workflow runs under `workflow_run` in the base-branch context,
+# which grants a write token for fork PRs. It validates the response against the
+# GitHub API before mutating a label; neither workflow checks out or executes PR
+# code.
 
 name: Needs Response
 
@@ -59,51 +52,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Clear `needs-response` when the original author responds. Fires on every
-  # author-activity event; the `if:` filter below skips the run unless the item
-  # is open, carries the label, and the actor is the original author (and not a
-  # bot). The four branches exist because each event type exposes the item under
-  # a different payload key (`issue` vs `pull_request`) and the actor under a
-  # different one (`comment.user` vs `review.user` vs `github.actor`).
-  #
-  # The `github.repository` guard keeps forks from running automation that
-  # closes items and mutates labels.
-  remove-label:
+  # Fork-origin comment and review events receive a read-only token, so they
+  # cannot remove a label directly. Store only the immutable response ID for
+  # the trusted `workflow_run` consumer; it re-fetches and verifies everything.
+  record-author-response:
     if: >-
       github.repository == 'langchain-ai/deepagents' &&
-      (
-        (
-          github.event_name == 'issue_comment' &&
-          github.event.issue.state == 'open' &&
-          contains(github.event.issue.labels.*.name, 'needs-response') &&
-          github.event.comment.user.type != 'Bot' &&
-          github.event.comment.user.login == github.event.issue.user.login
-        ) || (
-          github.event_name == 'pull_request_review_comment' &&
-          github.event.pull_request.state == 'open' &&
-          contains(github.event.pull_request.labels.*.name, 'needs-response') &&
-          github.event.comment.user.type != 'Bot' &&
-          github.event.comment.user.login == github.event.pull_request.user.login
-        ) || (
-          github.event_name == 'pull_request_review' &&
-          github.event.pull_request.state == 'open' &&
-          contains(github.event.pull_request.labels.*.name, 'needs-response') &&
-          github.event.review.user.type != 'Bot' &&
-          github.event.review.user.login == github.event.pull_request.user.login
-        ) || (
-          github.event_name == 'pull_request_target' &&
-          github.event.pull_request.state == 'open' &&
-          contains(github.event.pull_request.labels.*.name, 'needs-response') &&
-          github.actor == github.event.pull_request.user.login
-        )
+      contains(
+        fromJSON('["issue_comment", "pull_request_review", "pull_request_review_comment"]'),
+        github.event_name
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # `issues: write` alone is not enough: `issue_comment` also fires for PR
-    # conversation comments, and GitHub authorizes label mutations on a PR
-    # through the `pull-requests` scope even though the REST path is
-    # `/issues/{n}/labels`. A job-level block REPLACES the workflow-level one
-    # rather than merging with it, so both scopes must be listed here.
+
+    steps:
+      - name: Record response identifier
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const response = {
+              eventName: context.eventName,
+              responseId:
+                context.payload.comment?.id ?? context.payload.review?.id,
+              pullNumber: context.payload.pull_request?.number,
+            };
+
+            if (!response.responseId) {
+              core.setFailed(`No response ID found for ${context.eventName}`);
+              return;
+            }
+
+            const fs = require('fs');
+            fs.writeFileSync(
+              `${process.env.RUNNER_TEMP}/author-response.json`,
+              JSON.stringify(response),
+            );
+
+      - name: Upload response identifier
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: author-response
+          path: ${{ runner.temp }}/author-response.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # `pull_request_target` has a write token even for fork PRs, so a push can
+  # clear the label directly. Unlike comment and review events, it is already a
+  # trusted-context event; it still excludes bot-authored PRs.
+  remove-label-on-push:
+    if: >-
+      github.repository == 'langchain-ai/deepagents' &&
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.state == 'open' &&
+      contains(github.event.pull_request.labels.*.name, 'needs-response') &&
+      github.event.pull_request.user.type != 'Bot' &&
+      github.actor == github.event.pull_request.user.login
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       issues: write
       pull-requests: write
@@ -114,41 +119,22 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            // `issue_comment` payloads carry `issue` (for both issues and
-            // PRs); the `pull_request_*` payloads carry `pull_request`.
-            const item = context.payload.issue ?? context.payload.pull_request;
-            const issue_number = item.number;
-            const author = item.user.login;
-
-            console.log(
-              `Author ${author} responded on #${issue_number} via ` +
-                `${context.eventName} — removing needs-response`,
-            );
+            const issueNumber = context.payload.pull_request.number;
 
             try {
               await github.rest.issues.removeLabel({
                 owner,
                 repo,
-                issue_number,
+                issue_number: issueNumber,
                 name: 'needs-response',
               });
-            } catch (e) {
-              // 404: typically label not present (already removed or never
-              // applied). Could also indicate issue/repo not found — include
-              // e.message to disambiguate. Keep the message hedged and keep
-              // e.message: without it a genuine "issue not found" bug is
-              // indistinguishable from the benign case.
-              if (e.status === 404) {
-                console.log(
-                  `removeLabel returned 404 — label already absent, or the ` +
-                    `item is gone: ${e.message}`,
-                );
-                return;
-              }
-              throw e;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              console.log(`needs-response was already absent from #${issueNumber}.`);
+              return;
             }
 
-            console.log(`Removed needs-response from #${issue_number}`);
+            console.log(`Removed needs-response from #${issueNumber}.`);
 
   close-stale-issues:
     if: >-
@@ -169,7 +155,7 @@ jobs:
           days-before-stale: -1
           stale-issue-label: needs-response
           stale-pr-label: needs-response
-          # Let only the `remove-label` job above clear the label, so unrelated
+          # Let only the author-response jobs clear the label, so unrelated
           # activity does not reset an unanswered question.
           remove-stale-when-updated: false
           days-before-issue-close: 10

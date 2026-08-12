@@ -117,6 +117,9 @@ Zero or negative disables the suggestion.
 SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
 """Default warning threshold in USD; zero or negative disables the warning."""
 
+COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT = 0.10
+"""Default incremental re-warm cost that triggers a cold-cache warning."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -1551,6 +1554,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("threads", "columns"),
     ),
     # --- Warnings ------------------------------------------------------
+    ConfigOption(
+        key="warnings.cold_cache_min_delta_usd",
+        group="Warnings",
+        summary=(
+            "Warn before a cold prompt-cache turn exceeds this extra cost "
+            "estimate (0 disables)."
+        ),
+        kind=OptionKind.FLOAT,
+        default=COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
+        toml_keys=("warnings", "cold_cache_min_delta_usd"),
+    ),
     ConfigOption(
         key="warnings.session_cost_threshold_usd",
         group="Warnings",

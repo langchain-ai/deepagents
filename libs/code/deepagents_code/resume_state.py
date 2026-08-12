@@ -12,6 +12,10 @@ Written from inside the graph on successful model turns:
     in use for the turn, written by `ConfigurableModelMiddleware` after a
     successful model call. Lets `dcode -r` restore the model the resumed thread
     was actually using instead of falling back to the user's global default.
+- `_last_model_request_at` / `_last_cache_model_spec` — UTC request-start time
+    and requested model identity captured by `ConfigurableModelMiddleware` and
+    committed only after that call succeeds. Lets the TUI detect when the
+    provider's reusable prompt prefix may be cold.
 
 Written through the main graph or by the TUI client via `aupdate_state` (see
 `DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Their
@@ -199,6 +203,12 @@ class ResumeState(GoalRubricChannels):
 
     _model_params: Annotated[NotRequired[dict[str, Any] | None], PrivateStateAttr]
     """Invocation params effectively in use for the latest turn."""
+
+    _last_model_request_at: Annotated[NotRequired[str], PrivateStateAttr]
+    """UTC request-start timestamp for the latest successful main-model call."""
+
+    _last_cache_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """Requested model spec associated with `_last_model_request_at`."""
 
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""

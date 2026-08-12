@@ -12,13 +12,14 @@ import signal
 import threading
 import time
 import webbrowser
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 
     from langchain_core.messages import HumanMessage
     from textual.pilot import Pilot
@@ -68,6 +69,7 @@ from deepagents_code.app import (
     TextualSessionState,
     _build_whats_new_message,
     _ChatScroll,
+    _ColdCacheWarning,
     _display_model_label,
     _extra_is_ready,
     _format_mcp_server_changes,
@@ -78,6 +80,7 @@ from deepagents_code.app import (
     _ThreadHistoryPayload,
     _warn_discarded_goal_channels,
 )
+from deepagents_code.cold_cache import PromptCachePolicy, RewarmEstimate
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
@@ -21348,7 +21351,7 @@ class TestSlashCommandBypass:
             await pilot.pause()
 
             assert list(app._pending_messages) == [
-                QueuedMessage(text="next task", mode="normal")
+                QueuedMessage(text="next task", mode="normal", origin="external")
             ]
 
     async def test_external_prompt_exit_is_forwarded(self) -> None:
@@ -37735,3 +37738,175 @@ class TestForcedGoalCriteriaSync:
         await app._sync_goal_rubric_state_from_thread(force=False)
 
         remount.assert_not_awaited()
+
+
+class TestColdCacheWarningFlow:
+    """Tests for advisory cold prompt-cache dispatch gating."""
+
+    async def test_builds_warning_for_stale_material_openai_cache(self) -> None:
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.6"
+        app._model_params_override = None
+        app._last_cache_model_spec = "openai:gpt-5.6"
+        app._last_cache_model_params = None
+        app._last_model_request_at = (
+            datetime.now(UTC) - timedelta(minutes=31)
+        ).isoformat()
+        app._context_tokens = 50_000
+        app._cold_cache_warning_threshold_usd = 0.10
+        config = MagicMock()
+        config.get_base_url.return_value = None
+
+        def estimate(
+            usage: dict[str, Any],
+            _model: str,
+            _provider: str,
+        ) -> float:
+            details = usage["input_token_details"]
+            return 0.10 if "cache_read" in details else 0.35
+
+        with (
+            patch(
+                "deepagents_code.model_config.ModelConfig.load",
+                return_value=config,
+            ),
+            patch(
+                "deepagents_code.model_config.is_warning_suppressed",
+                return_value=False,
+            ),
+            patch("deepagents_code.cost_tracking.estimate_cost", estimate),
+        ):
+            warning = await app._cold_cache_warning_for(
+                QueuedMessage("continue", "normal")
+            )
+
+        assert warning is not None
+        assert warning.policy.provider_name == "OpenAI"
+        assert warning.estimate.incremental_cost_usd == pytest.approx(0.25)
+        assert warning.identity_changed is False
+
+    async def test_external_message_never_opens_warning(self) -> None:
+        app = DeepAgentsApp()
+        app._cold_cache_warning_threshold_usd = 0.10
+        app._model_override = "openai:gpt-5.6"
+        app._last_model_request_at = "2026-08-11T12:30:00+00:00"
+        app._context_tokens = 50_000
+
+        warning = await app._cold_cache_warning_for(
+            QueuedMessage("continue", "normal", origin="external")
+        )
+
+        assert warning is None
+
+    async def test_modal_admission_failure_sends_once(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = DeepAgentsApp()
+        warning = _ColdCacheWarning(
+            policy=PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+            estimate=RewarmEstimate(0.35, 0.25),
+            context_tokens=50_000,
+            age_seconds=3600,
+            identity_changed=False,
+        )
+        warning_for = AsyncMock(return_value=warning)
+        process = AsyncMock()
+        monkeypatch.setattr(app, "_cold_cache_warning_for", warning_for)
+        monkeypatch.setattr(app, "_process_message", process)
+
+        def reject(
+            coro: Coroutine[Any, Any, None],
+            *,
+            context: str,
+        ) -> None:
+            assert context == "cold-cache:confirm"
+            assert inspect.iscoroutine(coro)
+            coro.close()
+
+        monkeypatch.setattr(app, "_schedule_off_message_pump", reject)
+
+        await app._dispatch_queued_message(QueuedMessage("continue", "normal"))
+
+        process.assert_awaited_once_with("continue", "normal")
+
+    async def test_cancel_restores_draft_without_dispatch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = DeepAgentsApp(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        app._exiting = False
+        push_screen = AsyncMock(return_value=False)
+        process = AsyncMock()
+        monkeypatch.setattr(app, "_push_screen_wait", push_screen)
+        monkeypatch.setattr(app, "_process_message", process)
+        monkeypatch.setattr(app, "call_after_refresh", MagicMock())
+        chat_input = MagicMock()
+        chat_input.value = ""
+        chat_input.set_value_at_end.return_value = True
+        app._chat_input = chat_input
+        warning = _ColdCacheWarning(
+            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            estimate=RewarmEstimate(1.25, 1.15),
+            context_tokens=50_000,
+            age_seconds=600,
+            identity_changed=False,
+        )
+
+        await app._confirm_cold_cache_message(
+            QueuedMessage("continue", "normal"),
+            warning,
+            "thread-1",
+        )
+
+        chat_input.set_value_at_end.assert_called_once_with("continue")
+        process.assert_not_awaited()
+
+    async def test_thread_change_cancels_without_restoring_old_draft(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = DeepAgentsApp(thread_id="thread-2")
+        app._lc_thread_id = "thread-2"
+        app._exiting = False
+        process = AsyncMock()
+        restore = MagicMock()
+        notify = MagicMock()
+        monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value=True))
+        monkeypatch.setattr(app, "_process_message", process)
+        monkeypatch.setattr(app, "_restore_cold_cache_draft", restore)
+        monkeypatch.setattr(app, "notify", notify)
+        warning = _ColdCacheWarning(
+            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            estimate=RewarmEstimate(1.25, 1.15),
+            context_tokens=50_000,
+            age_seconds=600,
+            identity_changed=False,
+        )
+
+        await app._confirm_cold_cache_message(
+            QueuedMessage("old thread draft", "normal"),
+            warning,
+            "thread-1",
+        )
+
+        process.assert_not_awaited()
+        restore.assert_not_called()
+        notify.assert_called_once()
+
+    def test_checkpoint_sync_restores_cache_identity(self) -> None:
+        app = DeepAgentsApp()
+
+        app._sync_cache_state_from_state(
+            {
+                "_last_model_request_at": "2026-08-11T12:30:00+00:00",
+                "_last_cache_model_spec": "anthropic:claude-sonnet-4-6",
+                "_model_spec": "anthropic:claude-sonnet-4-6",
+                "_model_params": {"cache_control": {"ttl": "1h"}},
+            }
+        )
+
+        assert app._last_model_request_at == "2026-08-11T12:30:00+00:00"
+        assert app._last_cache_model_spec == "anthropic:claude-sonnet-4-6"
+        assert app._last_cache_model_params == {"cache_control": {"ttl": "1h"}}

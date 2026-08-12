@@ -69,7 +69,12 @@ def _checkpoint_update(
     assert isinstance(result, ExtendedModelResponse)
     assert result.command is not None
     assert isinstance(result.command.update, dict)
-    return result.command.update
+    update = dict(result.command.update)
+    timestamp = update.pop("_last_model_request_at")
+    assert isinstance(timestamp, str)
+    cache_model_spec = update.pop("_last_cache_model_spec")
+    assert isinstance(cache_model_spec, str)
+    return update
 
 
 def _make_model_result(
@@ -101,6 +106,37 @@ _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 
 class TestCheckpointPersistence:
     """Tests for private resume-state checkpoint updates."""
+
+    def test_records_request_start_only_after_success(self) -> None:
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+        request = _make_request(_make_model("gpt-5.6"))
+
+        with patch(
+            "deepagents_code.configurable_model._utc_now_iso",
+            return_value="2026-08-11T12:30:00+00:00",
+        ):
+            result = middleware.wrap_model_call(
+                request,
+                lambda _request: _make_response(),
+            )
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        update = result.command.update
+        assert isinstance(update, dict)
+        assert update["_last_model_request_at"] == "2026-08-11T12:30:00+00:00"
+        assert update["_last_cache_model_spec"] == "openai:gpt-5.6"
+
+    def test_failed_call_does_not_return_checkpoint_update(self) -> None:
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+        request = _make_request(_make_model("gpt-5.6"))
+
+        def fail(_request: ModelRequest) -> ModelResponse[Any]:
+            msg = "provider failed"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match="provider failed"):
+            middleware.wrap_model_call(request, fail)
 
     def test_can_disable_model_state_persistence(self) -> None:
         middleware = ConfigurableModelMiddleware(persist_model_state=False)

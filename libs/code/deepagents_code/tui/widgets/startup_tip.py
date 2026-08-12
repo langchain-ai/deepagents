@@ -27,6 +27,7 @@ _TIPS: dict[str, int] = {
     "Use /context to see context window usage and remaining space": 1,
     "Use /copy to copy the latest message": 3,
     "Use /cost to see a breakdown of estimated spend": 1,
+    "Cold-cache warnings flag expensive resumed turns before they send": 1,
     "Use /tools to list the tools available to the agent": 1,
     "Use /mcp login <server> to authenticate MCP servers": 1,
     "Use /remember to save learnings from this conversation": 1,

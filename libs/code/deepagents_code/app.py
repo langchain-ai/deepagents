@@ -1007,6 +1007,7 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.cold_cache import PromptCachePolicy, RewarmEstimate
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
@@ -2242,6 +2243,21 @@ escape hatch. Tight enough that a deliberate copy-then-interrupt sequence,
 which has much larger gaps, never trips it."""
 
 
+SubmissionOrigin = Literal["interactive", "external"]
+"""Source policy controlling whether a normal message may open a cost modal."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ColdCacheWarning:
+    """Validated data needed to render one advisory warning."""
+
+    policy: PromptCachePolicy
+    estimate: RewarmEstimate
+    context_tokens: int
+    age_seconds: float
+    identity_changed: bool
+
+
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
     """Represents a queued user message awaiting processing."""
@@ -2251,6 +2267,9 @@ class QueuedMessage:
 
     mode: InputMode
     """The input mode that determines message routing."""
+
+    origin: SubmissionOrigin = "interactive"
+    """Submission source retained until dispatch for advisory warning policy."""
 
 
 class ExternalInput(Message):
@@ -2343,6 +2362,12 @@ class _ThreadHistoryPayload:
 
     model_params: dict[str, Any] | None = None
     """Persisted `_model_params` from the checkpoint, if any."""
+
+    last_model_request_at: str | None = None
+    """Persisted request-start timestamp for the latest successful model call."""
+
+    last_cache_model_spec: str = ""
+    """Requested model identity associated with `last_model_request_at`."""
 
     session_cost_usd: float = 0.0
     """Persisted cumulative `_session_cost_usd` from the checkpoint."""
@@ -4297,6 +4322,15 @@ class DeepAgentsApp(App):
         copy for the status bar.
         """
 
+        self._last_model_request_at: str | None = None
+        """Latest successful main-model request start restored from graph state."""
+
+        self._last_cache_model_spec: str = ""
+        """Model spec associated with `_last_model_request_at`."""
+
+        self._last_cache_model_params: dict[str, Any] | None = None
+        """Model params associated with `_last_model_request_at`."""
+
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
 
@@ -4309,17 +4343,19 @@ class DeepAgentsApp(App):
         """
 
         from deepagents_code.config_manifest import (
+            COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
             get_option,
             load_config_toml,
             resolve_scalar,
         )
 
+        toml_data = load_config_toml()
         cost_warning_option = get_option("warnings.session_cost_threshold_usd")
         cost_warning_threshold: object = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
         if cost_warning_option is not None:
             cost_warning_threshold, _ = resolve_scalar(
-                cost_warning_option, toml_data=load_config_toml()
+                cost_warning_option, toml_data=toml_data
             )
         if not isinstance(cost_warning_threshold, float) or not math.isfinite(
             cost_warning_threshold
@@ -4331,6 +4367,25 @@ class DeepAgentsApp(App):
             cost_warning_threshold = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
         self._session_cost_warning_threshold_usd = cost_warning_threshold
         """Configured soft limit for the active thread's estimated cost."""
+
+        cold_cache_option = get_option("warnings.cold_cache_min_delta_usd")
+        cold_cache_threshold: object = COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT
+        if cold_cache_option is not None:
+            cold_cache_threshold, _ = resolve_scalar(
+                cold_cache_option, toml_data=toml_data
+            )
+        if (
+            not isinstance(cold_cache_threshold, float)
+            or not math.isfinite(cold_cache_threshold)
+            or cold_cache_threshold < 0
+        ):
+            logger.warning(
+                "Invalid cold-cache warning threshold %r; using the default",
+                cold_cache_threshold,
+            )
+            cold_cache_threshold = COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT
+        self._cold_cache_warning_threshold_usd = cold_cache_threshold
+        """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
         self._session_cost_warning_shown = False
         """Whether the active thread has already crossed its cost soft limit."""
@@ -8174,6 +8229,9 @@ class DeepAgentsApp(App):
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
         self._thread_has_completed_turn = False
+        self._last_model_request_at = None
+        self._last_cache_model_spec = ""
+        self._last_cache_model_params = None
         self._session_cost_warning_shown = False
         self._set_session_cost(self._thread_restored_cost_usd)
 
@@ -8428,8 +8486,25 @@ class DeepAgentsApp(App):
             _coerce_session_cost_usd(state_values.get("_session_cost_usd"))
         )
 
+    def _sync_cache_state_from_state(self, state_values: Mapping[str, Any]) -> None:
+        """Adopt the latest successful model request's prompt-cache identity."""
+        if "_last_model_request_at" not in state_values:
+            return
+        from deepagents_code.cold_cache import parse_cache_timestamp
+
+        timestamp = parse_cache_timestamp(state_values.get("_last_model_request_at"))
+        self._last_model_request_at = timestamp.isoformat() if timestamp else None
+        raw_spec = state_values.get("_last_cache_model_spec")
+        if not isinstance(raw_spec, str):
+            raw_spec = state_values.get("_model_spec")
+        self._last_cache_model_spec = raw_spec if isinstance(raw_spec, str) else ""
+        raw_params = state_values.get("_model_params")
+        self._last_cache_model_params = (
+            dict(raw_params) if isinstance(raw_params, dict) else None
+        )
+
     async def _sync_session_cost_from_checkpoint(self) -> None:
-        """Reconcile the displayed cost with the thread's committed total.
+        """Reconcile displayed cost and prompt-cache state from the checkpoint.
 
         The streamed totals already track spend during a turn; this settles the
         display at the end of one, and covers a turn whose final events were
@@ -8441,11 +8516,12 @@ class DeepAgentsApp(App):
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception:
             logger.debug(
-                "Could not load thread state while reconciling cost",
+                "Could not load thread state while reconciling cost and cache state",
                 exc_info=True,
             )
             return
         self._sync_session_cost_from_state(state_values)
+        self._sync_cache_state_from_state(state_values)
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.
@@ -10793,12 +10869,168 @@ class DeepAgentsApp(App):
             return value == cmd or " ".join(value.split()) in IMMEDIATE_UI_ARG_FORMS
         return cmd in SIDE_EFFECT_FREE
 
+    async def _cold_cache_warning_for(
+        self,
+        message: QueuedMessage,
+    ) -> _ColdCacheWarning | None:
+        """Build a warning when an interactive turn may miss a material cache.
+
+        Returns:
+            Validated warning data, or `None` when dispatch should proceed.
+        """
+        threshold = self._cold_cache_warning_threshold_usd
+        model_spec = self._effective_model_spec() or ""
+        timestamp_value = self._last_model_request_at
+        context_tokens = self._context_tokens
+        if (
+            message.mode != "normal"
+            or message.origin != "interactive"
+            or threshold <= 0
+            or not model_spec
+            or timestamp_value is None
+            or context_tokens <= 0
+        ):
+            return None
+
+        current_params = self._model_params_override or None
+        last_spec = self._last_cache_model_spec
+        last_params = self._last_cache_model_params
+
+        def _evaluate() -> _ColdCacheWarning | None:
+            from datetime import UTC, datetime
+
+            from deepagents_code.cold_cache import (
+                estimate_rewarm_cost,
+                parse_cache_timestamp,
+                resolve_prompt_cache_policy,
+            )
+            from deepagents_code.model_config import (
+                ModelConfig,
+                is_warning_suppressed,
+            )
+
+            if is_warning_suppressed("cold-cache"):
+                return None
+            provider = model_spec.split(":", 1)[0]
+            base_url = ModelConfig.load().get_base_url(provider)
+            policy = resolve_prompt_cache_policy(
+                model_spec,
+                current_params,
+                base_url=base_url,
+            )
+            if policy is None or context_tokens < policy.minimum_tokens:
+                return None
+            timestamp = parse_cache_timestamp(timestamp_value)
+            if timestamp is None:
+                return None
+            age_seconds = max((datetime.now(UTC) - timestamp).total_seconds(), 0.0)
+            identity_changed = model_spec != last_spec or current_params != last_params
+            if not identity_changed and age_seconds <= policy.window_seconds + 5:
+                return None
+            estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
+            if estimate is None or estimate.incremental_cost_usd < threshold:
+                return None
+            return _ColdCacheWarning(
+                policy=policy,
+                estimate=estimate,
+                context_tokens=context_tokens,
+                age_seconds=age_seconds,
+                identity_changed=identity_changed,
+            )
+
+        try:
+            return await asyncio.to_thread(_evaluate)
+        except Exception:
+            logger.warning(
+                "Could not evaluate the cold prompt-cache warning; sending normally",
+                exc_info=True,
+            )
+            return None
+
+    def _restore_cold_cache_draft(self, text: str) -> None:
+        """Restore a canceled cold-cache submission to an empty chat input."""
+        if (
+            self._chat_input
+            and not self._chat_input.value.strip()
+            and self._chat_input.set_value_at_end(text)
+        ):
+            self.call_after_refresh(self._chat_input.focus_input)
+            return
+        self.notify(
+            "Message canceled, but its text could not be restored to the chat input.",
+            severity="warning",
+            timeout=6,
+            markup=False,
+        )
+
+    async def _confirm_cold_cache_message(
+        self,
+        message: QueuedMessage,
+        warning: _ColdCacheWarning,
+        thread_id: str | None,
+    ) -> None:
+        """Resolve a detached cold-cache confirmation and continue safely.
+
+        Raises:
+            asyncio.CancelledError: When app shutdown cancels the continuation.
+        """
+        from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+
+        try:
+            send = await self._push_screen_wait(
+                ColdCacheWarningScreen(
+                    policy=warning.policy,
+                    estimate=warning.estimate,
+                    context_tokens=warning.context_tokens,
+                    age_seconds=warning.age_seconds,
+                    identity_changed=warning.identity_changed,
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to show the cold prompt-cache warning")
+            send = True
+
+        if self._exiting:
+            return
+        if self._lc_thread_id != thread_id:
+            self.notify(
+                "Canceled a pending send because the active thread changed.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+            return
+        if send:
+            await self._process_message(message.text, message.mode)
+        else:
+            self._restore_cold_cache_draft(message.text)
+
+    async def _dispatch_queued_message(self, message: QueuedMessage) -> None:
+        """Dispatch one idle message, interposing an advisory cache warning."""
+        warning = await self._cold_cache_warning_for(message)
+        if warning is None:
+            await self._process_message(message.text, message.mode)
+            return
+        task = self._schedule_off_message_pump(
+            self._confirm_cold_cache_message(
+                message,
+                warning,
+                self._lc_thread_id,
+            ),
+            context="cold-cache:confirm",
+        )
+        if task is None:
+            await self._process_message(message.text, message.mode)
+
     async def _submit_input(
         self,
         value: str,
         mode: InputMode,
         *,
         force_bypass: bool = False,
+        origin: SubmissionOrigin = "interactive",
     ) -> None:
         """Submit input, fast-pathing always-immediate commands.
 
@@ -10813,6 +11045,7 @@ class DeepAgentsApp(App):
                 immediately. External callers use this to mirror the
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
+            origin: Submission source used by advisory warning policy.
         """
         if self._exiting:
             return
@@ -10874,7 +11107,9 @@ class DeepAgentsApp(App):
             if mode == "command" and self._can_bypass_queue(value.lower().strip()):
                 await self._process_message(value, mode)
                 return
-            self._pending_messages.append(QueuedMessage(text=value, mode=mode))
+            self._pending_messages.append(
+                QueuedMessage(text=value, mode=mode, origin=origin)
+            )
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
             await self._mount_message(queued_widget)
@@ -10883,7 +11118,9 @@ class DeepAgentsApp(App):
                 self._reveal_connection_status()
             return
 
-        await self._process_message(value, mode)
+        await self._dispatch_queued_message(
+            QueuedMessage(text=value, mode=mode, origin=origin)
+        )
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
@@ -10980,7 +11217,12 @@ class DeepAgentsApp(App):
 
         mode: InputMode = "command" if external.kind == "command" else "normal"
         force_bypass = external.bypass is not BypassTier.QUEUED
-        await self._submit_input(external.payload, mode, force_bypass=force_bypass)
+        await self._submit_input(
+            external.payload,
+            mode,
+            force_bypass=force_bypass,
+            origin="external",
+        )
 
     async def _handle_external_signal(self, payload: str) -> None:
         """Dispatch an external signal payload to the corresponding action.
@@ -12258,6 +12500,13 @@ class DeepAgentsApp(App):
             context_tokens,
             model_spec,
             model_params,
+            last_model_request_at=_as_nonblank_str(
+                state_values.get("_last_model_request_at")
+            ),
+            last_cache_model_spec=(
+                _as_nonblank_str(state_values.get("_last_cache_model_spec"))
+                or model_spec
+            ),
             session_cost_usd=session_cost_usd,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
@@ -15609,6 +15858,7 @@ class DeepAgentsApp(App):
             # The compaction run's summary model spend is priced and committed by
             # the graph, so the state just read is the complete total.
             self._sync_session_cost_from_state(new_state)
+            self._sync_cache_state_from_state(new_state)
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)
 
@@ -17036,7 +17286,7 @@ class DeepAgentsApp(App):
                 widget = self._queued_widgets.popleft()
                 await widget.remove()
 
-            await self._process_message(msg.text, msg.mode)
+            await self._dispatch_queued_message(msg)
         except Exception:
             logger.exception("Failed to process queued message")
             await self._mount_message(
@@ -17768,6 +18018,15 @@ class DeepAgentsApp(App):
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
             )
+            if payload.last_model_request_at is not None:
+                self._sync_cache_state_from_state(
+                    {
+                        "_last_model_request_at": payload.last_model_request_at,
+                        "_last_cache_model_spec": payload.last_cache_model_spec,
+                        "_model_spec": payload.model_spec,
+                        "_model_params": payload.model_params,
+                    }
+                )
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 

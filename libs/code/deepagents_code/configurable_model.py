@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents._models import (  # noqa: PLC2701
@@ -566,19 +567,29 @@ async def _apply_overrides_async(
     )
 
 
-def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
+def _utc_now_iso() -> str:
+    """Return the current UTC time in checkpoint-safe ISO format."""
+    return datetime.now(UTC).isoformat()
+
+
+def _checkpoint_command(
+    resolved: _ResolvedModelRequest,
+    request_started_at: str,
+) -> Command[Any]:
     """Build the private resume-state update for a completed model call.
 
     Returns:
-        Command with private checkpoint updates, or `None` when nothing is known.
+        Command carrying cache timing and effective model metadata.
     """
-    update: dict[str, Any] = {}
+    update: dict[str, Any] = {"_last_model_request_at": request_started_at}
+    ctx = _get_context(resolved.request)
+    cache_model_spec = ctx.model if ctx and ctx.model else resolved.model_spec
+    if cache_model_spec:
+        update["_last_cache_model_spec"] = cache_model_spec
     if resolved.model_spec:
         update["_model_spec"] = resolved.model_spec
     if resolved.model_params_known:
         update["_model_params"] = resolved.model_params
-    if not update:
-        return None
     return Command(update=update)
 
 
@@ -644,10 +655,11 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         resolved = _apply_overrides(
             request, openai_prompt_cache_key=self._openai_prompt_cache_key
         )
+        request_started_at = _utc_now_iso()
         response = handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
-        if command is None:
+        if not self._persist_model_state:
             return response
+        command = _checkpoint_command(resolved, request_started_at)
         return ExtendedModelResponse(model_response=response, command=command)
 
     async def awrap_model_call(
@@ -664,8 +676,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         resolved = await _apply_overrides_async(
             request, openai_prompt_cache_key=self._openai_prompt_cache_key
         )
+        request_started_at = _utc_now_iso()
         response = await handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
-        if command is None:
+        if not self._persist_model_state:
             return response
+        command = _checkpoint_command(resolved, request_started_at)
         return ExtendedModelResponse(model_response=response, command=command)

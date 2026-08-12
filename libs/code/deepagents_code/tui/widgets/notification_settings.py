@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Warning keys and their user-facing labels.
 # Checked = warning is shown (not suppressed). Unchecked = suppressed.
 WARNING_TOGGLES: list[tuple[str, str]] = [
+    ("cold-cache", "Warn before expensive cold prompt-cache turns"),
     ("ripgrep", "Warn when ripgrep is not installed"),
     ("tavily", "Warn when TAVILY_API_KEY is not set (web search)"),
     (YOLO_WARNING_KEY, "Warn when YOLO mode is active (no approval review)"),

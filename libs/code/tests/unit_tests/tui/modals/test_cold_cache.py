@@ -72,30 +72,27 @@ def test_identity_change_uses_model_specific_copy() -> None:
     assert "previous cached prefix cannot be reused" in body
 
 
-async def test_enter_uses_safe_default_cancel() -> None:
+async def test_enter_authorizes_send() -> None:
     app = _Host()
     results: list[bool | None] = []
 
     async with app.run_test() as pilot:
         await app.push_screen(_screen(), callback=results.append)
         await pilot.pause()
-
-        assert app.focused is not None
-        assert app.focused.id == "cold-cache-cancel"
         await pilot.press("enter")
         await pilot.pause()
 
-    assert results == [False]
+    assert results == [True]
 
 
-async def test_send_shortcut_authorizes_once() -> None:
+async def test_escape_cancels_to_keep_draft() -> None:
     app = _Host()
     results: list[bool | None] = []
 
     async with app.run_test() as pilot:
         await app.push_screen(_screen(), callback=results.append)
         await pilot.pause()
-        await pilot.press("s")
+        await pilot.press("escape")
         await pilot.pause()
 
-    assert results == [True]
+    assert results == [False]

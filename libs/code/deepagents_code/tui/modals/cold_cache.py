@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Static
 
 from deepagents_code._session_stats import format_cost, format_token_count
 from deepagents_code.cold_cache import (
@@ -16,27 +16,29 @@ from deepagents_code.cold_cache import (
     format_cache_age,
     format_cache_window,
 )
+from deepagents_code.config import get_glyphs
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
-class ColdCacheWarningScreen(ModalScreen[bool]):
-    """Ask whether to send a turn whose prompt cache may be cold."""
+class ColdCacheWarningScreen(ModalScreen[bool | None]):
+    """Ask whether to send a turn whose prompt cache may be cold.
+
+    Dismisses with `True` when the user sends and `False` when the user
+    keeps the draft. Esc is treated as cancel so the user is never forced
+    into a spend they did not explicitly choose.
+
+    Typed `bool | None` rather than `bool`: a programmatic pop can yield
+    `None`. The caller's `if send:` collapses `None` and `False` to cancel,
+    so both dismiss values fail closed.
+    """
 
     can_focus = True
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "send", "Send", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
-        Binding("s", "send", "Send anyway", show=False, priority=True),
-        Binding(
-            "ctrl+c",
-            "quit_or_interrupt",
-            "Quit/Interrupt",
-            show=False,
-            priority=True,
-        ),
-        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
     ]
 
     CSS = """
@@ -66,14 +68,11 @@ class ColdCacheWarningScreen(ModalScreen[bool]):
         margin-bottom: 1;
     }
 
-    ColdCacheWarningScreen .cold-cache-actions {
-        width: 100%;
-        height: auto;
-        align-horizontal: center;
-    }
-
-    ColdCacheWarningScreen Button {
-        margin: 0 1;
+    ColdCacheWarningScreen .cold-cache-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
     }
     """
 
@@ -129,10 +128,10 @@ class ColdCacheWarningScreen(ModalScreen[bool]):
         )
 
     def compose(self) -> ComposeResult:
-        """Compose warning copy and safe-default actions.
+        """Compose the warning dialog.
 
         Yields:
-            Warning text and explicit cancel/send controls.
+            Title, warning copy, and keyboard help.
         """
         with Vertical():
             yield Static(
@@ -141,30 +140,29 @@ class ColdCacheWarningScreen(ModalScreen[bool]):
                 markup=False,
             )
             yield Static(self._body(), classes="cold-cache-body", markup=False)
-            with Horizontal(classes="cold-cache-actions"):
-                yield Button("Cancel & keep draft", id="cold-cache-cancel")
-                yield Button(
-                    "Send anyway",
-                    id="cold-cache-send",
-                    variant="warning",
-                )
+            yield Static(
+                f" {get_glyphs().bullet} ".join(
+                    ("Enter: send anyway", "Esc: keep draft")
+                ),
+                classes="cold-cache-help",
+                markup=False,
+            )
 
     def on_mount(self) -> None:
-        """Focus Cancel so an extra Enter cannot authorize spend."""
-        self.query_one("#cold-cache-cancel", Button).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Resolve the modal from its explicit actions."""
-        event.stop()
-        if event.button.id == "cold-cache-send":
-            self.dismiss(True)
-        else:
-            self.dismiss(False)
-
-    def action_cancel(self) -> None:
-        """Cancel the pending send."""
-        self.dismiss(False)
+        """Focus the modal so its bindings receive keyboard input."""
+        self.focus()
 
     def action_send(self) -> None:
         """Authorize the pending send."""
         self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Cancel the pending send, keeping the draft.
+
+        The method name must stay `cancel`: the app owns a priority `escape`
+        binding that, for an active `ModalScreen`, dispatches to `action_cancel`
+        if present and otherwise falls through to `dismiss(None)`. Renaming this
+        would silently regress Esc to a `None` dismiss instead of an explicit
+        cancel.
+        """
+        self.dismiss(False)

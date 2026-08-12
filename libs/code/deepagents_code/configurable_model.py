@@ -582,10 +582,11 @@ def _checkpoint_command(
         Command carrying cache timing and effective model metadata.
     """
     update: dict[str, Any] = {"_last_model_request_at": request_started_at}
-    ctx = _get_context(resolved.request)
-    cache_model_spec = ctx.model if ctx and ctx.model else resolved.model_spec
-    if cache_model_spec:
-        update["_last_cache_model_spec"] = cache_model_spec
+    # Use the resolved spec, not `ctx.model`: when an override fails with
+    # `ModelConfigError`, `_apply_overrides` falls back to the original model
+    # while `ctx.model` still names the rejected override.
+    if resolved.model_spec:
+        update["_last_cache_model_spec"] = resolved.model_spec
     if resolved.model_spec:
         update["_model_spec"] = resolved.model_spec
     if resolved.model_params_known:

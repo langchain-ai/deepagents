@@ -461,6 +461,23 @@ class TestModelSwap:
             "_model_params": None,
         }
 
+    def test_failed_override_records_original_as_cache_identity(self) -> None:
+        """The cache model spec tracks the model that served the call."""
+        from deepagents_code.model_config import ModelConfigError
+
+        original = _make_model("claude-sonnet-4-6")
+        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        request = _make_request(original, context=CLIContext(model="unknown:bad-model"))
+
+        with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
+            result = _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        update = result.command.update
+        assert isinstance(update, dict)
+        assert update["_last_cache_model_spec"] == "anthropic:claude-sonnet-4-6"
+
     def test_successful_swap_records_resolved_model_spec(self) -> None:
         original = _make_model("claude-sonnet-4-6")
         override = _make_model("gpt-5.5")

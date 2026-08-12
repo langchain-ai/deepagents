@@ -604,6 +604,16 @@ class TestTokenDisplay:
             assert display.display is True
             assert str(display.render()) == "Context: 0% / Tokens: 0 • $0.00"
 
+    async def test_unknown_context_limit_shows_dashes_with_tokens(self) -> None:
+        """With no known limit, a non-zero count renders `--` for the percentage."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(None)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "Context: -- / Tokens: 5K • $0.00"
+
 
 class TestCostDisplay:
     """Tests for cumulative cost rendered inline with context tokens."""
@@ -630,6 +640,9 @@ class TestCostDisplay:
     async def test_zero_cost_is_visible(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # A `None` limit renders `--` only once tokens are non-zero, so pin
+            # the limit rather than inheriting `settings.model_context_limit`.
+            bar.set_context_limit(None)
             bar.set_tokens(5000)
             bar.set_cost(0.0)
             await pilot.pause()

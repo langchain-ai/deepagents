@@ -291,10 +291,6 @@ class SubagentPanel(Vertical):
         self._last_render: dict[str, str] = {}
         self._spinner = Spinner()
         self._timer: Timer | None = None
-        # When True, the next subagent `start` clears the previous workflow's
-        # fan-out before adding the new row (armed by `prepare_turn`). Lets the
-        # panel persist across turns until a new workflow actually begins.
-        self._pending_reset = False
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Yield the header line and the two-pane body (phases | agents)."""
@@ -357,9 +353,6 @@ class SubagentPanel(Vertical):
 
     def _handle_start(self, sub_id: str, eval_key: str, event: dict[str, Any]) -> None:
         """Create/replace a running record and (re-)show the panel."""
-        if self._pending_reset:
-            # A new workflow is starting — drop the previous turn's fan-out now.
-            self._clear()
         phase = self._ensure_phase(eval_key)
         self._active_eval_id = eval_key
 
@@ -449,10 +442,6 @@ class SubagentPanel(Vertical):
         Returns:
             The newly created record, already inserted into its phase.
         """
-        if self._pending_reset:
-            # A dropped-start error is still evidence that a new workflow
-            # started, so clear the previous turn before surfacing it.
-            self._clear()
         phase = self._ensure_phase(eval_key)
         self._active_eval_id = eval_key
         record = _SubagentRecord(
@@ -554,25 +543,11 @@ class SubagentPanel(Vertical):
         self._refresh()
 
     def prepare_turn(self, *, model_label: str | None = None) -> None:
-        """Arm a deferred clear for a new turn without touching the panel yet.
-
-        The visible fan-out persists across turns; it is cleared lazily when the
-        next workflow actually starts a subagent (see `_handle_start`), so a turn
-        that spawns none leaves the previous results on screen. Refreshes the
-        session model used to label rows.
-        """
+        """Clear the previous workflow's fan-out for a new turn."""
         self._model_label = (
             _sanitize(model_label, max_chars=_MODEL_COL) if model_label else None
         )
-        # If the previous turn left rows stuck "running" — e.g. it was cancelled
-        # before the bridge emitted terminal events (CancelledError is a
-        # BaseException, so it bypasses the bridge's `except Exception`) — clear
-        # now instead of persisting a stale, still-spinning fan-out. Otherwise
-        # defer the clear so a completed workflow survives no-subagent turns.
-        if self._any_running():
-            self._clear()
-        else:
-            self._pending_reset = True
+        self._clear()
 
     def reset(self, *, model_label: str | None = None, **_kwargs: Any) -> None:
         """Clear all phases and hide the panel immediately (e.g. on `/clear`)."""
@@ -593,7 +568,6 @@ class SubagentPanel(Vertical):
         self._selected_eval_id = None
         self._applied_height = None
         self._last_render.clear()
-        self._pending_reset = False
         self._stop_timer()
         self.remove_class("-visible")
 

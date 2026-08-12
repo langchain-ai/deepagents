@@ -16161,10 +16161,8 @@ class DeepAgentsApp(App):
             self._inflight_turn_start = time.monotonic()
             self._inflight_thread_id = self._lc_thread_id
 
-            # Arm the subagent fan-out panel for this turn, seeding the session
-            # model that labels each row. The panel persists across turns and only
-            # clears when this turn's first subagent actually starts, so a turn that
-            # spawns none leaves the previous workflow's results on screen.
+            # Clear the previous turn's subagent fan-out and seed the session
+            # model that labels rows if this turn starts a new workflow.
             panel = self._get_subagent_panel()
             if panel is not None:
                 spec = self._effective_model_spec()

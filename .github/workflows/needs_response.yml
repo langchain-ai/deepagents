@@ -1,24 +1,13 @@
-# Close issues and PRs that maintainers labeled `needs-response` once the
-# original author has gone quiet, and clear the label as soon as they respond.
+# Close issues and PRs ten days after a maintainer applies `needs-response`,
+# unless the original author explicitly replies. The timeout is measured from
+# the latest label event, so unrelated activity never resets it. Maintainers
+# can therefore ask their question before or after applying the label.
 #
-# MAINTAINER PROCEDURE — post your question FIRST, then apply the label.
-# `actions/stale` refuses to close an item if any human comment exists after the
-# `labeled` event, so labeling and *then* asking means the item never closes.
-# A third party commenting after the label has the same effect. This fails
-# silently: the scheduled run logs "not old enough to close yet" and stays
-# green, so there is no signal distinguishing "nothing due" from "never closes".
-#
-# The 10-day close window is measured from the item's `updated_at`, not from
-# when the label was applied, so any activity by anyone postpones closure while
-# the label persists.
-#
-# Because `remove-stale-when-updated: false` stops the stale action from
-# clearing the label on activity, the trusted follow-up workflow is the *only*
-# path that clears it. This workflow records every way an author can
-# respond: conversation comments (`issue_comment`, which covers issues and PR
-# conversations), review-thread replies (`pull_request_review_comment`), and
-# submitted reviews (`pull_request_review`). Pushing commits does not clear the
-# label: a maintainer must decide whether the change addressed their question.
+# This workflow records author responses from conversation comments
+# (`issue_comment`, which covers issues and PR conversations), review-thread
+# replies (`pull_request_review_comment`), and submitted reviews
+# (`pull_request_review`). Pushing commits does not clear the label: a
+# maintainer must decide whether the change addressed their question.
 #
 # The follow-up workflow runs under `workflow_run` in the base-branch context,
 # which grants a write token for fork PRs. It validates the response against the
@@ -43,7 +32,7 @@ permissions:
 
 # Key the concurrency group by issue/PR number for author-activity events so an
 # author's reply is never discarded behind an unrelated comment or the
-# scheduled stale scan; scheduled/dispatch runs share one group.
+# scheduled scan; scheduled/dispatch runs share one group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || 'scheduled' }}
   cancel-in-progress: false
@@ -93,7 +82,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  close-stale-issues:
+  close-expired-items:
     if: >-
       github.repository == 'langchain-ai/deepagents' &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -105,37 +94,168 @@ jobs:
 
     steps:
       - name: Close issues and PRs awaiting an author response
-        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          # Do not apply a stale label; only process issues and PRs that
-          # maintainers explicitly marked as waiting on their original author.
-          days-before-stale: -1
-          stale-issue-label: needs-response
-          stale-pr-label: needs-response
-          # Let only the author-response jobs clear the label, so unrelated
-          # activity does not reset an unanswered question.
-          remove-stale-when-updated: false
-          days-before-issue-close: 10
-          days-before-pr-close: 10
-          # Honor the repo-wide bypass label (see `close_old_prs.yml`) and skip
-          # drafts, matching `close_old_prs.yml`. Both default to empty/false,
-          # so without these a maintainer applying `do-not-close` would be
-          # silently overruled.
-          exempt-issue-labels: do-not-close
-          exempt-pr-labels: do-not-close
-          exempt-draft-pr: true
-          # Default is 30, and exhausting the budget only logs a warning and
-          # exits 0 — making a truncated sweep look identical to a clean one.
-          # `getIssues` pages over every open issue and PR, spending operations
-          # on `listEvents` + `listComments` per candidate.
-          operations-per-run: 200
-          close-issue-message: >
-            This issue has been automatically closed because we have not
-            received a response from the original author. Please
-            comment with any additional information if you would like us to
-            reopen it.
-          close-pr-message: >
-            This PR has been automatically closed because we have not
-            received a response from the original author. Please
-            comment with any additional information if you would like us to
-            reopen it.
+          script: |
+            const { owner, repo } = context.repo;
+            const timeoutMs = 10 * 24 * 60 * 60 * 1000;
+            const closeMessage =
+              'This item has been automatically closed because we have not received a response from the original author. Please comment with any additional information if you would like us to reopen it.';
+
+            function latestNeedsResponseEvent(events) {
+              return events
+                .filter(
+                  (event) =>
+                    event.event === 'labeled' &&
+                    event.label?.name === 'needs-response' &&
+                    event.created_at,
+                )
+                .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            }
+
+            async function authorRespondedAfter(item, labelTime) {
+              const responseByAuthor = (response) =>
+                response.user?.type !== 'Bot' &&
+                response.user?.login === item.user.login &&
+                Date.parse(response.created_at ?? response.submitted_at) > labelTime;
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: item.number,
+                since: new Date(labelTime).toISOString(),
+                per_page: 100,
+              });
+              if (comments.some(responseByAuthor)) return true;
+
+              if (!item.pull_request) return false;
+
+              const [reviewComments, reviews] = await Promise.all([
+                github.paginate(github.rest.pulls.listReviewComments, {
+                  owner,
+                  repo,
+                  pull_number: item.number,
+                  per_page: 100,
+                }),
+                github.paginate(github.rest.pulls.listReviews, {
+                  owner,
+                  repo,
+                  pull_number: item.number,
+                  per_page: 100,
+                }),
+              ]);
+              return reviewComments.some(responseByAuthor) || reviews.some(responseByAuthor);
+            }
+
+            const items = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              labels: 'needs-response',
+              per_page: 100,
+            });
+
+            for (const item of items) {
+              if (
+                item.user?.type === 'Bot' ||
+                item.labels.some((label) => label.name === 'do-not-close')
+              ) {
+                continue;
+              }
+
+              if (item.pull_request) {
+                const pullRequest = (
+                  await github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: item.number,
+                  })
+                ).data;
+                if (pullRequest.draft) continue;
+              }
+
+              const events = await github.paginate(github.rest.issues.listEvents, {
+                owner,
+                repo,
+                issue_number: item.number,
+                per_page: 100,
+              });
+              const latestLabelEvent = latestNeedsResponseEvent(events);
+
+              if (!latestLabelEvent) {
+                core.warning(
+                  `No needs-response label event found for #${item.number}; leaving it open.`,
+                );
+                continue;
+              }
+
+              if (Date.now() - Date.parse(latestLabelEvent.created_at) < timeoutMs) {
+                continue;
+              }
+
+              // Re-fetch the item and event history immediately before mutating
+              // it so a newly applied label cannot inherit an older timeout.
+              const currentItem = (
+                await github.rest.issues.get({
+                  owner,
+                  repo,
+                  issue_number: item.number,
+                })
+              ).data;
+              if (
+                currentItem.state !== 'open' ||
+                !currentItem.labels.some((label) => label.name === 'needs-response') ||
+                currentItem.labels.some((label) => label.name === 'do-not-close')
+              ) {
+                continue;
+              }
+
+              const currentEvents = await github.paginate(
+                github.rest.issues.listEvents,
+                {
+                  owner,
+                  repo,
+                  issue_number: item.number,
+                  per_page: 100,
+                },
+              );
+              const currentLabelEvent = latestNeedsResponseEvent(currentEvents);
+
+              if (
+                !currentLabelEvent ||
+                currentLabelEvent.created_at !== latestLabelEvent.created_at
+              ) {
+                console.log(`needs-response was reapplied to #${item.number}; skipping.`);
+                continue;
+              }
+
+              if (
+                await authorRespondedAfter(
+                  currentItem,
+                  Date.parse(currentLabelEvent.created_at),
+                )
+              ) {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: item.number,
+                  name: 'needs-response',
+                });
+                console.log(`Removed needs-response from #${item.number} after an author reply.`);
+                continue;
+              }
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: item.number,
+                body: closeMessage,
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: item.number,
+                state: 'closed',
+              });
+              console.log(`Closed #${item.number} after ten days without a response.`);
+            }

@@ -15,8 +15,11 @@ permissions:
   issues: write
   pull-requests: write
 
+# Key the concurrency group by issue/PR number for comment events so an
+# author's reply is never discarded behind an unrelated comment or the
+# scheduled stale scan; scheduled/dispatch runs share one group.
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:

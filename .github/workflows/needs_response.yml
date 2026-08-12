@@ -1,11 +1,12 @@
-# Close issues and prs after 10 days without activity while a maintainer awaits
-# the author response. On each scheduled run, the stale action removes the
-# waiting-on-author label from issues with activity, so this workflow never
-# marks issues stale.
+# Close issues and PRs after 10 days without activity while a maintainer awaits
+# the author's response. Only a response from the original author removes the
+# `needs-response` label.
 
 name: Close Stale Issues
 
 on:
+  issue_comment:
+    types: [created]
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
@@ -19,8 +20,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  remove-label:
+    if: >-
+      github.repository == 'langchain-ai/deepagents' &&
+      github.event_name == 'issue_comment' &&
+      github.event.issue.state == 'open' &&
+      contains(github.event.issue.labels.*.name, 'needs-response') &&
+      github.event.comment.user.type != 'Bot' &&
+      github.event.comment.user.login == github.event.issue.user.login
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Remove needs-response label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            const author = context.payload.issue.user.login;
+
+            console.log(
+              `Author ${author} commented on #${issue_number} — removing needs-response`,
+            );
+
+            try {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number,
+                name: 'needs-response',
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                console.log(`Label already absent (404) — nothing to do: ${e.message}`);
+                return;
+              }
+              throw e;
+            }
+
   close-stale-issues:
-    if: github.repository == 'langchain-ai/deepagents'
+    if: >-
+      github.repository == 'langchain-ai/deepagents' &&
+      github.event_name != 'issue_comment'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -35,7 +78,7 @@ jobs:
           days-before-stale: -1
           stale-issue-label: needs-response
           stale-pr-label: needs-response
-          remove-stale-when-updated: true
+          remove-stale-when-updated: false
           days-before-issue-close: 10
           days-before-pr-close: 10
           close-issue-message: >

@@ -2064,7 +2064,7 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-haiku-4-5). Interactive TUI only. Defaults to "
+        "(e.g. anthropic:claude-haiku-4-5). Local TUI or ACP only. Defaults to "
         "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
         "then the main agent model. A weaker model weakens Auto's review.",
     )
@@ -2214,7 +2214,7 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help="Interactive local TUI only: enable classifier-backed Auto mode.",
+        help="Enable classifier-backed Auto mode in the local TUI or ACP server.",
     )
     approval_group.add_argument(
         "--yolo",
@@ -2815,7 +2815,9 @@ async def _run_acp_cli_async(
     trust_project_mcp: bool | None = None,
     allow_fs_tools: "list[FsToolName] | None" = None,
     recursion_limit: int | None = None,
+    auto: bool = False,
     yolo: bool = False,
+    auto_classifier_model: str | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2836,10 +2838,15 @@ async def _run_acp_cli_async(
             `None` leaves the SDK default (all tools).
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env/`config.toml`/default at agent-build time.
+        auto: Enable classifier-backed approval routing.
         yolo: Disable approval prompts for this ACP server.
+        auto_classifier_model: Optional model for Auto approval classification.
 
     Returns:
         Exit code for ACP mode.
+
+    Raises:
+        RuntimeError: If Auto starts without its required Store.
     """
     from deepagents_code.agent import create_cli_agent, load_async_subagents
     from deepagents_code.config import (
@@ -2924,7 +2931,9 @@ async def _run_acp_cli_async(
 
     try:
         from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.store.memory import InMemoryStore
 
+        store = InMemoryStore() if auto else None
         agent_graph, _backend = create_cli_agent(
             model=model_result.model,
             assistant_id=assistant_id,
@@ -2935,7 +2944,10 @@ async def _run_acp_cli_async(
             fs_tools=allow_fs_tools,
             recursion_limit=recursion_limit,
             auto_approve=yolo,
+            auto_mode_enabled=auto,
+            auto_classifier_model=auto_classifier_model,
             memory_auto_save=is_memory_auto_save_enabled(),
+            store=store,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")
@@ -2943,7 +2955,88 @@ async def _run_acp_cli_async(
         logger.debug("ACP agent creation failed", exc_info=True)
         return 1
 
-    server = agent_server_cls(agent_graph)  # Pregel is a CompiledStateGraph at runtime
+    context_factory = message_factory = None
+    if auto:
+        from uuid import uuid4
+
+        from acp.schema import (
+            AudioContentBlock,
+            EmbeddedResourceContentBlock,
+            ImageContentBlock,
+            ResourceContentBlock,
+            TextContentBlock,
+        )
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code._cli_context import CLIContextSchema
+        from deepagents_code.approval_mode import (
+            APPROVAL_MODE_NAMESPACE,
+            ApprovalMode,
+            approval_mode_key,
+            approval_mode_payload,
+        )
+        from deepagents_code.auto_mode import (
+            USER_PROMPT_METADATA_KEY,
+            user_prompt_metadata,
+        )
+
+        if store is None:
+            msg = "Auto mode requires an approval Store"
+            raise RuntimeError(msg)
+        turns: dict[str, str] = {}
+
+        def context_factory(
+            session_id: str,
+            _prompt: list[
+                TextContentBlock
+                | ImageContentBlock
+                | AudioContentBlock
+                | ResourceContentBlock
+                | EmbeddedResourceContentBlock
+            ],
+        ) -> CLIContextSchema:
+            turn_id = uuid4().hex
+            turns[session_id] = turn_id
+            key = approval_mode_key(session_id)
+            store.put(
+                APPROVAL_MODE_NAMESPACE,
+                key,
+                dict(approval_mode_payload(mode=ApprovalMode.AUTO)),
+            )
+            return CLIContextSchema(
+                approval_mode=ApprovalMode.AUTO.value,
+                auto_approve=True,
+                approval_mode_key=key,
+                thread_id=session_id,
+                turn_id=turn_id,
+            )
+
+        def message_factory(
+            session_id: str,
+            prompt: list[
+                TextContentBlock
+                | ImageContentBlock
+                | AudioContentBlock
+                | ResourceContentBlock
+                | EmbeddedResourceContentBlock
+            ],
+            content_blocks: Sequence[str | dict[Any, Any]],
+        ) -> HumanMessage:
+            text = "\n".join(block.text for block in prompt)
+            return HumanMessage(
+                content=list(content_blocks),
+                additional_kwargs={
+                    USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                        text, [], turn_id=turns[session_id]
+                    )
+                },
+            )
+
+    server = agent_server_cls(
+        agent_graph,
+        context_factory=context_factory,
+        message_factory=message_factory,
+    )  # Pregel is a CompiledStateGraph at runtime
     exit_code = 0
     try:
         await run_acp_agent(server)
@@ -4102,12 +4195,6 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            if getattr(args, "auto_approve", False):
-                sys.stderr.write(
-                    "Error: --auto-approve is only supported by the interactive "
-                    "Textual TUI.\n"
-                )
-                sys.exit(2)
             if getattr(args, "yolo", False):
                 from deepagents_code.approval_mode import has_yolo_acknowledgement
 
@@ -4117,10 +4204,12 @@ def cli_main() -> None:
                         "using it in ACP mode.\n"
                     )
                     sys.exit(2)
-            if getattr(args, "auto_classifier_model", None) is not None:
+            if getattr(args, "auto_classifier_model", None) is not None and not getattr(
+                args, "auto_approve", False
+            ):
                 sys.stderr.write(
-                    "Error: --auto-classifier-model is only supported by the "
-                    "interactive Textual TUI.\n"
+                    "Error: --auto-classifier-model requires --auto-approve "
+                    "in ACP mode.\n"
                 )
                 sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
@@ -4161,7 +4250,9 @@ def cli_main() -> None:
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
                     recursion_limit=getattr(args, "recursion_limit", None),
+                    auto=getattr(args, "auto_approve", False),
                     yolo=getattr(args, "yolo", False),
+                    auto_classifier_model=getattr(args, "auto_classifier_model", None),
                 )
             )
             sys.exit(exit_code)

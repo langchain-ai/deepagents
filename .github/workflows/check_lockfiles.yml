@@ -32,15 +32,10 @@ jobs:
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.14"
-          # This job only runs `uv lock --check`, never `uv sync`, so the uv
-          # cache dir stays absent — and setup-uv's post-job save *throws* on a
-          # missing cache path rather than warning, failing the job. Surfaced
-          # alongside the setup-uv v9.0.0 bump, though v7.6.0 has the same throw
-          # — so treat v9 as when this was noticed, not as what introduced it.
-          #
-          # setup-uv's `ignore-nothing-to-cache: true` would fix the whole class
-          # of this in one place, but `uv_setup` does not forward that input.
-          # Disabling the cache is equivalent here: there is nothing to cache.
+          # `uv lock --check` never runs `uv sync`, so no cache dir exists,
+          # and setup-uv's post-job save throws on a missing cache path,
+          # failing the job. (`ignore-nothing-to-cache` would fix this too,
+          # but `uv_setup` doesn't forward it.)
           enable-cache: "false"
 
       - name: "🔍 Check changed lockfiles"

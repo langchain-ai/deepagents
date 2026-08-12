@@ -16,10 +16,9 @@
 # clearing the label on activity, the trusted follow-up workflow is the *only*
 # path that clears it. This workflow records every way an author can
 # respond: conversation comments (`issue_comment`, which covers issues and PR
-# conversations), review-thread replies (`pull_request_review_comment`),
-# submitted reviews (`pull_request_review`), and pushing commits
-# (`pull_request_target` / `synchronize`). Missing any of these would auto-close
-# a PR with "we have not received a response" *after* the author responded.
+# conversations), review-thread replies (`pull_request_review_comment`), and
+# submitted reviews (`pull_request_review`). Pushing commits does not clear the
+# label: a maintainer must decide whether the change addressed their question.
 #
 # The follow-up workflow runs under `workflow_run` in the base-branch context,
 # which grants a write token for fork PRs. It validates the response against the
@@ -35,8 +34,6 @@ on:
     types: [submitted]
   pull_request_review_comment:
     types: [created]
-  pull_request_target:
-    types: [synchronize]
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
@@ -95,46 +92,6 @@ jobs:
           path: ${{ runner.temp }}/author-response.json
           if-no-files-found: error
           retention-days: 1
-
-  # `pull_request_target` has a write token even for fork PRs, so a push can
-  # clear the label directly. Unlike comment and review events, it is already a
-  # trusted-context event; it still excludes bot-authored PRs.
-  remove-label-on-push:
-    if: >-
-      github.repository == 'langchain-ai/deepagents' &&
-      github.event_name == 'pull_request_target' &&
-      github.event.pull_request.state == 'open' &&
-      contains(github.event.pull_request.labels.*.name, 'needs-response') &&
-      github.event.pull_request.user.type != 'Bot' &&
-      github.actor == github.event.pull_request.user.login
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      issues: write
-      pull-requests: write
-
-    steps:
-      - name: Remove needs-response label
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const issueNumber = context.payload.pull_request.number;
-
-            try {
-              await github.rest.issues.removeLabel({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                name: 'needs-response',
-              });
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              console.log(`needs-response was already absent from #${issueNumber}.`);
-              return;
-            }
-
-            console.log(`Removed needs-response from #${issueNumber}.`);
 
   close-stale-issues:
     if: >-

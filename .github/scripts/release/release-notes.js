@@ -550,7 +550,7 @@ async function announceRefresh({ github, owner, repo, number, core, refreshedCom
       owner,
       repo,
       number,
-      `${REFRESH_MARKER} for ${component} ${version} -->\nThe curated release-notes comment on this PR was regenerated in place; review the latest draft in [that comment](${url}).`,
+      `${REFRESH_MARKER} for ${component} ${version} -->\nThe curated release-notes comment on this PR was regenerated in place; review the latest draft in [the original comment](${url}).`,
     );
   } catch (error) {
     core.warning(

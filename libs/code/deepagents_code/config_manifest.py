@@ -1802,6 +1802,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.DEBUG_UPDATE,
     ),
     ConfigOption(
+        key="debug.cold_cache",
+        group="Debug",
+        summary=(
+            "Force the cold prompt-cache warning modal on the next interactive send."
+        ),
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_COLD_CACHE,
+    ),
+    ConfigOption(
         key="debug.mcp_project_trust",
         group="Debug",
         summary="Force the project MCP approval prompt for manual UI testing.",

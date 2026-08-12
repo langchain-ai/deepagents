@@ -71,6 +71,16 @@ The merged changelog is the source for the published GitHub release notes.
 
 To ship without curated notes, add the `release: dangerously skip curated notes` label. That is the only way to skip the curated-notes merge gate — use it only when you intentionally want the generated changelog as-is, without maintainer polish.
 
+#### Observing a `@release-bot` run
+
+A `@release-bot` comment triggers the "📝 Curate release notes" workflow on the `issue_comment` event, not on the PR's head branch, so it does **not** appear as a PR status check. To watch it:
+
+- Open the repo's **Actions** tab → select "📝 Curate release notes" in the left sidebar → the newest run is yours.
+- From the CLI: `gh run list --workflow=release_notes.yml --limit 5`, then `gh run view <run-id> --log`.
+- Passively: the bot posts feedback on the PR as it works — a validation-failure comment if the command can't be validated, the drafted notes comment for `draft`, and a failure comment pointing at the run logs if drafting errors out.
+
+The workflow's concurrency group is per-PR with `cancel-in-progress: false`, so a second command posted while a run is in flight queues behind it instead of cancelling it.
+
 #### One-time repository setup
 
 The draft and apply jobs reuse the repository's GitHub App credentials to mint short-lived installation tokens. Keep `ORG_MEMBERSHIP_APP_CLIENT_ID` as a repository variable and `ORG_MEMBERSHIP_APP_PRIVATE_KEY` as a repository secret, and ensure the installed App grants read/write access to contents, issues, and pull requests. `ORG_MEMBERSHIP_APP_ID` is not used by this workflow.

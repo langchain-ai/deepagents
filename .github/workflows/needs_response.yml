@@ -12,6 +12,7 @@ on:
 
 permissions:
   issues: write
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}
@@ -23,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      pull-requests: write
 
     steps:
       - name: Close issues awaiting an author response

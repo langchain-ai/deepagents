@@ -463,6 +463,9 @@ class TestTokenDisplay:
     async def test_show_pending_tokens_before_count_keeps_zero_state(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # `on_mount` reads `settings.model_context_limit` (process-global),
+            # so pin the widget's limit instead of trusting the ambient value.
+            bar.set_context_limit(None)
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
@@ -587,6 +590,11 @@ class TestTokenDisplay:
     async def test_zero_context_and_cost_are_visible_on_mount(self) -> None:
         """The lower-right metrics should not be blank before the first request."""
         async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            # `on_mount` reads `settings.model_context_limit` (process-global),
+            # so pin the widget's limit instead of trusting the ambient value.
+            bar.set_context_limit(None)
+            await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             assert display.display is True
             assert str(display.render()) == "Context: 0% / Tokens: 0 • $0.00"
@@ -595,6 +603,9 @@ class TestTokenDisplay:
         """Zeroing a positive count restores visible placeholders."""
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # `on_mount` reads `settings.model_context_limit` (process-global),
+            # so pin the widget's limit instead of trusting the ambient value.
+            bar.set_context_limit(None)
             bar.set_tokens(5000)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
@@ -621,6 +632,9 @@ class TestCostDisplay:
     async def test_cost_displays_without_tokens(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # `on_mount` reads `settings.model_context_limit` (process-global),
+            # so pin the widget's limit instead of trusting the ambient value.
+            bar.set_context_limit(None)
             bar.set_cost(1.25)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
@@ -630,6 +644,9 @@ class TestCostDisplay:
     async def test_zero_cost_is_visible(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # `on_mount` reads `settings.model_context_limit` (process-global);
+            # `--` only renders when the limit is `None`, so pin it explicitly.
+            bar.set_context_limit(None)
             bar.set_tokens(5000)
             bar.set_cost(0.0)
             await pilot.pause()
@@ -639,6 +656,9 @@ class TestCostDisplay:
     async def test_sub_cent_cost_uses_display_floor(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # `on_mount` reads `settings.model_context_limit` (process-global),
+            # so pin the widget's limit instead of trusting the ambient value.
+            bar.set_context_limit(None)
             bar.set_cost(0.0045)
             await pilot.pause()
             assert str(pilot.app.query_one("#tokens-display").render()) == (

@@ -19642,7 +19642,10 @@ class DeepAgentsApp(App):
             # entry that reverts to the main agent model. `_auto_usage_text`
             # carries the hint, but it is mounted only for an unrecognized
             # `/auto` subcommand, so no path that opens this modal shows it.
-            tail = " Clear it with `/auto model clear`."
+            tail = (
+                " Run `/auto model clear` to have Auto review with the main agent "
+                "model."
+            )
 
         # Every branch hands the screen a `Content`: the description reaches a
         # `Static`, which parses a plain `str` as markup. The branches naming a

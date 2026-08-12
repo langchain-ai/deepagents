@@ -13452,7 +13452,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-haiku-4-5."
-            " Clear it with `/auto model clear`."
+            " Run `/auto model clear` to have Auto review with the main agent model."
         )
 
     async def test_selector_description_marks_a_classifier_matching_the_main_model(
@@ -13469,7 +13469,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            " Clear it with `/auto model clear`."
+            " Run `/auto model clear` to have Auto review with the main agent model."
         )
 
     async def test_selector_description_does_not_parse_a_spec_as_markup(self) -> None:
@@ -13484,7 +13484,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-opus-5[dim]."
-            " Clear it with `/auto model clear`."
+            " Run `/auto model clear` to have Auto review with the main agent model."
         )
 
     async def test_selector_description_does_not_crash_on_a_closing_tag_spec(
@@ -13501,7 +13501,7 @@ class TestAutoClassifierModelCommand:
 
         assert self._rendered_description(push) == (
             "Auto currently reviews with anthropic:claude-opus-5[/]."
-            " Clear it with `/auto model clear`."
+            " Run `/auto model clear` to have Auto review with the main agent model."
         )
 
     async def test_selector_description_renders_markup_safely_when_mounted(

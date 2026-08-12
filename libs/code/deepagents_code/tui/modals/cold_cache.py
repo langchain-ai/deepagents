@@ -111,7 +111,7 @@ class ColdCacheWarningScreen(ModalScreen[bool]):
             status = (
                 f"This thread has been idle for {age}, longer than "
                 f"{self._policy.provider_name}'s {window} prompt-cache lifetime. "
-                "The cached conversation prefix has expired."
+                "The cached conversation prefix has likely expired."
             )
         else:
             status = (
@@ -125,8 +125,7 @@ class ColdCacheWarningScreen(ModalScreen[bool]):
             f"history tokens may cost {format_cost(self._estimate.cold_cost_usd)} "
             "in input tokens, roughly "
             f"{format_cost(self._estimate.incremental_cost_usd)} more than a warm "
-            "cache hit. Output cost is not included.\n\n"
-            "Cancel and use /clear to start without the old context."
+            "cache hit."
         )
 
     def compose(self) -> ComposeResult:
@@ -143,7 +142,7 @@ class ColdCacheWarningScreen(ModalScreen[bool]):
             )
             yield Static(self._body(), classes="cold-cache-body", markup=False)
             with Horizontal(classes="cold-cache-actions"):
-                yield Button("Cancel", id="cold-cache-cancel")
+                yield Button("Cancel & keep draft", id="cold-cache-cancel")
                 yield Button(
                     "Send anyway",
                     id="cold-cache-send",

@@ -41,7 +41,6 @@ def test_openai_copy_preserves_retention_uncertainty() -> None:
     assert "may still have retained" in body
     assert "$0.42" in body
     assert "$0.35 more" in body
-    assert "Output cost is not included" in body
 
 
 def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
@@ -55,7 +54,7 @@ def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
     body = screen._body()
 
     assert "Anthropic's 5m prompt-cache lifetime" in body
-    assert "has expired" in body
+    assert "has likely expired" in body
 
 
 def test_identity_change_uses_model_specific_copy() -> None:

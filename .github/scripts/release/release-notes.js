@@ -23,6 +23,7 @@ const CONTENT_END = '<!-- release-notes-content-end -->';
 const STALE_MARKER = '<!-- release-notes-stale';
 const FAILURE_MARKER = '<!-- release-notes-draft-failure';
 const APPLY_FAILURE_MARKER = '<!-- release-notes-apply-failure';
+const REFRESH_MARKER = '<!-- release-notes-refreshed';
 // Prefix shared by every marker above. validateDraftOutput rejects it wholesale so
 // model output cannot forge any of them.
 const MARKER_PREFIX = '<!-- release-notes-';
@@ -513,6 +514,9 @@ async function createComment(github, owner, repo, number, body) {
   return github.rest.issues.createComment({ owner, repo, issue_number: number, body });
 }
 
+// Upserts the latest bot-owned comment carrying `marker`. Returns
+// { comment, created } so a caller can tell a fresh comment from an in-place
+// edit — an edit is what maintainers would otherwise never notice.
 async function upsertOwnMarkedComment({ github, owner, repo, number, comments, login, id, marker, body }) {
   const existing = [...comments]
     .filter(comment => matchesBot(comment, login, id) && (comment.body ?? '').startsWith(`<!-- ${marker}\n`))
@@ -524,10 +528,33 @@ async function upsertOwnMarkedComment({ github, owner, repo, number, comments, l
       comment_id: existing.id,
       body,
     });
-    return response.data;
+    return { comment: response.data, created: false };
   }
   const response = await createComment(github, owner, repo, number, body);
-  return response.data;
+  return { comment: response.data, created: true };
+}
+
+// Re-drafting replaces the curated-notes comment in place, and GitHub surfaces
+// comment edits quietly (no notification, no timeline entry), so a regenerated
+// draft is easy to miss — the PR looks unchanged unless someone re-opens the
+// original comment. After an in-place update, post a small pointer comment so
+// the refresh shows up in the timeline. Best-effort: a failure here must not
+// turn an already-successful draft post into a job failure. The pointer body
+// must never include COMMAND_MENTION, or it would re-trigger the command flow.
+async function announceRefresh({ github, owner, repo, number, core, refreshedCommentId, component, version }) {
+  try {
+    await createComment(
+      github,
+      owner,
+      repo,
+      number,
+      `${REFRESH_MARKER} for ${component} ${version} -->\nThe curated release-notes comment on this PR was regenerated in place; review the latest draft in that comment.`,
+    );
+  } catch (error) {
+    core.warning(
+      `Draft comment ${refreshedCommentId} was updated but posting the refreshed notice failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function getPr(github, owner, repo, number) {
@@ -726,7 +753,7 @@ function validateDraftOutput(output) {
   return notes;
 }
 
-async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, login, id }) {
+async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, login, id, core = null }) {
   await authenticatedBot(github, appSlug, login, id);
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   const pr = await getPr(github, owner, repo, state.number);
@@ -743,7 +770,7 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
   const notes = validateDraftOutput(fs.readFileSync(outputFile, 'utf8'));
   const section = `${state.heading}\n\n${notes.trim()}\n`;
   const comments = await listComments(github, owner, repo, state.number);
-  return upsertOwnMarkedComment({
+  const { comment, created } = await upsertOwnMarkedComment({
     github,
     owner,
     repo,
@@ -762,6 +789,19 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
       instructions: state.instructions ?? '',
     }),
   });
+  if (!created && core) {
+    await announceRefresh({
+      github,
+      owner,
+      repo,
+      number: state.number,
+      core,
+      refreshedCommentId: comment.id,
+      component: state.component,
+      version: state.version,
+    });
+  }
+  return comment;
 }
 
 // Post a bot-authored failure notice once per PR head (deduped by the head-scoped
@@ -948,7 +988,7 @@ async function publishAppliedState({ github, owner, repo, stateFile, appliedHead
   });
   await validateReleaseBranchHead({ github, owner, repo, releaseBranch: target.releaseBranch, expectedHead: appliedHead });
   await github.rest.pulls.update({ owner, repo, pull_number: state.number, body: state.body });
-  return upsertOwnMarkedComment({
+  const { comment } = await upsertOwnMarkedComment({
     github,
     owner,
     repo,
@@ -968,6 +1008,7 @@ async function publishAppliedState({ github, owner, repo, stateFile, appliedHead
       contentHash: state.contentHash,
     }),
   });
+  return comment;
 }
 
 async function fetchChangelog(github, owner, repo, ref, changelogPath) {
@@ -1242,6 +1283,7 @@ module.exports = {
   CONTENT_END,
   CONTENT_START,
   RELEASE_BRANCH_PREFIX,
+  announceRefresh,
   canonical,
   changelogFingerprint,
   checkCuratedState,

@@ -1649,6 +1649,68 @@ test('re-drafting updates the existing override comment instead of creating a ne
   assert.equal(run.calls.createComment.length, 0);
 });
 
+test('re-drafting posts a refreshed notice after editing the override comment in place', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-refresh-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
+  const core = makeCore();
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core, ...BOT_AUTH });
+  assert.equal(run.calls.updateComment.length, 1);
+  // The in-place edit is followed by exactly one timeline comment that points at
+  // the regenerated draft, so maintainers learn the notes changed without
+  // watching the original comment.
+  assert.equal(run.calls.createComment.length, 1);
+  const notice = run.calls.createComment[0].body;
+  assert.match(notice, /regenerated in place/);
+  assert.match(notice, /release-notes-refreshed/);
+  // The pointer must never re-trigger the command flow.
+  assert.ok(!notice.includes('@release-bot'));
+  assert.equal(core.warnings.length, 0);
+});
+
+test('a first-time draft creates the override comment without a refreshed notice', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-first-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub();
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.equal(run.calls.updateComment.length, 0);
+  // Only the draft comment itself; no "regenerated" pointer, because nothing
+  // pre-existing was silently edited.
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /release-notes-override/);
+});
+
+test('a failed refreshed notice only warns and never fails the draft post', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-refresh-fail-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  let created = 0;
+  const run = makeGithub({
+    comments: [overrideComment({ id: 55 })],
+    onCreateComment: () => {
+      created += 1;
+      throw new Error('secondary rate limit');
+    },
+  });
+  const core = makeCore();
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core, ...BOT_AUTH });
+  assert.equal(created, 1);
+  assert.equal(run.calls.updateComment.length, 1);
+  assert.equal(core.warnings.length, 1);
+  assert.match(core.warnings[0], /posting the refreshed notice failed/);
+});
+
 test('prepareApply fails when no valid override is present', async t => {
   const workspace = tempWorkspace();
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));

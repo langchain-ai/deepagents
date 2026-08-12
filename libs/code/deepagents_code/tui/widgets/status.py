@@ -806,12 +806,6 @@ class StatusBar(Vertical):
     _CONTEXT_CRITICAL_PERCENT = 80.0
     """Context usage at which the percentage turns to alert."""
 
-    _CACHE_WARNING_PERCENT = 90.0
-    """Cache hit rate below which the percentage turns to caution."""
-
-    _CACHE_CRITICAL_PERCENT = 60.0
-    """Cache hit rate below which the percentage turns to alert."""
-
     def _percent_color(self, percent: float) -> str:
         """Return the color that encodes how full the context window is."""
         colors = theme.get_theme_colors(self)
@@ -824,9 +818,9 @@ class StatusBar(Vertical):
     def _cache_hit_color(self, percent: float) -> str:
         """Return the color that encodes cache hit-rate health."""
         colors = theme.get_theme_colors(self)
-        if percent < self._CACHE_CRITICAL_PERCENT:
+        if percent < 60.0:  # noqa: PLR2004  # cache alert threshold
             return colors.error
-        if percent < self._CACHE_WARNING_PERCENT:
+        if percent < 90.0:  # noqa: PLR2004  # cache warning threshold
             return colors.warning
         return colors.muted
 

@@ -1341,7 +1341,6 @@ class Glyphs:
 
     # Box-drawing characters
     box_horizontal: str  # ─ vs -
-    box_horizontal_heavy: str  # ━ vs =
 
     # Diff-specific
     hunk_break: str  # ⋮ vs :
@@ -1373,7 +1372,6 @@ UNICODE_GLYPHS = Glyphs(
     disclosure_expanded="▾",
     # Box-drawing characters
     box_horizontal="─",
-    box_horizontal_heavy="━",
     # Diff-specific
     hunk_break="⋮",
     # Status bar
@@ -1404,7 +1402,6 @@ ASCII_GLYPHS = Glyphs(
     disclosure_expanded="v",
     # Box-drawing characters
     box_horizontal="-",
-    box_horizontal_heavy="=",
     # Diff-specific
     hunk_break=":",
     # Status bar

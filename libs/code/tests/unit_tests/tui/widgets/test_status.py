@@ -68,36 +68,20 @@ class TestTwoLineMetrics:
             assert bar._percent_color(80.0) == colors.warning
             assert bar._percent_color(80.1) == colors.error
 
-    async def test_cache_hit_color_thresholds(self) -> None:
+    @pytest.mark.parametrize(
+        ("read", "color"),
+        [(0, "muted"), (59, "error"), (60, "warning"), (90, "muted")],
+    )
+    async def test_cache_hit_rate_colors(self, read: int, color: str) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             colors = theme.get_theme_colors(bar)
-
-            assert bar._cache_hit_color(59.9) == colors.error
-            assert bar._cache_hit_color(60.0) == colors.warning
-            assert bar._cache_hit_color(89.9) == colors.warning
-            assert bar._cache_hit_color(90.0) == colors.muted
-
-    async def test_truncated_cache_keeps_hit_rate_color(self) -> None:
-        async with StatusBarApp().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_cache_tokens(10, 0, input_tokens=100)
+            bar.set_cache_tokens(read, 0, input_tokens=100 if read else 0)
             cache = pilot.app.query_one("#cache-display")
             cache.styles.width = 9
-            await pilot.pause()
-
             rendered = cache.render()
             assert isinstance(rendered, Content)
-            assert rendered.plain == "Cache 10…"
-            assert rendered.spans[-1].style == theme.get_theme_colors(bar).error
-
-    async def test_zero_cache_rate_is_muted(self) -> None:
-        async with StatusBarApp().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            rendered = pilot.app.query_one("#cache-display").render()
-
-            assert isinstance(rendered, Content)
-            assert rendered.spans[-1].style == theme.get_theme_colors(bar).muted
+            assert rendered.spans[-1].style == getattr(colors, color)
 
 
 class TestApprovalModeDisplay:

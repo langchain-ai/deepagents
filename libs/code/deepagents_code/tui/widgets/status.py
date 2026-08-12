@@ -815,15 +815,6 @@ class StatusBar(Vertical):
             return colors.warning
         return colors.muted
 
-    def _cache_hit_color(self, percent: float) -> str:
-        """Return the color that encodes cache hit-rate health."""
-        colors = theme.get_theme_colors(self)
-        if percent < 60.0:  # noqa: PLR2004  # cache alert threshold
-            return colors.error
-        if percent < 90.0:  # noqa: PLR2004  # cache warning threshold
-            return colors.warning
-        return colors.muted
-
     def _context_segment(self, count: int, *, approximate: bool = False) -> Content:
         """Build the context percentage and absolute-usage segment.
 
@@ -860,21 +851,26 @@ class StatusBar(Vertical):
         Returns:
             Styled cache usage.
         """
+        colors = theme.get_theme_colors(self)
         hit_rate = Content("")
         if self.cache_input_tokens:
             cached = min(self.cache_read_tokens, self.cache_input_tokens)
             percent = cached / self.cache_input_tokens * 100
-            hit_rate = Content.styled(
-                f"{percent:.0f}% hit", self._cache_hit_color(percent)
-            )
+            if percent < 60.0:  # noqa: PLR2004  # cache alert threshold
+                color = colors.error
+            elif percent < 90.0:  # noqa: PLR2004  # cache warning threshold
+                color = colors.warning
+            else:
+                color = colors.muted
+            hit_rate = Content.styled(f"{percent:.0f}% hit", color)
         elif not self.cache_read_tokens and not self.cache_write_tokens:
-            hit_rate = Content.styled("0% hit", theme.get_theme_colors(self).muted)
+            hit_rate = Content.styled("0% hit", colors.muted)
         details = (
             f"{_compact_tokens(self.cache_read_tokens)} read"
             f" / {_compact_tokens(self.cache_write_tokens)} write"
         )
         return Content.assemble(
-            Content.styled("Cache", theme.get_theme_colors(self).muted),
+            Content.styled("Cache", colors.muted),
             " ",
             hit_rate,
             f" {get_glyphs().bullet} " if hit_rate.plain else "",

@@ -1,18 +1,18 @@
-"""Focused TUI tests for transcript virtualization scroll hydration.
+"""Focused TUI tests for transcript viewport reconciliation.
 
-These bind the behavior that history hydration is driven by real changes to the
+These bind the behavior that reconciliation is driven by real changes to the
 chat's vertical scroll offset (`_ChatScroll.watch_scroll_y` -> the
 `_ChatScroll.Scrolled` message -> `DeepAgentsApp.on_chat_scrolled`), rather than
 the scrollbar `ScrollUp`/`ScrollDown` messages the feature originally relied on.
 See `_ChatScroll.Scrolled` for why those scrollbar messages never reached the app
-for wheel/trackpad/keyboard scrolling, so hydration never ran for the common case
-of scrolling with a trackpad.
+for wheel, trackpad, or keyboard scrolling.
 """
 
 from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -24,6 +24,7 @@ from deepagents_code.tui.widgets.messages import UserMessage
 
 if TYPE_CHECKING:
     import pytest
+    from textual.widget import Widget
 
 
 class _ScrollProbeApp(App[None]):
@@ -144,10 +145,10 @@ async def _mount_user_messages(app: DeepAgentsApp, count: int) -> None:
         await app._mount_message(UserMessage(f"m{index}", id=f"m{index}"))
 
 
-class TestScrollDrivenHydration:
-    """Scrolling into a spacer must hydrate the adjacent archived history."""
+class TestScrollDrivenReconciliation:
+    """Scrolling into a spacer projects the corresponding archived history."""
 
-    async def test_scroll_up_hydrates_archived_history(
+    async def test_scroll_up_projects_archived_history(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Scrolling up toward the top spacer remounts older messages."""
@@ -161,7 +162,6 @@ class TestScrollDrivenHydration:
             # above the mounted tail (the state after a long transcript grows).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
-            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
             await app._prune_old_messages()
             await pilot.pause()
 
@@ -170,9 +170,8 @@ class TestScrollDrivenHydration:
             assert start_before > 0
 
             # The oldest row (`m0`) is archived, so no widget for it is mounted.
-            # The DOM stays bounded at `WINDOW_SIZE`, so hydration swaps rows
-            # rather than growing the count — assert the boundary row itself is
-            # (re)mounted, which binds the store counters to real widgets.
+            # The DOM stays bounded at `WINDOW_SIZE`, so reconciliation swaps the
+            # projected range instead of growing the mounted widget count.
             messages = app.query_one("#messages", Container)
             assert not messages.query("#m0")
 
@@ -181,12 +180,12 @@ class TestScrollDrivenHydration:
             await pilot.pause()
             chat.scroll_to(y=0, animate=False)
 
-            async def wait_for_head_hydration() -> None:
+            async def wait_for_head_projection() -> None:
                 while app._message_store.has_messages_above:
                     await pilot.pause()
                     chat.scroll_to(y=0, animate=False)
 
-            await asyncio.wait_for(wait_for_head_hydration(), timeout=5)
+            await asyncio.wait_for(wait_for_head_projection(), timeout=5)
             await pilot.pause()
 
             start_after, _end_after = app._message_store.get_visible_range()
@@ -207,9 +206,8 @@ class TestScrollDrivenHydration:
             # has scrolled up and older history was mounted in their place).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
-            monkeypatch.setattr(app, "_check_hydration_needed", lambda: None)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._reconcile_transcript_range(messages, 0, 3)
             await pilot.pause()
 
             _start_before, _end_before = app._message_store.get_visible_range()
@@ -238,3 +236,103 @@ class TestScrollDrivenHydration:
             assert end_after == app._message_store.total_count
             # Bind the store counter to a real widget: the tail row is mounted.
             assert messages.query(last_id)
+
+
+class TestBoundedWindowReconciliation:
+    """Large scroll jumps must not rebuild intervening transcript rows."""
+
+    async def test_tail_to_head_jump_builds_only_target_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A tail-to-head jump reconstructs one bounded window, not all history."""
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 20)
+        payload = _ThreadHistoryPayload(
+            [
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"message {index}",
+                    id=f"bounded-{index}",
+                )
+                for index in range(500)
+            ],
+            0,
+            "",
+        )
+
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            with patch.object(app, "set_timer"):
+                await app._load_thread_history(
+                    thread_id="bounded-window",
+                    preloaded_payload=payload,
+                )
+            await pilot.pause()
+
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.scroll_end(animate=False, immediate=True)
+            await pilot.pause()
+
+            async def wait_for_tail() -> None:
+                while (
+                    app._message_store.has_messages_below
+                    or app._transcript_reconcile_scheduled
+                    or app._transcript_reconciling
+                    or app._transcript_reconcile_pending
+                ):
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_tail(), timeout=5)
+            messages = app.query_one("#messages", Container)
+            top_spacer = app.query_one("#message-top-spacer", Static)
+            start, _end = app._message_store.get_visible_range()
+            assert top_spacer.region.height == app._message_store.range_height(0, start)
+            app._set_active_message("bounded-499")
+
+            builds = 0
+            original = MessageData.to_widget
+
+            def counted(data: MessageData) -> Widget:
+                nonlocal builds
+                builds += 1
+                return original(data)
+
+            monkeypatch.setattr(MessageData, "to_widget", counted)
+            chat.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+
+            async def wait_for_head() -> None:
+                while (
+                    app._message_store.has_messages_above
+                    or app._transcript_reconcile_scheduled
+                    or app._transcript_reconciling
+                    or app._transcript_reconcile_pending
+                ):
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_head(), timeout=5)
+            await pilot.pause()
+
+            assert app._message_store.get_visible_range() == (0, 20)
+            assert builds == 20
+            retained = messages.query_one("#bounded-499", UserMessage)
+            assert retained.is_attached
+            assert not retained.display
+            assert sum(widget.display for widget in app.query(UserMessage)) == 20
+
+            chat.scroll_end(animate=False, immediate=True)
+            await pilot.pause()
+            await asyncio.wait_for(wait_for_tail(), timeout=5)
+            visible_ids = [
+                data.id for data in app._message_store.get_visible_messages()
+            ]
+            mounted_ids = [
+                child.id
+                for child in messages.children
+                if child.id in set(visible_ids) and child.display
+            ]
+            assert mounted_ids == visible_ids
+            app._set_active_message(None)

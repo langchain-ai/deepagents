@@ -14836,10 +14836,10 @@ class TestMessageTimestampFooters:
             assert len(app.query("#a-id")) == 1
             assert len(app.query("#b-id")) == 1
 
-    async def test_footers_render_for_hydrated_messages_above(
+    async def test_footers_render_for_projected_head_messages(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Scroll-up hydration of older messages builds visible footers."""
+        """Projecting older messages builds visible timestamp footers."""
         from deepagents_code.app import _ThreadHistoryPayload
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
@@ -14850,7 +14850,6 @@ class TestMessageTimestampFooters:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
             # Shrink the window so a small load archives messages above the
             # visible range, mirroring a long thread scrolled to the bottom.
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
@@ -14867,9 +14866,8 @@ class TestMessageTimestampFooters:
                 0,
                 "",
             )
-            # Suppress history loading's delayed scroll-to-bottom timer. If it
-            # fires after the explicit hydrate-above call below, the resulting
-            # scroll offset change hydrates the tail and prunes `hist-0` again.
+            # Suppress history loading's delayed scroll-to-bottom timer so the
+            # explicit head-window projection below remains stable.
             with patch.object(app, "set_timer"):
                 await app._load_thread_history(
                     thread_id="t-long", preloaded_payload=payload
@@ -14880,13 +14878,13 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
-            await app._hydrate_messages_above()
+            messages = app.query_one("#messages", Container)
+            await app._reconcile_transcript_range(messages, 0, 2)
             await pilot.pause()
 
             footer = app.query_one("#hist-0-timestamp-footer", Static)
             assert footer.display is True
-            # Footer sits directly after its hydrated message in the DOM.
-            messages = app.query_one("#messages", Container)
+            # Footer sits directly after its projected message in the DOM.
             children = list(messages.children)
             anchor = app.query_one("#hist-0", UserMessage)
             assert children[children.index(anchor) + 1] is footer
@@ -14945,7 +14943,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._reconcile_transcript_range(messages, 0, 3)
             await pilot.pause()
 
             assert app._message_store.has_messages_below
@@ -14971,10 +14969,10 @@ class TestMessageTimestampFooters:
             for message_id in ["tail-3", "tail-4", "tail-new"]:
                 assert app.query_one(f"#{message_id}", UserMessage)
 
-    async def test_hydrate_below_stops_at_first_failure(
+    async def test_reconcile_uses_placeholder_after_rebuild_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A mid-batch mount failure must not desync the store from the DOM."""
+        """A malformed row must not block navigation to the requested window."""
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
@@ -14985,12 +14983,10 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._reconcile_transcript_range(messages, 0, 3)
             await pilot.pause()
             assert app._message_store.has_messages_below
 
-            # Make the SECOND hidden row fail to build; hydration must stop
-            # there so the mounted block stays contiguous with the window.
             _start, end = app._message_store.get_visible_range()
             hidden = app._message_store.get_all_messages()[end:]
             assert len(hidden) >= 2
@@ -15002,19 +14998,16 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(failing, "to_widget", _boom)
 
-            await app._hydrate_messages_below()
+            await app._reconcile_transcript_range(messages, end, end + 3)
             await pilot.pause()
 
-            # The store's visible range must match exactly the mounted rows:
-            # no phantom (store-visible but unmounted) or orphan (mounted but
-            # outside the window).
             all_ids = {f"b-{i}" for i in range(6)}
             visible_ids = {msg.id for msg in app._message_store.get_visible_messages()}
             mounted_ids = {
                 child.id for child in messages.children if child.id in all_ids
             }
             assert mounted_ids == visible_ids
-            assert failing.id not in visible_ids
+            assert isinstance(app.query_one(f"#{failing.id}"), ErrorMessage)
 
     async def test_tool_state_sync_updates_store_and_protection(self) -> None:
         """Mutable tool widget state should be canonical in MessageStore."""

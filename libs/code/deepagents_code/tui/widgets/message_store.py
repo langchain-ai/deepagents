@@ -39,6 +39,79 @@ _LIVE_REASON = "live"
 """Protection reason for a pending/running tool row (default for protect_message)."""
 
 
+class _HeightIndex:
+    """Fenwick tree mapping transcript row offsets to message indices."""
+
+    def __init__(self) -> None:
+        self._values: list[int] = []
+        self._tree: list[int] = [0]
+
+    def rebuild(self, values: list[int]) -> None:
+        """Replace the indexed heights in linear time."""
+        self._values = list(values)
+        self._tree = [0, *values]
+        for index in range(1, len(self._tree)):
+            parent = index + (index & -index)
+            if parent < len(self._tree):
+                self._tree[parent] += self._tree[index]
+
+    def append(self, value: int) -> None:
+        """Append one height while preserving Fenwick aggregates."""
+        self._values.append(value)
+        index = len(self._values)
+        block_start = index - (index & -index)
+        aggregate = value + self.prefix(index - 1) - self.prefix(block_start)
+        self._tree.append(aggregate)
+
+    def set(self, index: int, value: int) -> None:
+        """Update one indexed height."""
+        delta = value - self._values[index]
+        if delta == 0:
+            return
+        self._values[index] = value
+        tree_index = index + 1
+        while tree_index < len(self._tree):
+            self._tree[tree_index] += delta
+            tree_index += tree_index & -tree_index
+
+    def prefix(self, end: int) -> int:
+        """Return the height of rows before `end`."""
+        total = 0
+        index = max(0, min(end, len(self._values)))
+        while index:
+            total += self._tree[index]
+            index -= index & -index
+        return total
+
+    def range(self, start: int, end: int) -> int:
+        """Return the height of rows in `[start:end)`."""
+        return self.prefix(end) - self.prefix(start)
+
+    def index_at_offset(self, offset: float) -> int:
+        """Return the message containing a transcript-relative row offset."""
+        if not self._values:
+            return 0
+        target = max(0, int(offset))
+        index = 0
+        height = 0
+        bit = 1 << (len(self._values).bit_length() - 1)
+        while bit:
+            candidate = index + bit
+            if (
+                candidate <= len(self._values)
+                and height + self._tree[candidate] <= target
+            ):
+                index = candidate
+                height += self._tree[candidate]
+            bit >>= 1
+        return min(index, len(self._values) - 1)
+
+    def clear(self) -> None:
+        """Drop all indexed heights."""
+        self._values.clear()
+        self._tree[:] = [0]
+
+
 _UPDATABLE_FIELDS: frozenset[str] = frozenset(
     {
         "content",
@@ -596,7 +669,7 @@ class MessageStore:
             Provides enough buffer to avoid visible loading pauses.
     """
 
-    WINDOW_SIZE: int = 200
+    WINDOW_SIZE: int = 50
     HYDRATE_BUFFER: int = 15
 
     def __init__(self) -> None:
@@ -609,6 +682,12 @@ class MessageStore:
         that adds to or removes from `_messages` must update `_index`
         in lockstep.
         """
+        self._positions: dict[str, int] = {}
+        """ID -> index of the newest matching entry in `_messages`."""
+
+        self._height_index = _HeightIndex()
+        """Prefix-height index used for spacer sizing and viewport lookup."""
+
         self._visible_start: int = 0
         self._visible_end: int = 0
 
@@ -661,6 +740,8 @@ class MessageStore:
             )
         self._messages.append(message)
         self._index[message.id] = message
+        self._positions[message.id] = len(self._messages) - 1
+        self._height_index.append(self.estimate_height(message))
         if was_at_tail:
             self._visible_end = len(self._messages)
 
@@ -679,8 +760,9 @@ class MessageStore:
         Returns:
             Tuple of (archived, visible) message lists.
         """
+        first_index = len(self._messages)
         self._messages.extend(messages)
-        for msg in messages:
+        for offset, msg in enumerate(messages):
             if msg.id in self._index:
                 logger.warning(
                     "Duplicate message ID %r in bulk_load; previous entry "
@@ -688,6 +770,10 @@ class MessageStore:
                     msg.id,
                 )
             self._index[msg.id] = msg
+            self._positions[msg.id] = first_index + offset
+        self._height_index.rebuild(
+            [self.estimate_height(msg) for msg in self._messages]
+        )
         total = len(self._messages)
 
         if total <= self.WINDOW_SIZE:
@@ -1044,6 +1130,8 @@ class MessageStore:
         """Clear all messages."""
         self._messages.clear()
         self._index.clear()
+        self._positions.clear()
+        self._height_index.clear()
         self._visible_start = 0
         self._visible_end = 0
         self._protection_reasons.clear()
@@ -1073,6 +1161,73 @@ class MessageStore:
         """
         return self._messages[self._visible_start : self._visible_end]
 
+    def get_messages(self, start: int, end: int) -> list[MessageData]:
+        """Return the messages in a bounded index range."""
+        bounded_start = max(0, min(start, len(self._messages)))
+        bounded_end = max(bounded_start, min(end, len(self._messages)))
+        return self._messages[bounded_start:bounded_end]
+
+    def set_visible_range(self, start: int, end: int) -> None:
+        """Record the contiguous message range represented by the DOM.
+
+        Raises:
+            ValueError: If the range falls outside the stored transcript.
+        """
+        if not 0 <= start <= end <= len(self._messages):
+            msg = (
+                f"Invalid visible range [{start}:{end}) for "
+                f"{len(self._messages)} messages"
+            )
+            raise ValueError(msg)
+        self._visible_start = start
+        self._visible_end = end
+
+    def window_for_offset(
+        self,
+        offset: float,
+        viewport_height: int,
+    ) -> tuple[int, int]:
+        """Return a bounded window covering a transcript-relative row offset.
+
+        The existing range is retained while the viewport remains inside its
+        hydration buffers. A jump into a spacer selects the destination window
+        directly instead of walking through every intervening message.
+        """
+        total = len(self._messages)
+        if total == 0:
+            return (0, 0)
+        if offset <= 0:
+            return (0, min(total, self.WINDOW_SIZE))
+        if offset + max(1, viewport_height) >= self._height_index.prefix(total):
+            return (max(0, total - self.WINDOW_SIZE), total)
+
+        first = self._height_index.index_at_offset(offset)
+        last = self._height_index.index_at_offset(offset + max(1, viewport_height))
+        current_start, current_end = self.get_visible_range()
+        if current_start < current_end:
+            safe_start = (
+                current_start
+                if current_start == 0
+                else min(current_end, current_start + self.HYDRATE_BUFFER)
+            )
+            safe_end = (
+                current_end
+                if current_end == total
+                else max(current_start, current_end - self.HYDRATE_BUFFER)
+            )
+            if first >= safe_start and last < safe_end:
+                return (current_start, current_end)
+
+        target_start = max(0, first - self.HYDRATE_BUFFER)
+        target_end = min(total, target_start + self.WINDOW_SIZE)
+        required_end = min(total, last + self.HYDRATE_BUFFER + 1)
+        if target_end < required_end:
+            target_end = required_end
+            target_start = max(0, target_end - self.WINDOW_SIZE)
+        if target_end - target_start < self.WINDOW_SIZE:
+            target_start = max(0, target_end - self.WINDOW_SIZE)
+        return (target_start, target_end)
+
     def set_height_hint(self, message_id: str, rows: int) -> bool:
         """Update a measured message height, clamped to `MIN_HEIGHT_HINT`.
 
@@ -1087,9 +1242,11 @@ class MessageStore:
             Whether the message existed and was updated.
         """
         msg_data = self._index.get(message_id)
-        if msg_data is None:
+        position = self._positions.get(message_id)
+        if msg_data is None or position is None:
             return False
         msg_data.height_hint = max(MIN_HEIGHT_HINT, rows)
+        self._height_index.set(position, self.estimate_height(msg_data))
         return True
 
     def invalidate_height_hints(self, *, scale: float | None = None) -> None:
@@ -1106,6 +1263,9 @@ class MessageStore:
                 msg.height_hint = None
             else:
                 msg.height_hint = max(MIN_HEIGHT_HINT, round(msg.height_hint * scale))
+        self._height_index.rebuild(
+            [self.estimate_height(msg) for msg in self._messages]
+        )
 
     @staticmethod
     def estimate_height(message: MessageData) -> int:
@@ -1122,7 +1282,4 @@ class MessageStore:
         """
         bounded_start = max(0, min(start, len(self._messages)))
         bounded_end = max(bounded_start, min(end, len(self._messages)))
-        return sum(
-            self.estimate_height(msg)
-            for msg in self._messages[bounded_start:bounded_end]
-        )
+        return self._height_index.range(bounded_start, bounded_end)

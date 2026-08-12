@@ -4,10 +4,9 @@
 
 ## [0.0.10](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.9...deepagents-acp==0.0.10) (2026-08-12)
 
-
 ### Features
 
-* **acp:** support persistent session loading ([#5365](https://github.com/langchain-ai/deepagents/issues/5365)) ([aaefb1e](https://github.com/langchain-ai/deepagents/commit/aaefb1eea1652abf370b5ac699be8307aee979e5))
+- Added support for loading persistent ACP sessions ([#5365](https://github.com/langchain-ai/deepagents/issues/5365)).
 
 ## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.8...deepagents-acp==0.0.9) (2026-07-07)
 

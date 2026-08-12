@@ -1,0 +1,19 @@
+libs/evals/uv.lock
+  s_b999aac40ef9b3::t_bb23713d9241cb 499,505-527,579
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "293ffebb2dc417fea3fde947e6a7f7ba0cc09516",
+  "prompts": {},
+  "sessions": {
+    "s_b999aac40ef9b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ceea9ef2-dc4c-4d62-b5ce-0f30811e7d7f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

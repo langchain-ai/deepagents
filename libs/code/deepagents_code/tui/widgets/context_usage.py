@@ -83,15 +83,18 @@ class _ContextUsage(Static):
         for _label, tokens, color in categories:
             end = round(min(scale, used + tokens) / scale * width)
             start = round(min(scale, used) / scale * width)
-            segments.append(Content.styled(" " * (end - start), f"reverse {color}"))
+            segments.append(
+                Content.styled(glyphs.box_horizontal_heavy * (end - start), color)
+            )
             used += tokens
         bar = Content.assemble(*segments)
 
         rows: list[Content] = []
+        marker = glyphs.box_horizontal_heavy * 2
         for label, tokens, color in categories:
             percent = tokens / scale * 100
             value = f"{format_token_count(tokens)}  {glyphs.bullet}  {percent:.1f}%"
-            item = Content.assemble(("  ", f"reverse {color}"), " ", label)
+            item = Content.assemble((marker, color), " ", label)
             rows.append(
                 Content.assemble(
                     item,

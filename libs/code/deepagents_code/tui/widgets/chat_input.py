@@ -28,7 +28,11 @@ from deepagents_code.config import (
     detect_mode_prefix,
     is_ascii_mode,
 )
-from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
+from deepagents_code.input import (
+    IMAGE_PLACEHOLDER_PATTERN,
+    VIDEO_PLACEHOLDER_PATTERN,
+    looks_like_dropped_payload,
+)
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
     PastedContent,
@@ -532,6 +536,8 @@ class ChatTextArea(PasteBurstTextArea):
         self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
+        self._deferred_space_pending = False
+        self._deferred_keys: list[tuple[str, str | None]] = []
         # Paste-burst and backslash-pending state is initialized by
         # PasteBurstTextArea.__init__.
         # Tracks terminal focus so a click that re-focuses the window only
@@ -916,8 +922,54 @@ class ChatTextArea(PasteBurstTextArea):
         if "\n" in payload:
             self.call_after_refresh(self.scroll_cursor_visible)
 
+    def _burst_run_payload_for_dispatch(self, payload: str) -> str:
+        """Restore a virtual command prefix when a burst is an absolute path.
+
+        Returns:
+            The payload with a stripped leading slash restored when applicable.
+        """
+        owner = self._chat_input_owner
+        if owner is None or owner.mode != "command":
+            return payload
+        candidate = f"/{payload.lstrip('/')}"
+        if looks_like_dropped_payload(candidate):
+            return candidate
+        return payload
+
+    def _on_burst_run_promoted(
+        self, visible_payload: str, dispatch_payload: str
+    ) -> None:
+        """Leave command mode when promotion recovered a leading path slash."""
+        if visible_payload == dispatch_payload:
+            return
+        owner = self._chat_input_owner
+        if owner is not None and owner.mode == "command":
+            owner.mode = "normal"
+
+    async def _insert_deferred_space_and_keys(self, burst_time: float) -> None:
+        """Insert a queued synthetic space before replaying later key events."""
+        self.insert(" ")
+        self._note_printable_burst_keystroke(" ", burst_time)
+        deferred_keys = self._deferred_keys
+        self._deferred_keys = []
+        self._deferred_space_pending = False
+
+        from textual import events as textual_events
+
+        for key, character in deferred_keys:
+            await self._on_key(textual_events.Key(key, character))
+
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
+        # A character-less VS Code space may need to wait behind a burst payload
+        # message. Keys already present in Textual's FIFO queue would otherwise
+        # overtake it, so hold and replay them after the space is inserted.
+        if self._deferred_space_pending:
+            event.prevent_default()
+            event.stop()
+            self._deferred_keys.append((event.key, event.character))
+            return
+
         # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. The
         # kitty parser patch in `_textual_patches.py` already neutralizes these
         # at the source; this is defense-in-depth in case a lock key still
@@ -961,6 +1013,7 @@ class ChatTextArea(PasteBurstTextArea):
                 # Large-paste and dropped-path dispatch posts a message to the
                 # owner. Queue the space behind that message so its insertion
                 # cannot move the cursor before the payload is handled.
+                self._deferred_space_pending = True
                 self.post_message(self.DeferredSpace(space_now))
                 self.post_message(self.Typing())
                 return
@@ -2308,14 +2361,13 @@ class ChatInput(Vertical):
             return
         self._collapse_and_insert_paste(event.text)
 
-    def on_chat_text_area_deferred_space(
+    async def on_chat_text_area_deferred_space(
         self, event: ChatTextArea.DeferredSpace
     ) -> None:
         """Insert a synthetic space after the preceding burst payload."""
         if not self._text_area:
             return
-        self._text_area.insert(" ")
-        self._text_area._note_printable_burst_keystroke(" ", event.burst_time)
+        await self._text_area._insert_deferred_space_and_keys(event.burst_time)
 
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.

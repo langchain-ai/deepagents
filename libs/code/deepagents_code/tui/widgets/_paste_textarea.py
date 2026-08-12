@@ -187,6 +187,20 @@ class PasteBurstTextArea(TextArea):
         """Handle a flushed burst payload. Base behavior inserts it verbatim."""
         self.insert(payload)
 
+    def _burst_run_payload_for_dispatch(self, payload: str) -> str:  # noqa: PLR6301  # overridable hook
+        """Return the payload represented by a visible rapid-key run.
+
+        Most text areas display every character in the run, so the payload is
+        unchanged. Subclasses with virtual prefixes may restore characters
+        that were consumed before insertion.
+        """
+        return payload
+
+    def _on_burst_run_promoted(
+        self, visible_payload: str, dispatch_payload: str
+    ) -> None:
+        """React after a visible run has been promoted into the burst buffer."""
+
     # -- Burst state machine --------------------------------------------------
 
     def _cancel_paste_burst_timer(self) -> None:
@@ -484,11 +498,17 @@ class PasteBurstTextArea(TextArea):
         if self._paste_burst_buffer or self._paste_burst_run < PASTE_BURST_MIN_CHARS:
             return
         payload = self._paste_burst_run_text
+        dispatch_payload = self._burst_run_payload_for_dispatch(payload)
         if (
-            looks_like_dropped_payload(payload)
+            looks_like_dropped_payload(dispatch_payload)
             or len(payload) >= PASTE_BURST_PROMOTE_CHARS
         ):
-            self._promote_paste_burst_run(self._paste_burst_last_key_time or 0.0)
+            promoted = self._promote_paste_burst_run(
+                self._paste_burst_last_key_time or 0.0
+            )
+            if promoted:
+                self._paste_burst_buffer = dispatch_payload
+                self._on_burst_run_promoted(payload, dispatch_payload)
 
     def _consume_enter_as_burst_newline(self, now: float) -> bool:
         """Insert a newline instead of submitting when inside a paste burst.

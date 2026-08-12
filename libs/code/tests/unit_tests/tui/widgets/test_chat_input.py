@@ -3180,6 +3180,36 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
 
+    async def test_key_burst_absolute_path_preserves_leading_slash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rapid absolute path recovers the slash consumed by command mode."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 1.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        img_path = tmp_path / "absolute-burst.png"
+        from PIL import Image
+
+        Image.new("RGB", (3, 3), color="navy").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            for char in str(img_path):
+                await chat._text_area._on_key(events.Key(char, char))
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
+            await pilot.pause(0.35)
+
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
     async def test_submit_absolute_path_without_paste_event_attaches_image(
         self, tmp_path
     ) -> None:
@@ -4970,6 +5000,35 @@ class TestPasteBurstPromotion:
             assert ta.text == "[Pasted text #1] "
             assert chat._pasted_contents[1].content == payload
             assert ta._paste_burst_run_text == " "
+
+    async def test_vscode_space_stays_ahead_of_already_queued_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key queued before `DeferredSpace` must not overtake the space."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("abc", stale_time)
+
+            ta.post_message(events.Key("space", None))
+            ta.post_message(events.Key("x", "x"))
+            await pilot.pause()
+
+            assert ta.text == "abc x"
+            assert ta._paste_burst_run_text == " x"
 
     async def test_flushed_run_is_not_re_promoted_by_a_later_enter(
         self, monkeypatch: pytest.MonkeyPatch

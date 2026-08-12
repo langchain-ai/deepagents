@@ -167,11 +167,6 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             event.stop()
             return
 
-        if self._maybe_start_burst(event, now):
-            event.prevent_default()
-            event.stop()
-            return
-
         self._track_burst_run(event, now)
 
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):

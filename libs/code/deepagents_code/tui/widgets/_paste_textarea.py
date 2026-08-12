@@ -51,9 +51,6 @@ PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
 """Idle timeout before flushing buffered burst text."""
 
-PASTE_BURST_START_CHARS = {"'", '"'}
-"""Characters that can start dropped-path payloads."""
-
 PASTE_BURST_MIN_CHARS = 3
 """Consecutive fast keystrokes before a stream is treated as a paste burst.
 
@@ -315,21 +312,6 @@ class PasteBurstTextArea(TextArea):
             return False
         return (now - last_key) <= PASTE_BURST_CHAR_GAP_SECONDS
 
-    def _should_start_paste_burst(self, char: str) -> bool:
-        """Return whether a keypress should start paste-burst buffering.
-
-        Only a quote typed into an empty document buffers immediately, for
-        dropped-path parsing. Other rapid printable runs stay visible in the
-        document until something confirms a paste and promotes them — see
-        `_check_burst_run_for_promotion` and `_consume_enter_as_burst_newline`.
-        """
-        if char not in PASTE_BURST_START_CHARS:
-            return False
-        if self.text or not self.selection.is_empty:
-            return False
-        row, col = self.cursor_location
-        return row == 0 and col == 0
-
     async def _flush_paste_burst(self) -> None:
         """Flush buffered burst text through the payload dispatch hook.
 
@@ -419,22 +401,6 @@ class PasteBurstTextArea(TextArea):
         ):
             return True
         await self._flush_paste_burst()
-        return False
-
-    def _maybe_start_burst(self, event: events.Key, now: float) -> bool:
-        """Start buffering when a keypress looks like the head of a paste.
-
-        Returns:
-            `True` when a burst was started and the caller should stop handling
-            the key.
-        """
-        if (
-            event.is_printable
-            and event.character is not None
-            and self._should_start_paste_burst(event.character)
-        ):
-            self._start_paste_burst(event.character, now)
-            return True
         return False
 
     def _track_burst_run(self, event: events.Key, now: float) -> None:

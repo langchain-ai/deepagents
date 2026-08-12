@@ -222,10 +222,11 @@ class TestInlinePromptPaste:
             assert app.submissions == []
             assert "\n" in ta.text
 
+    @pytest.mark.parametrize("payload", ["hello", '"hello"'])
     async def test_rapid_typing_stays_visible(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, payload: str
     ) -> None:
-        """Rapid ordinary typing is not hidden by the dropped-media check."""
+        """Rapid ordinary typing, including quoted text, stays visible."""
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
         app = _PromptApp()
         async with app.run_test() as pilot:
@@ -233,11 +234,11 @@ class TestInlinePromptPaste:
             ta.focus()
             await pilot.pause()
 
-            for char in "hello":
+            for char in payload:
                 await pilot.press(char)
             await pilot.pause()
 
-            assert ta.text == "hello"
+            assert ta.text == payload
             assert ta._paste_burst_buffer == ""
             assert not list(app._notifications)
 
@@ -720,8 +721,8 @@ class TestInlinePromptMediaDrop:
 
         Drives the production route end to end — `_on_key` -> burst promotion ->
         flush timer -> `_dispatch_burst_payload` — rather than calling the
-        dispatcher directly. A leading quote is in `PASTE_BURST_START_CHARS`
-        precisely so a dropped path buffers, so this is the designed shape.
+        dispatcher directly. The leading quote stays visible until the rapid
+        run contains enough of the absolute path to confirm a dropped payload.
         """
         monkeypatch.setattr(
             paste_textarea_module, "_collapse_pastes_enabled", lambda: False
@@ -773,13 +774,14 @@ class TestInlinePromptMediaDrop:
             ta.focus()
             await pilot.pause()
 
-            for char in "'abc":
+            pending = f"'{tmp_path / 'draft.txt'}'"
+            for char in pending:
                 await ta._on_key(Key(char, char))
             assert ta._paste_burst_buffer, "expected a pending burst to flush"
 
             await _paste(pilot, str(img))
 
-            assert ta.text == "'abc"
+            assert ta.text == pending
             assert not ta._paste_burst_buffer
             latest = list(app._notifications)[-1]
             assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)

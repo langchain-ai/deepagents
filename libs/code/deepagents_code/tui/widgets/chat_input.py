@@ -1034,11 +1034,6 @@ class ChatTextArea(PasteBurstTextArea):
             event.stop()
             return
 
-        if self._maybe_start_burst(event, now):
-            event.prevent_default()
-            event.stop()
-            return
-
         # Track rapid keystroke runs so terminals without bracketed paste keep
         # embedded newlines grouped without delaying ordinary text insertion.
         self._track_burst_run(event, now)

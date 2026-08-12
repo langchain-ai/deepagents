@@ -4816,10 +4816,11 @@ class TestPasteBurstPromotion:
             assert payload not in ta.text
             assert chat._pasted_contents[1].content == payload
 
+    @pytest.mark.parametrize("payload", ["hello world", '"hello world"'])
     async def test_ordinary_rapid_typing_is_never_promoted(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, payload: str
     ) -> None:
-        """A short rapid run with no paste evidence stays fully visible."""
+        """A short rapid run, including quoted text, stays fully visible."""
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
 
         app = _RecordingApp()
@@ -4828,11 +4829,11 @@ class TestPasteBurstPromotion:
             ta = chat._text_area
             assert ta is not None
 
-            for char in "hello world":
+            for char in payload:
                 await pilot.press(char)
             await pilot.pause(0.15)
 
-            assert ta.text == "hello world"
+            assert ta.text == payload
             assert ta._paste_burst_buffer == ""
 
     async def test_promotion_falls_back_when_selection_is_active(

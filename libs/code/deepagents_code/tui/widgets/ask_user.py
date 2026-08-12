@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     )
 
 from deepagents_code.config import get_glyphs
+from deepagents_code.editor import editor_display_name
 from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
     InlinePromptOption,
@@ -183,9 +184,8 @@ class AskUserMenu(Container):
     def _render_help(self) -> str:
         """Build the footer hint text for the current menu state.
 
-        The `Ctrl+X external editor` hint is included only while one of this
-        menu's text areas holds focus, matching the routing in
-        `App.action_open_editor`.
+        The `Ctrl+X` editor hint is included only while one of this menu's text
+        areas holds focus, matching the routing in `App.action_open_editor`.
 
         Returns:
             The bullet-joined footer hint string.
@@ -197,7 +197,12 @@ class AskUserMenu(Container):
             newline_hint(),
         ]
         if self._show_editor_hint():
-            parts.append("Ctrl+X external editor")
+            editor = editor_display_name()
+            parts.append(
+                f"Ctrl+X edit in {editor}"
+                if editor is not None
+                else "Ctrl+X external editor"
+            )
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
         parts.append("Esc to cancel")

@@ -229,12 +229,8 @@ jobs:
                 continue;
               }
 
-              if (
-                await authorRespondedAfter(
-                  currentItem,
-                  Date.parse(currentLabelEvent.created_at),
-                )
-              ) {
+              const labelTime = Date.parse(currentLabelEvent.created_at);
+              if (await authorRespondedAfter(currentItem, labelTime)) {
                 await github.rest.issues.removeLabel({
                   owner,
                   repo,
@@ -243,6 +239,45 @@ jobs:
                 });
                 console.log(`Removed needs-response from #${item.number} after an author reply.`);
                 continue;
+              }
+
+              // The author-response check above ran before the mutations below,
+              // so a reply landing between them would be closed over — and the
+              // follow-up workflow skips closed items, so nothing would clear
+              // the label afterward. Re-fetch once at the mutation boundary and
+              // treat any changed state (reply, close, relabel, do-not-close,
+              // or a PR flipped to draft) as a signal to leave the item alone.
+              // A same-author `updated_at` bump can only mean new activity; a
+              // false positive just defers closure to the next scheduled run.
+              const finalItem = (
+                await github.rest.issues.get({
+                  owner,
+                  repo,
+                  issue_number: item.number,
+                })
+              ).data;
+              if (
+                finalItem.state !== 'open' ||
+                finalItem.updated_at !== currentItem.updated_at ||
+                !finalItem.labels.some((label) => label.name === 'needs-response') ||
+                finalItem.labels.some((label) => label.name === 'do-not-close')
+              ) {
+                console.log(`#${item.number} changed during the scan; skipping.`);
+                continue;
+              }
+
+              if (finalItem.pull_request) {
+                const finalPullRequest = (
+                  await github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: item.number,
+                  })
+                ).data;
+                if (finalPullRequest.draft) {
+                  console.log(`#${item.number} became a draft during the scan; skipping.`);
+                  continue;
+                }
               }
 
               await github.rest.issues.createComment({

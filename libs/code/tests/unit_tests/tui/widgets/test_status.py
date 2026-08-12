@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.geometry import Size
 from textual.widgets import Static
 
@@ -76,6 +77,27 @@ class TestTwoLineMetrics:
             assert bar._cache_hit_color(60.0) == colors.warning
             assert bar._cache_hit_color(89.9) == colors.warning
             assert bar._cache_hit_color(90.0) == colors.muted
+
+    async def test_truncated_cache_keeps_hit_rate_color(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(10, 0, input_tokens=100)
+            cache = pilot.app.query_one("#cache-display")
+            cache.styles.width = 9
+            await pilot.pause()
+
+            rendered = cache.render()
+            assert isinstance(rendered, Content)
+            assert rendered.plain == "Cache 10…"
+            assert rendered.spans[-1].style == theme.get_theme_colors(bar).error
+
+    async def test_zero_cache_rate_is_muted(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            rendered = pilot.app.query_one("#cache-display").render()
+
+            assert isinstance(rendered, Content)
+            assert rendered.spans[-1].style == theme.get_theme_colors(bar).muted
 
 
 class TestApprovalModeDisplay:

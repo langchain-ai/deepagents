@@ -250,8 +250,8 @@ class MetricsLine(Widget):
         ellipsis = get_glyphs().ellipsis
         if width <= len(ellipsis):
             return Content("")
-        first = self._chain(1).plain
-        return Content(first[: width - len(ellipsis)] + ellipsis)
+        first = self._chain(1).truncate(width - len(ellipsis))
+        return first + ellipsis
 
 
 class StatusBar(Vertical):
@@ -868,7 +868,7 @@ class StatusBar(Vertical):
                 f"{percent:.0f}% hit", self._cache_hit_color(percent)
             )
         elif not self.cache_read_tokens and not self.cache_write_tokens:
-            hit_rate = Content.styled("0% hit", self._cache_hit_color(0))
+            hit_rate = Content.styled("0% hit", theme.get_theme_colors(self).muted)
         details = (
             f"{_compact_tokens(self.cache_read_tokens)} read"
             f" / {_compact_tokens(self.cache_write_tokens)} write"

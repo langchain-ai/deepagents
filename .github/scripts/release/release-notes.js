@@ -540,10 +540,24 @@ async function upsertOwnMarkedComment({ github, owner, repo, number, comments, l
 // original comment. After an in-place update, post a small pointer comment so
 // the refresh shows up in the timeline. Best-effort: a failure here must not
 // turn an already-successful draft post into a job failure. The pointer body
-// must never include COMMAND_MENTION, or it would re-trigger the command flow.
+// must never include COMMAND_MENTION; bot-authored comments are already dropped
+// by validateTrigger and by the workflow's author_association gate, and keeping
+// the mention out means neither of those is the only thing standing between an
+// echo and a self-trigger loop.
+//
+// REFRESH_MARKER is only there for humans and `grep` — nothing parses it back,
+// and unlike every other marked comment these notices are deliberately *not*
+// upserted. Editing a prior notice in place would be exactly as silent as the
+// problem being solved, so one notice per re-draft is the point.
 async function announceRefresh({ github, owner, repo, number, core, refreshedComment, component, version }) {
+  // Misuse must fail here rather than inside the catch below, where it would
+  // replace a real API error with a TypeError from an absent `core`.
+  if (typeof core?.warning !== 'function') {
+    throw new TypeError('announceRefresh requires a core with a warning() method');
+  }
+  // `||`, not `??`: an empty-string html_url would otherwise produce a dead link.
   const url = refreshedComment.html_url
-    ?? `https://github.com/${owner}/${repo}/pull/${number}#issuecomment-${refreshedComment.id}`;
+    || `https://github.com/${owner}/${repo}/pull/${number}#issuecomment-${refreshedComment.id}`;
   try {
     await createComment(
       github,
@@ -553,8 +567,12 @@ async function announceRefresh({ github, owner, repo, number, core, refreshedCom
       `${REFRESH_MARKER} for ${component} ${version} -->\nThe curated release-notes comment on this PR was regenerated in place; review the latest draft in [the original comment](${url}).`,
     );
   } catch (error) {
+    // Include the status: a transient 403 rate limit and a permanent 422 body
+    // rejection both land here, but only the latter will recur on every
+    // re-draft and needs a human to notice it in the run log.
+    const status = error?.status ? ` (HTTP ${error.status})` : '';
     core.warning(
-      `Draft comment ${refreshedComment.id} was updated but posting the refreshed notice failed: ${error instanceof Error ? error.message : String(error)}`,
+      `Draft comment ${refreshedComment.id} on ${owner}/${repo}#${number} (${component} ${version}) was updated but posting the refreshed notice failed${status}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }
@@ -755,7 +773,12 @@ function validateDraftOutput(output) {
   return notes;
 }
 
-async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, login, id, core = null }) {
+// `core` is required, not optional: an absent one would skip the refresh notice
+// with no throw and no warning, silently restoring the very bug it exists to fix.
+async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, login, id, core }) {
+  if (typeof core?.warning !== 'function') {
+    throw new TypeError('postDraft requires a core with a warning() method');
+  }
   await authenticatedBot(github, appSlug, login, id);
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   const pr = await getPr(github, owner, repo, state.number);
@@ -791,7 +814,7 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
       instructions: state.instructions ?? '',
     }),
   });
-  if (!created && core) {
+  if (!created) {
     await announceRefresh({
       github,
       owner,

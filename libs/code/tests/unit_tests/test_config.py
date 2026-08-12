@@ -1192,13 +1192,21 @@ class TestModelResultApplyToSettings:
             context_limit=64000,
             unsupported_modalities=frozenset({"image", "audio"}),
         )
-        original = settings.model_unsupported_modalities
+        # `apply_to_settings` writes four fields to the process-global settings;
+        # restore all of them or the values leak into every later test.
+        original_name = settings.model_name
+        original_provider = settings.model_provider
+        original_limit = settings.model_context_limit
+        original_modalities = settings.model_unsupported_modalities
         try:
             model_result.apply_to_settings()
             expected = frozenset({"image", "audio"})
             assert settings.model_unsupported_modalities == expected
         finally:
-            settings.model_unsupported_modalities = original
+            settings.model_name = original_name
+            settings.model_provider = original_provider
+            settings.model_context_limit = original_limit
+            settings.model_unsupported_modalities = original_modalities
 
 
 class TestRetriesConfig:

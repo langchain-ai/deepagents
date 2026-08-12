@@ -15770,14 +15770,14 @@ class TestPasteRouting:
             with (
                 patch.object(app, "_is_input_focused", return_value=False),
                 patch.object(
-                    app._chat_input, "handle_external_paste", return_value=True
+                    app._chat_input, "handle_external_paste_async", return_value=True
                 ) as mock_handle,
                 patch.object(event, "prevent_default") as mock_prevent,
                 patch.object(event, "stop") as mock_stop,
             ):
-                app.on_paste(event)
+                await app.on_paste(event)
 
-            mock_handle.assert_called_once_with("/tmp/photo.png")
+            mock_handle.assert_awaited_once_with("/tmp/photo.png")
             mock_prevent.assert_called_once()
             mock_stop.assert_called_once()
 
@@ -15792,14 +15792,14 @@ class TestPasteRouting:
             with (
                 patch.object(app, "_is_input_focused", return_value=True),
                 patch.object(
-                    app._chat_input, "handle_external_paste", return_value=True
+                    app._chat_input, "handle_external_paste_async", return_value=True
                 ) as mock_handle,
                 patch.object(event, "prevent_default") as mock_prevent,
                 patch.object(event, "stop") as mock_stop,
             ):
-                app.on_paste(event)
+                await app.on_paste(event)
 
-            mock_handle.assert_not_called()
+            mock_handle.assert_not_awaited()
             mock_prevent.assert_not_called()
             mock_stop.assert_not_called()
 
@@ -15816,14 +15816,14 @@ class TestPasteRouting:
             event = events.Paste("Ada")
             with (
                 patch.object(
-                    app._chat_input, "handle_external_paste", return_value=True
+                    app._chat_input, "handle_external_paste_async", return_value=True
                 ) as mock_handle,
                 patch.object(event, "prevent_default") as mock_prevent,
                 patch.object(event, "stop") as mock_stop,
             ):
-                app.on_paste(event)
+                await app.on_paste(event)
 
-            mock_handle.assert_not_called()
+            mock_handle.assert_not_awaited()
             mock_prevent.assert_not_called()
             mock_stop.assert_not_called()
 

@@ -20034,7 +20034,7 @@ class DeepAgentsApp(App):
             restore_focus=chat_input.focus_input,
         )
 
-    def on_paste(self, event: Paste) -> None:
+    async def on_paste(self, event: Paste) -> None:
         """Route unfocused paste events to chat input for drag/drop reliability."""
         if not self._chat_input:
             return
@@ -20047,7 +20047,7 @@ class DeepAgentsApp(App):
             or self._is_input_focused()
         ):
             return
-        if self._chat_input.handle_external_paste(event.text):
+        if await self._chat_input.handle_external_paste_async(event.text):
             event.prevent_default()
             event.stop()
 

@@ -1061,6 +1061,19 @@ class ProbeFailure(NamedTuple):
         return f"{self.path}: {self.error}"
 
 
+class PastedEntryPayload(NamedTuple):
+    """A paste payload classified as one or more filesystem entries."""
+
+    prefix: str
+    """Leading source text belonging to the pasted entry payload."""
+
+    paths: tuple[Path, ...]
+    """Entries that resolved successfully, including files and directories."""
+
+    failure: ProbeFailure | None
+    """Most relevant failed probe, when an entry could not be inspected."""
+
+
 _probe_failures: ContextVar[list[ProbeFailure] | None] = ContextVar(
     "_probe_failures", default=None
 )
@@ -1130,6 +1143,46 @@ def select_probe_failure_for(
     if mentioned:
         return max(mentioned, key=lambda failure: len(str(failure.path)))
     return failures[0]
+
+
+def classify_pasted_entry_payload(text: str) -> PastedEntryPayload | None:
+    """Classify pasted text as filesystem entries without changing UI state.
+
+    This is the parser entry point for paste handlers. It deliberately performs
+    all filesystem work in one call so UI callers can run it in a worker thread
+    before inserting the payload. Files and directories use the same result:
+    media-capable files may be attached, while directories remain literal text.
+
+    Args:
+        text: Raw terminal paste or keystroke-burst payload.
+
+    Returns:
+        Parsed payload details, or `None` when the text is not path-shaped or no
+        entry could be identified. A path-shaped probe failure is returned as a
+        payload with no resolved paths so callers preserve the text safely.
+    """
+    if not looks_like_dropped_payload(text):
+        return None
+
+    with track_probe_failures() as failures:
+        paths = parse_pasted_any_entry_paths(text)
+        if paths:
+            prefix = text.strip()
+            resolved = tuple(paths)
+        else:
+            leading = extract_leading_pasted_entry_path(text)
+            if leading is None:
+                prefix = ""
+                resolved = ()
+            else:
+                path, token_end = leading
+                prefix = text[:token_end]
+                resolved = (path,)
+
+    failure = select_probe_failure_for(failures, text)
+    if not prefix and failure is None:
+        return None
+    return PastedEntryPayload(prefix or text.strip(), resolved, failure)
 
 
 def _record_probe_failure(path: Path, error: Exception) -> None:

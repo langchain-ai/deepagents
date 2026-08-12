@@ -155,6 +155,19 @@ class TestSkillInvocationHistory:
         assert reloaded.get_previous("") == "/tmp/assets"
         assert reloaded.current_mode == "normal"
 
+    def test_same_text_with_different_modes_is_not_deduplicated(
+        self, tmp_path: Path
+    ) -> None:
+        """Mode metadata participates in adjacent-entry deduplication."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("same text", mode="normal")
+        mgr.add("same text", mode="shell")
+
+        assert mgr.get_previous("") == "same text"
+        assert mgr.current_mode == "shell"
+        assert mgr.get_previous("") == "same text"
+        assert mgr.current_mode == "normal"
+
 
 class TestSubstringMatch:
     """Substring matching navigates to entries containing the query."""

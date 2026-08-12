@@ -3159,10 +3159,10 @@ class TestDroppedImagePaste:
             assert app.submitted[0].value == str(file_path)
             assert app.submitted[0].mode == "normal"
 
-    async def test_submit_existing_non_image_path_without_drop_draft_stays_normal(
+    async def test_submit_existing_path_without_drop_provenance_uses_prefix_mode(
         self, tmp_path
     ) -> None:
-        """Submission should revalidate paths when transient drop state is absent."""
+        """Submission does not probe arbitrary slash-prefixed text."""
         file_path = tmp_path / "anthropic_top_level_anyof_repro.ipynb"
         file_path.write_text("{}")
 
@@ -3177,7 +3177,7 @@ class TestDroppedImagePaste:
 
             assert len(app.submitted) == 1
             assert app.submitted[0].value == str(file_path)
-            assert app.submitted[0].mode == "normal"
+            assert app.submitted[0].mode == "command"
 
     async def test_inline_quoted_path_payload_rewrites_to_placeholder(
         self, tmp_path
@@ -3194,8 +3194,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Simulate terminals that drop paths as plain quoted text.
-            chat._text_area.text = f"'{img_path}'"
+            await chat._text_area._on_paste(events.Paste(f"'{img_path}'"))
             await pilot.pause()
 
             assert chat._text_area.text == "[image 1] "
@@ -3433,10 +3432,8 @@ class TestDroppedImagePaste:
             assert app.tracker.get_images() == []
             assert app.tracker.next_image_id == 1
 
-    async def test_submit_recovers_if_command_mode_already_stripped_path(
-        self, tmp_path
-    ) -> None:
-        """If slash mode stripped a dropped path, submission should recover it."""
+    async def test_paste_in_command_mode_restores_normal_mode(self, tmp_path) -> None:
+        """An explicit path paste replaces stale command-mode interpretation."""
         img_path = tmp_path / "recover.png"
         from PIL import Image
 
@@ -3448,9 +3445,8 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Simulate previously stripped leading slash.
             chat.mode = "command"
-            chat._text_area.text = str(img_path).lstrip("/")
+            await chat._text_area._on_paste(events.Paste(str(img_path)))
             await pilot.pause()
 
             await pilot.press("enter")
@@ -3609,7 +3605,7 @@ class TestDroppedFolderPaste:
             popup = chat.query_one(CompletionPopup)
             assert chat._text_area is not None
 
-            chat._text_area.text = str(folder)
+            await chat._text_area._on_paste(events.Paste(str(folder)))
             await _pause_for_strip(pilot)
 
             assert chat.mode == "normal"
@@ -3817,10 +3813,10 @@ class TestDroppedFolderPaste:
             assert app.submitted[0].value == value
             assert app.submitted[0].mode == "normal"
 
-    async def test_submit_folder_with_prose_without_drop_draft_stays_normal(
+    async def test_submit_folder_without_drop_provenance_uses_prefix_mode(
         self, tmp_path: Path
     ) -> None:
-        """Revalidation must accept a leading folder plus prose, like a file."""
+        """Submission does not infer provenance from the current filesystem."""
         folder = tmp_path / "assets"
         folder.mkdir()
         value = f"{folder} what is in here"
@@ -3835,7 +3831,7 @@ class TestDroppedFolderPaste:
 
             assert len(app.submitted) == 1
             assert app.submitted[0].value == value
-            assert app.submitted[0].mode == "normal"
+            assert app.submitted[0].mode == "command"
 
     async def test_recalled_dropped_folder_with_prose_stays_normal_text(
         self, tmp_path: Path
@@ -3888,7 +3884,7 @@ class TestDroppedFolderPaste:
             # if the slash controller were still consulted.
             chat.update_slash_commands([CommandEntry(f"{dropped}o", "stub", "", "")])
 
-            chat._text_area.text = dropped
+            await chat._text_area._on_paste(events.Paste(dropped))
             chat._text_area.move_cursor_to_end()
             await _pause_for_strip(pilot)
 
@@ -4110,9 +4106,8 @@ class TestDroppedFolderPaste:
     ) -> None:
         """History recall must survive the next keystroke.
 
-        Recall returns early from `on_text_area_changed` before draft detection
-        runs, so the recall handler installs the draft itself; otherwise the
-        classification would last exactly until the user typed one character.
+        Recall uses persisted mode metadata to install the draft without
+        consulting the current filesystem.
         """
         folder = tmp_path / "assets"
         folder.mkdir()
@@ -4122,7 +4117,7 @@ class TestDroppedFolderPaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append(str(folder))
+            chat._history.add(str(folder), mode="normal")
             await pilot.press("up")
             await pilot.pause()
 
@@ -4177,6 +4172,26 @@ class TestDroppedFolderPaste:
 
             assert chat.mode == "command"
             assert chat._dropped_path_draft is None
+
+    async def test_explicit_path_paste_wins_over_registered_command(
+        self, tmp_path: Path
+    ) -> None:
+        """Paste provenance disambiguates a path sharing a command name."""
+        folder = tmp_path / "tools"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            _register_command(chat, str(folder))
+
+            await chat._text_area._on_paste(events.Paste(str(folder)))
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+            assert chat._dropped_path_draft == str(folder)
 
     @pytest.mark.parametrize("command", ["/debug", "/debug-error"])
     async def test_hidden_command_wins_over_path(self, command: str) -> None:
@@ -4255,7 +4270,7 @@ class TestDroppedFolderPaste:
             notifications = _capture_notifications(monkeypatch, app)
             assert chat._text_area is not None
 
-            chat._text_area.text = str(folder)
+            await chat._text_area._on_paste(events.Paste(str(folder)))
             await _pause_for_strip(pilot)
 
             assert chat.mode == "normal"
@@ -4273,7 +4288,7 @@ class TestDroppedFolderPaste:
     async def test_unreadable_dropped_path_warns_once_per_drop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Re-detection over the same unreadable drop must not re-toast."""
+        """Editing an unreadable drop must not re-toast."""
         folder = tmp_path / "assets"
         folder.mkdir()
         _deny_stat_for(monkeypatch, folder)
@@ -4284,9 +4299,9 @@ class TestDroppedFolderPaste:
             notifications = _capture_notifications(monkeypatch, app)
             assert chat._text_area is not None
 
-            chat._text_area.text = str(folder)
+            await chat._text_area._on_paste(events.Paste(str(folder)))
             await _pause_for_strip(pilot)
-            # A second bulk edit re-runs detection over the same payload.
+            # Edits preserve provenance without probing the filesystem again.
             chat._text_area.text = f"{folder} and more"
             await _pause_for_strip(pilot)
 
@@ -4305,7 +4320,7 @@ class TestDroppedFolderPaste:
             notifications = _capture_notifications(monkeypatch, app)
             assert chat._text_area is not None
 
-            chat._text_area.text = str(folder)
+            await chat._text_area._on_paste(events.Paste(str(folder)))
             await _pause_for_strip(pilot)
 
             assert chat.mode == "normal"
@@ -4326,15 +4341,10 @@ class TestDroppedFolderPaste:
 
             assert notifications == []
 
-    async def test_unreadable_path_recalled_from_history_stays_text(
+    async def test_unreadable_path_recall_uses_persisted_mode(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """History recall must classify through the probe tracker too.
-
-        Submitting a path and then recalling it after the mount died (or its
-        permissions were revoked) is the same "cannot stat" case as the drop
-        itself, and must not silently eat the leading `/`.
-        """
+        """History recall stays deterministic without probing the path again."""
         folder = tmp_path / "assets"
         folder.mkdir()
         _deny_stat_for(monkeypatch, folder)
@@ -4344,17 +4354,19 @@ class TestDroppedFolderPaste:
             chat = app.query_one(ChatInput)
             notifications = _capture_notifications(monkeypatch, app)
 
-            mode, display_text = chat._history_entry_mode_and_text(str(folder))
+            mode, display_text = chat._history_entry_mode_and_text(
+                str(folder), stored_mode="normal"
+            )
 
             assert mode == "normal"
             assert display_text == str(folder)
             assert chat._dropped_path_draft == str(folder)
-            assert notifications
+            assert notifications == []
 
-    async def test_unreadable_path_submitted_without_draft_stays_text(
+    async def test_unreadable_path_without_provenance_is_not_revalidated(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Submission-time revalidation must use the probe tracker as well."""
+        """Submission does not synchronously probe slash-prefixed text."""
         folder = tmp_path / "assets"
         folder.mkdir()
         _deny_stat_for(monkeypatch, folder)
@@ -4365,7 +4377,7 @@ class TestDroppedFolderPaste:
             _capture_notifications(monkeypatch, app)
             chat._dropped_path_draft = None
 
-            assert chat._is_dropped_path_submission(str(folder)) is True
+            assert chat._is_dropped_path_submission(str(folder)) is False
 
     async def test_mixed_drop_with_unreadable_entry_warns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4383,7 +4395,7 @@ class TestDroppedFolderPaste:
             notifications = _capture_notifications(monkeypatch, app)
             assert chat._text_area is not None
 
-            chat._text_area.text = f"{readable} {denied}"
+            await chat._text_area._on_paste(events.Paste(f"{readable} {denied}"))
             await _pause_for_strip(pilot)
 
             assert chat.mode == "normal"
@@ -4671,82 +4683,67 @@ class TestDroppedFolderPaste:
 
 
 class TestPathPayloadDetectionGating:
-    """Single-keystroke edits should skip the blocking path-detection helpers.
+    """Filesystem classification stays off the synchronous Changed handler."""
 
-    `_detect_dropped_path_draft` and `_apply_inline_dropped_path_replacement`
-    both bottom out in synchronous `Path.stat()` syscalls on the event-loop
-    thread, by different routes: the former through `_classify_dropped_path`,
-    the latter through `parse_pasted_path_payload`. They are only meaningful
-    when a text change inserts more than one character (drag-drop / bracketed
-    paste); on normal typing they cost real wall-clock time for no possible
-    match.
-    """
+    async def test_bulk_text_change_uses_shape_without_filesystem_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path-shaped bulk edit records provenance without touching disk."""
+        from deepagents_code import input as input_module
 
-    async def test_typing_does_not_invoke_path_detection(self) -> None:
-        """Char-by-char keypresses must not run path-detection helpers."""
+        def fail_probe(_path: Path) -> os.stat_result | None:
+            pytest.fail("bulk text change performed a filesystem probe")
+
+        monkeypatch.setattr(input_module, "_stat_path", fail_probe)
+
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
-            ta = chat._text_area
-            assert ta is not None
+            assert chat._text_area is not None
 
-            detect_calls = 0
-            replace_calls = 0
-            original_detect = chat._detect_dropped_path_draft
-            original_replace = chat._apply_inline_dropped_path_replacement
-
-            def counting_detect(text: str) -> str | None:
-                nonlocal detect_calls
-                detect_calls += 1
-                return original_detect(text)
-
-            def counting_replace(text: str) -> bool:
-                nonlocal replace_calls
-                replace_calls += 1
-                return original_replace(text)
-
-            chat._detect_dropped_path_draft = counting_detect  # ty: ignore
-            chat._apply_inline_dropped_path_replacement = counting_replace  # ty: ignore
-
-            for char in "hello":
-                await pilot.press(char)
+            chat._text_area.text = "/definitely/missing/path"
             await pilot.pause()
 
-            assert detect_calls == 0
-            assert replace_calls == 0
+            assert chat.mode == "normal"
+            assert chat._dropped_path_draft == "/definitely/missing/path"
 
-    async def test_bulk_text_change_invokes_path_detection(
-        self, tmp_path: Path
+    async def test_paste_classification_runs_off_event_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Multi-char Changed events (drag-drop / paste) must still detect paths."""
+        """Bracketed paste resolves entries in a worker thread."""
+        import threading
+
+        from deepagents_code import input as input_module
+
         target = tmp_path / "dropped.txt"
         target.write_text("payload")
+        event_loop_thread = threading.get_ident()
+        parser_threads: list[int] = []
+        original = input_module.classify_pasted_entry_payload
+
+        def recording_parser(text: str) -> input_module.PastedEntryPayload | None:
+            parser_threads.append(threading.get_ident())
+            return original(text)
+
+        monkeypatch.setattr(
+            input_module, "classify_pasted_entry_payload", recording_parser
+        )
 
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
-            ta = chat._text_area
-            assert ta is not None
+            assert chat._text_area is not None
 
-            detect_calls = 0
-            original_detect = chat._detect_dropped_path_draft
-
-            def counting_detect(text: str) -> str | None:
-                nonlocal detect_calls
-                detect_calls += 1
-                return original_detect(text)
-
-            chat._detect_dropped_path_draft = counting_detect  # ty: ignore
-
-            ta.text = str(target)
+            await chat._text_area._on_paste(events.Paste(str(target)))
             await pilot.pause()
 
-            assert detect_calls >= 1
+            assert parser_threads
+            assert parser_threads[0] != event_loop_thread
 
-    async def test_replacement_edit_with_small_length_delta_detects_path(
+    async def test_replacement_paste_with_small_length_delta_attaches_path(
         self, tmp_path: Path
     ) -> None:
-        """Replacing selected text with a similar-length path should attach it."""
+        """A real paste event attaches a path even with a small length delta."""
         img_path = tmp_path / "similar-length.png"
         from PIL import Image
 
@@ -4761,8 +4758,8 @@ class TestPathPayloadDetectionGating:
 
             ta.text = "x" * len(str(img_path))
             await pilot.pause()
-
-            ta.text = str(img_path)
+            ta.selection = Selection((0, 0), ta.document.end)
+            await ta._on_paste(events.Paste(str(img_path)))
             await pilot.pause()
 
             assert ta.text == "[image 1] "

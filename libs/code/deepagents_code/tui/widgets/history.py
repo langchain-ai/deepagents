@@ -131,14 +131,19 @@ class HistoryManager:
         if not text or (is_command and not lower_text.startswith("/skill:")):
             return
 
-        # Skip duplicates of the last entry
-        if self._entries and self._entries[-1] == text:
-            return
-
         if len(self._entry_modes) < len(self._entries):
             self._entry_modes.extend(
                 [None] * (len(self._entries) - len(self._entry_modes))
             )
+        # Mode is part of an entry's meaning: the same slash-prefixed text may
+        # be a literal dropped path in normal mode or a command.
+        if (
+            self._entries
+            and self._entries[-1] == text
+            and self._entry_modes[-1] == mode
+        ):
+            return
+
         self._entries.append(text)
         self._entry_modes.append(mode)
 

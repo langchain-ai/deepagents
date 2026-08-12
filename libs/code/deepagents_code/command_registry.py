@@ -122,7 +122,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/copy",
         description="Copy the latest assistant message to clipboard",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
         name="/context",

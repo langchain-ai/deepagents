@@ -78,7 +78,8 @@ A `@release-bot` comment triggers the "📝 Curate release notes" workflow on th
 - Open the repo's **Actions** tab → select "📝 Curate release notes" in the left sidebar → the newest run is yours.
 - From the CLI: `gh run list --workflow=release_notes.yml --limit 5`, then `gh run view <run-id> --log`.
 
-**Note:** the workflow's concurrency group is per-PR with `cancel-in-progress: false`, so a second command posted while a run is in flight queues behind it instead of cancelling it.
+> [!NOTE]
+> The workflow's concurrency group is per-PR with `cancel-in-progress: false`, so a second command posted while a run is in flight queues behind it instead of cancelling it.
 
 #### One-time repository setup
 

@@ -13634,7 +13634,8 @@ class TestAutoClassifierModelCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "already the default for future sessions" in rendered
+            assert "reviews gated actions from the next turn." in rendered
+            assert "already the default for future sessions" not in rendered
             assert "Press Ctrl+S" not in rendered
             assert "config.toml" not in rendered
 

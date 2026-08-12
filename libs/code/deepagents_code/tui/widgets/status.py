@@ -250,8 +250,8 @@ class MetricsLine(Widget):
         ellipsis = get_glyphs().ellipsis
         if width <= len(ellipsis):
             return Content("")
-        first = self._chain(1).plain
-        return Content(first[: width - len(ellipsis)] + ellipsis)
+        first = self._chain(1).truncate(width - len(ellipsis))
+        return first + ellipsis
 
 
 class StatusBar(Vertical):
@@ -851,20 +851,29 @@ class StatusBar(Vertical):
         Returns:
             Styled cache usage.
         """
-        hit_rate = ""
+        colors = theme.get_theme_colors(self)
+        hit_rate = Content("")
         if self.cache_input_tokens:
             cached = min(self.cache_read_tokens, self.cache_input_tokens)
-            hit_rate = f"{cached / self.cache_input_tokens * 100:.0f}% hit"
+            percent = cached / self.cache_input_tokens * 100
+            if percent < 60.0:  # noqa: PLR2004  # cache alert threshold
+                color = colors.error
+            elif percent < 90.0:  # noqa: PLR2004  # cache warning threshold
+                color = colors.warning
+            else:
+                color = colors.muted
+            hit_rate = Content.styled(f"{percent:.0f}% hit", color)
         elif not self.cache_read_tokens and not self.cache_write_tokens:
-            hit_rate = "0% hit"
+            hit_rate = Content.styled("0% hit", colors.muted)
         details = (
             f"{_compact_tokens(self.cache_read_tokens)} read"
             f" / {_compact_tokens(self.cache_write_tokens)} write"
         )
         return Content.assemble(
-            Content.styled("Cache", theme.get_theme_colors(self).muted),
+            Content.styled("Cache", colors.muted),
             " ",
-            f"{hit_rate} {get_glyphs().bullet} " if hit_rate else "",
+            hit_rate,
+            f" {get_glyphs().bullet} " if hit_rate.plain else "",
             details,
         )
 

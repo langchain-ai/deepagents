@@ -20,8 +20,9 @@ from deepagents_code.approval_mode import (
 from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Callable, Sequence
 
+    from deepagents_acp.server import AgentSessionContext
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from langgraph.store.base import BaseStore
@@ -89,21 +90,47 @@ class _AutoGraph:
     async def aget_state(self, config: RunnableConfig) -> object:
         return await self._graph.aget_state(config)
 
+    async def aupdate_state(
+        self,
+        config: RunnableConfig,
+        values: dict[str, Any],
+        *,
+        as_node: str | None = None,
+    ) -> RunnableConfig:
+        return await self._graph.aupdate_state(config, values, as_node=as_node)
+
+    async def aget_state_history(self, config: RunnableConfig) -> AsyncIterator[object]:
+        async for state in self._graph.aget_state_history(config):
+            yield state
+
 
 class AgentServerACP(BaseAgentServerACP):
     """ACP server that supplies trusted classifier context in Auto mode."""
 
     def __init__(
         self,
-        agent: Pregel[Any, Any, Any, Any],
+        agent: Pregel[Any, Any, Any, Any]
+        | Callable[[AgentSessionContext], Pregel[Any, Any, Any, Any]],
         *,
         store: BaseStore,
+        **kwargs: Any,
     ) -> None:
         """Initialize the Auto-aware ACP server."""
-        super().__init__(cast("Any", agent))
-        wrapped = _AutoGraph(agent, store)
-        self._agent_factory = cast("Any", wrapped)
-        self._agent = cast("Any", wrapped)
+        self._store = store
+        if callable(agent):
+            factory = cast(
+                "Callable[[AgentSessionContext], Pregel[Any, Any, Any, Any]]", agent
+            )
+
+            def build(context: AgentSessionContext) -> _AutoGraph:
+                return _AutoGraph(factory(context), store)
+
+            super().__init__(cast("Any", build), **kwargs)
+        else:
+            super().__init__(cast("Any", agent), **kwargs)
+            wrapped = _AutoGraph(agent, store)
+            self._agent_factory = cast("Any", wrapped)
+            self._agent = cast("Any", wrapped)
 
     async def prompt(
         self,

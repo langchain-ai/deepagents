@@ -356,6 +356,10 @@ class AskUserMenu(Container):
 class _ChoiceOption(InlinePromptOption):
     """A single selectable ask-user choice option."""
 
+    @property
+    def _unselected_marker(self) -> str:
+        return get_glyphs().bullet
+
     def __init__(
         self, text: str, index: int, *, selected: bool = False, **kwargs: Any
     ) -> None:

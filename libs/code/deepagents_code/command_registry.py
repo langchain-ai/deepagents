@@ -80,10 +80,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auto",
-        description=(
-            "Switch to Auto approval mode, or pick its classifier model for "
-            "this session"
-        ),
+        description="Switch to Auto approval mode or manage its classifier model",
         # Bare `/auto` still switches mode immediately (the switcher must work
         # mid-turn). `/auto model` with no further arguments only opens the
         # classifier picker, so it also bypasses (via IMMEDIATE_UI_ARG_FORMS);
@@ -126,6 +123,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/copy",
         description="Copy the latest assistant message to clipboard",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+    ),
+    SlashCommand(
+        name="/context",
+        description="Show current context window usage",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="tokens window usage remaining offload compact",
     ),
     SlashCommand(
         name="/cost",
@@ -270,6 +273,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Show or hide message timestamps",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
         hidden_keywords="time footer footers date dates",
+    ),
+    SlashCommand(
+        name="/line-numbers",
+        description="Show or hide line numbers in file diffs",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="diff gutter numbers lines",
     ),
     SlashCommand(
         name="/update",

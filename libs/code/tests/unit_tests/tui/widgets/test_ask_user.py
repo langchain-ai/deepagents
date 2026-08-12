@@ -18,6 +18,7 @@ from deepagents_code.tui.widgets.ask_user import (
     MISSING_ANSWER_TOAST,
     AskUserMenu,
     AskUserTextArea,
+    _ChoiceOption,
     _QuestionWidget,
 )
 
@@ -210,8 +211,11 @@ class TestAskUserMenu:
 
         async with app.run_test(size=(36, 24)) as pilot:
             await pilot.pause()
-            choice = app.query_one(".ask-user-choice", Static)
-            assert choice.size.height > 1
+            choice = app.query_one(".ask-user-choice", _ChoiceOption)
+            cursor = choice.query_one(".inline-prompt-option-cursor", Static)
+            label = choice.query_one(".inline-prompt-option-label", Static)
+            assert label.size.height > 1
+            assert label.region.x == cursor.region.x + cursor.region.width
 
     async def test_text_question_submits_typed_answer(self) -> None:
         app = _AskUserTestApp([{"question": "What is your name?", "type": "text"}])

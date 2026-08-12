@@ -140,6 +140,7 @@ class ApprovalMenu(Container):
         id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
         *,
         auto_mode_eligible: bool = True,
+        show_diff_line_numbers: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize the ApprovalMenu widget.
@@ -154,6 +155,8 @@ class ApprovalMenu(Container):
             auto_mode_eligible: Whether Auto mode can be enabled in this session.
                 When `False` (e.g. a sandbox is active), the "Enable Auto for this
                 thread" option is not offered.
+            show_diff_line_numbers: Whether file-relative line numbers are shown
+                in diff previews.
             **kwargs: Additional keyword arguments passed to the Container base class.
         """
         super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
@@ -164,6 +167,7 @@ class ApprovalMenu(Container):
             self._action_requests = action_requests
 
         self._assistant_id = assistant_id
+        self._show_diff_line_numbers = show_diff_line_numbers
         # For display purposes, get tool names
         self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
         self._is_auto_fallback = any(
@@ -427,6 +431,10 @@ class ApprovalMenu(Container):
             widget_class, data = renderer.get_approval_widget(
                 tool_args, assistant_id=self._assistant_id
             )
+            if "show_numbers" in data:
+                data["show_numbers"] = (
+                    bool(data["show_numbers"]) and self._show_diff_line_numbers
+                )
             approval_widget = widget_class(data)
             await self._tool_info_container.mount(approval_widget)
 

@@ -37798,6 +37798,125 @@ class TestColdCacheWarningFlow:
 
         assert warning is None
 
+    async def test_debug_env_var_forces_warning_past_all_gates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`DEEPAGENTS_CODE_DEBUG_COLD_CACHE` synthesizes a warning despite gates."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_COLD_CACHE", "1")
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.6"
+        app._model_params_override = None
+        # Every gate that would normally bail: zero threshold, no recorded
+        # request, and a context below the provider floor.
+        app._cold_cache_warning_threshold_usd = 0.0
+        app._last_model_request_at = None
+        app._last_cache_model_spec = ""
+        app._last_cache_model_params = None
+        app._context_tokens = 12
+        config = MagicMock()
+        config.get_base_url.return_value = None
+
+        def estimate(
+            usage: dict[str, Any],
+            _model: str,
+            _provider: str,
+        ) -> float:
+            details = usage["input_token_details"]
+            return 0.10 if "cache_read" in details else 0.35
+
+        with (
+            patch(
+                "deepagents_code.model_config.ModelConfig.load",
+                return_value=config,
+            ),
+            patch(
+                "deepagents_code.model_config.is_warning_suppressed",
+                return_value=False,
+            ),
+            patch("deepagents_code.cost_tracking.estimate_cost", estimate),
+        ):
+            warning = await app._cold_cache_warning_for(
+                QueuedMessage("continue", "normal")
+            )
+
+        assert warning is not None
+        assert warning.policy.provider_name == "OpenAI"
+        # The context is raised to the floor so the modal copy stays sensible.
+        assert warning.context_tokens == warning.policy.minimum_tokens
+        assert warning.age_seconds > warning.policy.window_seconds
+
+    async def test_debug_env_var_falls_back_to_stand_in_policy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Unsupported providers get a stand-in policy so the modal is reachable."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_COLD_CACHE", "1")
+        app = DeepAgentsApp()
+        app._model_override = "fireworks:accounts/fireworks/models/kimi-k3"
+        app._model_params_override = None
+        app._cold_cache_warning_threshold_usd = 0.10
+        app._last_model_request_at = None
+        app._context_tokens = 50_000
+        config = MagicMock()
+        config.get_base_url.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.model_config.ModelConfig.load",
+                return_value=config,
+            ),
+            patch(
+                "deepagents_code.model_config.is_warning_suppressed",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.cost_tracking.estimate_cost",
+                return_value=None,
+            ),
+        ):
+            warning = await app._cold_cache_warning_for(
+                QueuedMessage("continue", "normal")
+            )
+
+        assert warning is not None
+        assert warning.policy.provider_name == "Anthropic"
+        assert warning.estimate.incremental_cost_usd == pytest.approx(0.0)
+
+    async def test_debug_env_var_still_respects_suppression_and_origin(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The debug override never fires for suppressed warnings or external sends."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_COLD_CACHE", "1")
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.6"
+        app._cold_cache_warning_threshold_usd = 0.10
+        app._context_tokens = 50_000
+
+        external = await app._cold_cache_warning_for(
+            QueuedMessage("continue", "normal", origin="external")
+        )
+        assert external is None
+
+        config = MagicMock()
+        config.get_base_url.return_value = None
+        with (
+            patch(
+                "deepagents_code.model_config.ModelConfig.load",
+                return_value=config,
+            ),
+            patch(
+                "deepagents_code.model_config.is_warning_suppressed",
+                return_value=True,
+            ),
+        ):
+            suppressed = await app._cold_cache_warning_for(
+                QueuedMessage("continue", "normal")
+            )
+
+        assert suppressed is None
+
     async def test_modal_admission_failure_sends_once(
         self,
         monkeypatch: pytest.MonkeyPatch,

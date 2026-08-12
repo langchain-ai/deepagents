@@ -117,6 +117,20 @@ Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
 as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
+DEBUG_COLD_CACHE = "DEEPAGENTS_CODE_DEBUG_COLD_CACHE"
+"""Force the cold prompt-cache warning modal on the next interactive send.
+
+Set to a truthy value when launching the interactive TUI to make
+`_cold_cache_warning_for` synthesize a warning from the current model and
+context, bypassing the provider-policy, token-floor, cache-window, and
+cost-threshold gates. When the active model has no documented cache policy, a
+stand-in policy is used so the modal stays reachable — in that case the dollar
+figures are illustrative, not real estimates. Lets the modal be exercised
+without waiting out a provider cache window.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
 r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
 

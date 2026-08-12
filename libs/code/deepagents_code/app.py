@@ -10878,6 +10878,9 @@ class DeepAgentsApp(App):
         Returns:
             Validated warning data, or `None` when dispatch should proceed.
         """
+        from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
+
+        debug_forced = is_env_truthy(DEBUG_COLD_CACHE)
         threshold = self._cold_cache_warning_threshold_usd
         model_spec = self._effective_model_spec() or ""
         timestamp_value = self._last_model_request_at
@@ -10885,10 +10888,9 @@ class DeepAgentsApp(App):
         if (
             message.mode != "normal"
             or message.origin != "interactive"
-            or threshold <= 0
             or not model_spec
-            or timestamp_value is None
-            or context_tokens <= 0
+            or (not debug_forced and (threshold <= 0 or timestamp_value is None))
+            or (not debug_forced and context_tokens <= 0)
         ):
             return None
 
@@ -10900,6 +10902,8 @@ class DeepAgentsApp(App):
             from datetime import UTC, datetime
 
             from deepagents_code.cold_cache import (
+                PromptCachePolicy,
+                RewarmEstimate,
                 estimate_rewarm_cost,
                 parse_cache_timestamp,
                 resolve_prompt_cache_policy,
@@ -10918,6 +10922,23 @@ class DeepAgentsApp(App):
                 current_params,
                 base_url=base_url,
             )
+            if debug_forced:
+                if policy is None:
+                    # Stand-in policy so the modal stays reachable on providers
+                    # without a documented cache policy; the dollar figures are
+                    # then illustrative, not real estimates.
+                    policy = PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m")
+                tokens = max(context_tokens, policy.minimum_tokens)
+                estimate = estimate_rewarm_cost(tokens, model_spec, policy)
+                if estimate is None:
+                    estimate = RewarmEstimate(0.0, 0.0)
+                return _ColdCacheWarning(
+                    policy=policy,
+                    estimate=estimate,
+                    context_tokens=tokens,
+                    age_seconds=float(policy.window_seconds) + 60,
+                    identity_changed=False,
+                )
             if policy is None or context_tokens < policy.minimum_tokens:
                 return None
             timestamp = parse_cache_timestamp(timestamp_value)

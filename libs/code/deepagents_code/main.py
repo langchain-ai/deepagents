@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
     from deepagents import FsToolName
+    from deepagents_acp.server import AgentSessionContext
+    from langgraph.pregel import Pregel
     from rich.console import Console
 
     from deepagents_code._dep_floor_check import _FloorViolation
@@ -2878,6 +2880,7 @@ async def _run_acp_cli_async(
     )
     from deepagents_code.model_config import (
         ModelConfigError,
+        get_available_models,
         save_recent_model,
         touch_recent_model,
     )
@@ -2912,6 +2915,19 @@ async def _run_acp_cli_async(
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
+    models = [
+        {"value": spec, "name": spec}
+        for spec in dict.fromkeys(
+            [
+                resolved_spec,
+                *(
+                    f"{provider}:{model}"
+                    for provider, available in get_available_models().items()
+                    for model in available
+                ),
+            ]
+        )
+    ]
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
@@ -2950,31 +2966,49 @@ async def _run_acp_cli_async(
         return 1
 
     async_subagents = load_async_subagents() or None
-
-    try:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        agent_graph, _backend = create_cli_agent(
-            model=model_result.model,
-            assistant_id=assistant_id,
-            tools=tools,
-            mcp_server_info=mcp_server_info,
-            checkpointer=InMemorySaver(),
-            async_subagents=async_subagents,
-            fs_tools=allow_fs_tools,
-            recursion_limit=recursion_limit,
-            memory_auto_save=is_memory_auto_save_enabled(),
-        )
-    except Exception as exc:
-        sys.stderr.write(f"Error: failed to create agent: {exc}\n")
-        sys.stderr.flush()
-        logger.debug("ACP agent creation failed", exc_info=True)
-        return 1
-
-    server = agent_server_cls(agent_graph)  # Pregel is a CompiledStateGraph at runtime
     exit_code = 0
     try:
-        await run_acp_agent(server)
+        from deepagents_code.sessions import get_checkpointer
+
+        async with get_checkpointer() as checkpointer:
+            await checkpointer.setup()
+
+            def build_agent(
+                context: "AgentSessionContext",
+            ) -> "Pregel[Any, Any, Any, Any]":
+                selected_model = context.model or resolved_spec
+                session_model = (
+                    model_result
+                    if selected_model == resolved_spec
+                    else create_model(
+                        selected_model,
+                        extra_kwargs=model_params,
+                        profile_overrides=profile_override,
+                    )
+                )
+                session_model.apply_to_settings()
+                agent_graph, _backend = create_cli_agent(
+                    model=session_model.model,
+                    assistant_id=assistant_id,
+                    tools=tools,
+                    mcp_server_info=mcp_server_info,
+                    checkpointer=checkpointer,
+                    async_subagents=async_subagents,
+                    fs_tools=allow_fs_tools,
+                    recursion_limit=recursion_limit,
+                    memory_auto_save=is_memory_auto_save_enabled(),
+                    cwd=context.cwd,
+                    project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
+                )
+                return agent_graph
+
+            server = agent_server_cls(
+                build_agent,
+                models=models,
+                load_sessions=True,
+                checkpoint_metadata={"agent_name": assistant_id},
+            )
+            await run_acp_agent(server)
     except KeyboardInterrupt:
         pass
     except Exception as exc:

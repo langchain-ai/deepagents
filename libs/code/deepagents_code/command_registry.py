@@ -275,6 +275,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="time footer footers date dates",
     ),
     SlashCommand(
+        name="/line-numbers",
+        description="Show or hide line numbers in file diffs",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="diff gutter numbers lines",
+    ),
+    SlashCommand(
         name="/update",
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,

@@ -354,6 +354,7 @@ class TestMessageData:
             diff_content,
             file_path="src/file.py",
             tool_name="edit_file",
+            show_numbers=False,
             id="test-diff-1",
         )
 
@@ -363,6 +364,7 @@ class TestMessageData:
         assert data.content == diff_content
         assert data.diff_file_path == "src/file.py"
         assert data.diff_tool_name == "edit_file"
+        assert data.diff_show_numbers is False
         assert data.id == "test-diff-1"
 
         # Deserialize
@@ -371,6 +373,7 @@ class TestMessageData:
         assert restored._diff_content == diff_content
         assert restored._file_path == "src/file.py"
         assert restored._tool_name == "edit_file"
+        assert restored._show_numbers is False
         assert restored.id == "test-diff-1"
 
     def test_summarization_message_roundtrip(self):

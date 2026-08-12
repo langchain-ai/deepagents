@@ -59,3 +59,13 @@ async def test_auto_graph_adds_trusted_prompt_context() -> None:
     metadata = message.additional_kwargs["deepagents_code_user_prompt"]
     assert metadata["literal_user_text"] == "Update parser.py"
     assert metadata["turn_id"] == context.turn_id
+
+
+def test_auto_server_installs_wrapper_as_built_agent() -> None:
+    from deepagents_code.acp import AgentServerACP, _AutoGraph
+
+    graph = SimpleNamespace(checkpointer=object())
+    server = AgentServerACP(graph, store=InMemoryStore())  # type: ignore[arg-type]
+
+    assert isinstance(server._agent, _AutoGraph)
+    assert server._agent_factory is server._agent

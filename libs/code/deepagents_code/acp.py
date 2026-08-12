@@ -100,7 +100,10 @@ class AgentServerACP(BaseAgentServerACP):
         store: BaseStore,
     ) -> None:
         """Initialize the Auto-aware ACP server."""
-        super().__init__(cast("Any", _AutoGraph(agent, store)))
+        super().__init__(cast("Any", agent))
+        wrapped = _AutoGraph(agent, store)
+        self._agent_factory = cast("Any", wrapped)
+        self._agent = cast("Any", wrapped)
 
     async def prompt(
         self,

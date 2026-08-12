@@ -492,6 +492,10 @@ class _ThreadREPL:
         """
         self._worker.run_sync(self._ainstall_tools(tools))
 
+    async def ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
+        """Async variant of ``install_tools``."""
+        await self._worker.run_async(self._ainstall_tools(tools))
+
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
         ctx = self._require_ctx()
         name_to_tool: dict[str, BaseTool] = {}
@@ -963,6 +967,25 @@ class _Registry:
                 self._slots[thread_id] = slot
             return slot.repl
 
+    async def aget(self, thread_id: str) -> _ThreadREPL:
+        """Return a REPL without blocking the caller's event loop on a miss."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+        if slot is not None:
+            return slot.repl
+
+        slot = await asyncio.to_thread(self._build_slot, thread_id)
+        with self._lock:
+            current = self._slots.get(thread_id)
+            if current is None:
+                self._slots[thread_id] = slot
+                return slot.repl
+
+        # Another caller won the race to install the slot. Dispose of the
+        # duplicate off the event loop before returning the canonical REPL.
+        await asyncio.to_thread(self._close_slot, slot)
+        return current.repl
+
     def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
         """Return existing REPL for `thread_id` without creating a new slot."""
         with self._lock:
@@ -1011,7 +1034,14 @@ class _Registry:
         with contextlib.suppress(Exception):
             new_repl.close()
 
+    async def areset_repl(self, thread_id: str) -> None:
+        """Async variant of ``reset_repl``."""
+        await asyncio.to_thread(self.reset_repl, thread_id)
+
     def _build_slot_locked(self, thread_id: str) -> _Slot:
+        return self._build_slot(thread_id)
+
+    def _build_slot(self, thread_id: str) -> _Slot:
         name = f"quickjs-worker-{thread_id[:8]}"
         worker = ThreadWorker(name=name)
         runtime = worker.run_sync(self._acreate_runtime())
@@ -1042,7 +1072,7 @@ class _Registry:
             await slot.repl.aclose()
         with contextlib.suppress(Exception):
             await slot.worker.run_async(_aclose_runtime(slot.runtime))
-        slot.worker.close()
+        await asyncio.to_thread(slot.worker.close)
 
     async def _acreate_runtime(self) -> Runtime:
         return Runtime(

@@ -301,7 +301,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             code: Annotated[str, code_doc],
         ) -> ToolMessage:
             thread_id = _resolve_thread_id(fallback_id)
-            repl = middleware._repl_for_eval(thread_id)
+            repl = await middleware._arepl_for_eval(thread_id)
             try:
                 outcome = await repl.eval_async(
                     code,
@@ -310,7 +310,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 )
             finally:
                 if middleware._mode == "call":
-                    middleware._registry.reset_repl(thread_id)
+                    await middleware._registry.areset_repl(thread_id)
             return _make_tool_message(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
@@ -338,6 +338,15 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         repl = self._registry.get(thread_id)
         if self._mode == "call" and self._ptc is not None:
             repl.install_tools(list(self._ptc_tools_by_thread.get(thread_id, ())))
+        return repl
+
+    async def _arepl_for_eval(self, thread_id: str) -> Any:
+        """Async variant of ``_repl_for_eval``."""
+        repl = await self._registry.aget(thread_id)
+        if self._mode == "call" and self._ptc is not None:
+            await repl.ainstall_tools(
+                list(self._ptc_tools_by_thread.get(thread_id, ()))
+            )
         return repl
 
     def before_agent(
@@ -376,7 +385,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if not payload:
             return None
         thread_id = _resolve_thread_id(self._fallback_thread_id)
-        repl = self._registry.get(thread_id)
+        repl = await self._registry.aget(thread_id)
         try:
             await repl.arestore_snapshot(payload, inject_globals=True)
         except Exception:  # noqa: BLE001  # best-effort restore path
@@ -409,7 +418,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ],
     ) -> ModelResponse[ResponseT]:
         """(async) Inject the REPL's system-prompt snippet on every model call."""
-        prompt = self._prepare_for_call(request)
+        prompt = await self._aprepare_for_call(request)
         return await handler(
             request.override(
                 system_message=self._extend(request.system_message, prompt)
@@ -467,6 +476,35 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         # *identity* — if a tool keeps its name but its schema changes
         # between turns, the cached prompt staleness is on the caller.
         # Same tradeoff the TS package accepts; see the module docstring.
+        exposed_names = frozenset(t.name for t in exposed)
+        if self._ptc_prompt_cache is None or self._ptc_prompt_cache[0] != exposed_names:
+            self._ptc_prompt_cache = (
+                exposed_names,
+                render_ptc_prompt(exposed, tool_name=self._tool_name),
+            )
+        return prompt + self._ptc_prompt_cache[1]
+
+    async def _aprepare_for_call(self, request: ModelRequest[ContextT]) -> str:
+        """Async variant of ``_prepare_for_call``."""
+        request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
+
+        subagent_section = ""
+        if self._subagents and find_subagent_task_tool(request_tools) is not None:
+            subagent_section = render_subagent_system_prompt(tool_name=self._tool_name)
+
+        if self._ptc is None:
+            return self._base_prompt(ptc_attached=False) + subagent_section
+
+        exposed = filter_tools_for_ptc(
+            request_tools,
+            self._ptc,
+            self_tool_name=self._tool_name,
+        )
+        prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
+        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        repl = await self._registry.aget(thread_id)
+        await repl.ainstall_tools(exposed)
+        self._ptc_tools_by_thread[thread_id] = tuple(exposed)
         exposed_names = frozenset(t.name for t in exposed)
         if self._ptc_prompt_cache is None or self._ptc_prompt_cache[0] != exposed_names:
             self._ptc_prompt_cache = (

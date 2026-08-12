@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -746,6 +747,128 @@ async def test_aevict_closes_and_removes_slot() -> None:
         assert "thread-a" not in reg._slots
     finally:
         reg.close()
+
+
+async def test_async_model_call_build_does_not_block_event_loop() -> None:
+    """Building a QuickJS slot from an async hook leaves the loop responsive."""
+
+    class _Request:
+        def __init__(self) -> None:
+            self.tools: list[BaseTool] = []
+            self.system_message = None
+
+        def override(self, **_: Any) -> _Request:
+            return self
+
+    mw = CodeInterpreterMiddleware(ptc=["eval"])
+    entered = threading.Event()
+    released = threading.Event()
+    pulse = asyncio.Event()
+    pulse_times: list[float] = []
+    release_times: list[float] = []
+    original_run_sync = ThreadWorker.run_sync
+
+    def blocked_run_sync(worker: ThreadWorker, coro: Any) -> Any:
+        entered.set()
+        released.wait(timeout=2.0)
+        return original_run_sync(worker, coro)
+
+    def release() -> None:
+        if not released.is_set():
+            release_times.append(time.monotonic())
+            released.set()
+
+    def record_pulse() -> None:
+        pulse_times.append(time.monotonic())
+        pulse.set()
+
+    async def handler(_: Any) -> str:
+        return "ok"
+
+    release_timer = threading.Timer(0.2, release)
+    try:
+        with patch.object(ThreadWorker, "run_sync", blocked_run_sync):
+            asyncio.get_running_loop().call_later(0.01, record_pulse)
+            task = asyncio.create_task(mw.awrap_model_call(_Request(), handler))
+            release_timer.start()
+            try:
+                await asyncio.wait_for(pulse.wait(), timeout=1.0)
+                release()
+                assert await task == "ok"
+            finally:
+                release()
+                if not task.done():
+                    await task
+    finally:
+        release_timer.cancel()
+        mw._registry.close()
+
+    assert entered.is_set()
+    assert pulse_times
+    assert release_times
+    assert pulse_times[0] < release_times[0]
+
+
+async def test_aevict_worker_close_does_not_block_event_loop() -> None:
+    """Evicting a slot leaves the loop responsive while the worker stops."""
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    reg.get("thread-a")
+    slot = reg._slots["thread-a"]
+    entered = threading.Event()
+    released = threading.Event()
+    pulse = asyncio.Event()
+    pulse_times: list[float] = []
+    release_times: list[float] = []
+    original_close = slot.worker.close
+    loop = asyncio.get_running_loop()
+
+    def blocked_close() -> None:
+        entered.set()
+        released.wait(timeout=2.0)
+        original_close()
+
+    def release() -> None:
+        if not released.is_set():
+            release_times.append(time.monotonic())
+            released.set()
+
+    def record_pulse() -> None:
+        pulse_times.append(time.monotonic())
+        pulse.set()
+
+    def schedule_pulse() -> None:
+        entered.wait(timeout=2.0)
+        loop.call_soon_threadsafe(record_pulse)
+
+    pulse_thread = threading.Thread(target=schedule_pulse)
+    release_timer = threading.Timer(0.2, release)
+    try:
+        with patch.object(slot.worker, "close", blocked_close):
+            pulse_thread.start()
+            release_timer.start()
+            task = asyncio.create_task(reg.aevict("thread-a"))
+            try:
+                await asyncio.wait_for(pulse.wait(), timeout=1.0)
+                release()
+                await task
+            finally:
+                release()
+                if not task.done():
+                    await task
+    finally:
+        pulse_thread.join(timeout=1.0)
+        release_timer.cancel()
+        reg.close()
+
+    assert entered.is_set()
+    assert pulse_times
+    assert release_times
+    assert pulse_times[0] < release_times[0]
 
 
 def test_after_agent_evicts_current_thread_slot() -> None:

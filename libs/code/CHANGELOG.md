@@ -4,31 +4,29 @@
 
 ## [0.1.55](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.54...deepagents-code==0.1.55) (2026-08-12)
 
-
 ### Features
 
-* **code:** `Ctrl+S` in `/auto model` stores `[models].auto_classifier` ([#5313](https://github.com/langchain-ai/deepagents/issues/5313)) ([e742d04](https://github.com/langchain-ai/deepagents/commit/e742d04c8ca6f615327d7d1eab7994be8fcb3000))
-* **code:** add `/context` usage report ([#5407](https://github.com/langchain-ai/deepagents/issues/5407)) ([0355416](https://github.com/langchain-ai/deepagents/commit/0355416c0d4817ac58d3e14aa8b7ab099b6db74d))
-* **code:** add cache and context status row ([#5408](https://github.com/langchain-ai/deepagents/issues/5408)) ([2b3edf9](https://github.com/langchain-ai/deepagents/commit/2b3edf9ba4f3b43911f118b8e942374091602854))
-* **code:** auto-update installed plugins ([#5368](https://github.com/langchain-ai/deepagents/issues/5368)) ([3bf6ca7](https://github.com/langchain-ai/deepagents/commit/3bf6ca7ac076bc0330b65d244e3b46f398674de8))
-* **code:** persist and reconfigure ACP sessions ([#5366](https://github.com/langchain-ai/deepagents/issues/5366)) ([22a36d2](https://github.com/langchain-ai/deepagents/commit/22a36d25d9e82902fa28cdacdcb51cd6a9b013d7))
-* **code:** toggle diff line numbers ([#5427](https://github.com/langchain-ai/deepagents/issues/5427)) ([4cd21b6](https://github.com/langchain-ai/deepagents/commit/4cd21b61592ef0239f59cf4e3f27a2a70d226737))
-* **code:** warn above configurable session cost threshold ([#5405](https://github.com/langchain-ai/deepagents/issues/5405)) ([8cf8517](https://github.com/langchain-ai/deepagents/commit/8cf8517e7fb728fedd07db15a0577b305cd69f70))
+- Added a `/context` usage report for inspecting context consumption ([#5407](https://github.com/langchain-ai/deepagents/issues/5407)).
+- Added a cache and context status row for at-a-glance session state ([#5408](https://github.com/langchain-ai/deepagents/issues/5408)).
+- Added configurable warnings when a session exceeds the configured cost threshold ([#5405](https://github.com/langchain-ai/deepagents/issues/5405)).
+- Added support for persisting and reconfiguring ACP sessions ([#5366](https://github.com/langchain-ai/deepagents/issues/5366)).
+- Added automatic updates for installed plugins ([#5368](https://github.com/langchain-ai/deepagents/issues/5368)).
+- Added a toggle for diff line numbers ([#5427](https://github.com/langchain-ai/deepagents/issues/5427)).
+- `Ctrl+S` in `/auto model` now stores `[models].auto_classifier` ([#5313](https://github.com/langchain-ai/deepagents/issues/5313)).
 
+### Fixes
 
-### Bug Fixes
-
-* **code:** clarify project hooks trust prompt and stop prompting for user hooks ([#5426](https://github.com/langchain-ai/deepagents/issues/5426)) ([61d3279](https://github.com/langchain-ai/deepagents/commit/61d32797ef85d1380e356cd2f9de1eb7926417ec))
-* **code:** clear dynamic subagents on next turn ([#5437](https://github.com/langchain-ai/deepagents/issues/5437)) ([9a37479](https://github.com/langchain-ai/deepagents/commit/9a37479f866160f92474847720b57db9598ddb3e))
-* **code:** count distinct targets in grouped tool summaries ([#5409](https://github.com/langchain-ai/deepagents/issues/5409)) ([cf8ea93](https://github.com/langchain-ai/deepagents/commit/cf8ea93a634b2ae03fa9033db6e0e240ed2ae1a1))
-* **code:** drop the "Message restored to input" toast ([#5253](https://github.com/langchain-ai/deepagents/issues/5253)) ([c206eb4](https://github.com/langchain-ai/deepagents/commit/c206eb450d612f77924ee55ecd136fbc52f459ab))
-* **code:** hide incomplete extras from version output ([#5352](https://github.com/langchain-ai/deepagents/issues/5352)) ([38f32cd](https://github.com/langchain-ai/deepagents/commit/38f32cdbfdfcf1728178dbee85a42751dd3f3d2e))
-* **code:** indent wrapped ask-user choices and add selection styling ([#5442](https://github.com/langchain-ai/deepagents/issues/5442)) ([a78d7b1](https://github.com/langchain-ai/deepagents/commit/a78d7b1744050c3221aab5e0c0300cc5f5bec519))
-* **code:** remove optional-provider startup tip ([#5421](https://github.com/langchain-ai/deepagents/issues/5421)) ([f137897](https://github.com/langchain-ai/deepagents/commit/f1378978e20f94762601ed38787a6fdb7fb39784))
-* **code:** restore edit diffs in resumed threads ([#5391](https://github.com/langchain-ai/deepagents/issues/5391)) ([6a5d93f](https://github.com/langchain-ai/deepagents/commit/6a5d93f9ba7391189f65e6b999b724253577085d))
-* **code:** serialize dcode self-upgrades across processes ([#5252](https://github.com/langchain-ai/deepagents/issues/5252)) ([e12acba](https://github.com/langchain-ai/deepagents/commit/e12acbac89e553048b03fb6132b53e61b3433271))
-* **code:** show resume hint after crashes ([#5412](https://github.com/langchain-ai/deepagents/issues/5412)) ([015a019](https://github.com/langchain-ai/deepagents/commit/015a0197f588e34475db63c2a03f04987583b081))
-* **code:** warn on stale dependencies in editable installs ([#5386](https://github.com/langchain-ai/deepagents/issues/5386)) ([10353bd](https://github.com/langchain-ai/deepagents/commit/10353bda7196f307db9b22ef1173764aeda6daa7))
+- Restored edit diffs in resumed threads ([#5391](https://github.com/langchain-ai/deepagents/issues/5391)).
+- Added a resume hint after crashes ([#5412](https://github.com/langchain-ai/deepagents/issues/5412)).
+- Clarified the project hooks trust prompt and stopped prompting for user hooks ([#5426](https://github.com/langchain-ai/deepagents/issues/5426)).
+- Cleared dynamic subagents on the next turn ([#5437](https://github.com/langchain-ai/deepagents/issues/5437)).
+- Improved grouped tool summaries by counting distinct targets ([#5409](https://github.com/langchain-ai/deepagents/issues/5409)).
+- Improved ask-user choice wrapping and selection styling ([#5442](https://github.com/langchain-ai/deepagents/issues/5442)).
+- Serialized `dcode` self-upgrades across processes ([#5252](https://github.com/langchain-ai/deepagents/issues/5252)).
+- Added warnings for stale dependencies in editable installs ([#5386](https://github.com/langchain-ai/deepagents/issues/5386)).
+- Hid incomplete extras from version output ([#5352](https://github.com/langchain-ai/deepagents/issues/5352)).
+- Removed the optional-provider startup tip ([#5421](https://github.com/langchain-ai/deepagents/issues/5421)).
+- Removed the “Message restored to input” toast ([#5253](https://github.com/langchain-ai/deepagents/issues/5253)).
 
 ## [0.1.54](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.53...deepagents-code==0.1.54) (2026-08-07)
 

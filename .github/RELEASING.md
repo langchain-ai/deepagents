@@ -75,8 +75,8 @@ To ship without curated notes, add the `release: dangerously skip curated notes`
 
 A `@release-bot` comment triggers the "📝 Curate release notes" workflow on the `issue_comment` event, not on the PR's head branch, so it does **not** appear as a PR status check. To watch it:
 
-- Open the repo's **Actions** tab → select "📝 Curate release notes" in the left sidebar → the newest run is yours.
-- From the CLI: `gh run list --workflow=release_notes.yml --limit 5`, then `gh run view <run-id> --log`.
+- Open the repo's **Actions** tab → select "📝 Curate release notes" in the left sidebar → select the run whose title matches your release PR.
+- From the CLI: `gh run list --workflow=release_notes.yml --limit 5`, find the row whose title matches your release PR, then run `gh run view <run-id> --log`.
 
 > [!NOTE]
 > The workflow's concurrency group is per-PR with `cancel-in-progress: false`, so a second command posted while a run is in flight queues behind it instead of cancelling it.

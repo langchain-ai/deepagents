@@ -1,39 +1,112 @@
-# Close issues and PRs after 10 days without activity while a maintainer awaits
-# the author's response. Only a response from the original author removes the
-# `needs-response` label.
+# Close issues and PRs that maintainers labeled `needs-response` once the
+# original author has gone quiet, and clear the label as soon as they respond.
+#
+# MAINTAINER PROCEDURE — post your question FIRST, then apply the label.
+# `actions/stale` refuses to close an item if any human comment exists after the
+# `labeled` event, so labeling and *then* asking means the item never closes.
+# A third party commenting after the label has the same effect. This fails
+# silently: the scheduled run logs "not old enough to close yet" and stays
+# green, so there is no signal distinguishing "nothing due" from "never closes".
+#
+# The 10-day close window is measured from the item's `updated_at`, not from
+# when the label was applied, so any activity by anyone postpones closure while
+# the label persists.
+#
+# Because `remove-stale-when-updated: false` stops the stale action from
+# clearing the label on activity, the `remove-label` job below is the *only*
+# path that clears it. It therefore has to cover every way an author can
+# respond: conversation comments (`issue_comment`, which covers issues and PR
+# conversations), review-thread replies (`pull_request_review_comment`),
+# submitted reviews (`pull_request_review`), and pushing commits
+# (`pull_request_target` / `synchronize`). Missing any of these would auto-close
+# a PR with "we have not received a response" *after* the author responded.
+#
+# `pull_request_target` runs in the base-branch context, which is what grants a
+# write token on fork PRs. Nothing here checks out or executes PR code, so the
+# usual `pull_request_target` injection risk does not apply.
+#
+# Both jobs use the default GITHUB_TOKEN so their mutations do NOT re-trigger
+# workflows: GitHub does not start new runs from actions performed by the
+# default token (narrow exceptions like `workflow_dispatch` aside). That matters
+# more here than it did in the predecessor workflow, because this one both
+# triggers on `issue_comment` and posts its own close comments — under a PAT,
+# `close-issue-message` would feed straight back into `remove-label`. The
+# `user.type != 'Bot'` guards below are the second line of defense.
 
-name: Close Stale Issues
+name: Needs Response
 
 on:
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_target:
+    types: [synchronize]
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
-  issues: write
-  pull-requests: write
+  contents: read
 
-# Key the concurrency group by issue/PR number for comment events so an
+# Key the concurrency group by issue/PR number for author-activity events so an
 # author's reply is never discarded behind an unrelated comment or the
 # scheduled stale scan; scheduled/dispatch runs share one group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.issue.number || 'scheduled' }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
+  # Clear `needs-response` when the original author responds. Fires on every
+  # author-activity event; the `if:` filter below skips the run unless the item
+  # is open, carries the label, and the actor is the original author (and not a
+  # bot). The four branches exist because each event type exposes the item under
+  # a different payload key (`issue` vs `pull_request`) and the actor under a
+  # different one (`comment.user` vs `review.user` vs `github.actor`).
+  #
+  # The `github.repository` guard keeps forks from running automation that
+  # closes items and mutates labels.
   remove-label:
     if: >-
       github.repository == 'langchain-ai/deepagents' &&
-      github.event_name == 'issue_comment' &&
-      github.event.issue.state == 'open' &&
-      contains(github.event.issue.labels.*.name, 'needs-response') &&
-      github.event.comment.user.type != 'Bot' &&
-      github.event.comment.user.login == github.event.issue.user.login
+      (
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.state == 'open' &&
+          contains(github.event.issue.labels.*.name, 'needs-response') &&
+          github.event.comment.user.type != 'Bot' &&
+          github.event.comment.user.login == github.event.issue.user.login
+        ) || (
+          github.event_name == 'pull_request_review_comment' &&
+          github.event.pull_request.state == 'open' &&
+          contains(github.event.pull_request.labels.*.name, 'needs-response') &&
+          github.event.comment.user.type != 'Bot' &&
+          github.event.comment.user.login == github.event.pull_request.user.login
+        ) || (
+          github.event_name == 'pull_request_review' &&
+          github.event.pull_request.state == 'open' &&
+          contains(github.event.pull_request.labels.*.name, 'needs-response') &&
+          github.event.review.user.type != 'Bot' &&
+          github.event.review.user.login == github.event.pull_request.user.login
+        ) || (
+          github.event_name == 'pull_request_target' &&
+          github.event.pull_request.state == 'open' &&
+          contains(github.event.pull_request.labels.*.name, 'needs-response') &&
+          github.actor == github.event.pull_request.user.login
+        )
+      )
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # `issues: write` alone is not enough: `issue_comment` also fires for PR
+    # conversation comments, and GitHub authorizes label mutations on a PR
+    # through the `pull-requests` scope even though the REST path is
+    # `/issues/{n}/labels`. A job-level block REPLACES the workflow-level one
+    # rather than merging with it, so both scopes must be listed here.
     permissions:
       issues: write
+      pull-requests: write
 
     steps:
       - name: Remove needs-response label
@@ -41,11 +114,15 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const issue_number = context.payload.issue.number;
-            const author = context.payload.issue.user.login;
+            // `issue_comment` payloads carry `issue` (for both issues and
+            // PRs); the `pull_request_*` payloads carry `pull_request`.
+            const item = context.payload.issue ?? context.payload.pull_request;
+            const issue_number = item.number;
+            const author = item.user.login;
 
             console.log(
-              `Author ${author} commented on #${issue_number} — removing needs-response`,
+              `Author ${author} responded on #${issue_number} via ` +
+                `${context.eventName} — removing needs-response`,
             );
 
             try {
@@ -56,34 +133,59 @@ jobs:
                 name: 'needs-response',
               });
             } catch (e) {
+              // 404: typically label not present (already removed or never
+              // applied). Could also indicate issue/repo not found — include
+              // e.message to disambiguate. Keep the message hedged and keep
+              // e.message: without it a genuine "issue not found" bug is
+              // indistinguishable from the benign case.
               if (e.status === 404) {
-                console.log(`Label already absent (404) — nothing to do: ${e.message}`);
+                console.log(
+                  `removeLabel returned 404 — label already absent, or the ` +
+                    `item is gone: ${e.message}`,
+                );
                 return;
               }
               throw e;
             }
 
+            console.log(`Removed needs-response from #${issue_number}`);
+
   close-stale-issues:
     if: >-
       github.repository == 'langchain-ai/deepagents' &&
-      github.event_name != 'issue_comment'
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       issues: write
       pull-requests: write
 
     steps:
-      - name: Close issues awaiting an author response
+      - name: Close issues and PRs awaiting an author response
         uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
         with:
-          # Do not apply a stale label; only process issues that maintainers
-          # explicitly marked as waiting on their original author.
+          # Do not apply a stale label; only process issues and PRs that
+          # maintainers explicitly marked as waiting on their original author.
           days-before-stale: -1
           stale-issue-label: needs-response
           stale-pr-label: needs-response
+          # Let only the `remove-label` job above clear the label, so unrelated
+          # activity does not reset an unanswered question.
           remove-stale-when-updated: false
           days-before-issue-close: 10
           days-before-pr-close: 10
+          # Honor the repo-wide bypass label (see `close_old_prs.yml`) and skip
+          # drafts, matching `close_old_prs.yml`. Both default to empty/false,
+          # so without these a maintainer applying `do-not-close` would be
+          # silently overruled.
+          exempt-issue-labels: do-not-close
+          exempt-pr-labels: do-not-close
+          exempt-draft-pr: true
+          # Default is 30, and exhausting the budget only logs a warning and
+          # exits 0 — making a truncated sweep look identical to a clean one.
+          # `getIssues` pages over every open issue and PR, spending operations
+          # on `listEvents` + `listComments` per candidate.
+          operations-per-run: 200
           close-issue-message: >
             This issue has been automatically closed because we have not
             received a response from the original author. Please

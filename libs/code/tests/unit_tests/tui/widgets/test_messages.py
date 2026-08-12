@@ -743,6 +743,14 @@ class TestDiffMessageCredentialRedaction:
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
 
+    def test_app_config_can_hide_file_line_numbers(self) -> None:
+        """The app-level preference removes gutters from file-relative diffs."""
+        diff = "@@ -10 +12 @@\n-old\n+new"
+        texts = self._texts(DiffMessage(diff, file_path="main.py", show_numbers=False))
+        assert "- old" in texts
+        assert "+ new" in texts
+        assert not any(text.lstrip().startswith(("10", "12")) for text in texts)
+
     def test_empty_file_path_renders_diff(self) -> None:
         """An unknown (empty) path renders normally rather than falsely hiding.
 

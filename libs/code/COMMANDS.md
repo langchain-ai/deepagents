@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (39)
+## Public (40)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -29,6 +29,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
+| `/line-numbers` |  | Show or hide line numbers in file diffs |
 | `/manual` |  | Switch to Manual approval mode |
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |

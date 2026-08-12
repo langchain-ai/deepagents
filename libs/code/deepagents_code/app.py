@@ -1098,6 +1098,29 @@ def _load_message_timestamps_visible() -> bool:
     return False
 
 
+def _load_show_diff_line_numbers() -> bool:
+    """Resolve whether diff hunks show file line numbers.
+
+    Returns:
+        Whether file-relative line numbers are enabled.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.show_diff_line_numbers")
+    if option is None:
+        logger.warning(
+            "Unknown config option %r; showing diff line numbers",
+            "display.show_diff_line_numbers",
+        )
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def _load_show_scrollbar() -> bool:
     """Load the chat scrollbar visibility preference.
 
@@ -1639,6 +1662,68 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
         return _ConfigWriteResult(
             False,
             f"Scrollbar toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
+
+
+def _save_show_diff_line_numbers_result(enabled: bool) -> _ConfigWriteResult:
+    """Persist the diff line-number visibility preference.
+
+    Writes `[ui].show_diff_line_numbers` atomically (temp file +
+    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["show_diff_line_numbers"] = enabled
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save diff line-number preference")
+        return _ConfigWriteResult(
+            False,
+            f"Diff line numbers toggled for this session but could not be saved "
             f"({type(exc).__name__}).",
             "error",
         )
@@ -3593,6 +3678,14 @@ class DeepAgentsApp(App):
         Restored from `[ui].show_message_timestamps` and re-persisted on toggle.
         """
 
+        self._show_diff_line_numbers = _load_show_diff_line_numbers()
+        """Whether file-relative line numbers are shown in diff hunks.
+
+        Restored from `[ui].show_diff_line_numbers` and re-persisted on
+        `/line-numbers` toggle. Captured per diff widget at mount, so the
+        toggle only affects diffs rendered after it.
+        """
+
         self._show_scrollbar = _load_show_scrollbar()
         """Whether the vertical scrollbar is shown in the chat area.
 
@@ -4635,6 +4728,7 @@ class DeepAgentsApp(App):
             on_subagent_event=self._on_subagent_event,
             on_auto_mode_event=self._on_auto_mode_event,
             on_approval_mode_fallback=self._on_approval_mode_fallback,
+            show_diff_line_numbers=self._show_diff_line_numbers,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -8657,6 +8751,7 @@ class DeepAgentsApp(App):
             assistant_id,
             id=unique_id,
             auto_mode_eligible=self._auto_mode_eligible,
+            show_diff_line_numbers=self._show_diff_line_numbers,
         )
         menu.set_future(result_future)
 
@@ -14243,6 +14338,15 @@ class DeepAgentsApp(App):
                 timeout=5,
                 markup=False,
             )
+        elif cmd == "/line-numbers":
+            await self._toggle_diff_line_numbers()
+            label = "shown" if self._show_diff_line_numbers else "hidden"
+            self.notify(
+                f"Diff line numbers {label} for new diffs.",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
         elif cmd == "/context":
             context_tokens, conversation_tokens = await self._get_context_usage_counts()
             if context_tokens is None and not self._tokens_approximate:
@@ -16840,6 +16944,10 @@ class DeepAgentsApp(App):
                                         diff_file_path=path,
                                         diff_tool_name="edit_file",
                                         diff_stats=stats,
+                                        # Rebuilt from `old_string`/`new_string`
+                                        # fragments, not the file: hunk numbers
+                                        # start at 1 and are not file-relative.
+                                        diff_show_numbers=False,
                                     )
                                 )
                     else:
@@ -17468,6 +17576,40 @@ class DeepAgentsApp(App):
             chat.styles.scrollbar_size_vertical = 1
         else:
             chat.styles.scrollbar_size_vertical = 0
+
+    async def _toggle_diff_line_numbers(self) -> None:
+        """Toggle diff-hunk line numbers and persist the preference.
+
+        Applies to diffs mounted after the toggle; already-mounted diff
+        widgets keep the numbers they were rendered with because the flag is
+        captured per widget at construction.
+        """
+        self._show_diff_line_numbers = not self._show_diff_line_numbers
+        if self._ui_adapter is not None:
+            self._ui_adapter._show_diff_line_numbers = self._show_diff_line_numbers
+        try:
+            status = await asyncio.to_thread(
+                _save_show_diff_line_numbers_result,
+                self._show_diff_line_numbers,
+            )
+            if status.message is not None:
+                self.notify(
+                    status.message,
+                    severity=status.severity,
+                    timeout=6,
+                    markup=False,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to persist diff line-number preference",
+                exc_info=True,
+            )
+            self.notify(
+                "Diff line numbers toggled for this session but could not be saved.",
+                severity="error",
+                timeout=6,
+                markup=False,
+            )
 
     async def _toggle_scrollbar(self) -> None:
         """Toggle chat scrollbar visibility and persist the preference."""

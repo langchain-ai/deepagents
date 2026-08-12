@@ -5537,6 +5537,7 @@ class TestMessageQueue:
                 adapter._on_user_visible_output_started
                 == app._on_user_visible_output_started
             )
+            assert adapter._show_diff_line_numbers is app._show_diff_line_numbers
 
     async def test_interrupt_restores_before_cancelling_worker(self) -> None:
         """Restore reads the gate before the worker's cleanup can reset it.
@@ -15725,6 +15726,84 @@ class TestScrollbarToggle:
         assert result.message is not None
 
 
+class TestDiffLineNumbersCommand:
+    """Tests for the `/line-numbers` toggle and its persistence."""
+
+    def test_save_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving then loading returns the saved value, both directions."""
+        from deepagents_code.app import (
+            _load_show_diff_line_numbers,
+            _save_show_diff_line_numbers_result,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _save_show_diff_line_numbers_result(False).ok is True
+        assert _load_show_diff_line_numbers() is False
+        assert _save_show_diff_line_numbers_result(True).ok is True
+        assert _load_show_diff_line_numbers() is True
+
+    def test_save_preserves_other_ui_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persisting the toggle leaves unrelated `[ui]` keys intact."""
+        import tomllib
+
+        from deepagents_code.app import _save_show_diff_line_numbers_result
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ntheme = "langchain"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _save_show_diff_line_numbers_result(False).ok is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+        assert data["ui"]["show_diff_line_numbers"] is False
+
+    async def test_command_toggles_state_and_toasts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/line-numbers` flips the app and adapter flags and toasts."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._show_diff_line_numbers is True
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/line-numbers")
+                await pilot.pause()
+
+            assert app._show_diff_line_numbers is False
+            assert app._ui_adapter is not None
+            assert app._ui_adapter._show_diff_line_numbers is False
+            notify_mock.assert_called_once()
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers hidden for new diffs."
+            )
+            assert notify_mock.call_args.kwargs.get("severity") == "information"
+            assert notify_mock.call_args.kwargs.get("markup") is False
+
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/line-numbers")
+                await pilot.pause()
+
+            assert app._show_diff_line_numbers is True
+            assert app._ui_adapter._show_diff_line_numbers is True
+            notify_mock.assert_called_once()
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers shown for new diffs."
+            )
+
+
 class TestDebugConsoleClickToCopyPreference:
     """Tests for the persisted Debug Console click-to-copy preference."""
 
@@ -17544,6 +17623,7 @@ class TestRequestApprovalBranching:
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = None
         app._auto_mode_eligible = eligible
+        app._show_diff_line_numbers = False
 
         async def fake_mount_before_queued(  # noqa: RUF029
             _container: object, _widget: object
@@ -17570,6 +17650,7 @@ class TestRequestApprovalBranching:
         # flag, so this asserts the value actually crossed the app→widget seam.
         assert app._pending_approval_widget is not None
         assert app._pending_approval_widget._show_auto_option is eligible
+        assert app._pending_approval_widget._show_diff_line_numbers is False
 
 
 class TestDeferredShowApproval:

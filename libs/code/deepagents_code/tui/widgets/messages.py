@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import asyncio
 import json
 import logging
 import re
@@ -4761,21 +4760,6 @@ class LazyToolGroupSummary(Vertical):
         self._deferred_expanded = False
         self._transitioning = False
         self._details: Vertical | None = None
-        self._detail_widgets: list[Widget] = []
-
-    @property
-    def message_data(self) -> tuple[MessageData, ...]:
-        """The retained detail rows.
-
-        Returns:
-            Immutable view of the group's message data.
-        """
-        return tuple(self._message_data)
-
-    @property
-    def expanded(self) -> bool:
-        """Whether detail widgets are currently mounted."""
-        return self._expanded
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the persistent header and initially empty detail container.
@@ -4795,36 +4779,29 @@ class LazyToolGroupSummary(Vertical):
             self._deferred_expanded = False
             self.toggle()
 
-    def _summary_calls(self) -> list[_SummaryCall]:
-        """Return tool calls that contribute to the one-line summary."""
-        return [
-            (data.tool_name, data.tool_args or {})
-            for data in self._message_data
-            if data.tool_name is not None
-        ]
-
     def _update_header(self) -> None:
         """Refresh disclosure state without constructing any detail widget."""
         if not self.is_attached:
             return
-        header = self.query_one(".lazy-tool-group-header", Static)
         glyphs = get_glyphs()
         mark = (
             glyphs.disclosure_expanded
             if self._expanded
             else glyphs.disclosure_collapsed
         )
-        header.update(Content(f"{mark} {summarize_tool_group(self._summary_calls())}"))
+        calls = [
+            (data.tool_name, data.tool_args or {})
+            for data in self._message_data
+            if data.tool_name is not None
+        ]
+        self.query_one(".lazy-tool-group-header", Static).update(
+            Content(f"{mark} {summarize_tool_group(calls)}")
+        )
 
     def toggle(self) -> None:
         """Schedule expansion or collapse without blocking the input handler."""
-        if self._transitioning:
-            return
-        self.run_worker(
-            self._set_expanded(not self._expanded),
-            exclusive=True,
-            group=f"lazy-tool-group-{id(self)}",
-        )
+        if not self._transitioning:
+            self.run_worker(self._set_expanded(not self._expanded))
 
     async def _set_expanded(self, expanded: bool) -> None:
         """Create or discard detail widgets for one explicit toggle."""
@@ -4838,33 +4815,23 @@ class LazyToolGroupSummary(Vertical):
         try:
             if expanded:
                 try:
-                    widgets = [data.to_widget() for data in self._message_data]
-                    await details.mount(*widgets)
-                    assistant_updates = [
-                        widget.set_content(data.content)
-                        for widget, data in zip(
-                            widgets, self._message_data, strict=True
-                        )
-                        if isinstance(widget, AssistantMessage) and data.content
-                    ]
-                    if assistant_updates:
-                        await asyncio.gather(*assistant_updates)
+                    await details.mount(
+                        *(data.to_widget() for data in self._message_data)
+                    )
                 except Exception:
                     logger.warning("Failed to expand lazy tool group", exc_info=True)
                     with suppress(Exception):
                         await details.remove_children()
                     return
-                self._detail_widgets = widgets
                 details.display = True
             else:
                 for data, widget in zip(
-                    self._message_data, self._detail_widgets, strict=True
+                    self._message_data, details.children, strict=True
                 ):
                     if isinstance(widget, ToolCallMessage):
                         data.tool_expanded = widget._expanded
                 details.display = False
                 await details.remove_children()
-                self._detail_widgets = []
 
             self._expanded = expanded
             self._update_header()

@@ -4840,7 +4840,7 @@ class TestConvertMessagesToData:
 
     def test_mixed_message_sequence(self) -> None:
         """Full conversation with mixed message types should convert correctly."""
-        from deepagents_code.tui.widgets.message_store import MessageType, ToolStatus
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         msgs = [
             self._make_human("What files are here?"),
@@ -4858,8 +4858,6 @@ class TestConvertMessagesToData:
         assert result[1].type == MessageType.ASSISTANT
         assert result[1].content == "Let me check."
         assert result[2].type == MessageType.TOOL_GROUP
-        assert result[2].tool_group_messages is not None
-        assert result[2].tool_group_messages[0].tool_status == ToolStatus.SUCCESS
         assert result[3].type == MessageType.ASSISTANT
         assert result[3].content == "I found 2 files."
 

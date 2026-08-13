@@ -467,7 +467,6 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
-            LazyToolGroupSummary,
             RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
@@ -476,15 +475,6 @@ class MessageData:
         )
 
         widget_id = widget.id or f"msg-{uuid.uuid4().hex}"
-
-        if isinstance(widget, LazyToolGroupSummary):
-            return cls(
-                type=MessageType.TOOL_GROUP,
-                content="",
-                id=widget_id,
-                tool_group_messages=list(widget.message_data),
-                tool_group_expanded=widget.expanded,
-            )
 
         if isinstance(widget, SkillMessage):
             return cls(

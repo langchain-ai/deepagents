@@ -7634,7 +7634,11 @@ class DeepAgentsApp(App):
         Driven by `_ChatScroll.Scrolled` (see that message for why hydration
         keys off the scroll offset rather than the scrollbar messages).
         """
-        self._defer_transcript_prune_while_scrolling()
+        if (
+            self._transcript_prune_timer is not None
+            and not self._message_store.hard_window_exceeded()
+        ):
+            self._schedule_transcript_prune(self._transcript_prune_direction)
         self._check_hydration_needed()
         self._check_hydration_below_needed()
 
@@ -8223,8 +8227,6 @@ class DeepAgentsApp(App):
             if not self._hydration_requests:
                 return
             direction = self._hydration_preferred_direction
-            if direction not in self._hydration_requests:
-                direction = next(iter(self._hydration_requests))
             self._hydration_requests.discard(direction)
             count = self._message_store.HYDRATE_BUFFER
             if direction == "above" and self._history_prefetch_active:
@@ -8243,7 +8245,7 @@ class DeepAgentsApp(App):
                 )
             else:
                 hydrated_count = await self._hydrate_messages_below(
-                    count=self._message_store.HYDRATE_BUFFER,
+                    count=count,
                     generation=generation,
                 )
         finally:
@@ -8599,14 +8601,6 @@ class DeepAgentsApp(App):
             self.call_after_refresh(
                 lambda: self._schedule_transcript_prune(direction, immediate=True)
             )
-
-    def _defer_transcript_prune_while_scrolling(self) -> None:
-        """Restart a soft prune timer when another scroll delta arrives."""
-        if (
-            self._transcript_prune_timer is not None
-            and not self._message_store.hard_window_exceeded()
-        ):
-            self._schedule_transcript_prune(self._transcript_prune_direction)
 
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
         """Mount a widget in the messages container, kept above the bottom anchors.

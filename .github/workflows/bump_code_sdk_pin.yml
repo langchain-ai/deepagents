@@ -113,12 +113,16 @@ jobs:
           echo "Code pin:    $code_pin"
           echo "Stale:       $stale"
 
-      - name: Log if nothing to do
+      - name: Annotate the run if nothing to do
         # The actual skip is implemented by the `if:` guards on every
-        # subsequent step; this step only emits a log line so the run
-        # history shows why no PR was opened.
+        # subsequent step; this step only explains the skip. Use ::notice::
+        # (not plain echo) so the outcome shows up as a run annotation in
+        # the Actions UI, not just buried in the step log.
         if: steps.versions.outputs.stale != 'true'
-        run: echo "Code SDK pin is not behind the workspace SDK version; nothing to do."
+        env:
+          SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
+          CODE_PIN: ${{ steps.versions.outputs.code_pin }}
+        run: 'echo "::notice::Nothing to do: Code SDK pin $CODE_PIN is not behind the workspace SDK version $SDK_VERSION."'
 
       - name: Skip if PR already open for this version
         id: existing

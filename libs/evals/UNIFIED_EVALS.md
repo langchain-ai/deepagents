@@ -50,7 +50,7 @@ Add `--ref <branch>` to dispatch a workflow definition other than the default br
 
 ### Run one category from your machine (`harbor run`)
 
-To iterate locally, run a single category's dataset directly through Harbor with the same LangGraph agent the CI job uses — `graph=bare` for the neutral SDK agent, `graph=dcode` for the product agent. Autonomous (`harbor-index/harbor-index-1.0`) is the simplest since it comes from the Harbor registry:
+To iterate locally, run a single category's dataset directly through Harbor with the same LangGraph agent the CI job uses — `graph=bare` for the neutral SDK agent, `graph=dcode` for the product agent. Autonomous (`harbor-index/harbor-index`) is the simplest since it comes from the Harbor registry:
 
 ```bash
 # From libs/evals. Export every host var the command templates below, or Harbor
@@ -77,14 +77,14 @@ uv run harbor run \
   --verifier-env 'JUDGE_MODELS=gpt-5.6-luna' \
   --verifier-env 'JUDGE_REPEATS=1' \
   --verifier-env 'JUDGE_CONCURRENCY=1' \
-  --dataset harbor-index/harbor-index-1.0 \
+  --dataset harbor-index/harbor-index \
   --model anthropic:claude-opus-4-8 \
   --include-task-name hello-world \
   -n 4 \
   --jobs-dir harbor-jobs/unified \
   --env langsmith \
   --plugin langsmith \
-  --plugin-kwarg dataset_name=harbor-index/harbor-index-1.0 \
+  --plugin-kwarg dataset_name=harbor-index/harbor-index \
   --plugin-kwarg experiment_name=unified-local-smoke
 ```
 
@@ -106,7 +106,7 @@ A "deep agent" is not one skill, so a single benchmark can't score one. We split
 
 | Category | Capability it stands for | Benchmark | Harness |
 |---|---|---|---|
-| **autonomous** | End-to-end task execution in a real, sandboxed computer/terminal environment | [`harbor-index/harbor-index-1.0`](https://github.com/laude-institute/harbor) (Harbor registry) | bare · dcode |
+| **autonomous** | End-to-end task execution in a real, sandboxed computer/terminal environment | [`harbor-index/harbor-index`](https://github.com/laude-institute/harbor) (Harbor registry) | bare · dcode |
 | **conversation** | Multi-turn, tool-using dialogue against a simulated user, following a policy | [`tau3-subset`](https://github.com/sierra-research/tau2-bench) (τ³-bench) | tau3 |
 | **context** | Retrieval + reasoning over a large, multi-file corpus | [`context-retrieval-evals`](https://github.com/letta-ai/letta-evals) (Context-Bench) | bare · dcode |
 | **research** | Open-ended research across a live enterprise app stack **and** the open web, synthesized into a cited report | [`drbench-evals`](https://github.com/ServiceNow/drbench) (DRBench, app mode) | bare · dcode |
@@ -136,11 +136,11 @@ Four principles cut across all three categories and explain why the task sets lo
 
 ## Category detail
 
-### Autonomous — `harbor-index/harbor-index-1.0`
+### Autonomous — `harbor-index/harbor-index`
 
 **What it measures.** Whether the agent can take a task to completion in a real, sandboxed environment — writing and running code, using the terminal, and manipulating files — graded by each task's own verification harness rather than by an LLM judge.
 
-**Why this benchmark.** This is the flagship "can it actually do the job" axis. We run `harbor-index/harbor-index-1.0`, the curated autonomous-agent task index from the [Harbor](https://github.com/laude-institute/harbor) registry. It is the same sandboxed-verifiable-task family as [Terminal-Bench 2](https://github.com/laude-institute/terminal-bench-2) — the suite's original Harbor benchmark, spanning 90+ tasks across software engineering, biology, security, gaming, and more. Running through Harbor means each task ships its own environment image and grader, so a pass is objective and reproducible. (`terminal-bench/terminal-bench-2-1` is the closely-related sibling dataset selectable in the standalone [`harbor.yml`](../../.github/workflows/harbor.yml) workflow.)
+**Why this benchmark.** This is the flagship "can it actually do the job" axis. We run `harbor-index/harbor-index`, the curated autonomous-agent task index from the [Harbor](https://github.com/laude-institute/harbor) registry. It is the same sandboxed-verifiable-task family as [Terminal-Bench 2](https://github.com/laude-institute/terminal-bench-2) — the suite's original Harbor benchmark, spanning 90+ tasks across software engineering, biology, security, gaming, and more. Running through Harbor means each task ships its own environment image and grader, so a pass is objective and reproducible. (`terminal-bench/terminal-bench-2-1` is the closely-related sibling dataset selectable in the standalone [`harbor.yml`](../../.github/workflows/harbor.yml) workflow.)
 
 **Why these tasks.** We run the benchmark's own published index as authored, rather than sub-selecting, so the score covers breadth and stays comparable to the wider Harbor/Terminal-Bench ecosystem. The tasks are cross-domain terminal / computer-use problems — in the Terminal-Bench family, software engineering, security, data and scientific computing, system administration, and more — each shipping its own environment and pass/fail verifier. So this category measures general "operate a computer to finish a real job" competence across domains, not a hand-picked slice.
 

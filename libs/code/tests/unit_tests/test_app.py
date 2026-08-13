@@ -2611,7 +2611,6 @@ class TestCacheStatus:
             1_200,
             150,
             input_tokens=1_500,
-            visible=False,
         )
 
 

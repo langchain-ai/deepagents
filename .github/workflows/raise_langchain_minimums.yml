@@ -262,7 +262,7 @@ jobs:
             lockfiles+=("$dir/uv.lock")
           done
           git add -- "${files[@]}" "${lockfiles[@]}"
-          git commit -m "chore(deps): raise dependency minimums for $PACKAGE"
+          git commit -m "chore(deps): raise dependency minimums for \`$PACKAGE\`"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
@@ -275,7 +275,7 @@ jobs:
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): raise dependency minimums for $PACKAGE" \
+            --title "chore(deps): raise dependency minimums for \`$PACKAGE\`" \
             --body-file "$body_file")
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"

@@ -122,7 +122,7 @@ jobs:
         env:
           SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
           CODE_PIN: ${{ steps.versions.outputs.code_pin }}
-        run: echo "::notice::Code SDK pin $CODE_PIN is not behind the workspace SDK version $SDK_VERSION; nothing to do."
+        run: 'echo "::notice::Nothing to do: Code SDK pin $CODE_PIN is not behind the workspace SDK version $SDK_VERSION."'
 
       - name: Skip if PR already open for this version
         id: existing

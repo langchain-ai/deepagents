@@ -9,6 +9,10 @@ from textual.content import Content
 from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
+from deepagents_code.editor import editor_display_name
+
+_TIP_EXTERNAL_EDITOR = "Press ctrl+x to compose prompts in your external editor"
+"""Generic editor tip replaced at construction when an editor is configured."""
 
 _TIP_SHIFT_TAB_WITH_YOLO = "Press Shift+Tab to cycle Manual, Auto, and YOLO modes"
 """Tip used when `startup.yolo_switcher` keeps YOLO in the approval cycle."""
@@ -28,7 +32,7 @@ _TIPS: dict[str, int] = {
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Use /effort to change the current model's reasoning effort": 1,
-    "Press ctrl+x to compose prompts in your external editor": 1,
+    _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Use /theme to customize the TUI's colors": 1,
     "Use /skill-creator to build reusable agent skills": 1,
@@ -76,15 +80,18 @@ def _active_tips(*, yolo_switcher_enabled: bool | None = None) -> dict[str, int]
         yolo_switcher_enabled = is_yolo_switcher_enabled()
 
     tips = dict(_TIPS)
-    if yolo_switcher_enabled:
-        return tips
+    editor = editor_display_name()
+    if editor is not None:
+        weight = tips.pop(_TIP_EXTERNAL_EDITOR)
+        tips[f"Press ctrl+x to compose prompts in {editor}"] = weight
 
-    # Replace the YOLO cycle tip with the Manual/Auto-only wording so the
-    # splash never claims Shift+Tab can enter unrestricted mode when policy
-    # has removed that entry from the switcher.
-    weight = tips.pop(_TIP_SHIFT_TAB_WITH_YOLO, None)
-    if weight is not None:
-        tips[_TIP_SHIFT_TAB_WITHOUT_YOLO] = weight
+    if not yolo_switcher_enabled:
+        # Replace the YOLO cycle tip with the Manual/Auto-only wording so the
+        # splash never claims Shift+Tab can enter unrestricted mode when policy
+        # has removed that entry from the switcher.
+        weight = tips.pop(_TIP_SHIFT_TAB_WITH_YOLO, None)
+        if weight is not None:
+            tips[_TIP_SHIFT_TAB_WITHOUT_YOLO] = weight
     return tips
 
 

@@ -6221,6 +6221,21 @@ class TestSuppressWarning:
         assert data["models"]["default"] == "some:model"
         assert "ripgrep" in data["warnings"]["suppress"]
 
+    def test_returns_false_when_warnings_is_not_a_table(self, tmp_path) -> None:
+        """Reports failure instead of raising on a hand-edited `warnings = []`.
+
+        Callers run this inside detached async continuations where a raised
+        `AttributeError` would surface only as a background-task failure and
+        abandon the user's pending action.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        result = suppress_warning("ripgrep", config_path)
+
+        assert result is False
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
 
 class TestUnsuppressWarning:
     """Tests for unsuppress_warning() function."""
@@ -6296,6 +6311,15 @@ class TestUnsuppressWarning:
         result = unsuppress_warning("ripgrep", config_path)
 
         assert result is True
+
+    def test_returns_false_when_warnings_is_not_a_table(self, tmp_path: Path) -> None:
+        """Reports failure instead of raising on a hand-edited `warnings = []`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is False
 
     def test_roundtrip_suppress_unsuppress(self, tmp_path: Path) -> None:
         """Suppress then unsuppress returns to original state."""

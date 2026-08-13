@@ -88,6 +88,7 @@ from deepagents_code.goal_state_notice import (
 )
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.media_utils import ImageData, VideoData
+from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
 from deepagents_code.tui.textual_adapter import RubricEvaluationEnd, TextualUIAdapter
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
@@ -37956,7 +37957,7 @@ class TestColdCacheWarningFlow:
         app = DeepAgentsApp(thread_id="thread-1")
         app._lc_thread_id = "thread-1"
         app._exiting = False
-        push_screen = AsyncMock(return_value=False)
+        push_screen = AsyncMock(return_value=ColdCacheChoice.CANCEL)
         process = AsyncMock()
         monkeypatch.setattr(app, "_push_screen_wait", push_screen)
         monkeypatch.setattr(app, "_process_message", process)
@@ -37982,6 +37983,178 @@ class TestColdCacheWarningFlow:
         chat_input.set_value_at_end.assert_called_once_with("continue")
         process.assert_not_awaited()
 
+    async def test_send_suppress_session_sends_and_mutes_gating(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = DeepAgentsApp(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        app._exiting = False
+        process = AsyncMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(return_value=ColdCacheChoice.SEND_SUPPRESS_SESSION),
+        )
+        monkeypatch.setattr(app, "_process_message", process)
+        warning = _ColdCacheWarning(
+            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            estimate=RewarmEstimate(1.25, 1.15),
+            context_tokens=50_000,
+            age_seconds=600,
+            identity_changed=False,
+        )
+
+        await app._confirm_cold_cache_message(
+            QueuedMessage("continue", "normal"),
+            warning,
+            "thread-1",
+        )
+
+        process.assert_awaited_once_with("continue", "normal")
+        assert app._cold_cache_suppressed_for_session is True
+
+        # The session flag gates `_cold_cache_warning_for` even when every
+        # other warning condition would fire.
+        app._model_override = "anthropic:claude-sonnet-4-6"
+        app._cold_cache_warning_threshold_usd = 0.10
+        app._context_tokens = 50_000
+        app._last_model_request_at = "2026-08-11T12:30:00+00:00"
+        assert (
+            await app._cold_cache_warning_for(QueuedMessage("continue", "normal"))
+            is None
+        )
+
+    async def test_send_suppress_session_still_reachable_under_debug_env_var(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The debug override bypasses the session flag so the modal stays testable."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_COLD_CACHE", "1")
+        app = DeepAgentsApp()
+        app._model_override = "anthropic:claude-sonnet-4-6"
+        app._cold_cache_suppressed_for_session = True
+        app._cold_cache_warning_threshold_usd = 0.10
+        app._context_tokens = 50_000
+
+        config = MagicMock()
+        config.get_base_url.return_value = None
+        with patch(
+            "deepagents_code.model_config.ModelConfig.load",
+            return_value=config,
+        ):
+            warning = await app._cold_cache_warning_for(
+                QueuedMessage("continue", "normal")
+            )
+
+        assert warning is not None
+
+    async def test_send_suppress_always_persists_before_sending(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = DeepAgentsApp(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        app._exiting = False
+        process = AsyncMock()
+        suppress = AsyncMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(return_value=ColdCacheChoice.SEND_SUPPRESS_ALWAYS),
+        )
+        monkeypatch.setattr(app, "_process_message", process)
+        monkeypatch.setattr(app, "_suppress_cold_cache_warning", suppress)
+        warning = _ColdCacheWarning(
+            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            estimate=RewarmEstimate(1.25, 1.15),
+            context_tokens=50_000,
+            age_seconds=600,
+            identity_changed=False,
+        )
+
+        await app._confirm_cold_cache_message(
+            QueuedMessage("continue", "normal"),
+            warning,
+            "thread-1",
+        )
+
+        suppress.assert_awaited_once()
+        process.assert_awaited_once_with("continue", "normal")
+        assert app._cold_cache_suppressed_for_session is False
+
+    async def test_send_once_leaves_suppression_state_untouched(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = DeepAgentsApp(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        app._exiting = False
+        process = AsyncMock()
+        suppress = AsyncMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(return_value=ColdCacheChoice.SEND),
+        )
+        monkeypatch.setattr(app, "_process_message", process)
+        monkeypatch.setattr(app, "_suppress_cold_cache_warning", suppress)
+        warning = _ColdCacheWarning(
+            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            estimate=RewarmEstimate(1.25, 1.15),
+            context_tokens=50_000,
+            age_seconds=600,
+            identity_changed=False,
+        )
+
+        await app._confirm_cold_cache_message(
+            QueuedMessage("continue", "normal"),
+            warning,
+            "thread-1",
+        )
+
+        process.assert_awaited_once_with("continue", "normal")
+        suppress.assert_not_awaited()
+        assert app._cold_cache_suppressed_for_session is False
+
+    async def test_suppression_persistence_failure_still_sends(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed config write warns but must not drop the submitted message."""
+        app = DeepAgentsApp(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        app._exiting = False
+        process = AsyncMock()
+        notify = MagicMock()
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(return_value=ColdCacheChoice.SEND_SUPPRESS_ALWAYS),
+        )
+        monkeypatch.setattr(app, "_process_message", process)
+        monkeypatch.setattr(app, "notify", notify)
+
+        with patch(
+            "deepagents_code.model_config.suppress_warning",
+            side_effect=AttributeError("'list' object has no attribute 'get'"),
+        ):
+            await app._confirm_cold_cache_message(
+                QueuedMessage("continue", "normal"),
+                _ColdCacheWarning(
+                    policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+                    estimate=RewarmEstimate(1.25, 1.15),
+                    context_tokens=50_000,
+                    age_seconds=600,
+                    identity_changed=False,
+                ),
+                "thread-1",
+            )
+
+        process.assert_awaited_once_with("continue", "normal")
+        notify.assert_called_once()
+        assert "Could not save notification preference" in notify.call_args.args[0]
+
     async def test_thread_change_cancels_without_restoring_old_draft(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -37992,7 +38165,9 @@ class TestColdCacheWarningFlow:
         process = AsyncMock()
         restore = MagicMock()
         notify = MagicMock()
-        monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            app, "_push_screen_wait", AsyncMock(return_value=ColdCacheChoice.SEND)
+        )
         monkeypatch.setattr(app, "_process_message", process)
         monkeypatch.setattr(app, "_restore_cold_cache_draft", restore)
         monkeypatch.setattr(app, "notify", notify)

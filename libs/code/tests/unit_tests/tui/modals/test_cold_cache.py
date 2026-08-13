@@ -3,7 +3,10 @@
 from textual.app import App
 
 from deepagents_code.cold_cache import PromptCachePolicy, RewarmEstimate
-from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+from deepagents_code.tui.modals.cold_cache import (
+    ColdCacheChoice,
+    ColdCacheWarningScreen,
+)
 
 
 class _Host(App[None]):
@@ -74,7 +77,7 @@ def test_identity_change_uses_model_specific_copy() -> None:
 
 async def test_enter_authorizes_send() -> None:
     app = _Host()
-    results: list[bool | None] = []
+    results: list[ColdCacheChoice | None] = []
 
     async with app.run_test() as pilot:
         await app.push_screen(_screen(), callback=results.append)
@@ -82,12 +85,51 @@ async def test_enter_authorizes_send() -> None:
         await pilot.press("enter")
         await pilot.pause()
 
-    assert results == [True]
+    assert results == [ColdCacheChoice.SEND]
+
+
+async def test_arrow_down_then_enter_suppresses_for_session() -> None:
+    app = _Host()
+    results: list[ColdCacheChoice | None] = []
+
+    async with app.run_test() as pilot:
+        await app.push_screen(_screen(), callback=results.append)
+        await pilot.pause()
+        await pilot.press("down", "enter")
+        await pilot.pause()
+
+    assert results == [ColdCacheChoice.SEND_SUPPRESS_SESSION]
+
+
+async def test_navigation_wraps_to_suppress_always() -> None:
+    app = _Host()
+    results: list[ColdCacheChoice | None] = []
+
+    async with app.run_test() as pilot:
+        await app.push_screen(_screen(), callback=results.append)
+        await pilot.pause()
+        await pilot.press("down", "down", "enter")
+        await pilot.pause()
+
+    assert results == [ColdCacheChoice.SEND_SUPPRESS_ALWAYS]
+
+
+async def test_navigation_up_from_top_wraps_to_keep_draft() -> None:
+    app = _Host()
+    results: list[ColdCacheChoice | None] = []
+
+    async with app.run_test() as pilot:
+        await app.push_screen(_screen(), callback=results.append)
+        await pilot.pause()
+        await pilot.press("up", "enter")
+        await pilot.pause()
+
+    assert results == [ColdCacheChoice.CANCEL]
 
 
 async def test_escape_cancels_to_keep_draft() -> None:
     app = _Host()
-    results: list[bool | None] = []
+    results: list[ColdCacheChoice | None] = []
 
     async with app.run_test() as pilot:
         await app.push_screen(_screen(), callback=results.append)
@@ -95,4 +137,4 @@ async def test_escape_cancels_to_keep_draft() -> None:
         await pilot.press("escape")
         await pilot.pause()
 
-    assert results == [False]
+    assert results == [ColdCacheChoice.CANCEL]

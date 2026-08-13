@@ -3578,6 +3578,17 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
 
             if "warnings" not in data:
                 data["warnings"] = {}
+            # A hand-edited `warnings = [...]` (or any non-table) would make
+            # `.get("suppress")` below raise `AttributeError`, and the callers'
+            # detached tasks cannot surface a raised exception — report the
+            # failure so the caller can fall back to an in-app warning.
+            if not isinstance(data["warnings"], dict):
+                logger.debug(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(data["warnings"]).__name__,
+                )
+                return False
             suppress_list = data["warnings"].get("suppress", [])
             if not isinstance(suppress_list, list):
                 logger.debug(
@@ -3632,7 +3643,15 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
 
-            suppress_list = data.get("warnings", {}).get("suppress", [])
+            warnings_section = data.get("warnings", {})
+            if not isinstance(warnings_section, dict):
+                logger.debug(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(warnings_section).__name__,
+                )
+                return False
+            suppress_list = warnings_section.get("suppress", [])
             if not isinstance(suppress_list, list):
                 logger.debug(
                     "[warnings].suppress in %s should be a list, got %s",
@@ -3644,7 +3663,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
                 return True  # already unsuppressed
 
             suppress_list.remove(key)
-            data.setdefault("warnings", {})["suppress"] = suppress_list
+            warnings_section["suppress"] = suppress_list
 
             fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
             try:

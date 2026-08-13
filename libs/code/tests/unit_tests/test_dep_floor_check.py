@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import builtins
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from pathlib import Path
     from types import ModuleType
 
 import pytest
@@ -222,6 +222,16 @@ class TestBestEffort:
 
     def test_checkout_pyproject_reads(self) -> None:
         """The live checkout's pyproject parses into requirement strings."""
+        # `_load_cli_requirements` reads the `pyproject.toml` two directories
+        # above the installed module. Wheel installs (e.g. the release
+        # pipeline's built-wheel test run) have no checkout `pyproject.toml`
+        # there, so the function takes its designed `None` fallback and this
+        # test has nothing to assert against.
+        pyproject = (
+            Path(dep_floor_check.__file__).resolve().parent.parent / "pyproject.toml"
+        )
+        if not pyproject.is_file():
+            pytest.skip("no checkout pyproject.toml adjacent to the installed package")
         entries = _load_cli_requirements()
         assert entries is not None
         assert entries

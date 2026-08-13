@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.geometry import Size
 from textual.widgets import Static
 
@@ -66,6 +67,21 @@ class TestTwoLineMetrics:
             assert bar._percent_color(60.1) == colors.warning
             assert bar._percent_color(80.0) == colors.warning
             assert bar._percent_color(80.1) == colors.error
+
+    @pytest.mark.parametrize(
+        ("read", "color"),
+        [(0, "muted"), (59, "error"), (60, "warning"), (90, "muted")],
+    )
+    async def test_cache_hit_rate_colors(self, read: int, color: str) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            colors = theme.get_theme_colors(bar)
+            bar.set_cache_tokens(read, 0, input_tokens=100 if read else 0)
+            cache = pilot.app.query_one("#cache-display")
+            cache.styles.width = 9
+            rendered = cache.render()
+            assert isinstance(rendered, Content)
+            assert rendered.spans[-1].style == getattr(colors, color)
 
 
 class TestApprovalModeDisplay:

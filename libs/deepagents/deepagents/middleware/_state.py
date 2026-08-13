@@ -45,7 +45,7 @@ def prepare_subagent_state(
     returns. This allows synchronous and remote subagents to use their native
     message representations while sharing the same visibility policy.
     """
-    excluded_keys = _SUBAGENT_EXCLUDED_STATE_KEYS | private_state_keys
+    excluded_keys = _EXCLUDED_STATE_KEYS | private_state_keys
     return {key: value for key, value in state.items() if key not in excluded_keys}
 
 logger = logging.getLogger(__name__)

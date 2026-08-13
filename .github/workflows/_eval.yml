@@ -363,6 +363,8 @@ jobs:
         continue-on-error: true
         env:
           ANALYSIS_MODEL: ${{ inputs.analysis_model }}
+          # Empty for workflow_dispatch runs, so no PR line is added there.
+          EVAL_PR_URL: ${{ github.event.pull_request.html_url }}
           ANTHROPIC_API_KEY: ${{ startsWith(inputs.analysis_model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(inputs.analysis_model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
           FIREWORKS_API_KEY: ${{ startsWith(inputs.analysis_model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}

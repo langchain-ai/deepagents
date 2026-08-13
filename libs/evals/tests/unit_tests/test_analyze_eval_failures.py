@@ -73,6 +73,28 @@ class TestFormatMarkdown:
         close_idx = md.index("</details>")
         assert heading_idx < details_idx < summary_idx < close_idx
 
+    def test_pr_url_shown_when_set(self, monkeypatch):
+        monkeypatch.setenv("EVAL_PR_URL", "https://github.com/langchain-ai/deepagents/pull/123")
+        results = [{**_SAMPLE_FAILURE, "analysis": "analysis"}]
+        md = _format_markdown(results)
+        # PR link renders above the details toggle, directly under the heading.
+        heading_idx = md.index("## Failure analysis")
+        pr_idx = md.index("**PR:** https://github.com/langchain-ai/deepagents/pull/123")
+        details_idx = md.index("<details>")
+        assert heading_idx < pr_idx < details_idx
+
+    def test_pr_url_omitted_when_unset(self, monkeypatch):
+        monkeypatch.delenv("EVAL_PR_URL", raising=False)
+        results = [{**_SAMPLE_FAILURE, "analysis": "analysis"}]
+        md = _format_markdown(results)
+        assert "**PR:**" not in md
+
+    def test_pr_url_omitted_when_empty(self, monkeypatch):
+        monkeypatch.setenv("EVAL_PR_URL", "")
+        results = [{**_SAMPLE_FAILURE, "analysis": "analysis"}]
+        md = _format_markdown(results)
+        assert "**PR:**" not in md
+
 
 class TestAnalyzeOne:
     async def test_returns_analysis(self):

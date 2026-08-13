@@ -84,6 +84,11 @@ def _format_markdown(results: list[dict[str, str]]) -> str:
     """
     lines = [
         f"## Failure analysis ({len(results)} failure{'s' if len(results) != 1 else ''})\n",
+    ]
+    pr_url = os.environ.get("EVAL_PR_URL", "")
+    if pr_url:
+        lines.append(f"**PR:** {pr_url}\n")
+    lines += [
         "<details>",
         "<summary>(click to expand)</summary>",
         "",

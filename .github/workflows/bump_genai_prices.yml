@@ -23,7 +23,10 @@
 #   is defined as "`uv lock` moved the pin", never as "PyPI has something
 #   newer" — otherwise a release above the declared ceiling (or a yanked or
 #   pre-release version uv correctly refuses) would fail this job every day
-#   forever with nothing a bump could fix.
+#   forever with nothing a bump could fix. The flip side — a release above
+#   the ceiling making every run a green no-op forever — is caught by a
+#   PyPI check that files a tracking issue when the newest release is one
+#   the manifest excludes.
 # - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
 #   files inside the managed `libs/code` package would make release-please
 #   open a separate `release(deepagents-code)` PR (multi-component fan-out).
@@ -169,15 +172,42 @@ jobs:
             stale=true
           fi
 
+          # Detect a release the manifest ceiling excludes. "Not stale" is
+          # ambiguous on its own — it means either "nothing newer exists" or
+          # "the newest release is above the declared ceiling", and the
+          # second case is silently permanent until someone raises the
+          # ceiling by hand. A newer-than-allowed PyPI release flips
+          # `capped` so a later step can file a tracking issue.
+          pypi_latest=$(uv run --no-project --with packaging python - <<'PY'
+          import json
+          import urllib.request
+
+          from packaging.version import Version
+
+          with urllib.request.urlopen("https://pypi.org/pypi/genai-prices/json") as r:
+              data = json.load(r)
+          releases = [v for v, files in data["releases"].items() if files and not any(f.get("yanked") for f in files)]
+          print(max(releases, key=Version))
+          PY
+          )
+          capped=false
+          if [ "$stale" = false ] && [ "$pypi_latest" != "$latest" ]; then
+            capped=true
+          fi
+
           {
             echo "locked=$locked"
             echo "latest=$latest"
             echo "stale=$stale"
+            echo "capped=$capped"
+            echo "pypi_latest=$pypi_latest"
             echo "branch=chore/bump-genai-prices"
           } >> "$GITHUB_OUTPUT"
-          echo "Locked: $locked"
-          echo "Latest: $latest"
-          echo "Stale:  $stale"
+          echo "Locked:  $locked"
+          echo "Latest:  $latest"
+          echo "Stale:   $stale"
+          echo "PyPI:    $pypi_latest"
+          echo "Capped:  $capped"
 
       - name: Log if nothing to do
         # The actual skip is implemented by the `if:` guards on the steps that
@@ -326,6 +356,58 @@ jobs:
             echo "Opened genai-prices bump PR: $new_url"
             echo "::notice::Opened genai-prices bump PR: $new_url"
           fi
+
+      - name: File a tracking issue when the ceiling caps the bump
+        # A "not stale" green run is ambiguous: either nothing newer exists
+        # or the newest release sits above the declared ceiling and the
+        # bump can never move again. The second case is invisible without
+        # this — surface it exactly once, deduplicated by marker like the
+        # failure issue below. Not failure()-gated: a capped bump is a
+        # green run.
+        if: steps.versions.outputs.capped == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PYPI_LATEST: ${{ steps.versions.outputs.pypi_latest }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+        with:
+          script: |
+            const marker = '<!-- bump-genai-prices-capped -->';
+            const { owner, repo } = context.repo;
+            const pypiLatest = process.env.PYPI_LATEST;
+            const latest = process.env.LATEST;
+            const title = 'genai-prices bump is capped by the declared ceiling';
+            const body = [
+              marker,
+              `PyPI has genai-prices ${pypiLatest}, but the ceiling in \`libs/code/pyproject.toml\` caps the daily bump at ${latest}.`,
+              '',
+              'The bump cannot move again until the ceiling is raised. Review the upstream changelog for breaking changes, bump the ceiling, and close this issue.',
+              '',
+              'This issue is reused by later capped runs rather than duplicated.',
+            ].join('\n');
+
+            try {
+              const existing = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', per_page: 100 },
+              );
+              const found = existing.find(
+                i => !i.pull_request && (i.body ?? '').startsWith(marker),
+              );
+              if (found) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: found.number,
+                  body: `Still capped: PyPI has ${pypiLatest}, ceiling allows ${latest}.`,
+                });
+                core.info(`Commented on existing tracking issue #${found.number}.`);
+              } else {
+                const created = await github.rest.issues.create({ owner, repo, title, body });
+                core.info(`Filed tracking issue #${created.data.number}.`);
+              }
+            } catch (err) {
+              // A green capped run must not turn red because the report
+              // failed — the cap itself is the signal, not a CI failure.
+              core.warning(`Could not file the genai-prices ceiling tracking issue: ${err.message}`);
+            }
 
       - name: File a tracking issue on failure
         # Nobody watches a green cron, and nobody watches a red one either

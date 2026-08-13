@@ -1593,6 +1593,26 @@ class TestSessionIdResolution:
         path, _ = backend.write_calls[0]
         assert path == "/conversation_history/session_deadbeef.md"
 
+    def test_independent_invocations_do_not_share_history_file(self) -> None:
+        """Independent invocations over one backend each get their own history file.
+
+        A parent and its sub-agents share a backend but have isolated state, so
+        each mints its own session id rather than overwriting a shared file.
+        """
+        backend = MockBackend()
+
+        # Two invocations, each with its own state and no session id in it --
+        # exactly the parent/sub-agent situation once private state is stripped.
+        for _ in range(2):
+            middleware = self._make_middleware(backend)
+            state = cast("AgentState[Any]", {"messages": make_conversation_messages(num_old=6, num_recent=2)})
+            call_wrap_model_call(middleware, state, make_mock_runtime())
+
+        paths = [p for p, _ in backend.write_calls]
+        assert len(paths) == 2
+        assert len(set(paths)) == 2, f"history files collided: {paths}"
+        assert all(re.fullmatch(r"/conversation_history/session_[0-9a-f]{8}\.md", p) for p in paths)
+
 
 class TestAsyncBehavior:
     """Tests for async version of `before_model`."""

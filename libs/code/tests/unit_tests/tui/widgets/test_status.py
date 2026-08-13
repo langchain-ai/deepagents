@@ -58,6 +58,12 @@ class TestTwoLineMetrics:
             assert str(cache.render()) == ("Cache 80% hit • 12.5K read / 750 write")
             assert str(context.render()) == "Context: 6% / Tokens: 12.5K • $0.42"
 
+            bar.set_cache_tokens(12_500, 750, input_tokens=15_625, visible=False)
+            await pilot.pause()
+
+            assert str(cache.render()) == ""
+            assert context.region.right == metrics.region.right
+
     async def test_context_percentage_color_thresholds(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)

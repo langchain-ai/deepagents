@@ -123,7 +123,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/copy",
         description="Copy the latest assistant message to clipboard",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        bypass_tier=BypassTier.QUEUED,
+    ),
+    SlashCommand(
+        name="/context",
+        description="Show current context window usage",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="tokens window usage remaining offload compact",
     ),
     SlashCommand(
         name="/cost",
@@ -268,6 +274,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Show or hide message timestamps",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
         hidden_keywords="time footer footers date dates",
+    ),
+    SlashCommand(
+        name="/line-numbers",
+        description="Show or hide line numbers in file diffs",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="diff gutter numbers lines",
     ),
     SlashCommand(
         name="/update",

@@ -67,7 +67,7 @@ on:
         default: false
         description:
           "Release from a non-main branch (danger!) - Only use for backports
-          and hotfixes"
+          or hotfixes not on main"
       dangerous-skip-sdk-pin-check:
         required: false
         type: boolean

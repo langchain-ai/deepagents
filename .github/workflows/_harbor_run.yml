@@ -581,6 +581,7 @@ jobs:
           git checkout FETCH_HEAD -- \
             libs/deepagents \
             libs/code \
+            libs/acp \
             libs/partners/quickjs
           echo "Overlaid agent source from branch: $BRANCH ($BRANCH_SHA)"
 
@@ -647,8 +648,17 @@ jobs:
             --exclude 'dist' \
             --exclude '*.egg-info' \
             ../code/ "$local_deps_dir/deepagents-code/"
-          # deepagents-code pins langchain-quickjs via a path source
-          # (../partners/quickjs); stage it so the editable install resolves.
+          # deepagents-code pins deepagents-acp and langchain-quickjs via path
+          # sources (../acp, ../partners/quickjs), resolved relative to the staged
+          # copy; stage both as siblings so the editable installs resolve.
+          rsync -a --delete \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude 'build' \
+            --exclude 'dist' \
+            --exclude '*.egg-info' \
+            ../acp/ "$local_deps_dir/acp/"
           rsync -a --delete \
             --exclude '.venv' \
             --exclude '__pycache__' \

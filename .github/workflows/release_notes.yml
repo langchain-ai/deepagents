@@ -237,6 +237,7 @@ jobs:
                 appSlug: process.env.APP_SLUG,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
+                core,
               });
             } catch (error) {
               core.setOutput('error', error instanceof Error ? error.message : String(error));

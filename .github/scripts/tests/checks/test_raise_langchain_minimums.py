@@ -344,7 +344,7 @@ class TestInScope:
 
 
 class TestEditsMarkdown:
-    def test_renders_one_bullet_per_edit(self) -> None:
+    def test_renders_one_table_row_per_edit(self) -> None:
         edit = raise_langchain_minimums.RequirementEdit(
             manifest_path="libs/code/pyproject.toml",
             dependency_name="langsmith",
@@ -355,8 +355,10 @@ class TestEditsMarkdown:
         assert edits_markdown([edit], heading="Raised 1 minimum(s):") == (
             "Raised 1 minimum(s):\n"
             "\n"
-            "- `libs/code/pyproject.toml`: `langsmith` "
-            "`langsmith>=0.1.0` → `langsmith>=0.4.0`"
+            "| Manifest | Dependency | Change |\n"
+            "|---|---|---|\n"
+            "| `libs/code/pyproject.toml` | `langsmith` | "
+            "`langsmith>=0.1.0` → `langsmith>=0.4.0` |"
         )
 
 

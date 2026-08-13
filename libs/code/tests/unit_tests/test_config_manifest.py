@@ -58,6 +58,32 @@ def _declared_deepagents_env_vars() -> set[str]:
     }
 
 
+def test_show_diff_line_numbers_defaults_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Diff hunk line numbers remain enabled when app config is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.app import _load_show_diff_line_numbers
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    assert _load_show_diff_line_numbers() is True
+
+
+def test_show_diff_line_numbers_reads_app_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`[ui].show_diff_line_numbers` can disable the diff gutter."""
+    from deepagents_code import config_manifest
+    from deepagents_code.app import _load_show_diff_line_numbers
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"ui": {"show_diff_line_numbers": False}},
+    )
+    assert _load_show_diff_line_numbers() is False
+
+
 # --- Drift / coverage -------------------------------------------------------
 
 
@@ -1655,6 +1681,16 @@ def test_resolve_bool_presence_enables_on_any_value(monkeypatch) -> None:
     monkeypatch.setenv(opt.env_var, "")
     # An empty value is unset (see resolve_scalar), so it falls back to default.
     assert resolve_scalar(opt, toml_data={}) == (False, "default")
+
+
+@pytest.mark.parametrize("value", ["0", "false"])
+def test_debug_dep_floor_uses_boolean_semantics(monkeypatch, value: str) -> None:
+    """Config inspection agrees with the runtime for explicitly falsy values."""
+    opt = get_option("debug.dep_floor")
+    assert opt is not None
+    assert opt.kind is OptionKind.BOOL
+    monkeypatch.setenv(_env_vars.DEBUG_DEP_FLOOR, value)
+    assert resolve_scalar(opt, toml_data={})[0] is False
 
 
 def test_resolve_malformed_int_env_falls_back_with_warning(monkeypatch, caplog) -> None:

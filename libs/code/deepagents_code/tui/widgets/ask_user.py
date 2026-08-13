@@ -170,7 +170,7 @@ class AskUserMenu(Container):
 
         with Vertical(classes="ask-user-questions"):
             for i, q in enumerate(self._questions):
-                qw = _QuestionWidget(q, index=i)
+                qw = _QuestionWidget(q, index=i, show_number=count > 1)
                 self._question_widgets.append(qw)
                 yield qw
 
@@ -392,11 +392,19 @@ class _QuestionWidget(Vertical):
     can_focus = True
     can_focus_children = True
 
-    def __init__(self, question: Question, index: int, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        question: Question,
+        index: int,
+        *,
+        show_number: bool = True,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(classes="ask-user-question", **kwargs)
         question_type = question.get("type", "text")
         self._question: Question = question
         self._index: int = index
+        self._show_number = show_number
         self._q_type: Literal["text", "multiple_choice"] = (
             "multiple_choice" if question_type == "multiple_choice" else "text"
         )
@@ -410,11 +418,11 @@ class _QuestionWidget(Vertical):
 
     def compose(self) -> ComposeResult:
         q_text = _TRAILING_ANNOTATION_RE.sub("", self._question.get("question", ""))
-        num = self._index + 1
+        prefix = f"**{self._index + 1}.** " if self._show_number else ""
         suffix = " *(required)*" if self._required else ""
         # q_text is agent-authored; rendered as markdown intentionally so
         # agents can use inline formatting, links, and code spans in questions.
-        yield Markdown(f"**{num}.** {q_text}{suffix}", classes="ask-user-question-text")
+        yield Markdown(f"{prefix}{q_text}{suffix}", classes="ask-user-question-text")
 
         if self._q_type == "multiple_choice" and self._choices:
             for i, choice in enumerate(self._choices):

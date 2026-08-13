@@ -1074,7 +1074,12 @@ jobs:
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
           permission-actions: write
 
+      # Post-publish convenience only: the SDK is already live and the GitHub
+      # release is already tagged by the time this runs, and the pin-bump PR
+      # can always be opened by dispatching bump_code_sdk_pin.yml manually.
+      # Never let a dispatch hiccup mark the release run failed.
       - name: Dispatch bump_code_sdk_pin.yml
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |

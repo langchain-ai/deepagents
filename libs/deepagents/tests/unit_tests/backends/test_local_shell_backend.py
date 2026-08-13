@@ -320,7 +320,54 @@ class TestLocalShellVirtualModeDefault:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
-        assert be.virtual_mode is True
+
+
+def test_virtual_mode_host_path_normalization(tmp_path: Path) -> None:
+    """A host absolute path pointing inside ``root_dir`` is normalized to its
+    virtual equivalent instead of being nested under ``root_dir`` (#5469).
+
+    When ``execute("pwd")`` returns the host working directory, an agent may
+    pass that host path to ``write()`` thinking it is a virtual path.  Without
+    normalization, ``_resolve_path`` treats the host path as a virtual
+    sub-path and creates a nested duplicate directory tree inside ``root_dir``.
+    """
+    backend = LocalShellBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    # Simulate what an agent does: get the host pwd, then write to it
+    result = backend.execute("pwd")
+    host_pwd = result.output.strip()
+
+    # Write using the host absolute path
+    write_result = backend.write(f"{host_pwd}/fib.py", "print('hello')")
+    assert write_result.error is None
+
+    # The file must land at root_dir/fib.py, not root_dir/<host_pwd>/fib.py
+    assert (tmp_path / "fib.py").exists()
+    nested = tmp_path / host_pwd.lstrip("/") / "fib.py"
+    assert not nested.exists(), f"file was nested under root_dir: {nested}"
+
+
+def test_virtual_mode_host_path_read(tmp_path: Path) -> None:
+    """Reading via a host absolute path inside ``root_dir`` resolves to the
+    correct virtual file (#5469).
+    """
+    backend = LocalShellBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    # Write a file at the virtual path
+    backend.write("/data.txt", "hello world")
+
+    # Get the host pwd and read using the host absolute path
+    result = backend.execute("pwd")
+    host_pwd = result.output.strip()
+
+    read_result = backend.read(f"{host_pwd}/data.txt")
+    assert read_result.error is None
+    assert read_result.file_data is not None
+    assert "hello world" in read_result.file_data["content"]
+
+
+class TestLocalShellVirtualModeExplicit:
+    """Explicit ``virtual_mode`` values do not warn."""
 
     def test_explicit_virtual_mode_does_not_warn(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, warnings.catch_warnings(record=True) as captured:

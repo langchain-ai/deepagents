@@ -201,6 +201,24 @@ class FilesystemBackend(BackendProtocol):
             OSError: If the path is a symlink loop (`ELOOP`).
         """
         if self.virtual_mode:
+            # When an agent passes a host absolute path that actually lives
+            # inside ``root_dir`` (e.g. the output of ``execute("pwd")``),
+            # normalize it to the corresponding virtual path instead of
+            # treating it as a virtual sub-path and creating a nested
+            # duplicate directory tree (#5469).
+            if key.startswith("/"):
+                try:
+                    candidate = Path(key).resolve()
+                    candidate.relative_to(self.cwd)
+                    # The host path is inside root_dir — re-anchor it as a
+                    # virtual path and fall through to the normal virtual
+                    # resolution below.
+                    key = "/" + str(candidate.relative_to(self.cwd))
+                    if key == "/":
+                        key = "/"
+                except (ValueError, OSError):
+                    pass  # Outside root_dir — let normal virtual handling reject it
+
             vpath = key if key.startswith("/") else "/" + key
             if ".." in vpath or vpath.startswith("~"):
                 msg = "Path traversal not allowed"

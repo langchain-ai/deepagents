@@ -241,9 +241,8 @@ class TestDeepAgentsCLIEndToEnd:
             # mode the history prefix lives under the backend's `artifacts_root`
             # (a per-session temp dir), routed to persistent storage.
             assert backend.ls(f"{backend.artifacts_root}/conversation_history/").entries
-            assert (
-                tmp_path / ".deepagents" / "conversation_history" / f"{thread_id}.md"
-            ).exists()
+            history_dir = tmp_path / ".deepagents" / "conversation_history"
+            assert len(list(history_dir.glob("session_*.md"))) == 1
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.

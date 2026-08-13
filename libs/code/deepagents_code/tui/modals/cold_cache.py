@@ -135,7 +135,7 @@ class ColdCacheWarningScreen(ModalScreen[bool | None]):
         """
         with Vertical():
             yield Static(
-                "Prompt cache may be cold",
+                "Warning: cache may be cold",
                 classes="cold-cache-title",
                 markup=False,
             )

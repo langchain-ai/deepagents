@@ -421,6 +421,7 @@ class StatusBar(Vertical):
         self.cache_input_tokens = 0
         self.cache_read_tokens = 0
         self.cache_write_tokens = 0
+        self._cache_visible = False
         self._status_by_source: dict[StatusMessageSource, str] = {
             "agent": "",
             "hooks": "",
@@ -903,7 +904,7 @@ class StatusBar(Vertical):
             if segment.plain
         )
         cache = self._cache_segment()
-        cache_display.segments = (cache,) if cache.plain else ()
+        cache_display.segments = (cache,) if self._cache_visible else ()
         context_display.segments = context_segments
 
     def set_rubric_label(self, label: str) -> None:
@@ -949,6 +950,7 @@ class StatusBar(Vertical):
         write_tokens: int,
         *,
         input_tokens: int = 0,
+        visible: bool = True,
     ) -> None:
         """Set cumulative input and cache token counts for the active thread.
 
@@ -957,6 +959,7 @@ class StatusBar(Vertical):
             write_tokens: Input tokens written to the provider cache.
             input_tokens: Inclusive input-token total used as the hit-rate
                 denominator.
+            visible: Whether to show cache metrics.
         """
         reads = max(read_tokens, 0)
         writes = max(write_tokens, 0)
@@ -964,6 +967,7 @@ class StatusBar(Vertical):
         self.cache_input_tokens = inputs
         self.cache_read_tokens = reads
         self.cache_write_tokens = writes
+        self._cache_visible = visible
         self._refresh_metrics()
 
     def set_cost(self, cost_usd: float) -> None:

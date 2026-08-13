@@ -2589,6 +2589,33 @@ class TestAppCSSValidation:
 class TestCacheStatus:
     """Tests for active-thread cache metrics forwarded to the status bar."""
 
+    @pytest.mark.parametrize(
+        ("completed", "reads", "writes", "visible"),
+        [
+            (False, 800, 100, False),
+            (True, 0, 100, True),
+            (True, 800, 0, False),
+            (True, 800, 100, True),
+        ],
+    )
+    def test_refresh_validates_cache_metrics(
+        self, completed: bool, reads: int, writes: int, visible: bool
+    ) -> None:
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._status_bar = MagicMock()
+        app._thread_stats = SessionStats(
+            input_tokens=1_000,
+            cache_read_tokens=reads,
+            cache_write_tokens=writes,
+        )
+        app._thread_has_completed_turn = completed
+
+        app._refresh_cache_display()
+
+        app._status_bar.set_cache_tokens.assert_called_once_with(
+            reads, writes, input_tokens=1_000, visible=visible
+        )
+
     def test_refresh_includes_matching_inflight_input_total(self) -> None:
         """The hit-rate denominator should cover persisted and in-flight usage."""
         app = DeepAgentsApp(thread_id="thread-123")
@@ -2604,6 +2631,7 @@ class TestCacheStatus:
             cache_write_tokens=50,
         )
         app._inflight_thread_id = app._lc_thread_id
+        app._thread_has_completed_turn = True
 
         app._refresh_cache_display()
 
@@ -2611,6 +2639,7 @@ class TestCacheStatus:
             1_200,
             150,
             input_tokens=1_500,
+            visible=True,
         )
 
 

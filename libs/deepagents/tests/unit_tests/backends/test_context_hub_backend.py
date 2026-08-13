@@ -555,11 +555,11 @@ def test_grep_glob_does_not_brace_expand() -> None:
     assert paths == {"/literal.{py,md}"}
 
 
-def test_grep_invalid_regex() -> None:
-    backend, _ = _make_backend()
-    result = backend.grep("[unclosed")
-    assert result.error is not None
-    assert "Invalid regex" in result.error
+def test_grep_treats_pattern_literally() -> None:
+    backend, _ = _make_backend(**{"notes.md": FileEntry(type="file", content="items[0]\n")})
+    result = backend.grep("[")
+    assert result.error is None
+    assert result.matches == [{"path": "/notes.md", "line": 1, "text": "items[0]"}]
 
 
 def _grep_cap_backend() -> ContextHubBackend:

@@ -610,11 +610,6 @@ class ContextHubBackend(BackendProtocol):
             return GrepResult(error=f"Hub unavailable: {exc}")
         matches: list[GrepMatch] = []
 
-        try:
-            regex = re.compile(pattern)
-        except re.error as e:
-            return GrepResult(error=f"Invalid regex pattern: {e}")
-
         prefix = self._strip_prefix(path).rstrip("/") if path else ""
 
         glob_re = re.compile(fnmatch.translate(os.path.normcase(glob))) if glob else None
@@ -625,7 +620,7 @@ class ContextHubBackend(BackendProtocol):
             if glob_re is not None and not glob_re.match(os.path.normcase(file_path)):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
-                if regex.search(line):
+                if pattern in line:
                     if max_count is not None and len(matches) >= max_count:
                         # A further match beyond `max_count` proves more exist;
                         # stop and flag truncation. Checked before appending so

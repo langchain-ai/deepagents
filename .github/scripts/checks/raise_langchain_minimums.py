@@ -549,11 +549,11 @@ def stale_lock_dirs(changed_manifests: Collection[str]) -> list[str]:
 
 
 def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
-    """Render applied edits as a Markdown bullet list for the PR body/summary."""
-    lines = [heading, ""]
+    """Render applied edits as a Markdown table for the PR body/summary."""
+    lines = [heading, "", "| Manifest | Dependency | Change |", "|---|---|---|"]
     lines.extend(
-        f"- `{edit.manifest_path}`: `{edit.dependency_name}` "
-        f"`{edit.old_requirement}` → `{edit.new_requirement}`"
+        f"| `{edit.manifest_path}` | `{edit.dependency_name}` | "
+        f"`{edit.old_requirement}` → `{edit.new_requirement}` |"
         for edit in edits
     )
     return "\n".join(lines)

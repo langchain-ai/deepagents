@@ -1079,5 +1079,8 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          gh workflow run bump_code_sdk_pin.yml --ref main
+          # `-R` is required: this job skips checkout (it only needs the API),
+          # and without a repo flag `gh` shells out to `git` to discover the
+          # repository, which fails with "fatal: not a git repository".
+          gh workflow run bump_code_sdk_pin.yml --repo "${GITHUB_REPOSITORY}" --ref main
           echo "::notice::Dispatched bump_code_sdk_pin.yml after publishing deepagents==${SDK_VERSION}."

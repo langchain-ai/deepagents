@@ -435,7 +435,9 @@ function overrideBody({ component, version, head, headingHash, fingerprint, sect
     // Echo the maintainer's draft instructions so the prompt that produced this
     // draft is auditable on the PR, and so a later draft with different
     // instructions produces a visibly distinct comment.
-    ...(instructions ? ['', `Drafted with maintainer instructions: ${instructions}`] : []),
+    ...(instructions
+        ? ['', '<details>', '<summary>📝 <strong>Drafted with maintainer instructions</strong></summary>', '', instructions, '</details>']
+        : []),
     '',
     '---',
     CONTENT_START,

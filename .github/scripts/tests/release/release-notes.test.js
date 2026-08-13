@@ -548,7 +548,7 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   assert.match(calls.createComment[0].body, /Keep the version heading intact\. To regenerate with steering/);
   assert.match(calls.createComment[0].body, /@release-bot draft <instructions>/);
   // No instructions were recorded in state, so nothing is echoed.
-  assert.ok(!calls.createComment[0].body.includes('Drafted with maintainer instructions'));
+  assert.ok(!calls.createComment[0].body.includes('<details>'));
 
   const stale = makeGithub({ pr: releasePr({ head: { ...releasePr().head, sha: 'c'.repeat(40) } }) });
   await assert.rejects(
@@ -567,7 +567,7 @@ test('posts a draft that echoes the maintainer instructions it used', async t =>
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
   assert.equal(calls.createComment.length, 1);
-  assert.match(calls.createComment[0].body, /Drafted with maintainer instructions: emphasize the breaking SDK change/);
+  assert.match(calls.createComment[0].body, /<details>\n<summary>📝 <strong>Drafted with maintainer instructions<\/strong><\/summary>\n\nemphasize the breaking SDK change\n<\/details>/);
   // The echo sits outside the marked metadata block and the editable content
   // markers, so it cannot corrupt either parser.
   const body = calls.createComment[0].body;

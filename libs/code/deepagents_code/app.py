@@ -10976,7 +10976,7 @@ class DeepAgentsApp(App):
                 return None
             age_seconds = max((datetime.now(UTC) - timestamp).total_seconds(), 0.0)
             identity_changed = model_spec != last_spec or current_params != last_params
-            if not identity_changed and age_seconds <= policy.window_seconds + 5:
+            if not identity_changed and age_seconds <= policy.window_seconds:
                 return None
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
             if estimate is None or estimate.incremental_cost_usd < threshold:

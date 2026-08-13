@@ -19815,8 +19815,7 @@ class DeepAgentsApp(App):
                 else:
                     message = (
                         f"Auto classifier model set to {display}{revalidated}; it "
-                        "reviews gated actions from the next turn and is already "
-                        "the default for future sessions."
+                        "reviews gated actions from the next turn."
                     )
             else:
                 message = (

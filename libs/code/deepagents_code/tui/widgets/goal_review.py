@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code.config import get_glyphs
+from deepagents_code.editor import editor_display_name
 from deepagents_code.goal_state_limits import validate_goal_application
 from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
@@ -35,6 +36,14 @@ _OPTIONS: tuple[tuple[str, str], ...] = (
     ("3. Reject with message (r)", "reject_with_message"),
     ("4. Cancel (n)", "cancel"),
 )
+
+
+def _editor_hint() -> str:
+    """Return the current editor shortcut hint."""
+    editor = editor_display_name()
+    return (
+        f"Ctrl+X edit in {editor}" if editor is not None else "Ctrl+X external editor"
+    )
 
 
 class GoalReviewAccepted(TypedDict):
@@ -370,7 +379,7 @@ class GoalReviewMenu(Container):
         glyphs = get_glyphs()
         self._help_widget.update(
             f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
-            f"{newline_hint()} {glyphs.bullet} Ctrl+X external editor"
+            f"{newline_hint()} {glyphs.bullet} {_editor_hint()}"
         )
 
     def _hint_invalid_submission(self, error: str) -> None:
@@ -405,14 +414,14 @@ class GoalReviewMenu(Container):
             self._help_widget.update(
                 f"Enter save edits {glyphs.bullet} "
                 f"{newline_hint()} {glyphs.bullet} "
-                f"Ctrl+X external editor {glyphs.bullet} Esc back"
+                f"{_editor_hint()} {glyphs.bullet} Esc back"
             )
             return
         if self._input_mode == "reject":
             self._help_widget.update(
                 f"Enter regenerate {glyphs.bullet} "
                 f"{newline_hint()} {glyphs.bullet} "
-                f"Ctrl+X external editor {glyphs.bullet} Esc back"
+                f"{_editor_hint()} {glyphs.bullet} Esc back"
             )
             return
         self._help_widget.update(

@@ -6,11 +6,13 @@ import argparse
 import asyncio
 import sys
 from contextlib import asynccontextmanager
+from inspect import signature
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from deepagents_acp.server import AgentServerACP
 
 from deepagents_code.main import _preload_session_mcp_server_info, cli_main
 
@@ -33,7 +35,8 @@ def test_acp_checkpointer() -> Generator[SimpleNamespace]:
 def _build_agent_server(server: object) -> Callable[..., object]:
     """Stand in for `AgentServerACP`, exercising the agent factory it is handed."""
 
-    def build(agent_factory: Callable[..., object], **_kwargs: object) -> object:
+    def build(agent_factory: Callable[..., object], **kwargs: object) -> object:
+        signature(AgentServerACP).bind(agent_factory, **kwargs)
         agent_factory(SimpleNamespace(cwd="/tmp", model=None))
         return server
 
@@ -208,9 +211,6 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
         "name": "anthropic:claude-sonnet-4-6",
     }
     assert mock_server_cls.call_args.kwargs["load_sessions"] is True
-    assert mock_server_cls.call_args.kwargs["checkpoint_metadata"] == {
-        "agent_name": "agent"
-    }
     run_agent.assert_awaited_once_with(server)
     mcp_manager.cleanup.assert_awaited_once_with()
 

@@ -3011,7 +3011,6 @@ async def _run_acp_cli_async(
                 build_agent,
                 models=models,
                 load_sessions=True,
-                checkpoint_metadata={"agent_name": assistant_id},
             )
             await run_acp_agent(server)
     except KeyboardInterrupt:
@@ -3475,16 +3474,17 @@ def prompt_for_dep_floor_mismatch(
         console.print(f"  - {escape(v.describe())}", highlight=False)
     refresh = refresh_command()
     console.print(
-        f"Refresh the active environment:\n  {escape(refresh)}", highlight=False
+        f"\nRefresh the active environment:\n  {escape(refresh)}", highlight=False
     )
     console.print(
-        "[yellow]Running stale source against older dependencies can break "
+        "[yellow]\nRunning stale source against older dependencies can break "
         "behavior in hard-to-diagnose ways.[/yellow]",
         highlight=False,
     )
+    console.print()
     return _select_trust_action(
         console,
-        remember_label="Mute until the mismatch changes",
+        remember_label="Continue and hide until versions change",
         allow_label="Continue this session only",
         deny_label="Abort launch",
         deny_first=True,

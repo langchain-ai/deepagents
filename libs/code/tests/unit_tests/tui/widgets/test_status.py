@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.geometry import Size
 from textual.widgets import Static
 
@@ -66,6 +67,21 @@ class TestTwoLineMetrics:
             assert bar._percent_color(60.1) == colors.warning
             assert bar._percent_color(80.0) == colors.warning
             assert bar._percent_color(80.1) == colors.error
+
+    @pytest.mark.parametrize(
+        ("read", "color"),
+        [(0, "muted"), (59, "error"), (60, "warning"), (90, "muted")],
+    )
+    async def test_cache_hit_rate_colors(self, read: int, color: str) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            colors = theme.get_theme_colors(bar)
+            bar.set_cache_tokens(read, 0, input_tokens=100 if read else 0)
+            cache = pilot.app.query_one("#cache-display")
+            cache.styles.width = 9
+            rendered = cache.render()
+            assert isinstance(rendered, Content)
+            assert rendered.spans[-1].style == getattr(colors, color)
 
 
 class TestApprovalModeDisplay:
@@ -604,6 +620,16 @@ class TestTokenDisplay:
             assert display.display is True
             assert str(display.render()) == "Context: 0% / Tokens: 0 • $0.00"
 
+    async def test_unknown_context_limit_shows_dashes_with_tokens(self) -> None:
+        """With no known limit, a non-zero count renders `--` for the percentage."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(None)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "Context: -- / Tokens: 5K • $0.00"
+
 
 class TestCostDisplay:
     """Tests for cumulative cost rendered inline with context tokens."""
@@ -630,6 +656,9 @@ class TestCostDisplay:
     async def test_zero_cost_is_visible(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # A `None` limit renders `--` only once tokens are non-zero, so pin
+            # the limit rather than inheriting `settings.model_context_limit`.
+            bar.set_context_limit(None)
             bar.set_tokens(5000)
             bar.set_cost(0.0)
             await pilot.pause()

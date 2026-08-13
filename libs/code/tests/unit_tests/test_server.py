@@ -1304,8 +1304,9 @@ class TestServerProcessStopIdempotency:
             assert server._stopped is False
         finally:
             # The failed `start()` allocated the workspace `TemporaryDirectory`
-            # before raising; without a second `stop()` its finalizer would
-            # warn about implicit cleanup at GC time.
+            # before raising, and did so outside `_start`'s cleanup `finally` —
+            # so without an explicit `stop()` its finalizer would warn about
+            # implicit cleanup at GC time.
             server.stop()
 
 

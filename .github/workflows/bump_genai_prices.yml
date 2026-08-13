@@ -185,7 +185,10 @@ jobs:
           # "the newest release is above the declared ceiling", and the
           # second case is silently permanent until someone raises the
           # ceiling by hand. A newer-than-allowed PyPI release flips
-          # `capped` so a later step can file a tracking issue.
+          # `capped` so a later step can file a tracking issue. Pre-release
+          # and dev versions are excluded to match the uv resolution above:
+          # uv refuses them by default, so one of them being newest on PyPI
+          # is not the ceiling's fault and must not file the issue.
           pypi_latest=$(uv run --no-project --with packaging python - <<'PY'
           import json
           import urllib.request
@@ -194,8 +197,9 @@ jobs:
 
           with urllib.request.urlopen("https://pypi.org/pypi/genai-prices/json") as r:
               data = json.load(r)
-          releases = [v for v, files in data["releases"].items() if files and not any(f.get("yanked") for f in files)]
-          print(max(releases, key=Version))
+          versions = [Version(v) for v, files in data["releases"].items() if files and not any(f.get("yanked") for f in files)]
+          stable = [v for v in versions if not v.is_prerelease and not v.is_devrelease]
+          print(max(stable))
           PY
           )
           capped=false

@@ -7428,7 +7428,7 @@ class TestCopyCommand:
             copy_mock.assert_called_once_with(app, markdown)
             assert any(w._content == "/copy" for w in app.query(UserMessage))
             assert any(
-                str(w._content) == "Copied latest assistant message to clipboard."
+                str(w._content) == "Copied latest response to clipboard."
                 for w in app.query(AppMessage)
             )
 

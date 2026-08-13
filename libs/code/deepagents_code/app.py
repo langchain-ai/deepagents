@@ -14185,7 +14185,7 @@ class DeepAgentsApp(App):
             success, error = copy_text_to_clipboard(self, content)
             if success:
                 await self._mount_message(
-                    AppMessage("Copied latest assistant message to clipboard."),
+                    AppMessage("Copied latest response to clipboard."),
                 )
             else:
                 fail_msg = (

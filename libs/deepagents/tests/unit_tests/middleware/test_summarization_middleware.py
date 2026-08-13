@@ -391,7 +391,7 @@ class TestOffloadingBasic:
         assert len(backend.write_calls) == 1
 
         path, content = backend.write_calls[0]
-        assert re.fullmatch(r"/conversation_history/session_[0-9a-f]{8}\.md", path)
+        assert re.fullmatch(r"/conversation_history/session_[0-9a-f]{32}\.md", path)
 
         assert "## Summarized at" in content
         assert '<message type="human">' in content or '<message type="ai">' in content
@@ -577,7 +577,7 @@ class TestOffloadingBasic:
         assert image_uploads[0][0] == expected_path
 
         archive_write = next((p, c) for p, c in mock_backend.write_calls if p.endswith(".md"))
-        assert re.fullmatch(r"/custom/conversation_history/session_[0-9a-f]{8}\.md", archive_write[0])
+        assert re.fullmatch(r"/custom/conversation_history/session_[0-9a-f]{32}\.md", archive_write[0])
         assert expected_path in archive_write[1]
 
     def test_offload_per_block_upload_failure(self) -> None:
@@ -1569,7 +1569,7 @@ class TestSessionIdResolution:
         result, _ = call_wrap_model_call(middleware, state, runtime)
 
         path, _ = backend.write_calls[0]
-        assert re.fullmatch(r"/conversation_history/session_[0-9a-f]{8}\.md", path)
+        assert re.fullmatch(r"/conversation_history/session_[0-9a-f]{32}\.md", path)
         # The id is persisted so later turns append to the same file.
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
@@ -1611,7 +1611,7 @@ class TestSessionIdResolution:
         paths = [p for p, _ in backend.write_calls]
         assert len(paths) == 2
         assert len(set(paths)) == 2, f"history files collided: {paths}"
-        assert all(re.fullmatch(r"/conversation_history/session_[0-9a-f]{8}\.md", p) for p in paths)
+        assert all(re.fullmatch(r"/conversation_history/session_[0-9a-f]{32}\.md", p) for p in paths)
 
 
 class TestAsyncBehavior:

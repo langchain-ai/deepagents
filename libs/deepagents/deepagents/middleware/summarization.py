@@ -667,12 +667,14 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             state: The agent state to read the persisted id from.
 
         Returns:
-            A session id (e.g. `'session_a1b2c3d4'`).
+            A session id (e.g. `'session_<uuid4 hex>'`).
         """
         existing = state.get("_summarization_session_id")
         if isinstance(existing, str) and existing:
             return existing
-        return f"session_{uuid.uuid4().hex[:8]}"
+        # Full uuid4 entropy: history filenames must not collide across
+        # independent sessions sharing a backend, or their evicted history mixes.
+        return f"session_{uuid.uuid4().hex}"
 
     def _get_history_path(self, session_id: str) -> str:
         """Generate path for storing conversation history.

@@ -155,18 +155,26 @@ jobs:
           # keeps pace — otherwise older releases stay installable and the
           # pin's protection against an outdated parser does not hold for
           # fresh resolves. `.` and `+` are regex metacharacters that can
-          # appear in versions, so the substitution escapes them.
+          # appear in versions, so the substitution escapes them. The floor
+          # is read *before* the rewrite: a floor already behind the pin is
+          # itself stale (the rewrite would otherwise be silently discarded
+          # by the staleness check below whenever the lock pin did not move).
+          floor=$(sed -n -E 's/.*"genai-prices>=([0-9]+(\.[0-9]+)*([a-z0-9.+-]*)).*/\1/p' libs/code/pyproject.toml)
+          if [[ ! "$floor" =~ $version_re ]]; then
+            echo "::error::Could not parse the genai-prices floor from libs/code/pyproject.toml (got '$floor')"
+            exit 1
+          fi
           escaped=$(printf '%s' "$latest" | sed 's/[.+]/\\&/g')
           sed -i -E "s/\"genai-prices>=[0-9]+(\\.[0-9]+)*([a-z0-9.+-]*)/\"genai-prices>=$escaped/" libs/code/pyproject.toml
 
-          # Staleness is the pin moving, not files changing: `uv lock` can
-          # touch unrelated lines (a lock revision bump, a re-resolved
-          # transitive), and a "bump genai-prices" PR that does not move
-          # genai-prices is worse than no PR. Nothing is lost by dropping a
-          # diff check here — if the pin moved, the lockfile and the
-          # manifest's `>=` floor necessarily changed, and an empty
-          # `git commit` in the push step would fail loudly anyway.
-          if [ "$locked" = "$latest" ]; then
+          # Staleness is the pin moving or the floor lagging the pin, not
+          # files changing: `uv lock` can touch unrelated lines (a lock
+          # revision bump, a re-resolved transitive), and a "bump
+          # genai-prices" PR that does not move genai-prices is worse than
+          # no PR. Nothing is lost by dropping a diff check here — if either
+          # moved, the lockfile or the manifest necessarily changed, and an
+          # empty `git commit` in the push step would fail loudly anyway.
+          if [ "$locked" = "$latest" ] && [ "$floor" = "$latest" ]; then
             stale=false
           else
             stale=true

@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.7.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.5...deepagents==0.7.6) (2026-08-13)
+
+
+### Bug Fixes
+
+* **sdk:** offload conversation history to distinct session ID when summarizing ([#5470](https://github.com/langchain-ai/deepagents/issues/5470)) ([fa55c52](https://github.com/langchain-ai/deepagents/commit/fa55c52fe774462b2775c0d77dcf811d6dfd0e35))
+
 ## [0.7.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.4...deepagents==0.7.5) (2026-08-06)
 
 ### Bug Fixes

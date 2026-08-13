@@ -3469,13 +3469,14 @@ def prompt_for_dep_floor_mismatch(
         console.print(f"  - {escape(v.describe())}", highlight=False)
     refresh = refresh_command()
     console.print(
-        f"Refresh the active environment:\n  {escape(refresh)}", highlight=False
+        f"\nRefresh the active environment:\n  {escape(refresh)}", highlight=False
     )
     console.print(
-        "[yellow]Running stale source against older dependencies can break "
+        "[yellow]\nRunning stale source against older dependencies can break "
         "behavior in hard-to-diagnose ways.[/yellow]",
         highlight=False,
     )
+    console.print()
     return _select_trust_action(
         console,
         remember_label="Mute until the mismatch changes",

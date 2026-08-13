@@ -359,6 +359,16 @@ function latestApplied({ comments, login, id, component, version }) {
 // limit keeps both readable. Applies to instructions only, not the command.
 const INSTRUCTIONS_MAX_LENGTH = 500;
 
+// Escape HTML metacharacters in the instructions echo so the <details>
+// wrapper cannot be broken by instruction text that mentions HTML.
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // Tokens that must never reach the override comment via the instructions echo.
 // parseOverrideComment locates the curated section by scanning for the first
 // CONTENT_START/CONTENT_END, and validateDraftOutput rejects MARKER_PREFIX and
@@ -434,8 +444,11 @@ function overrideBody({ component, version, head, headingHash, fingerprint, sect
     `Review and edit the release notes between the content markers below as needed. Keep the version heading intact. To regenerate with steering instead of editing by hand, run \`${COMMAND_MENTION} draft <instructions>\`.`,
     // Echo the maintainer's draft instructions so the prompt that produced this
     // draft is auditable on the PR, and so a later draft with different
-    // instructions produces a visibly distinct comment.
-    ...(instructions ? ['', `Drafted with maintainer instructions: ${instructions}`] : []),
+    // instructions produces a visibly distinct comment. Escape HTML so the
+    // instructions cannot break the <details> wrapper or inject markup.
+    ...(instructions
+        ? ['', '<details>', '<summary>📝 <strong>Drafted with maintainer instructions</strong></summary>', '', escapeHtml(instructions), '</details>']
+        : []),
     '',
     '---',
     CONTENT_START,

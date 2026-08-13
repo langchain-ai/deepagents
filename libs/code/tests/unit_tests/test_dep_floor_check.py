@@ -687,6 +687,30 @@ def test_dep_floor_prompt_escapes_dynamic_rich_markup(
     assert "/tmp/[bold]" in text
 
 
+def test_dep_floor_prompt_separates_guidance_and_actions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The remediation, risk warning, and chooser each start after a blank line."""
+    from rich.console import Console
+
+    picker: dict[str, object] = {}
+
+    def _select(*_args: object, **kwargs: object) -> _TrustAction:
+        picker.update(kwargs)
+        return _TrustAction.ALLOW_ONCE
+
+    monkeypatch.setattr(dep_floor_check, "refresh_command", lambda: "uv sync")
+    monkeypatch.setattr(main_module, "_select_trust_action", _select)
+
+    main_module.prompt_for_dep_floor_mismatch(Console(stderr=True), _VIOLATIONS)
+
+    text = capsys.readouterr().err
+    assert "\n\nRefresh the active environment:" in text
+    assert "  uv sync\n\nRunning stale source" in text
+    assert "hard-to-diagnose ways.\n\n" in text
+    assert picker["remember_label"] == "Continue and hide until versions change"
+
+
 def _patch_versions(monkeypatch: pytest.MonkeyPatch, versions: dict[str, str]) -> None:
     """Resolve `importlib.metadata.version` lookups from `versions` only."""
 

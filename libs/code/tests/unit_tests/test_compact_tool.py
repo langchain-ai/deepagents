@@ -125,6 +125,7 @@ class TestCLICompactionMiddleware:
             messages
         )
         summarization._determine_cutoff_index.return_value = 2
+        summarization._get_session_id.return_value = "session-test"
         summarization._partition_messages.side_effect = lambda messages, cutoff: (
             messages[:cutoff],
             messages[cutoff:],
@@ -218,6 +219,7 @@ class TestCLICompactionMiddleware:
         summarization._acreate_summary.assert_awaited_once()
         assert result.update is not None
         assert result.update["_summarization_event"]["cutoff_index"] == 2
+        assert result.update["_summarization_session_id"] == "session-test"
 
     def test_runtime_model_builds_matching_summarizer(self) -> None:
         """A `/model` override selects the summarizer used by `/offload`."""
@@ -537,10 +539,12 @@ class TestCLICompactionMiddleware:
         summarization._filter_summary_messages.side_effect = lambda messages: messages
 
         async def sdk_offload(
-            guarded: BackendProtocol, messages: list[AnyMessage]
+            guarded: BackendProtocol,
+            messages: list[AnyMessage],
+            session_id: str,
         ) -> str | None:
             return await SummarizationMiddleware._aoffload_to_backend(
-                summarization, guarded, messages
+                summarization, guarded, messages, session_id
             )
 
         summarization._aoffload_to_backend = AsyncMock(side_effect=sdk_offload)

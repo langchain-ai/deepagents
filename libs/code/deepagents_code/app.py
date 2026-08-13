@@ -123,6 +123,7 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
     QueuedUserMessage,
     RubricResultMessage,
     SkillMessage,
@@ -236,6 +237,54 @@ group summary would still count and phrase a row the user cannot see, and one
 `display` flag with two independent owners is a standing hazard even when both
 currently agree.
 """
+
+
+def _collapse_restored_tool_groups(messages: list[MessageData]) -> list[MessageData]:
+    """Replace completed groupable tool runs with lazy data-backed summaries.
+
+    Args:
+        messages: Converted checkpoint rows in transcript order.
+
+    Returns:
+        Display rows with each collapsible tool run represented once.
+    """
+    collapsed: list[MessageData] = []
+    group: list[MessageData] = []
+
+    def flush() -> None:
+        if not group:
+            return
+        collapsed.append(
+            MessageData(
+                type=MessageType.TOOL_GROUP,
+                content="",
+                timestamp=group[0].timestamp,
+                tool_group_messages=list(group),
+            )
+        )
+        group.clear()
+
+    for message in messages:
+        if (
+            message.type == MessageType.TOOL
+            and message.tool_status == ToolStatus.SUCCESS
+            and message.tool_name not in _TOOL_GROUP_EXCLUSIONS
+            and not message.tool_display_caveat
+        ):
+            group.append(message)
+            continue
+        if (
+            message.type == MessageType.DIFF
+            and group
+            and message.diff_tool_name not in _TOOL_GROUP_EXCLUSIONS
+        ):
+            group.append(message)
+            continue
+        flush()
+        collapsed.append(message)
+    flush()
+    return collapsed
+
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 """CSS class applied to individual message timestamp footer widgets."""
@@ -2949,6 +2998,12 @@ class DeepAgentsApp(App):
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
 
+    _TRANSCRIPT_PRUNE_IDLE_SECONDS = 0.2
+    """Seconds without hydration before the mounted window is trimmed."""
+
+    _TRANSCRIPT_PRUNE_SLICE_SECONDS = 0.001
+    """Smallest non-zero delay Textual timers accept between prune slices."""
+
     _hydration_failure_notified: bool = False
     """Set once a hydration failure has been surfaced, to avoid toast spam.
 
@@ -3997,6 +4052,30 @@ class DeepAgentsApp(App):
 
         self._message_store = MessageStore()
         """Message virtualization store."""
+
+        self._transcript_generation = 0
+        """Invalidates hydration/pruning work when the transcript is cleared."""
+
+        self._hydration_requests: set[Literal["above", "below"]] = set()
+        """Coalesced transcript hydration directions awaiting one UI slice."""
+
+        self._hydration_preferred_direction: Literal["above", "below"] = "above"
+        """Most recently requested direction, prioritized on direction changes."""
+
+        self._hydration_scheduled = False
+        """Whether a hydration slice is queued or currently running."""
+
+        self._history_prefetch_active = False
+        """Whether resumed history is warming toward the soft window size."""
+
+        self._transcript_prune_timer: Timer | None = None
+        """Idle timer that defers opposite-edge pruning while scrolling."""
+
+        self._transcript_prune_running = False
+        """Whether one bounded prune slice is currently mutating the DOM."""
+
+        self._transcript_prune_direction: Literal["above", "below"] = "above"
+        """Mounted-window edge to trim when the idle prune timer fires."""
 
         self._message_measure_width: int | None = None
         """Chat width used for cached message height hints."""
@@ -7555,6 +7634,7 @@ class DeepAgentsApp(App):
         Driven by `_ChatScroll.Scrolled` (see that message for why hydration
         keys off the scroll offset rather than the scrollbar messages).
         """
+        self._defer_transcript_prune_while_scrolling()
         self._check_hydration_needed()
         self._check_hydration_below_needed()
 
@@ -8125,11 +8205,88 @@ class DeepAgentsApp(App):
             markup=False,
         )
 
-    def _check_hydration_needed(self) -> None:
-        """Check if we need to hydrate messages from the store.
+    def _request_hydration(self, direction: Literal["above", "below"]) -> None:
+        """Coalesce a transcript hydration request into one UI-thread slice."""
+        self._hydration_requests.add(direction)
+        self._hydration_preferred_direction = direction
+        if self._hydration_scheduled:
+            return
+        self._hydration_scheduled = True
+        self.call_later(self._run_hydration_slice)
 
-        Called when user scrolls up near the top of visible messages.
-        """
+    async def _run_hydration_slice(self) -> None:
+        """Mount one small history batch, then yield to Textual for a repaint."""
+        hydrated_count = 0
+        direction: Literal["above", "below"] | None = None
+        generation = self._transcript_generation
+        try:
+            if not self._hydration_requests:
+                return
+            direction = self._hydration_preferred_direction
+            if direction not in self._hydration_requests:
+                direction = next(iter(self._hydration_requests))
+            self._hydration_requests.discard(direction)
+            count = self._message_store.HYDRATE_BUFFER
+            if direction == "above" and self._history_prefetch_active:
+                count = min(
+                    count,
+                    max(
+                        0,
+                        self._message_store.WINDOW_SIZE
+                        - self._message_store.visible_count,
+                    ),
+                )
+            if direction == "above":
+                hydrated_count = await self._hydrate_messages_above(
+                    count=count,
+                    generation=generation,
+                )
+            else:
+                hydrated_count = await self._hydrate_messages_below(
+                    count=self._message_store.HYDRATE_BUFFER,
+                    generation=generation,
+                )
+        finally:
+            self._hydration_scheduled = False
+
+        if hydrated_count == 0 and direction == "above":
+            self._history_prefetch_active = False
+        if hydrated_count or self._hydration_requests:
+            self.call_after_refresh(self._continue_hydration)
+
+    def _continue_hydration(self) -> None:
+        """Continue coalesced or background hydration after layout catches up."""
+        if self._hydration_requests:
+            direction = self._hydration_preferred_direction
+            if direction not in self._hydration_requests:
+                direction = next(iter(self._hydration_requests))
+            self._request_hydration(direction)
+            return
+
+        if self._history_prefetch_active:
+            if (
+                self._message_store.has_messages_above
+                and self._message_store.visible_count < self._message_store.WINDOW_SIZE
+            ):
+                self._request_hydration("above")
+                return
+            self._history_prefetch_active = False
+            return
+
+        self._check_hydration_needed()
+        self._check_hydration_below_needed()
+
+    def _start_history_prefetch(self) -> None:
+        """Warm resumed history toward the soft window without blocking startup."""
+        self._history_prefetch_active = (
+            self._message_store.has_messages_above
+            and self._message_store.visible_count < self._message_store.WINDOW_SIZE
+        )
+        if self._history_prefetch_active:
+            self._request_hydration("above")
+
+    def _check_hydration_needed(self) -> None:
+        """Prefetch older messages near the mounted-window boundary."""
         if not self._message_store.has_messages_above:
             return
 
@@ -8139,14 +8296,17 @@ class DeepAgentsApp(App):
             logger.debug("Skipping hydration check: #chat container not found")
             return
 
-        scroll_y = chat.scroll_y
-        viewport_height = chat.size.height
-
-        if self._message_store.should_hydrate_above(scroll_y, viewport_height):
-            self.call_later(self._hydrate_messages_above)
+        start, _end = self._message_store.get_visible_range()
+        top_spacer_bottom = self._message_store.range_height(0, start)
+        if self._message_store.should_hydrate_above(
+            chat.scroll_y,
+            chat.size.height,
+            top_spacer_bottom,
+        ):
+            self._request_hydration("above")
 
     def _check_hydration_below_needed(self) -> None:
-        """Check if newer messages should be mounted below the current window."""
+        """Prefetch newer messages near the mounted-window boundary."""
         if not self._message_store.has_messages_below:
             return
         try:
@@ -8162,44 +8322,112 @@ class DeepAgentsApp(App):
             bottom_spacer_top,
             max_scroll=chat.max_scroll_y,
         ):
-            self.call_later(self._hydrate_messages_below)
+            self._request_hydration("below")
 
-    async def _hydrate_messages_above(self) -> None:
-        """Hydrate older messages when user scrolls near the top.
+    async def _mount_hydration_batch(
+        self,
+        messages_container: Container,
+        entries: list[tuple[Widget, MessageData, Widget | None]],
+        *,
+        before: Widget | None = None,
+        generation: int | None = None,
+    ) -> bool:
+        """Mount and render one prepared hydration batch in a single DOM call.
 
-        This recreates widgets for archived messages and inserts them
-        at the top of the messages container.
+        Args:
+            messages_container: Transcript container receiving the batch.
+            entries: Ordered `(widget, data, footer)` rows to mount.
+            before: Optional insertion anchor for hydrate-above.
+            generation: Transcript generation that owns the batch.
+
+        Returns:
+            Whether the complete batch mounted for the active transcript.
         """
-        if not self._message_store.has_messages_above:
-            return
+        nodes = [
+            node
+            for widget, _data, footer in entries
+            for node in ((widget, footer) if footer is not None else (widget,))
+        ]
+
+        async def remove_attached_nodes() -> None:
+            for node in reversed(nodes):
+                if node.is_attached:
+                    with suppress(Exception):
+                        await node.remove()
+
+        try:
+            await self._mount_transcript_nodes(
+                messages_container,
+                nodes,
+                before=before,
+            )
+        except Exception:
+            logger.warning("Failed to mount hydrated transcript batch", exc_info=True)
+            await remove_attached_nodes()
+            self._notify_hydration_failure()
+            return False
+
+        if generation is not None and generation != self._transcript_generation:
+            await remove_attached_nodes()
+            return False
+
+        assistant_updates = [
+            widget.set_content(data.content)
+            for widget, data, _footer in entries
+            if isinstance(widget, AssistantMessage) and data.content
+        ]
+        if assistant_updates:
+            results = await asyncio.gather(*assistant_updates, return_exceptions=True)
+            for error in results:
+                if isinstance(error, Exception):
+                    logger.warning(
+                        "Failed to render hydrated assistant message: %s", error
+                    )
+                    self._notify_hydration_failure()
+
+        if generation is not None and generation != self._transcript_generation:
+            await remove_attached_nodes()
+            return False
+        return True
+
+    async def _hydrate_messages_above(
+        self,
+        *,
+        count: int | None = None,
+        generation: int | None = None,
+    ) -> int:
+        """Hydrate one contiguous batch of older messages.
+
+        Args:
+            count: Maximum messages to mount; defaults to `HYDRATE_BUFFER`.
+            generation: Transcript generation that owns this scheduled slice.
+
+        Returns:
+            Number of messages mounted.
+        """
+        if (
+            generation is not None and generation != self._transcript_generation
+        ) or not self._message_store.has_messages_above:
+            return 0
 
         try:
             chat = self.query_one("#chat", VerticalScroll)
-        except NoMatches:
-            logger.debug("Skipping hydration: #chat not found")
-            return
-
-        try:
             messages_container = self.query_one("#messages", Container)
         except NoMatches:
-            logger.debug("Skipping hydration: #messages not found")
-            return
+            logger.debug("Skipping hydration: chat/messages container not found")
+            return 0
         await self._ensure_transcript_spacers(messages_container)
 
-        to_hydrate = self._message_store.get_messages_to_hydrate()
+        to_hydrate = self._message_store.get_messages_to_hydrate(count)
         if not to_hydrate:
-            return
+            return 0
 
         old_scroll_y = chat.scroll_y
-        first_child = self._first_transcript_child(messages_container)
+        entries: list[tuple[Widget, MessageData, Widget | None]] = []
 
-        # Mount from the window edge outward (newest archived first), each
-        # inserted before the running `first_child` so the DOM stays
-        # chronological. Stop at the first failure: `mark_hydrated` advances
-        # `_visible_start` by a plain count, so the mounted rows must remain a
-        # contiguous block adjacent to the window or the store desyncs from the
-        # DOM.
-        hydrated_count = 0
+        # Build from the window edge outward so a construction failure leaves a
+        # contiguous suffix that can still mount safely, then reverse it back to
+        # chronological DOM order for one mount call.
         for msg_data in reversed(to_hydrate):
             try:
                 widget = msg_data.to_widget()
@@ -8207,20 +8435,7 @@ class DeepAgentsApp(App):
                     msg_data, visible=self._message_timestamps_visible
                 )
                 self._link_message_timestamp_footer(widget, footer)
-                nodes: list[Widget] = [widget]
-                if footer is not None:
-                    nodes.append(footer)
-                await self._mount_transcript_nodes(
-                    messages_container,
-                    nodes,
-                    before=first_child,
-                )
-                first_child = widget
-                hydrated_count += 1
-                self._schedule_message_height_measurement(msg_data.id)
-                # Render Markdown content for hydrated assistant messages
-                if isinstance(widget, AssistantMessage) and msg_data.content:
-                    await widget.set_content(msg_data.content)
+                entries.append((widget, msg_data, footer))
             except Exception:
                 logger.warning(
                     "Failed to hydrate message %s above window; stopping to "
@@ -8231,46 +8446,65 @@ class DeepAgentsApp(App):
                 self._notify_hydration_failure()
                 break
 
+        entries.reverse()
+        if not entries or not await self._mount_hydration_batch(
+            messages_container,
+            entries,
+            before=self._first_transcript_child(messages_container),
+            generation=generation,
+        ):
+            return 0
+
+        hydrated_ids = [data.id for _widget, data, _footer in entries]
+        hydrated_count = len(hydrated_ids)
         if hydrated_count > 0:
             self._message_store.mark_hydrated(hydrated_count)
-            await self._prune_messages_below_window(messages_container)
+            self._schedule_message_height_measurements(hydrated_ids)
             self._sync_transcript_spacers(messages_container)
+            self._schedule_transcript_prune("below")
 
         # The top spacer already shrank by the hydrated rows' estimated height
-        # (via `_sync_transcript_spacers` above) while real widgets filled the
-        # freed space, so total content above the viewport is unchanged and the
-        # anchor holds without adjusting scroll_y. (Mirrors _hydrate_below.)
+        # while real widgets filled the freed space, so the viewport anchor holds
+        # without compensating for every mounted row individually.
         chat.scroll_y = old_scroll_y
 
-        # Collapse any completed tool runs brought in above the window so
-        # hydrated history matches the live transcript.
-        await self._regroup_completed_tools()
         if hydrated_count > 0:
-            # Re-check after layout because a boundary scroll cannot emit
-            # another `Scrolled` message while its offset remains unchanged.
-            self.call_after_refresh(self._check_hydration_needed)
+            await self._regroup_completed_tools()
+        return hydrated_count
 
-    async def _hydrate_messages_below(self) -> None:
-        """Hydrate newer messages when scrolling down toward the tail."""
-        if not self._message_store.has_messages_below:
-            return
+    async def _hydrate_messages_below(
+        self,
+        *,
+        count: int | None = None,
+        generation: int | None = None,
+    ) -> int:
+        """Hydrate one contiguous batch of newer messages.
+
+        Args:
+            count: Maximum messages to mount; defaults to `HYDRATE_BUFFER`.
+            generation: Transcript generation that owns this scheduled slice.
+
+        Returns:
+            Number of messages mounted.
+        """
+        if (
+            generation is not None and generation != self._transcript_generation
+        ) or not self._message_store.has_messages_below:
+            return 0
         try:
             chat = self.query_one("#chat", VerticalScroll)
             messages_container = self.query_one("#messages", Container)
         except NoMatches:
             logger.debug("Skipping hydrate below: chat/messages container not found")
-            return
+            return 0
         await self._ensure_transcript_spacers(messages_container)
 
-        to_hydrate = self._message_store.get_messages_to_hydrate_below()
+        to_hydrate = self._message_store.get_messages_to_hydrate_below(count)
         if not to_hydrate:
-            return
+            return 0
 
         old_scroll_y = chat.scroll_y
-        hydrated_count = 0
-        # Mount in order from the window edge downward, stopping at the first
-        # failure so `mark_hydrated_below`'s count stays contiguous with the
-        # mounted rows (a mid-batch gap would desync `_visible_end`).
+        entries: list[tuple[Widget, MessageData, Widget | None]] = []
         for msg_data in to_hydrate:
             try:
                 widget = msg_data.to_widget()
@@ -8278,14 +8512,7 @@ class DeepAgentsApp(App):
                     msg_data, visible=self._message_timestamps_visible
                 )
                 self._link_message_timestamp_footer(widget, footer)
-                nodes = [widget]
-                if footer is not None:
-                    nodes.append(footer)
-                await self._mount_transcript_nodes(messages_container, nodes)
-                hydrated_count += 1
-                self._schedule_message_height_measurement(msg_data.id)
-                if isinstance(widget, AssistantMessage) and msg_data.content:
-                    await widget.set_content(msg_data.content)
+                entries.append((widget, msg_data, footer))
             except Exception:
                 logger.warning(
                     "Failed to hydrate message %s below window; stopping to "
@@ -8296,17 +8523,90 @@ class DeepAgentsApp(App):
                 self._notify_hydration_failure()
                 break
 
+        if not entries or not await self._mount_hydration_batch(
+            messages_container,
+            entries,
+            generation=generation,
+        ):
+            return 0
+
+        hydrated_ids = [data.id for _widget, data, _footer in entries]
+        hydrated_count = len(hydrated_ids)
         if hydrated_count == 0:
-            return
+            return 0
 
         self._message_store.mark_hydrated_below(hydrated_count)
-        await self._prune_old_messages()
+        self._schedule_message_height_measurements(hydrated_ids)
         self._sync_transcript_spacers(messages_container)
+        self._schedule_transcript_prune("above")
         chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
-        # Re-check after layout because a boundary scroll cannot emit another
-        # `Scrolled` message while its offset remains unchanged.
-        self.call_after_refresh(self._check_hydration_below_needed)
+        return hydrated_count
+
+    def _schedule_transcript_prune(
+        self,
+        direction: Literal["above", "below"],
+        *,
+        immediate: bool = False,
+    ) -> None:
+        """Debounce opposite-edge pruning until scrolling or hydration settles."""
+        self._transcript_prune_direction = direction
+        if self._transcript_prune_running:
+            return
+        if not self._message_store.window_exceeded():
+            if self._transcript_prune_timer is not None:
+                self._transcript_prune_timer.stop()
+                self._transcript_prune_timer = None
+            return
+
+        if self._transcript_prune_timer is not None:
+            self._transcript_prune_timer.stop()
+        delay = (
+            self._TRANSCRIPT_PRUNE_SLICE_SECONDS
+            if immediate or self._message_store.hard_window_exceeded()
+            else self._TRANSCRIPT_PRUNE_IDLE_SECONDS
+        )
+        self._transcript_prune_timer = self.set_timer(
+            delay, self._run_transcript_prune_slice
+        )
+
+    async def _run_transcript_prune_slice(self) -> None:
+        """Remove one small opposite-edge batch after the transcript goes idle."""
+        self._transcript_prune_timer = None
+        if self._transcript_prune_running:
+            return
+        excess = self._message_store.visible_count - self._message_store.WINDOW_SIZE
+        if excess <= 0:
+            return
+
+        generation = self._transcript_generation
+        self._transcript_prune_running = True
+        try:
+            count = min(excess, self._message_store.HYDRATE_BUFFER)
+            if self._transcript_prune_direction == "below":
+                pruned = await self._prune_messages_below_window(
+                    count=count, generation=generation
+                )
+            else:
+                pruned = await self._prune_old_messages(
+                    count=count, generation=generation
+                )
+        finally:
+            self._transcript_prune_running = False
+
+        if pruned and self._message_store.window_exceeded():
+            direction = self._transcript_prune_direction
+            self.call_after_refresh(
+                lambda: self._schedule_transcript_prune(direction, immediate=True)
+            )
+
+    def _defer_transcript_prune_while_scrolling(self) -> None:
+        """Restart a soft prune timer when another scroll delta arrives."""
+        if (
+            self._transcript_prune_timer is not None
+            and not self._message_store.hard_window_exceeded()
+        ):
+            self._schedule_transcript_prune(self._transcript_prune_direction)
 
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
         """Mount a widget in the messages container, kept above the bottom anchors.
@@ -8457,23 +8757,35 @@ class DeepAgentsApp(App):
         )
 
     def _schedule_message_height_measurement(self, message_id: str) -> None:
-        """Measure a message after Textual lays it out."""
-        self.call_after_refresh(self._measure_message_height, message_id)
+        """Measure one message after Textual lays it out."""
+        self._schedule_message_height_measurements([message_id])
 
-    def _measure_message_height(self, message_id: str) -> None:
-        """Cache the mounted row height for spacer estimates."""
+    def _schedule_message_height_measurements(self, message_ids: list[str]) -> None:
+        """Measure a mounted batch in one post-layout spacer update."""
+        unique_ids = tuple(dict.fromkeys(message_ids))
+        if unique_ids:
+            self.call_after_refresh(self._measure_message_heights, unique_ids)
+
+    def _measure_message_heights(self, message_ids: tuple[str, ...]) -> None:
+        """Cache mounted row heights and update virtual spacers once."""
         try:
             messages = self.query_one("#messages", Container)
-            widget = messages.query_one(f"#{message_id}")
         except NoMatches:
             return
-        height = max(1, widget.region.height)
-        footer_id = _message_timestamp_footer_id(message_id)
-        with suppress(NoMatches):
-            footer = messages.query_one(f"#{footer_id}")
-            if footer.display:
-                height += max(1, footer.region.height)
-        if self._message_store.set_height_hint(message_id, height):
+        changed = False
+        for message_id in message_ids:
+            try:
+                widget = messages.query_one(f"#{message_id}")
+            except NoMatches:
+                continue
+            height = max(1, widget.region.height)
+            footer_id = _message_timestamp_footer_id(message_id)
+            with suppress(NoMatches):
+                footer = messages.query_one(f"#{footer_id}")
+                if footer.display:
+                    height += max(1, footer.region.height)
+            changed = self._message_store.set_height_hint(message_id, height) or changed
+        if changed:
             self._sync_transcript_spacers(messages)
 
     async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
@@ -16864,7 +17176,7 @@ class DeepAgentsApp(App):
         for idx in pending_tool_indices.values():
             result[idx].tool_status = ToolStatus.REJECTED
 
-        return result
+        return _collapse_restored_tool_groups(result)
 
     async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
         """Fetch thread state values for a thread.
@@ -17154,8 +17466,8 @@ class DeepAgentsApp(App):
         this reuses that data. Otherwise, it fetches checkpoint state from the
         agent and converts stored messages into lightweight `MessageData`
         objects. The method then bulk-loads into the `MessageStore` and mounts
-        only the last `WINDOW_SIZE` widgets to reduce DOM operations on large
-        threads.
+        only the initial tail window synchronously, then warms toward the soft
+        window size in small post-refresh batches.
 
         Args:
             thread_id: Optional explicit thread ID to load.
@@ -17264,7 +17576,7 @@ class DeepAgentsApp(App):
             # Bulk load into store (sets visible window over the deduped set).
             _archived, visible = self._message_store.bulk_load(deduped)
 
-            # 6-7. Create and mount the visible widgets (max WINDOW_SIZE),
+            # 6-7. Create and mount the initial visible widget window,
             # skipping any whose ID is already mounted (guard (b) above).
             # `existing_ids` includes footer node IDs, which never collide with
             # the `msg-`/`asst-` message IDs checked here.
@@ -17312,8 +17624,9 @@ class DeepAgentsApp(App):
                             history_thread_id,
                             error,
                         )
-            for _widget, msg_data in mounted:
-                self._schedule_message_height_measurement(msg_data.id)
+            self._schedule_message_height_measurements(
+                [msg_data.id for _widget, msg_data in mounted]
+            )
             self._sync_transcript_spacers(messages_container)
 
             # 9. Add footer immediately and resolve link asynchronously
@@ -17332,6 +17645,7 @@ class DeepAgentsApp(App):
                     chat.scroll_end(animate=False, immediate=True)
 
             self.set_timer(0.1, scroll_to_end)
+            self.call_after_refresh(self._start_history_prefetch)
 
         except Exception as e:  # Resilient history loading
             logger.exception(
@@ -17628,8 +17942,8 @@ class DeepAgentsApp(App):
         self._schedule_message_height_measurement(message_data.id)
         self._sync_transcript_spacers(messages)
 
-        # Prune old widgets if window exceeded
-        await self._prune_old_messages()
+        # Keep appends cheap; trim the old edge only after transcript activity settles.
+        self._schedule_transcript_prune("above")
 
         # Scroll to keep input bar visible
         try:
@@ -17649,34 +17963,52 @@ class DeepAgentsApp(App):
             if after == before:
                 break
 
-    async def _prune_old_messages(self) -> None:
-        """Prune oldest message widgets if we exceed the window size.
+    async def _prune_old_messages(
+        self,
+        *,
+        count: int | None = None,
+        generation: int | None = None,
+    ) -> int:
+        """Prune a bounded batch from the oldest mounted edge.
 
-        This removes widgets from the DOM but keeps data in MessageStore
-        for potential re-hydration when scrolling up.
+        Args:
+            count: Maximum messages to remove; defaults to the full soft-limit
+                excess.
+            generation: Transcript generation that owns this scheduled slice.
+
+        Returns:
+            Number of messages removed.
         """
-        if not self._message_store.window_exceeded():
-            return
+        if (
+            generation is not None and generation != self._transcript_generation
+        ) or not self._message_store.window_exceeded():
+            return 0
 
         try:
             messages_container = self.query_one("#messages", Container)
         except NoMatches:
             logger.debug("Skipping pruning: #messages container not found")
-            return
+            return 0
 
-        to_prune = self._message_store.get_messages_to_prune()
+        to_prune = self._message_store.get_messages_to_prune(count)
         if not to_prune:
-            return
+            return 0
 
         pruned_ids: list[str] = []
         for msg_data in to_prune:
+            if generation is not None and generation != self._transcript_generation:
+                return 0
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
                 footer_id = _message_timestamp_footer_id(msg_data.id)
                 with suppress(NoMatches):
                     footer = messages_container.query_one(f"#{footer_id}")
                     await footer.remove()
+                if generation is not None and generation != self._transcript_generation:
+                    return 0
                 await widget.remove()
+                if generation is not None and generation != self._transcript_generation:
+                    return 0
                 pruned_ids.append(msg_data.id)
             except NoMatches:
                 # Widget not found -- do NOT mark as pruned to avoid
@@ -17686,6 +18018,8 @@ class DeepAgentsApp(App):
                     msg_data.id,
                 )
 
+        if generation is not None and generation != self._transcript_generation:
+            return 0
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
             self._sync_transcript_spacers(messages_container)
@@ -17701,29 +18035,52 @@ class DeepAgentsApp(App):
                             "Failed to remove orphaned tool group summary",
                             exc_info=True,
                         )
+        return len(pruned_ids)
 
     async def _prune_messages_below_window(
-        self, messages_container: Container | None = None
-    ) -> None:
-        """Prune newest mounted widgets when scrolling into older history."""
-        to_prune = self._message_store.get_messages_to_prune_below()
+        self,
+        messages_container: Container | None = None,
+        *,
+        count: int | None = None,
+        generation: int | None = None,
+    ) -> int:
+        """Prune a bounded batch from the newest mounted edge.
+
+        Args:
+            messages_container: Cached transcript container, when available.
+            count: Maximum messages to remove; defaults to the full soft-limit
+                excess.
+            generation: Transcript generation that owns this scheduled slice.
+
+        Returns:
+            Number of messages removed.
+        """
+        if generation is not None and generation != self._transcript_generation:
+            return 0
+        to_prune = self._message_store.get_messages_to_prune_below(count)
         if not to_prune:
-            return
+            return 0
         if messages_container is None:
             try:
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
-                return
+                return 0
 
         pruned_ids: list[str] = []
         for msg_data in to_prune:
+            if generation is not None and generation != self._transcript_generation:
+                return 0
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
                 footer_id = _message_timestamp_footer_id(msg_data.id)
                 with suppress(NoMatches):
                     footer = messages_container.query_one(f"#{footer_id}")
                     await footer.remove()
+                if generation is not None and generation != self._transcript_generation:
+                    return 0
                 await widget.remove()
+                if generation is not None and generation != self._transcript_generation:
+                    return 0
                 pruned_ids.append(msg_data.id)
             except NoMatches:
                 logger.debug(
@@ -17731,9 +18088,12 @@ class DeepAgentsApp(App):
                     msg_data.id,
                 )
 
+        if generation is not None and generation != self._transcript_generation:
+            return 0
         if pruned_ids:
             self._message_store.mark_pruned_below(pruned_ids)
             self._sync_transcript_spacers(messages_container)
+        return len(pruned_ids)
 
     def _reveal_pending_tool_calls(self) -> None:
         """Surface grouped tool calls before asking for approval."""
@@ -17968,6 +18328,20 @@ class DeepAgentsApp(App):
             # unrecognized status serializes to None; unprotecting then could
             # let a still-live row be virtualized mid-run.
             self._message_store.unprotect_message(widget.id)
+            if self._message_store.window_exceeded():
+                self._schedule_transcript_prune(self._transcript_prune_direction)
+
+    def on_lazy_tool_group_summary_expansion_changed(
+        self,
+        event: LazyToolGroupSummary.ExpansionChanged,
+    ) -> None:
+        """Keep lazy tool-group expansion state across virtualization."""
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                tool_group_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurement(event.widget.id)
 
     def on_rubric_result_message_expansion_changed(
         self,
@@ -18000,9 +18374,15 @@ class DeepAgentsApp(App):
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
+        self._transcript_generation += 1
         # Drop buffered `!` shell output so it never leaks across a thread
         # reset, switch, or resume.
         self._pending_shell_messages.clear()
+        self._hydration_requests.clear()
+        self._history_prefetch_active = False
+        if self._transcript_prune_timer is not None:
+            self._transcript_prune_timer.stop()
+            self._transcript_prune_timer = None
         # Clear the message store first
         self._message_store.clear()
         # Drop the open tool group; its widget is about to leave the DOM.
@@ -19981,7 +20361,7 @@ class DeepAgentsApp(App):
             if isinstance(child, RubricResultMessage) and child._details:
                 child.toggle_details()
                 return
-            if isinstance(child, ToolGroupSummary):
+            if isinstance(child, LazyToolGroupSummary | ToolGroupSummary):
                 child.toggle()
                 return
             if isinstance(child, SkillMessage) and child._stripped_body.strip():

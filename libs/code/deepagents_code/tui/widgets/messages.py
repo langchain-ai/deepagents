@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import logging
 import re
 import textwrap
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -91,6 +93,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.input import MediaTracker
     from deepagents_code.theme import ThemeColors
+    from deepagents_code.tui.widgets.message_store import MessageData
 
     _SummaryCall: TypeAlias = tuple[str, Mapping[str, Any]]
     """One tool call as the summary code sees it: `(raw tool name, parsed args)`."""
@@ -4704,6 +4707,176 @@ class ToolGroupSummary(Static):
                     [tool.summary_call for tool in self._tools], tense="past"
                 )
             self.update(Content(f"{mark} {self._past_text}"), layout=layout)
+
+
+class LazyToolGroupSummary(Vertical):
+    """Data-backed tool summary that creates detail widgets only when expanded."""
+
+    class ExpansionChanged(Message):
+        """Posted after lazy tool details mount or unmount."""
+
+        def __init__(self, widget: LazyToolGroupSummary, expanded: bool) -> None:
+            """Initialize an expansion notification.
+
+            Args:
+                widget: Lazy group whose detail state changed.
+                expanded: Whether its detail widgets are now mounted.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    DEFAULT_CSS = """
+    LazyToolGroupSummary {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-header {
+        height: auto;
+        padding: 0 1;
+        color: $text-muted;
+        pointer: pointer;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-header:hover {
+        color: $text;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-details {
+        height: auto;
+    }
+    """
+
+    def __init__(self, messages: list[MessageData], **kwargs: Any) -> None:
+        """Initialize a collapsed summary from retained message data.
+
+        Args:
+            messages: Completed tool and associated diff rows in display order.
+            **kwargs: Additional arguments passed to `Vertical`.
+        """
+        super().__init__(**kwargs)
+        self._message_data = list(messages)
+        self._expanded = False
+        self._deferred_expanded = False
+        self._transitioning = False
+        self._details: Vertical | None = None
+        self._detail_widgets: list[Widget] = []
+
+    @property
+    def message_data(self) -> tuple[MessageData, ...]:
+        """The retained detail rows.
+
+        Returns:
+            Immutable view of the group's message data.
+        """
+        return tuple(self._message_data)
+
+    @property
+    def expanded(self) -> bool:
+        """Whether detail widgets are currently mounted."""
+        return self._expanded
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
+        """Compose the persistent header and initially empty detail container.
+
+        Yields:
+            Header and detail container widgets.
+        """
+        yield Static("", classes="lazy-tool-group-header")
+        yield Vertical(classes="lazy-tool-group-details")
+
+    def on_mount(self) -> None:
+        """Render the summary and restore deferred expansion when requested."""
+        self._details = self.query_one(".lazy-tool-group-details", Vertical)
+        self._details.display = False
+        self._update_header()
+        if self._deferred_expanded:
+            self._deferred_expanded = False
+            self.toggle()
+
+    def _summary_calls(self) -> list[_SummaryCall]:
+        """Return tool calls that contribute to the one-line summary."""
+        return [
+            (data.tool_name, data.tool_args or {})
+            for data in self._message_data
+            if data.tool_name is not None
+        ]
+
+    def _update_header(self) -> None:
+        """Refresh disclosure state without constructing any detail widget."""
+        if not self.is_attached:
+            return
+        header = self.query_one(".lazy-tool-group-header", Static)
+        glyphs = get_glyphs()
+        mark = (
+            glyphs.disclosure_expanded
+            if self._expanded
+            else glyphs.disclosure_collapsed
+        )
+        header.update(Content(f"{mark} {summarize_tool_group(self._summary_calls())}"))
+
+    def toggle(self) -> None:
+        """Schedule expansion or collapse without blocking the input handler."""
+        if self._transitioning:
+            return
+        self.run_worker(
+            self._set_expanded(not self._expanded),
+            exclusive=True,
+            group=f"lazy-tool-group-{id(self)}",
+        )
+
+    async def _set_expanded(self, expanded: bool) -> None:
+        """Create or discard detail widgets for one explicit toggle."""
+        if expanded == self._expanded or self._transitioning:
+            return
+        details = self._details
+        if details is None or not details.is_attached:
+            return
+
+        self._transitioning = True
+        try:
+            if expanded:
+                try:
+                    widgets = [data.to_widget() for data in self._message_data]
+                    await details.mount(*widgets)
+                    assistant_updates = [
+                        widget.set_content(data.content)
+                        for widget, data in zip(
+                            widgets, self._message_data, strict=True
+                        )
+                        if isinstance(widget, AssistantMessage) and data.content
+                    ]
+                    if assistant_updates:
+                        await asyncio.gather(*assistant_updates)
+                except Exception:
+                    logger.warning("Failed to expand lazy tool group", exc_info=True)
+                    with suppress(Exception):
+                        await details.remove_children()
+                    return
+                self._detail_widgets = widgets
+                details.display = True
+            else:
+                for data, widget in zip(
+                    self._message_data, self._detail_widgets, strict=True
+                ):
+                    if isinstance(widget, ToolCallMessage):
+                        data.tool_expanded = widget._expanded
+                details.display = False
+                await details.remove_children()
+                self._detail_widgets = []
+
+            self._expanded = expanded
+            self._update_header()
+            self.post_message(self.ExpansionChanged(self, expanded))
+        finally:
+            self._transitioning = False
+
+    @on(Click, ".lazy-tool-group-header")
+    def _on_header_click(self, event: Click) -> None:
+        """Toggle details when the summary row is clicked."""
+        event.stop()
+        self.toggle()
 
 
 class DiffMessage(Static):

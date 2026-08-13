@@ -1093,22 +1093,43 @@ class TestSupportsOffload:
         http.get.assert_awaited_once_with("/dcode/offload")
 
     async def test_missing_route_selects_fallback(self) -> None:
+        """The SDK surfaces a 404 as `NotFoundError`, not `httpx.HTTPStatusError`."""
         import httpx
+        from langgraph_sdk.errors import NotFoundError
 
         agent = RemoteAgent("http://localhost:1234", graph_name="custom")
         request = httpx.Request("GET", "http://localhost/dcode/offload")
         response = httpx.Response(404, request=request)
         http = SimpleNamespace(
             get=AsyncMock(
-                side_effect=httpx.HTTPStatusError(
-                    "missing", request=request, response=response
-                )
+                side_effect=NotFoundError("missing", response=response, body=None)
             )
         )
         graph = SimpleNamespace(client=SimpleNamespace(http=http))
 
         with patch.object(agent, "_get_graph", return_value=graph):
             assert await agent.asupports_offload() is False
+
+    async def test_other_http_errors_propagate(self) -> None:
+        """Non-404 statuses surface as their typed SDK errors, not the fallback."""
+        import httpx
+        from langgraph_sdk.errors import InternalServerError
+
+        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
+        request = httpx.Request("GET", "http://localhost/dcode/offload")
+        response = httpx.Response(500, request=request)
+        http = SimpleNamespace(
+            get=AsyncMock(
+                side_effect=InternalServerError("boom", response=response, body=None)
+            )
+        )
+        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            pytest.raises(InternalServerError),
+        ):
+            await agent.asupports_offload()
 
 
 class TestServerOffload:

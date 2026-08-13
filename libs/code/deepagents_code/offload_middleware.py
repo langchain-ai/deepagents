@@ -20,7 +20,6 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
-    SummarizationEvent,
     SummarizationState,
     SummarizationToolMiddleware,
     create_summarization_middleware,
@@ -858,11 +857,12 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 return self._nothing_to_compact(runtime.tool_call_id or "")
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = summarization._create_summary(to_summarize)
+            session_id = summarization._get_session_id(runtime.state)
             file_path = summarization._offload_to_backend(
-                self._guarded_backend(), to_summarize
+                self._guarded_backend(), to_summarize, session_id
             )
             return self._build_compact_result(
-                runtime, to_summarize, summary, file_path, event, cutoff
+                runtime, to_summarize, summary, file_path, event, cutoff, session_id
             )
         except Exception as exc:  # tool errors must surface as ToolMessages
             logger.exception("forced compact_conversation failed")
@@ -887,11 +887,12 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 return self._nothing_to_compact(runtime.tool_call_id or "")
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = await summarization._acreate_summary(to_summarize)
+            session_id = summarization._get_session_id(runtime.state)
             file_path = await summarization._aoffload_to_backend(
-                self._guarded_backend(), to_summarize
+                self._guarded_backend(), to_summarize, session_id
             )
             return self._build_compact_result(
-                runtime, to_summarize, summary, file_path, event, cutoff
+                runtime, to_summarize, summary, file_path, event, cutoff, session_id
             )
         except Exception as exc:  # tool errors must surface as ToolMessages
             logger.exception("forced compact_conversation failed")
@@ -899,7 +900,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
     async def arun_forced_compaction_update(
         self, state: _OffloadState, runtime: _HasRunContext
-    ) -> dict[str, SummarizationEvent] | None:
+    ) -> dict[str, Any] | None:
         """Run forced compaction as a server operation without a tool message.
 
         Unlike the tool paths, this raises on failure instead of returning a
@@ -949,8 +950,9 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             return None
         to_summarize, _ = summarization._partition_messages(effective, cutoff)
         summary = await summarization._acreate_summary(to_summarize)
+        session_id = summarization._get_session_id(state)
         file_path = await summarization._aoffload_to_backend(
-            self._guarded_backend(), to_summarize
+            self._guarded_backend(), to_summarize, session_id
         )
         if file_path is None:
             # `_aoffload_to_backend` catches every write failure and returns
@@ -970,7 +972,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 len(to_summarize),
             )
         return self._forced_compaction_update(
-            summarization, summary, file_path, state_cutoff
+            summarization, summary, file_path, state_cutoff, session_id
         )
 
     @staticmethod
@@ -979,7 +981,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summary: str,
         file_path: str | None,
         state_cutoff: int,
-    ) -> dict[str, SummarizationEvent]:
+        session_id: str,
+    ) -> dict[str, Any]:
         """Build the state-only result used by the server `/offload` operation.
 
         Annotated with the SDK's own `SummarizationEvent` rather than a loose
@@ -996,9 +999,13 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 relative one by `_compute_state_cutoff`. Taken pre-resolved
                 rather than converted here so the caller's no-advance check and
                 the committed value cannot disagree.
+            session_id: The id that named the history file. Persisted under
+                `_summarization_session_id` (mirroring the SDK's compact and
+                auto-summarize paths) so a later offload appends to the same
+                archive instead of minting a fresh file.
 
         Returns:
-            The summarization-event state update.
+            The summarization state update.
 
         Raises:
             TypeError: If the summarizer's first message is not the
@@ -1027,7 +1034,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 "cutoff_index": state_cutoff,
                 "summary_message": summary_message,
                 "file_path": file_path,
-            }
+            },
+            "_summarization_session_id": session_id,
         }
 
     @staticmethod

@@ -298,6 +298,29 @@ class TestCLICompactionMiddleware:
         assert event["file_path"] == "/conversation_history/thread.md"
         assert isinstance(event["summary_message"], HumanMessage)
 
+    async def test_operation_path_threads_and_persists_the_session_id(self) -> None:
+        """`/offload` must reuse and re-commit the SDK's archive-file id.
+
+        The SDK's `_offload_to_backend` names the archive by `session_id`, and
+        the committed `_summarization_session_id` is what makes a later
+        compaction append to the same file instead of starting a new one. The
+        server operation bypasses the SDK's own state update, so it has to
+        thread the id through and write it back itself.
+        """
+        summarization = self._summarization()
+        summarization._get_session_id.return_value = "session_abc"
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        result = await middleware.arun_forced_compaction_update(
+            {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+        )
+
+        assert result is not None
+        assert result["_summarization_session_id"] == "session_abc"
+        assert summarization._aoffload_to_backend.await_args.args[2] == "session_abc"
+
     async def test_operation_path_refuses_a_chained_no_advance_compaction(
         self,
     ) -> None:
@@ -731,10 +754,10 @@ class TestCLICompactionMiddleware:
         summarization._filter_summary_messages.side_effect = lambda messages: messages
 
         async def sdk_offload(
-            guarded: BackendProtocol, messages: list[AnyMessage]
+            guarded: BackendProtocol, messages: list[AnyMessage], session_id: str
         ) -> str | None:
             return await SummarizationMiddleware._aoffload_to_backend(
-                summarization, guarded, messages
+                summarization, guarded, messages, session_id
             )
 
         summarization._aoffload_to_backend = AsyncMock(side_effect=sdk_offload)
@@ -896,6 +919,7 @@ class TestSdkContractGuards:
             "_acreate_summary",
             "_offload_to_backend",
             "_aoffload_to_backend",
+            "_get_session_id",
         ):
             assert callable(getattr(SummarizationMiddleware, name, None)), name
 

@@ -167,21 +167,18 @@ class RemoteAgent:
         a custom or older server and selects the compatibility fallback without
         inspecting graph nodes or checkpoint schemas.
 
-        Raises:
-            HTTPStatusError: If capability discovery fails for any status other
-                than a missing route.
+        The SDK maps a 404 to `NotFoundError` (handled here); any other error
+        status surfaces as its own typed `APIStatusError` subclass and
+        propagates to the caller.
         """
         if self._supports_offload is None:
-            import httpx
+            from langgraph_sdk.errors import NotFoundError
 
             graph = self._get_graph()
             try:
                 response = await graph.client.http.get("/dcode/offload")
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == httpx.codes.NOT_FOUND:
-                    self._supports_offload = False
-                else:
-                    raise
+            except NotFoundError:
+                self._supports_offload = False
             else:
                 self._supports_offload = bool(
                     isinstance(response, dict) and response.get("offload") is True

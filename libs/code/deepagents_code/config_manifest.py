@@ -1169,6 +1169,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.KITTY_KEYBOARD,
     ),
     ConfigOption(
+        key="display.show_diff_line_numbers",
+        group="Display",
+        summary="Show file line numbers in diff hunks.",
+        kind=OptionKind.BOOL,
+        default=True,
+        toml_keys=("ui", "show_diff_line_numbers"),
+    ),
+    ConfigOption(
         key="display.show_scrollbar",
         group="Display",
         summary="Show the vertical scrollbar in the chat area (off by default).",
@@ -1754,6 +1762,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.LOG_LEVEL_DELEGATE,
         env_var=_env_vars.LOG_LEVEL,
+    ),
+    ConfigOption(
+        key="debug.dep_floor",
+        group="Debug",
+        summary="Synthesize the stale editable-dependency prompt/warning at launch.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_DEP_FLOOR,
     ),
     ConfigOption(
         key="debug.notifications",

@@ -300,8 +300,8 @@ class TestCopyCommand:
         # assert the entry is registered with a non-empty description.
         assert copy_entry.description
 
-    def test_copy_classified_as_side_effect_free(self) -> None:
-        assert "/copy" in SIDE_EFFECT_FREE
+    def test_copy_classified_as_queue_bound(self) -> None:
+        assert "/copy" in QUEUE_BOUND
 
 
 class TestCommandsCatalogDrift:

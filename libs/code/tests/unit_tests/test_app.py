@@ -179,6 +179,34 @@ class TestDisplayModelLabel:
         assert _display_model_label(spec) == expected
 
 
+async def test_context_prefers_checkpoint_total_after_offload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._context_tokens = 200
+    app._tokens_approximate = True
+    monkeypatch.setattr(
+        app, "_get_context_usage_counts", AsyncMock(return_value=(1_000, 200))
+    )
+    push_screen = MagicMock()
+    monkeypatch.setattr(app, "push_screen", push_screen)
+    focus = MagicMock()
+    monkeypatch.setattr(app, "_focus_chat_input_after_refresh", focus)
+
+    with (
+        patch("deepagents_code.app.ContextUsageScreen") as screen_type,
+        patch("deepagents_code.config.settings") as settings,
+    ):
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-sonnet"
+        settings.model_context_limit = 2_000
+        await app._handle_command("/context")
+
+    assert screen_type.call_args.kwargs["context_tokens"] == 1_000
+    push_screen.call_args.args[1](None)
+    focus.assert_called_once_with()
+
+
 class TestWhatsNewMessage:
     """Tests for the post-upgrade banner content."""
 
@@ -2544,6 +2572,47 @@ class TestAppCSSValidation:
             # If we get here without exception, CSS is valid
             assert app.is_running
 
+    async def test_chat_input_aligns_with_status_rows(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+
+            input_box = app.query_one("#input-box")
+            session = app.query_one(".status-session")
+            metrics = app.query_one(".status-metrics")
+            assert input_box.region.x == session.region.x == metrics.region.x
+            assert (
+                input_box.region.right == session.region.right == metrics.region.right
+            )
+
+
+class TestCacheStatus:
+    """Tests for active-thread cache metrics forwarded to the status bar."""
+
+    def test_refresh_includes_matching_inflight_input_total(self) -> None:
+        """The hit-rate denominator should cover persisted and in-flight usage."""
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._status_bar = MagicMock()
+        app._thread_stats = SessionStats(
+            input_tokens=1_000,
+            cache_read_tokens=800,
+            cache_write_tokens=100,
+        )
+        app._inflight_turn_stats = SessionStats(
+            input_tokens=500,
+            cache_read_tokens=400,
+            cache_write_tokens=50,
+        )
+        app._inflight_thread_id = app._lc_thread_id
+
+        app._refresh_cache_display()
+
+        app._status_bar.set_cache_tokens.assert_called_once_with(
+            1_200,
+            150,
+            input_tokens=1_500,
+        )
+
 
 class TestThreadCachePrewarm:
     """Tests for startup thread-cache prewarming."""
@@ -3820,7 +3889,10 @@ class TestModalScreenCtrlDHandling:
         self,
     ) -> None:
         """Ctrl+D should not be swallowed or ignored in the model selector."""
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -3829,6 +3901,7 @@ class TestModalScreenCtrlDHandling:
             screen = ModelSelectorScreen(
                 current_model="claude-sonnet-4-5",
                 current_provider="anthropic",
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -4125,7 +4198,10 @@ class TestModalScreenCtrlCHandling:
         self,
     ) -> None:
         """Ctrl+C should not be swallowed by the model filter input."""
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -4134,6 +4210,7 @@ class TestModalScreenCtrlCHandling:
             screen = ModelSelectorScreen(
                 current_model="claude-sonnet-4-5",
                 current_provider="anthropic",
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -5454,6 +5531,7 @@ class TestMessageQueue:
                 adapter._on_user_visible_output_started
                 == app._on_user_visible_output_started
             )
+            assert adapter._show_diff_line_numbers is app._show_diff_line_numbers
 
     async def test_interrupt_restores_before_cancelling_worker(self) -> None:
         """Restore reads the gate before the worker's cleanup can reset it.
@@ -7350,7 +7428,7 @@ class TestCopyCommand:
             copy_mock.assert_called_once_with(app, markdown)
             assert any(w._content == "/copy" for w in app.query(UserMessage))
             assert any(
-                str(w._content) == "Copied latest assistant message to clipboard."
+                str(w._content) == "Copied latest response to clipboard."
                 for w in app.query(AppMessage)
             )
 
@@ -9533,6 +9611,46 @@ class TestGoalCommand:
             assert "startup chat model (openai:gpt-5.5)" in screen._description
             assert "rubric" not in screen._title.lower()
             assert "/rubric" not in screen._description
+
+    async def test_grader_model_selector_disables_ctrl_s(self) -> None:
+        """Ctrl+S must not persist the agent's model from a grader picker.
+
+        Grader models have no config key of their own yet, so the picker opts out
+        of persistence entirely rather than inheriting the main-model scope and
+        rewriting `[models].default`.
+        """
+        for source in ("goal", "rubric"):
+            app = DeepAgentsApp(agent=MagicMock())
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with patch.object(app, "push_screen") as push_screen:
+                    await app._show_rubric_model_selector(source=source)
+                    await pilot.pause()
+
+                screen = push_screen.call_args.args[0]
+                assert screen._default_scope is None
+
+    async def test_onboarding_selector_disables_ctrl_s_but_model_keeps_it(self) -> None:
+        """Onboarding advertises no Ctrl+S, so it must not have a scope either.
+
+        `_help_text` omits the hint in curated mode, but the binding is
+        unconditional and `action_set_default` has no curated guard — so a scope
+        here would let Ctrl+S write `[models].default` with nothing on screen
+        saying it did. `/model` (the same builder, uncurated) must keep it.
+        """
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert app._build_model_selector_screen(curated=True)._default_scope is None
+            assert (
+                app._build_model_selector_screen(curated=False)._default_scope
+                is MAIN_MODEL_DEFAULT_SCOPE
+            )
 
     async def test_grader_model_selector_bare_default_without_startup_model(
         self,
@@ -13294,6 +13412,21 @@ class TestAutoClassifierModelCommand:
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
         assert screen._include_recent_models is False
 
+    async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
+        """Ctrl+S in the classifier picker must not retarget the agent's model."""
+        from deepagents_code.model_config import save_auto_classifier_model
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            await app._show_auto_classifier_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._default_scope is AUTO_CLASSIFIER_DEFAULT_SCOPE
+        assert screen._default_scope.save is save_auto_classifier_model
+
     @staticmethod
     def _rendered_description(push: MagicMock) -> str:
         """Return the picker description as the user sees it rendered.
@@ -13480,6 +13613,70 @@ class TestAutoClassifierModelCommand:
             app._server_proc.update_env.assert_not_called()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Auto classifier model set to openai:gpt-5.5-mini" in rendered
+            assert "Press Ctrl+S in the `/auto model` picker" in rendered
+            assert "`[models].auto_classifier` in config.toml" in rendered
+
+    async def test_persisted_classifier_omits_the_default_hint(self) -> None:
+        """A selector choice stored with Ctrl+S should not suggest persisting again."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._set_auto_classifier_model(
+                    "openai:gpt-5.5-mini", persisted_as_default=True
+                )
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "reviews gated actions from the next turn." in rendered
+            assert "already the default for future sessions" not in rendered
+            assert "Press Ctrl+S" not in rendered
+            assert "config.toml" not in rendered
+
+    async def test_persisted_classifier_under_env_override_is_not_called_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored spec the env export outranks is "stored", not "the default".
+
+        The resolver consults `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` before
+        `[models].auto_classifier`, so claiming the stored spec "is already the
+        default for future sessions" misdescribes the next launch. Presence of
+        the variable is enough — a blank export still outranks the config key.
+        """
+        from deepagents_code import _env_vars
+
+        monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "")
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._set_auto_classifier_model(
+                    "openai:gpt-5.5-mini", persisted_as_default=True
+                )
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "reviews gated actions from the next turn in this session" in rendered
+            )
+            assert "Saved as the default classifier model." in rendered
+            assert (
+                f"{_env_vars.AUTO_CLASSIFIER_MODEL} is currently set; if it remains set"
+                in rendered
+            )
+            assert "already the default for future sessions" not in rendered
 
     async def test_set_auto_classifier_model_rejects_colon_only_spec(self) -> None:
         """A normalized-empty spec must not masquerade as an explicit clear."""
@@ -13647,12 +13844,13 @@ class TestAutoClassifierModelCommand:
             assert app._chat_input is not None
             deferred: list[Callable[[], None]] = []
             handlers: list[Callable[[tuple[str, str] | None], None]] = []
+            screens: list[Any] = []
             run_worker = MagicMock()
             set_model = AsyncMock()
             focus_input = MagicMock()
 
             def capture_push(screen: object, callback: object = None) -> None:
-                del screen
+                screens.append(screen)
                 handlers.append(cast("Any", callback))
 
             with (
@@ -13663,6 +13861,7 @@ class TestAutoClassifierModelCommand:
                 patch.object(app._chat_input, "focus_input", focus_input),
             ):
                 await app._show_auto_classifier_model_selector()
+                screens[0]._default_spec = "openai:gpt-5.5-mini"
                 handlers[0](("openai:gpt-5.5-mini", "openai"))
 
                 # Nothing has run yet: the selector is still on the stack.
@@ -13675,7 +13874,9 @@ class TestAutoClassifierModelCommand:
                 focus_input.assert_called_once()
                 await run_worker.call_args.args[0]
 
-            set_model.assert_awaited_once_with("openai:gpt-5.5-mini")
+            set_model.assert_awaited_once_with(
+                "openai:gpt-5.5-mini", persisted_as_default=True
+            )
 
     async def test_cancelled_selector_names_unchanged_classifier(self) -> None:
         """Cancelling the picker should name the classifier that stays active."""
@@ -15377,6 +15578,84 @@ class TestScrollbarToggle:
         assert result.ok is False
         assert result.severity == "error"
         assert result.message is not None
+
+
+class TestDiffLineNumbersCommand:
+    """Tests for the `/line-numbers` toggle and its persistence."""
+
+    def test_save_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving then loading returns the saved value, both directions."""
+        from deepagents_code.app import (
+            _load_show_diff_line_numbers,
+            _save_show_diff_line_numbers_result,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _save_show_diff_line_numbers_result(False).ok is True
+        assert _load_show_diff_line_numbers() is False
+        assert _save_show_diff_line_numbers_result(True).ok is True
+        assert _load_show_diff_line_numbers() is True
+
+    def test_save_preserves_other_ui_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persisting the toggle leaves unrelated `[ui]` keys intact."""
+        import tomllib
+
+        from deepagents_code.app import _save_show_diff_line_numbers_result
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ntheme = "langchain"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _save_show_diff_line_numbers_result(False).ok is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+        assert data["ui"]["show_diff_line_numbers"] is False
+
+    async def test_command_toggles_state_and_toasts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/line-numbers` flips the app and adapter flags and toasts."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._show_diff_line_numbers is True
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/line-numbers")
+                await pilot.pause()
+
+            assert app._show_diff_line_numbers is False
+            assert app._ui_adapter is not None
+            assert app._ui_adapter._show_diff_line_numbers is False
+            notify_mock.assert_called_once()
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers hidden for new diffs."
+            )
+            assert notify_mock.call_args.kwargs.get("severity") == "information"
+            assert notify_mock.call_args.kwargs.get("markup") is False
+
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/line-numbers")
+                await pilot.pause()
+
+            assert app._show_diff_line_numbers is True
+            assert app._ui_adapter._show_diff_line_numbers is True
+            notify_mock.assert_called_once()
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers shown for new diffs."
+            )
 
 
 class TestDebugConsoleClickToCopyPreference:
@@ -17198,6 +17477,7 @@ class TestRequestApprovalBranching:
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = None
         app._auto_mode_eligible = eligible
+        app._show_diff_line_numbers = False
 
         async def fake_mount_before_queued(  # noqa: RUF029
             _container: object, _widget: object
@@ -17224,6 +17504,7 @@ class TestRequestApprovalBranching:
         # flag, so this asserts the value actually crossed the app→widget seam.
         assert app._pending_approval_widget is not None
         assert app._pending_approval_widget._show_auto_option is eligible
+        assert app._pending_approval_widget._show_diff_line_numbers is False
 
 
 class TestDeferredShowApproval:
@@ -18131,6 +18412,37 @@ class TestEditorSlashCommand:
             app._chat_input = MagicMock()
             await app._handle_command("/editor")
         mock.assert_awaited_once()
+
+
+class TestHelpEditorHint:
+    """Tests for the editor name shown by `/help`."""
+
+    async def test_names_configured_editor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", "code --wait")
+        app = DeepAgentsApp(agent=MagicMock())
+        mount_message = AsyncMock()
+
+        with patch.object(app, "_mount_message", mount_message):
+            await app._handle_command("/help")
+
+        assert mount_message.await_count == 2
+        message = mount_message.await_args_list[-1].args[0]
+        assert "Ctrl+X          Open prompt in code" in str(message._content)
+
+    async def test_uses_generic_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        app = DeepAgentsApp(agent=MagicMock())
+        mount_message = AsyncMock()
+
+        with patch.object(app, "_mount_message", mount_message):
+            await app._handle_command("/help")
+
+        assert mount_message.await_count == 2
+        message = mount_message.await_args_list[-1].args[0]
+        assert "Ctrl+X          Open prompt in external editor" in str(message._content)
 
 
 class TestApprovalModeSlashCommands:
@@ -23201,7 +23513,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/copy", "/docs", "/feedback", "/mcp"):
+            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
                 assert app._can_bypass_queue(cmd) is True
 
     async def test_queued_commands_do_not_bypass(self) -> None:
@@ -23209,8 +23521,21 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/help", "/clear", "/tokens"):
+            for cmd in ("/help", "/clear", "/copy", "/tokens"):
                 assert app._can_bypass_queue(cmd) is False
+
+    async def test_copy_queues_while_agent_is_running(self) -> None:
+        """`/copy` waits for the active assistant response to complete."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/copy", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/copy"
 
     async def test_can_bypass_queue_empty_string(self) -> None:
         """Empty string should not bypass the queue."""
@@ -24974,7 +25299,10 @@ class TestNotificationCenterIntegration:
     ) -> None:
         """The model selector handles ctrl+n instead of the notification center."""
         from deepagents_code.tui.widgets import model_selector
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            MAIN_MODEL_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
         from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
@@ -24992,7 +25320,7 @@ class TestNotificationCenterIntegration:
         # prove the model selector suppressed it, rather than passing only
         # because an empty registry never opens the center anyway.
         app._notice_registry.add(_missing_dep_entry())
-        screen = ModelSelectorScreen()
+        screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
 
         async with app.run_test() as pilot:
             await pilot.pause()

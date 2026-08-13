@@ -658,3 +658,80 @@ def wait_for_modal() -> WaitForModal:
         raise AssertionError(msg)
 
     return _wait
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionfinish() -> Generator[None, None, None]:
+    """Close any debug-log file handlers still attached at session end.
+
+    Companion to `_close_leaked_debug_handlers`, which is setup-only and so
+    sweeps *before* each test — leaving nothing to sweep after the last one. A
+    handler installed during that final test would otherwise stay attached, and
+    its file open, for the remainder of the process.
+
+    This is a tidiness guarantee, not a warning fix: `logging.shutdown()` runs
+    at `atexit` and closes still-attached handlers, so an unswept handler does
+    not produce a `ResourceWarning` at interpreter exit.
+    """
+    try:
+        return (yield)
+    finally:
+        _sweep_debug_handlers()
+
+
+def _sweep_debug_handlers() -> None:
+    """Detach and close leaked `configure_debug_logging` file handlers.
+
+    `configure_debug_logging` tags the `FileHandler`s it installs with
+    `_DEBUG_HANDLER_ATTR`. Leaving one attached is not itself the bug: the
+    logger holds a strong reference, so the handler is not collected. The
+    failure comes one step later, when some *other* test clears or replaces
+    that logger's handlers and drops the last reference — the GC then reports
+    the unclosed file as a `PytestUnraisableExceptionWarning` against whichever
+    test happens to be running, which is why the blame lands on an innocent
+    test.
+    """
+    import logging
+
+    from deepagents_code._debug import _DEBUG_HANDLER_ATTR
+
+    for name in list(logging.root.manager.loggerDict):
+        target = logging.getLogger(name)
+        for handler in target.handlers[:]:
+            if isinstance(handler, logging.FileHandler) and getattr(
+                handler, _DEBUG_HANDLER_ATTR, False
+            ):
+                target.removeHandler(handler)
+                handler.close()
+
+
+@pytest.fixture
+def sweep_debug_handlers() -> Callable[[], None]:
+    """Expose `_sweep_debug_handlers` so tests can pin its behaviour.
+
+    The sweep runs autouse at setup, before any test body, so a test cannot
+    otherwise observe it acting on handlers the test itself installed.
+    """
+    return _sweep_debug_handlers
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_debug_handlers() -> None:
+    """Sweep debug-log file handlers installed before each test starts.
+
+    `deepagents_code.__init__` calls `configure_debug_logging` at import time,
+    so a `DEEPAGENTS_CODE_DEBUG` exported in the environment (a developer shell,
+    or a CI runner configured that way) attaches a real file handler to the
+    package logger before collection — and per-test checks then blame whichever
+    test first clears that logger's handlers. `config._quiet_sdk_logging` is the
+    other producer, tagging handlers on every SDK and MCP transport logger it
+    touches; the sweep walks the whole `loggerDict`, so both are in scope.
+
+    Individual tests are responsible for closing handlers they install
+    themselves; this only catches ones leaked from import time or from a prior
+    test that forgot. Sweeping rather than failing on a stray handler does mean
+    a test that forgets to close its own now passes quietly — accepted because
+    the goal here is to stop misattributed failures, and a detect-and-fail
+    variant would reintroduce them for the import-time handler nobody owns.
+    """
+    _sweep_debug_handlers()

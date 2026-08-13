@@ -3479,7 +3479,7 @@ def prompt_for_dep_floor_mismatch(
     console.print()
     return _select_trust_action(
         console,
-        remember_label="Mute until the mismatch changes",
+        remember_label="Continue and hide until versions change",
         allow_label="Continue this session only",
         deny_label="Abort launch",
         deny_first=True,

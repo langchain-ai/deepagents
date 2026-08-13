@@ -14533,6 +14533,14 @@ class TestMessageTimestampFooters:
         config.write_text("[ui]\nshow_message_timestamps = true\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         app = DeepAgentsApp()
+        tool = MessageData(
+            type=MessageType.TOOL,
+            content="",
+            id="hist-tool",
+            timestamp=1_704_110_405.0,
+            tool_name="read_file",
+            tool_status=ToolStatus.SUCCESS,
+        )
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -14543,6 +14551,13 @@ class TestMessageTimestampFooters:
                         content="restored",
                         id="hist-msg",
                         timestamp=1_704_110_405.0,
+                    ),
+                    MessageData(
+                        type=MessageType.TOOL_GROUP,
+                        content="",
+                        id="hist-tool-group",
+                        timestamp=tool.timestamp,
+                        tool_group_messages=[tool],
                     ),
                     # Excluded types never receive a footer, even on restore.
                     MessageData(
@@ -14567,6 +14582,17 @@ class TestMessageTimestampFooters:
             children = list(messages.children)
             anchor = app.query_one("#hist-msg", UserMessage)
             assert children[children.index(anchor) + 1] is footer
+            # Lazy tool details also build linked footers when expanded.
+            summary = app.query_one(LazyToolGroupSummary)
+            await summary._set_expanded(True)
+            tool_footer = summary.query_one("#hist-tool-timestamp-footer", Static)
+            assert tool_footer.display
+            assert (
+                tool_footer
+                in summary.query_one(
+                    "#hist-tool", ToolCallMessage
+                )._visibility_accessories
+            )
             # Excluded-type messages get no footer, even on restore.
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
@@ -14892,55 +14918,6 @@ class TestMessageTimestampFooters:
             children = list(messages.children)
             anchor = app.query_one("#hist-0", UserMessage)
             assert children[children.index(anchor) + 1] is footer
-
-    async def test_expanded_restored_tool_group_renders_timestamps(self) -> None:
-        """Lazy restored tool details retain their individual timestamps."""
-        details = [
-            MessageData(
-                type=MessageType.TOOL,
-                content="",
-                id=f"restored-tool-{index}",
-                timestamp=1_704_110_400.0 + index,
-                tool_name="read_file",
-                tool_status=ToolStatus.SUCCESS,
-            )
-            for index in range(2)
-        ]
-        payload = _ThreadHistoryPayload(
-            [
-                MessageData(
-                    type=MessageType.TOOL_GROUP,
-                    content="",
-                    id="restored-tool-group",
-                    timestamp=details[0].timestamp,
-                    tool_group_messages=details,
-                )
-            ],
-            0,
-            "",
-        )
-        app = DeepAgentsApp()
-        app._message_timestamps_visible = True
-
-        async with app.run_test() as pilot:
-            await app._load_thread_history(
-                thread_id="t-lazy-tools",
-                preloaded_payload=payload,
-                resolve_pending_goal=False,
-            )
-            summary = app.query_one(LazyToolGroupSummary)
-            await summary._set_expanded(True)
-            await pilot.pause()
-
-            for detail in details:
-                footer = summary.query_one(f"#{detail.id}-timestamp-footer", Static)
-                assert footer.display
-                assert (
-                    footer
-                    in summary.query_one(
-                        f"#{detail.id}", ToolCallMessage
-                    )._visibility_accessories
-                )
 
     async def test_restored_history_uses_top_spacer_for_archived_rows(
         self, monkeypatch: pytest.MonkeyPatch

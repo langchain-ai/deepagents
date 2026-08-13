@@ -8222,7 +8222,6 @@ class DeepAgentsApp(App):
         """Mount one small history batch, then yield to Textual for a repaint."""
         hydrated_count = 0
         direction: Literal["above", "below"] | None = None
-        generation = self._transcript_generation
         try:
             if not self._hydration_requests:
                 return
@@ -8239,15 +8238,9 @@ class DeepAgentsApp(App):
                     ),
                 )
             if direction == "above":
-                hydrated_count = await self._hydrate_messages_above(
-                    count=count,
-                    generation=generation,
-                )
+                hydrated_count = await self._hydrate_messages_above(count=count)
             else:
-                hydrated_count = await self._hydrate_messages_below(
-                    count=count,
-                    generation=generation,
-                )
+                hydrated_count = await self._hydrate_messages_below(count=count)
         finally:
             self._hydration_scheduled = False
 
@@ -8332,7 +8325,7 @@ class DeepAgentsApp(App):
         entries: list[tuple[Widget, MessageData, Widget | None]],
         *,
         before: Widget | None = None,
-        generation: int | None = None,
+        generation: int,
     ) -> bool:
         """Mount and render one prepared hydration batch in a single DOM call.
 
@@ -8369,7 +8362,7 @@ class DeepAgentsApp(App):
             self._notify_hydration_failure()
             return False
 
-        if generation is not None and generation != self._transcript_generation:
+        if generation != self._transcript_generation:
             await remove_attached_nodes()
             return False
 
@@ -8387,29 +8380,22 @@ class DeepAgentsApp(App):
                     )
                     self._notify_hydration_failure()
 
-        if generation is not None and generation != self._transcript_generation:
+        if generation != self._transcript_generation:
             await remove_attached_nodes()
             return False
         return True
 
-    async def _hydrate_messages_above(
-        self,
-        *,
-        count: int | None = None,
-        generation: int | None = None,
-    ) -> int:
+    async def _hydrate_messages_above(self, *, count: int | None = None) -> int:
         """Hydrate one contiguous batch of older messages.
 
         Args:
             count: Maximum messages to mount; defaults to `HYDRATE_BUFFER`.
-            generation: Transcript generation that owns this scheduled slice.
 
         Returns:
             Number of messages mounted.
         """
-        if (
-            generation is not None and generation != self._transcript_generation
-        ) or not self._message_store.has_messages_above:
+        generation = self._transcript_generation
+        if not self._message_store.has_messages_above:
             return 0
 
         try:
@@ -8432,13 +8418,7 @@ class DeepAgentsApp(App):
         # chronological DOM order for one mount call.
         for msg_data in reversed(to_hydrate):
             try:
-                widget = msg_data.to_widget(
-                    tool_group_detail_builder=self._build_lazy_tool_group_detail
-                )
-                footer = self._build_message_timestamp_footer(
-                    msg_data, visible=self._message_timestamps_visible
-                )
-                self._link_message_timestamp_footer(widget, footer)
+                widget, footer = self._build_message_with_timestamp_footer(msg_data)
                 entries.append((widget, msg_data, footer))
             except Exception:
                 logger.warning(
@@ -8461,39 +8441,30 @@ class DeepAgentsApp(App):
 
         hydrated_ids = [data.id for _widget, data, _footer in entries]
         hydrated_count = len(hydrated_ids)
-        if hydrated_count > 0:
-            self._message_store.mark_hydrated(hydrated_count)
-            self._schedule_message_height_measurements(hydrated_ids)
-            self._sync_transcript_spacers(messages_container)
-            self._schedule_transcript_prune("below")
+        self._message_store.mark_hydrated(hydrated_count)
+        self._schedule_message_height_measurements(hydrated_ids)
+        self._sync_transcript_spacers(messages_container)
+        self._schedule_transcript_prune("below")
 
         # The top spacer already shrank by the hydrated rows' estimated height
         # while real widgets filled the freed space, so the viewport anchor holds
         # without compensating for every mounted row individually.
         chat.scroll_y = old_scroll_y
 
-        if hydrated_count > 0:
-            await self._regroup_completed_tools()
+        await self._regroup_completed_tools()
         return hydrated_count
 
-    async def _hydrate_messages_below(
-        self,
-        *,
-        count: int | None = None,
-        generation: int | None = None,
-    ) -> int:
+    async def _hydrate_messages_below(self, *, count: int | None = None) -> int:
         """Hydrate one contiguous batch of newer messages.
 
         Args:
             count: Maximum messages to mount; defaults to `HYDRATE_BUFFER`.
-            generation: Transcript generation that owns this scheduled slice.
 
         Returns:
             Number of messages mounted.
         """
-        if (
-            generation is not None and generation != self._transcript_generation
-        ) or not self._message_store.has_messages_below:
+        generation = self._transcript_generation
+        if not self._message_store.has_messages_below:
             return 0
         try:
             chat = self.query_one("#chat", VerticalScroll)
@@ -8511,13 +8482,7 @@ class DeepAgentsApp(App):
         entries: list[tuple[Widget, MessageData, Widget | None]] = []
         for msg_data in to_hydrate:
             try:
-                widget = msg_data.to_widget(
-                    tool_group_detail_builder=self._build_lazy_tool_group_detail
-                )
-                footer = self._build_message_timestamp_footer(
-                    msg_data, visible=self._message_timestamps_visible
-                )
-                self._link_message_timestamp_footer(widget, footer)
+                widget, footer = self._build_message_with_timestamp_footer(msg_data)
                 entries.append((widget, msg_data, footer))
             except Exception:
                 logger.warning(
@@ -8538,9 +8503,6 @@ class DeepAgentsApp(App):
 
         hydrated_ids = [data.id for _widget, data, _footer in entries]
         hydrated_count = len(hydrated_ids)
-        if hydrated_count == 0:
-            return 0
-
         self._message_store.mark_hydrated_below(hydrated_count)
         self._schedule_message_height_measurements(hydrated_ids)
         self._sync_transcript_spacers(messages_container)
@@ -8585,18 +8547,13 @@ class DeepAgentsApp(App):
         if excess <= 0:
             return
 
-        generation = self._transcript_generation
         self._transcript_prune_running = True
         try:
             count = min(excess, self._message_store.HYDRATE_BUFFER)
             if self._transcript_prune_direction == "below":
-                pruned = await self._prune_messages_below_window(
-                    count=count, generation=generation
-                )
+                pruned = await self._prune_messages_below_window(count=count)
             else:
-                pruned = await self._prune_old_messages(
-                    count=count, generation=generation
-                )
+                pruned = await self._prune_old_messages(count=count)
         finally:
             self._transcript_prune_running = False
 
@@ -8760,9 +8717,8 @@ class DeepAgentsApp(App):
 
     def _schedule_message_height_measurements(self, message_ids: list[str]) -> None:
         """Measure a mounted batch in one post-layout spacer update."""
-        unique_ids = tuple(dict.fromkeys(message_ids))
-        if unique_ids:
-            self.call_after_refresh(self._measure_message_heights, unique_ids)
+        if message_ids:
+            self.call_after_refresh(self._measure_message_heights, tuple(message_ids))
 
     def _measure_message_heights(self, message_ids: tuple[str, ...]) -> None:
         """Cache mounted row heights and update virtual spacers once."""
@@ -17592,16 +17548,10 @@ class DeepAgentsApp(App):
                     )
                     continue
                 existing_ids.add(msg_data.id)
-                widget = msg_data.to_widget(
-                    tool_group_detail_builder=self._build_lazy_tool_group_detail
-                )
+                widget, footer = self._build_message_with_timestamp_footer(msg_data)
                 mounted.append((widget, msg_data))
                 nodes.append(widget)
-                footer = self._build_message_timestamp_footer(
-                    msg_data, visible=self._message_timestamps_visible
-                )
                 if footer is not None:
-                    self._link_message_timestamp_footer(widget, footer)
                     nodes.append(footer)
             if nodes:
                 await self._mount_transcript_nodes(messages_container, nodes)
@@ -17660,18 +17610,20 @@ class DeepAgentsApp(App):
                 except Exception:
                     logger.exception("Failed to restore pending goal review")
 
-    def _build_lazy_tool_group_detail(
+    def _build_message_with_timestamp_footer(
         self, data: MessageData
     ) -> tuple[Widget, Static | None]:
-        """Build one lazy tool detail with its linked timestamp footer.
+        """Recreate one stored message with its linked timestamp footer.
 
         Args:
-            data: Retained tool or diff row to recreate.
+            data: Message row to recreate.
 
         Returns:
-            Detail widget and optional timestamp footer.
+            Message widget and optional timestamp footer.
         """
-        widget = data.to_widget()
+        widget = data.to_widget(
+            tool_group_detail_builder=self._build_message_with_timestamp_footer
+        )
         footer = self._build_message_timestamp_footer(
             data, visible=self._message_timestamps_visible
         )
@@ -17981,25 +17933,18 @@ class DeepAgentsApp(App):
             if after == before:
                 break
 
-    async def _prune_old_messages(
-        self,
-        *,
-        count: int | None = None,
-        generation: int | None = None,
-    ) -> int:
+    async def _prune_old_messages(self, *, count: int | None = None) -> int:
         """Prune a bounded batch from the oldest mounted edge.
 
         Args:
             count: Maximum messages to remove; defaults to the full soft-limit
                 excess.
-            generation: Transcript generation that owns this scheduled slice.
 
         Returns:
             Number of messages removed.
         """
-        if (
-            generation is not None and generation != self._transcript_generation
-        ) or not self._message_store.window_exceeded():
+        generation = self._transcript_generation
+        if not self._message_store.window_exceeded():
             return 0
 
         try:
@@ -18014,7 +17959,7 @@ class DeepAgentsApp(App):
 
         pruned_ids: list[str] = []
         for msg_data in to_prune:
-            if generation is not None and generation != self._transcript_generation:
+            if generation != self._transcript_generation:
                 return 0
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
@@ -18022,10 +17967,10 @@ class DeepAgentsApp(App):
                 with suppress(NoMatches):
                     footer = messages_container.query_one(f"#{footer_id}")
                     await footer.remove()
-                if generation is not None and generation != self._transcript_generation:
+                if generation != self._transcript_generation:
                     return 0
                 await widget.remove()
-                if generation is not None and generation != self._transcript_generation:
+                if generation != self._transcript_generation:
                     return 0
                 pruned_ids.append(msg_data.id)
             except NoMatches:
@@ -18036,7 +17981,7 @@ class DeepAgentsApp(App):
                     msg_data.id,
                 )
 
-        if generation is not None and generation != self._transcript_generation:
+        if generation != self._transcript_generation:
             return 0
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
@@ -18060,7 +18005,6 @@ class DeepAgentsApp(App):
         messages_container: Container | None = None,
         *,
         count: int | None = None,
-        generation: int | None = None,
     ) -> int:
         """Prune a bounded batch from the newest mounted edge.
 
@@ -18068,13 +18012,11 @@ class DeepAgentsApp(App):
             messages_container: Cached transcript container, when available.
             count: Maximum messages to remove; defaults to the full soft-limit
                 excess.
-            generation: Transcript generation that owns this scheduled slice.
 
         Returns:
             Number of messages removed.
         """
-        if generation is not None and generation != self._transcript_generation:
-            return 0
+        generation = self._transcript_generation
         to_prune = self._message_store.get_messages_to_prune_below(count)
         if not to_prune:
             return 0
@@ -18086,7 +18028,7 @@ class DeepAgentsApp(App):
 
         pruned_ids: list[str] = []
         for msg_data in to_prune:
-            if generation is not None and generation != self._transcript_generation:
+            if generation != self._transcript_generation:
                 return 0
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
@@ -18094,10 +18036,10 @@ class DeepAgentsApp(App):
                 with suppress(NoMatches):
                     footer = messages_container.query_one(f"#{footer_id}")
                     await footer.remove()
-                if generation is not None and generation != self._transcript_generation:
+                if generation != self._transcript_generation:
                     return 0
                 await widget.remove()
-                if generation is not None and generation != self._transcript_generation:
+                if generation != self._transcript_generation:
                     return 0
                 pruned_ids.append(msg_data.id)
             except NoMatches:
@@ -18106,7 +18048,7 @@ class DeepAgentsApp(App):
                     msg_data.id,
                 )
 
-        if generation is not None and generation != self._transcript_generation:
+        if generation != self._transcript_generation:
             return 0
         if pruned_ids:
             self._message_store.mark_pruned_below(pruned_ids)

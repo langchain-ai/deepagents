@@ -122,9 +122,10 @@ def resolve_prompt_cache_policy(
     if provider != "openai" or not _official_endpoint(base_url, "api.openai.com"):
         return None
     if _openai_uses_thirty_minute_cache(model_name):
-        # 30 minutes is the documented guaranteed minimum for GPT-5.6+; past
-        # the window the prefix can only be treated as expired.
-        return PromptCachePolicy("OpenAI", 1800, "expired", 1024, "generic")
+        # 30 minutes is the documented guaranteed minimum for GPT-5.6+, but
+        # OpenAI may retain the prefix longer, so past the window it can only
+        # be treated as possibly cold.
+        return PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic")
 
     retention = params.get("prompt_cache_retention")
     # `in_memory` and `24h` are documented maximums ("up to one hour", "a

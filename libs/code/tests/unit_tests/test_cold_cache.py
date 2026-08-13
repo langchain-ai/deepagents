@@ -56,9 +56,9 @@ def test_resolves_anthropic_per_model_minimums(model: str, minimum: int) -> None
 def test_resolves_current_openai_minimum_retention(model: str) -> None:
     policy = resolve_prompt_cache_policy(f"openai:{model}")
 
-    # 30 minutes is the documented guaranteed minimum, so past the window the
-    # prefix is treated as expired.
-    assert policy == PromptCachePolicy("OpenAI", 1800, "expired", 1024, "generic")
+    # 30 minutes is the documented guaranteed minimum, but OpenAI may retain
+    # the prefix longer, so past the window it may still be warm.
+    assert policy == PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic")
 
 
 def test_resolves_explicit_older_openai_retention() -> None:

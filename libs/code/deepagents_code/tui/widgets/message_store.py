@@ -19,6 +19,8 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.widget import Widget
 
     from deepagents_code.diff_utils import DiffStats
@@ -335,8 +337,16 @@ class MessageData:
         if self.diff_after_content is not None:
             self.diff_after_content = self.diff_after_content[:MAX_HIGHLIGHT_CHARS]
 
-    def to_widget(self) -> Widget:
+    def to_widget(
+        self,
+        *,
+        tool_group_detail_builder: Callable[[MessageData], tuple[Widget, Widget | None]]
+        | None = None,
+    ) -> Widget:
         """Recreate a widget from this message data.
+
+        Args:
+            tool_group_detail_builder: Optional lazy tool-detail widget factory.
 
         Returns:
             The appropriate message widget for this data.
@@ -393,6 +403,7 @@ class MessageData:
             case MessageType.TOOL_GROUP:
                 widget = LazyToolGroupSummary(
                     self.tool_group_messages or [],
+                    detail_builder=tool_group_detail_builder,
                     id=self.id,
                 )
                 widget._deferred_expanded = self.tool_group_expanded

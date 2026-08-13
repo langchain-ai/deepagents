@@ -76,7 +76,7 @@ from deepagents_code.tui.widgets.diff import (
 from deepagents_code.unicode_security import render_with_unicode_markers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from rich.console import (
         Console as RichConsole,
@@ -4747,15 +4747,25 @@ class LazyToolGroupSummary(Vertical):
     }
     """
 
-    def __init__(self, messages: list[MessageData], **kwargs: Any) -> None:
+    def __init__(
+        self,
+        messages: list[MessageData],
+        *,
+        detail_builder: Callable[[MessageData], tuple[Widget, Widget | None]]
+        | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a collapsed summary from retained message data.
 
         Args:
             messages: Completed tool and associated diff rows in display order.
+            detail_builder: Optional factory for a detail widget and its timestamp.
             **kwargs: Additional arguments passed to `Vertical`.
         """
         super().__init__(**kwargs)
         self._message_data = list(messages)
+        self._detail_builder = detail_builder
+        self._detail_widgets: list[Widget] = []
         self._expanded = False
         self._deferred_expanded = False
         self._transitioning = False
@@ -4815,23 +4825,36 @@ class LazyToolGroupSummary(Vertical):
         try:
             if expanded:
                 try:
-                    await details.mount(
-                        *(data.to_widget() for data in self._message_data)
-                    )
+                    entries = [
+                        self._detail_builder(data)
+                        if self._detail_builder is not None
+                        else (data.to_widget(), None)
+                        for data in self._message_data
+                    ]
+                    nodes = [
+                        node
+                        for widget, footer in entries
+                        for node in (
+                            (widget, footer) if footer is not None else (widget,)
+                        )
+                    ]
+                    await details.mount(*nodes)
                 except Exception:
                     logger.warning("Failed to expand lazy tool group", exc_info=True)
                     with suppress(Exception):
                         await details.remove_children()
                     return
+                self._detail_widgets = [widget for widget, _footer in entries]
                 details.display = True
             else:
                 for data, widget in zip(
-                    self._message_data, details.children, strict=True
+                    self._message_data, self._detail_widgets, strict=True
                 ):
                     if isinstance(widget, ToolCallMessage):
                         data.tool_expanded = widget._expanded
                 details.display = False
                 await details.remove_children()
+                self._detail_widgets = []
 
             self._expanded = expanded
             self._update_header()

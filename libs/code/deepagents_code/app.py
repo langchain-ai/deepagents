@@ -8432,7 +8432,9 @@ class DeepAgentsApp(App):
         # chronological DOM order for one mount call.
         for msg_data in reversed(to_hydrate):
             try:
-                widget = msg_data.to_widget()
+                widget = msg_data.to_widget(
+                    tool_group_detail_builder=self._build_lazy_tool_group_detail
+                )
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
@@ -8509,7 +8511,9 @@ class DeepAgentsApp(App):
         entries: list[tuple[Widget, MessageData, Widget | None]] = []
         for msg_data in to_hydrate:
             try:
-                widget = msg_data.to_widget()
+                widget = msg_data.to_widget(
+                    tool_group_detail_builder=self._build_lazy_tool_group_detail
+                )
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
@@ -17588,7 +17592,9 @@ class DeepAgentsApp(App):
                     )
                     continue
                 existing_ids.add(msg_data.id)
-                widget = msg_data.to_widget()
+                widget = msg_data.to_widget(
+                    tool_group_detail_builder=self._build_lazy_tool_group_detail
+                )
                 mounted.append((widget, msg_data))
                 nodes.append(widget)
                 footer = self._build_message_timestamp_footer(
@@ -17653,6 +17659,24 @@ class DeepAgentsApp(App):
                     await self._remount_pending_goal_rubric_review()
                 except Exception:
                     logger.exception("Failed to restore pending goal review")
+
+    def _build_lazy_tool_group_detail(
+        self, data: MessageData
+    ) -> tuple[Widget, Static | None]:
+        """Build one lazy tool detail with its linked timestamp footer.
+
+        Args:
+            data: Retained tool or diff row to recreate.
+
+        Returns:
+            Detail widget and optional timestamp footer.
+        """
+        widget = data.to_widget()
+        footer = self._build_message_timestamp_footer(
+            data, visible=self._message_timestamps_visible
+        )
+        self._link_message_timestamp_footer(widget, footer)
+        return widget, footer
 
     @staticmethod
     def _build_message_timestamp_footer(

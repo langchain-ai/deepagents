@@ -360,7 +360,9 @@ def _invoke_interactive(
     for line in answers:
         payload = b"\x04" if line is _CTRL_D else f"{line}\n".encode()
         os.write(primary, payload)
-    output = proc.stdout.read() if proc.stdout else ""
+    assert proc.stdout is not None
+    with proc.stdout:
+        output = proc.stdout.read()
     proc.wait(timeout=30)
     os.close(primary)
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
@@ -5346,7 +5348,9 @@ def _invoke_with_local_dcode_not_on_path(
         )
         os.close(secondary)
         os.write(primary, f"{answer}\n".encode())
-        output = proc.stdout.read() if proc.stdout else ""
+        assert proc.stdout is not None
+        with proc.stdout:
+            output = proc.stdout.read()
         proc.wait(timeout=30)
         os.close(primary)
         clean = re.sub(r"\x1b\[[0-9;]*m", "", output)

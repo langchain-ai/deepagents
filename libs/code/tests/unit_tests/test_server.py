@@ -1300,7 +1300,13 @@ class TestServerProcessStopIdempotency:
         with contextlib.suppress(RuntimeError):
             await server.start()
 
-        assert server._stopped is False
+        try:
+            assert server._stopped is False
+        finally:
+            # The failed `start()` allocated the workspace `TemporaryDirectory`
+            # before raising; without a second `stop()` its finalizer would
+            # warn about implicit cleanup at GC time.
+            server.stop()
 
 
 class TestPreservedLogNotice:

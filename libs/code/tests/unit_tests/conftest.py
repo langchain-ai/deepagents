@@ -658,3 +658,56 @@ def wait_for_modal() -> WaitForModal:
         raise AssertionError(msg)
 
     return _wait
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionfinish() -> Generator[None, None, None]:
+    """Close any debug-log file handlers still attached at session end.
+
+    Companion to `_close_leaked_debug_handlers`: the per-test fixture sweeps
+    between tests, and this catches anything installed during the final test so
+    the handler's file is not closed by the GC at interpreter exit (where the
+    `ResourceWarning` would escape pytest entirely).
+    """
+    try:
+        yield
+    finally:
+        _sweep_debug_handlers()
+
+
+def _sweep_debug_handlers() -> None:
+    """Detach and close leaked `configure_debug_logging` file handlers.
+
+    `configure_debug_logging` tags the `FileHandler`s it installs with
+    `_deepagents_code_debug_handler`. A test that leaves one on a global logger
+    hands it to the GC, which reports the unclosed file as a
+    `PytestUnraisableExceptionWarning` against whichever test happens to be
+    running — or at interpreter exit, where pytest never sees it at all.
+    """
+    import logging
+
+    from deepagents_code._debug import _DEBUG_HANDLER_ATTR
+
+    for name in list(logging.root.manager.loggerDict):
+        target = logging.getLogger(name)
+        for handler in target.handlers[:]:
+            if isinstance(handler, logging.FileHandler) and getattr(
+                handler, _DEBUG_HANDLER_ATTR, False
+            ):
+                target.removeHandler(handler)
+                handler.close()
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_debug_handlers() -> None:
+    """Sweep debug-log file handlers installed before each test starts.
+
+    `deepagents_code.__init__` calls `configure_debug_logging` at import time,
+    so a `DEEPAGENTS_CODE_DEBUG` exported in the environment (a developer shell,
+    or a CI runner configured that way) attaches a real file handler to the
+    package logger before collection — and per-test checks then blame whichever
+    test first clears that logger's handlers. Individual tests are responsible
+    for closing handlers they install themselves; this only catches ones leaked
+    from import time or from a prior test that forgot.
+    """
+    _sweep_debug_handlers()

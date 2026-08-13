@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
-from langsmith.utils import LangSmithAPIError, LangSmithNotFoundError
+from langsmith.utils import LangSmithAPIError, LangSmithConflictError, LangSmithNotFoundError
 
 from deepagents.backends import CompositeBackend, ContextHubBackend, FilesystemBackend
 
@@ -16,7 +20,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _COMMIT_HASH = "abcd1234" * 8  # 64-char hex
-_COMMIT_URL = "https://host/hub/-/test-agent:ef567890"
+_COMMIT_URL = "https://host/context/test-agent/ef567890?organizationId=org-id"
+_LEGACY_COMMIT_URL = "https://host/hub/-/test-agent:ef567890"
+_HASHLESS_COMMIT_URL = "https://host/context/test-agent?organizationId=org-id"
 
 
 def _make_backend(
@@ -37,6 +43,27 @@ def _make_backend(
     mock_client.push_agent.return_value = _COMMIT_URL
     backend = ContextHubBackend("-/test-agent", client=mock_client)
     return backend, mock_client
+
+
+def _wait_for_content(backend: ContextHubBackend, path: str, expected: str, *, timeout: float = 1.0) -> None:
+    """Wait until an accepted local mutation is visible through `read`."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = backend.read(path)
+        if result.file_data is not None and result.file_data["content"] == expected:
+            return
+        time.sleep(0.001)
+    msg = f"{path} never became visible with expected content"
+    raise AssertionError(msg)
+
+
+def _flush_pending(backend: ContextHubBackend, count: int) -> None:
+    """Release a batch after exactly `count` mutations have been accepted."""
+    queue = backend._mutations
+    with queue.condition:
+        assert queue.condition.wait_for(lambda: len(queue.pending) == count, timeout=1)
+        queue.deadline = time.monotonic()
+        queue.condition.notify_all()
 
 
 def test_read_returns_content() -> None:
@@ -129,7 +156,7 @@ def test_has_prior_commits_flips_after_first_write() -> None:
     """A fresh repo flips from no-prior-commits to has-prior-commits after a write."""
     mock_client = MagicMock()
     mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
-    mock_client.push_agent.return_value = _COMMIT_URL
+    mock_client.push_agent.return_value = "https://host/context/fresh/ef567890?organizationId=org-id"
     backend = ContextHubBackend("-/fresh", client=mock_client)
 
     assert backend.has_prior_commits() is False
@@ -161,13 +188,214 @@ def test_write_sends_parent_commit_from_pull() -> None:
     assert call.kwargs["parent_commit"] == _COMMIT_HASH
 
 
-def test_write_updates_commit_hash_from_url() -> None:
+@pytest.mark.parametrize(
+    "commit_url",
+    [
+        pytest.param(_COMMIT_URL, id="current"),
+        pytest.param(_LEGACY_COMMIT_URL, id="legacy"),
+    ],
+)
+def test_write_updates_commit_hash_from_url(commit_url: str) -> None:
     backend, mock_client = _make_backend()
+    mock_client.push_agent.side_effect = [commit_url, _COMMIT_URL]
     backend.write("/a.md", "a")
     backend.write("/b.md", "b")
 
     second_call = mock_client.push_agent.call_args_list[1]
     assert second_call.kwargs["parent_commit"] == "ef567890"
+
+
+@pytest.mark.parametrize(
+    "commit_url",
+    [
+        pytest.param(_HASHLESS_COMMIT_URL, id="hashless-context-url"),
+        pytest.param("https://host/other/ef567890", id="unrelated-path"),
+        pytest.param(
+            "https://host/context/deadbeef?organizationId=org-id",
+            id="hex-repository-name",
+        ),
+        pytest.param(
+            "https://host/context/test-agent/012345678?organizationId=org-id",
+            id="nine-character-hash",
+        ),
+        pytest.param(
+            f"https://host/context/test-agent/{'a' * 64}?organizationId=org-id",
+            id="full-hash",
+        ),
+        pytest.param(
+            "https://host/context/-/test-agent/ef567890?organizationId=org-id",
+            id="multi-segment-context-path",
+        ),
+        pytest.param(
+            "https://host/context/test-agent/ef567890/?organizationId=org-id",
+            id="trailing-slash",
+        ),
+        pytest.param(
+            "https://host/context/other-agent/ef567890?organizationId=org-id",
+            id="other-context-repository",
+        ),
+        pytest.param(
+            "https://host/anything/test-agent:ef567890",
+            id="arbitrary-colon-suffix",
+        ),
+        pytest.param(
+            "https://host/hub/-/other-agent:ef567890",
+            id="other-legacy-repository",
+        ),
+        pytest.param("http://[", id="malformed-url"),
+    ],
+)
+def test_unrecognized_commit_url_reloads_remote_hash_before_next_batch(commit_url: str) -> None:
+    remote_hash = "feedface" * 8
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={"remote.md": FileEntry(type="file", content="before")},
+    )
+    reloaded = SimpleNamespace(
+        commit_id="reloaded",
+        commit_hash=remote_hash,
+        files={
+            "local.md": FileEntry(type="file", content="local"),
+            "remote.md": FileEntry(type="file", content="after"),
+        },
+    )
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = [initial, reloaded]
+    mock_client.push_agent.side_effect = [commit_url, _COMMIT_URL]
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+
+    assert backend.write("/local.md", "local").error is None
+    assert mock_client.pull_agent.call_count == 2
+    remote = backend.read("/remote.md")
+    assert remote.file_data is not None
+    assert remote.file_data["content"] == "after"
+
+    assert backend.write("/next.md", "next").error is None
+    second_push = mock_client.push_agent.call_args_list[1]
+    assert second_push.kwargs["parent_commit"] == remote_hash
+
+
+def test_hashless_commit_url_keeps_authoritative_reloaded_same_path_value() -> None:
+    remote_hash = "feedface" * 8
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={"shared.md": FileEntry(type="file", content="initial")},
+    )
+    reloaded = SimpleNamespace(
+        commit_id="newer",
+        commit_hash=remote_hash,
+        files={"shared.md": FileEntry(type="file", content="newer remote")},
+    )
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = [initial, reloaded]
+    mock_client.push_agent.side_effect = [_HASHLESS_COMMIT_URL, _COMMIT_URL]
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+
+    assert backend.write("/shared.md", "our value").error is None
+    shared = backend.read("/shared.md")
+    assert shared.file_data is not None
+    assert shared.file_data["content"] == "newer remote"
+
+    assert backend.write("/next.md", "next").error is None
+    second_push = mock_client.push_agent.call_args_list[1]
+    assert second_push.kwargs["parent_commit"] == remote_hash
+
+
+def test_hashless_snapshot_publication_is_atomic_with_in_flight_clear() -> None:
+    remote_hash = "feedface" * 8
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={"shared.md": FileEntry(type="file", content="initial")},
+    )
+    reloaded = SimpleNamespace(
+        commit_id="newer",
+        commit_hash=remote_hash,
+        files={"shared.md": FileEntry(type="file", content="newer remote")},
+    )
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = [initial, reloaded]
+    mock_client.push_agent.return_value = _HASHLESS_COMMIT_URL
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+    complete_started = threading.Event()
+    release_complete = threading.Event()
+    original_complete = backend._complete_batch
+
+    def gated_complete(*args: Any, **kwargs: Any) -> bool:
+        complete_started.set()
+        if not release_complete.wait(timeout=2):
+            msg = "timed out waiting to complete hashless batch"
+            raise TimeoutError(msg)
+        return original_complete(*args, **kwargs)
+
+    with patch.object(backend, "_complete_batch", side_effect=gated_complete), ThreadPoolExecutor(max_workers=1) as pool:
+        write = pool.submit(backend.write, "/shared.md", "our value")
+        assert complete_started.wait(timeout=1)
+        try:
+            with backend._mutations.condition:
+                assert backend._cache is not None
+                base_content = backend._cache["shared.md"]
+            visible = backend.read("/shared.md")
+            assert visible.file_data is not None
+            visible_content = visible.file_data["content"]
+            assert (base_content, visible_content) != ("newer remote", "our value")
+        finally:
+            release_complete.set()
+        assert write.result(timeout=2).error is None
+
+    final = backend.read("/shared.md")
+    assert final.file_data is not None
+    assert final.file_data["content"] == "newer remote"
+
+
+def test_hashless_commit_without_reloaded_hash_fails() -> None:
+    initial = SimpleNamespace(commit_id="initial", commit_hash=_COMMIT_HASH, files={})
+    unresolved = SimpleNamespace(
+        commit_id="unresolved",
+        commit_hash=None,
+        files={"local.md": FileEntry(type="file", content="local")},
+    )
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = [initial, unresolved]
+    mock_client.push_agent.return_value = _HASHLESS_COMMIT_URL
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+
+    with pytest.raises(RuntimeError, match="commit succeeded but its hash could not be resolved"):
+        backend.write("/local.md", "local")
+
+    assert mock_client.pull_agent.call_count == 2
+    assert backend._worker is None
+    assert backend._cache is None
+    assert backend._mutations.in_flight == []
+    assert backend._mutations.pending == []
+
+
+@pytest.mark.parametrize("failure_point", ["constructor", "start"])
+def test_worker_creation_failure_cleans_mutation_state(failure_point: str) -> None:
+    backend, mock_client = _make_backend()
+    failure = RuntimeError(f"thread {failure_point} failed")
+
+    if failure_point == "constructor":
+        worker_patch = patch("deepagents.backends.context_hub.threading.Thread", side_effect=failure)
+    else:
+        worker = MagicMock()
+        worker.start.side_effect = failure
+        worker_patch = patch("deepagents.backends.context_hub.threading.Thread", return_value=worker)
+
+    with worker_patch, pytest.raises(RuntimeError, match=f"thread {failure_point} failed"):
+        backend.write("/failed.md", "failed")
+
+    with backend._mutations.condition:
+        assert backend._mutations.pending == []
+        assert backend._mutations.in_flight == []
+        assert backend._mutations.deadline is None
+        assert backend._worker is None
+
+    result = backend.write("/recovered.md", "recovered")
+    assert result.error is None
+    mock_client.push_agent.assert_called_once()
 
 
 def test_write_updates_cache_after_commit() -> None:
@@ -715,3 +943,419 @@ async def test_adelete_missing_returns_not_found() -> None:
     assert result.error is not None
     assert "not found" in result.error
     mock_client.push_agent.assert_not_called()
+
+
+def test_batch_window_is_anchored_to_first_mutation() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")
+    queue = backend._mutations
+
+    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0):
+        with queue.condition:
+            first = backend._queue_changes_locked({"first.md": "first"})
+            first_deadline = queue.deadline
+            second = backend._queue_changes_locked({"second.md": "second"})
+
+            assert queue.deadline == first_deadline
+            queue.deadline = time.monotonic()
+            queue.condition.notify_all()
+
+        backend._wait_for_mutation(first)
+        backend._wait_for_mutation(second)
+
+    mock_client.push_agent.assert_called_once()
+
+
+def test_eight_concurrent_writes_coalesce_into_one_commit() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")  # Prime the remote snapshot before the burst.
+    barrier = threading.Barrier(8)
+
+    def write(index: int):
+        barrier.wait(timeout=2)
+        return backend.write(f"/file-{index}.md", f"value-{index}")
+
+    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0), ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(write, index) for index in range(8)]
+        _flush_pending(backend, 8)
+        results = [future.result(timeout=2) for future in futures]
+
+    assert all(result.error is None for result in results)
+    mock_client.push_agent.assert_called_once()
+    payload = mock_client.push_agent.call_args.kwargs["files"]
+    assert set(payload) == {f"file-{index}.md" for index in range(8)}
+    for index in range(8):
+        result = backend.read(f"/file-{index}.md")
+        assert result.file_data is not None
+        assert result.file_data["content"] == f"value-{index}"
+    assert backend._worker is None
+
+
+def test_mixed_mutations_and_upload_share_one_batch() -> None:
+    backend, mock_client = _make_backend(
+        **{
+            "edit.md": FileEntry(type="file", content="before"),
+            "delete.md": FileEntry(type="file", content="remove"),
+        }
+    )
+    backend.read("/edit.md")
+    barrier = threading.Barrier(4)
+
+    def write():
+        barrier.wait(timeout=2)
+        return backend.write("/write.md", "written")
+
+    def edit():
+        barrier.wait(timeout=2)
+        return backend.edit("/edit.md", "before", "after")
+
+    def delete():
+        barrier.wait(timeout=2)
+        return backend.delete("/delete.md")
+
+    def upload():
+        barrier.wait(timeout=2)
+        return backend.upload_files([("/upload-a.md", b"a"), ("/upload-b.md", b"b")])
+
+    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0), ThreadPoolExecutor(max_workers=4) as pool:
+        write_future = pool.submit(write)
+        edit_future = pool.submit(edit)
+        delete_future = pool.submit(delete)
+        upload_future = pool.submit(upload)
+        _flush_pending(backend, 4)
+        write_result = write_future.result(timeout=2)
+        edit_result = edit_future.result(timeout=2)
+        delete_result = delete_future.result(timeout=2)
+        upload_results = upload_future.result(timeout=2)
+
+    assert write_result.error is None
+    assert edit_result.error is None
+    assert delete_result.error is None
+    assert all(result.error is None for result in upload_results)
+    mock_client.push_agent.assert_called_once()
+    payload = mock_client.push_agent.call_args.kwargs["files"]
+    assert set(payload) == {"write.md", "edit.md", "delete.md", "upload-a.md", "upload-b.md"}
+    assert payload["write.md"].content == "written"
+    assert payload["edit.md"].content == "after"
+    assert payload["delete.md"] is None
+    assert payload["upload-a.md"].content == "a"
+    assert payload["upload-b.md"].content == "b"
+
+
+def test_follow_on_batch_waits_for_in_flight_commit() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls_lock = threading.Lock()
+    calls: list[dict[str, Any]] = []
+    active = 0
+    max_active = 0
+
+    def push_agent(identifier: str, **kwargs: Any) -> str:
+        nonlocal active, max_active
+        with calls_lock:
+            index = len(calls)
+            calls.append(kwargs)
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            if index == 0:
+                first_started.set()
+                if not release_first.wait(timeout=2):
+                    msg = "timed out waiting to release first commit"
+                    raise TimeoutError(msg)
+            return f"https://host/hub/{identifier}:{index + 1:08x}"
+        finally:
+            with calls_lock:
+                active -= 1
+
+    mock_client.push_agent.side_effect = push_agent
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(backend.write, "/first.md", "first")
+        assert first_started.wait(timeout=1)
+        second = pool.submit(backend.write, "/second.md", "second")
+        try:
+            _wait_for_content(backend, "/second.md", "second")
+            with calls_lock:
+                assert len(calls) == 1
+        finally:
+            release_first.set()
+        assert first.result(timeout=2).error is None
+        assert second.result(timeout=2).error is None
+
+    assert len(calls) == 2
+    assert max_active == 1
+    assert calls[1]["parent_commit"] == "00000001"
+
+
+def test_pending_mutation_is_visible_to_cached_read_operations() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")
+    push_started = threading.Event()
+    release_push = threading.Event()
+
+    def push_agent(_identifier: str, **_kwargs: Any) -> str:
+        push_started.set()
+        if not release_push.wait(timeout=2):
+            msg = "timed out waiting to release commit"
+            raise TimeoutError(msg)
+        return _COMMIT_URL
+
+    mock_client.push_agent.side_effect = push_agent
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(backend.write, "/pending.md", "visible pending text")
+        assert push_started.wait(timeout=1)
+        try:
+            read = backend.read("/pending.md")
+            assert read.file_data is not None
+            assert read.file_data["content"] == "visible pending text"
+            ls_result = backend.ls("/")
+            assert ls_result.entries is not None
+            assert "/pending.md" in {entry["path"] for entry in ls_result.entries}
+            grep_result = backend.grep("pending")
+            assert grep_result.matches is not None
+            assert [match["path"] for match in grep_result.matches] == ["/pending.md"]
+            glob_result = backend.glob("*.md")
+            assert glob_result.matches is not None
+            assert "/pending.md" in {match["path"] for match in glob_result.matches}
+            download = backend.download_files(["/pending.md"])
+            assert download[0].content == b"visible pending text"
+        finally:
+            release_push.set()
+        assert future.result(timeout=2).error is None
+
+
+def test_concurrent_cold_cache_access_pulls_once() -> None:
+    backend, mock_client = _make_backend()
+    start = threading.Barrier(8)
+    pull_barrier = threading.Barrier(8)
+
+    def pull_agent(_identifier: str):
+        with suppress(threading.BrokenBarrierError):
+            pull_barrier.wait(timeout=0.5)
+        return SimpleNamespace(commit_id="id", commit_hash=_COMMIT_HASH, files={})
+
+    mock_client.pull_agent.side_effect = pull_agent
+
+    def write(index: int):
+        start.wait(timeout=2)
+        return backend.write(f"/cold-{index}.md", str(index))
+
+    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0), ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(write, index) for index in range(8)]
+        _flush_pending(backend, 8)
+        results = [future.result(timeout=3) for future in futures]
+
+    assert all(result.error is None for result in results)
+    mock_client.pull_agent.assert_called_once_with("-/test-agent")
+    mock_client.push_agent.assert_called_once()
+
+
+def test_batch_failure_reaches_every_waiter_and_drains_worker() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")
+    mock_client.push_agent.side_effect = LangSmithAPIError("503")
+    barrier = threading.Barrier(8)
+
+    def write(index: int):
+        barrier.wait(timeout=2)
+        return backend.write(f"/failed-{index}.md", str(index))
+
+    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0), ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(write, index) for index in range(8)]
+        _flush_pending(backend, 8)
+        results = [future.result(timeout=2) for future in futures]
+
+    assert all("Hub unavailable" in (result.error or "") for result in results)
+    mock_client.push_agent.assert_called_once()
+    assert backend._worker is None
+    backend.read("/missing.md")
+    assert mock_client.pull_agent.call_count == 2
+
+
+def test_in_flight_failure_rejects_queued_waiter_without_orphaning_state() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls = 0
+
+    def push_agent(_identifier: str, **_kwargs: Any) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            if not release_first.wait(timeout=2):
+                msg = "timed out waiting to fail first commit"
+                raise TimeoutError(msg)
+            msg = "503"
+            raise LangSmithAPIError(msg)
+        return _COMMIT_URL
+
+    mock_client.push_agent.side_effect = push_agent
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(backend.write, "/first.md", "first")
+        assert first_started.wait(timeout=1)
+        second = pool.submit(backend.write, "/second.md", "second")
+        try:
+            _wait_for_content(backend, "/second.md", "second", timeout=0.5)
+        finally:
+            release_first.set()
+        first_result = first.result(timeout=2)
+        second_result = second.result(timeout=2)
+
+    assert "Hub unavailable" in (first_result.error or "")
+    assert "Hub unavailable" in (second_result.error or "")
+    mock_client.push_agent.assert_called_once()
+    assert backend._worker is None
+    assert backend.read("/second.md").error == "File '/second.md' not found"
+    assert mock_client.pull_agent.call_count == 2
+
+
+def test_worker_base_exception_settles_waiter_and_invalidates_state() -> None:
+    class WorkerAbort(BaseException):
+        pass
+
+    backend, mock_client = _make_backend()
+    push_started = threading.Event()
+
+    def push_agent(_identifier: str, **_kwargs: Any) -> str:
+        push_started.set()
+        msg = "worker aborted"
+        raise WorkerAbort(msg)
+
+    mock_client.push_agent.side_effect = push_agent
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = None
+    try:
+        with patch("threading.excepthook"):
+            future = pool.submit(backend.write, "/failed.md", "failed")
+            assert push_started.wait(timeout=1)
+            with pytest.raises(WorkerAbort, match="worker aborted"):
+                future.result(timeout=0.5)
+    finally:
+        with backend._mutations.condition:
+            stranded = [*backend._mutations.in_flight, *backend._mutations.pending]
+            backend._mutations.in_flight = []
+            backend._mutations.pending = []
+            backend._mutations.deadline = None
+            backend._cache = None
+            backend._worker = None
+            cleanup_error = RuntimeError("test cleanup")
+            for mutation in stranded:
+                mutation.error = cleanup_error
+        for mutation in stranded:
+            mutation.done.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+
+    assert future is not None
+    assert backend._worker is None
+    assert backend._cache is None
+    assert backend._mutations.in_flight == []
+    assert backend._mutations.pending == []
+
+
+def test_conflict_reloads_remote_and_retries_local_delta() -> None:
+    initial = SimpleNamespace(
+        commit_id="initial",
+        commit_hash=_COMMIT_HASH,
+        files={"base.md": FileEntry(type="file", content="base")},
+    )
+    remote_hash = "feedface" * 8
+    reloaded = SimpleNamespace(
+        commit_id="remote",
+        commit_hash=remote_hash,
+        files={
+            "base.md": FileEntry(type="file", content="base"),
+            "remote.md": FileEntry(type="file", content="remote change"),
+        },
+    )
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = [initial, reloaded]
+    mock_client.push_agent.side_effect = [LangSmithConflictError("409"), _COMMIT_URL]
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+
+    result = backend.write("/local.md", "local change")
+
+    assert result.error is None
+    assert mock_client.push_agent.call_count == 2
+    first, second = mock_client.push_agent.call_args_list
+    assert first.kwargs["parent_commit"] == _COMMIT_HASH
+    assert second.kwargs["parent_commit"] == remote_hash
+    assert set(second.kwargs["files"]) == {"local.md"}
+    assert second.kwargs["files"]["local.md"].content == "local change"
+    remote = backend.read("/remote.md")
+    assert remote.file_data is not None
+    assert remote.file_data["content"] == "remote change"
+    local = backend.read("/local.md")
+    assert local.file_data is not None
+    assert local.file_data["content"] == "local change"
+
+
+def test_conflict_stops_after_three_retries() -> None:
+    contexts = [SimpleNamespace(commit_id=str(index), commit_hash=f"{index + 1:064x}", files={}) for index in range(4)]
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = contexts
+    mock_client.push_agent.side_effect = LangSmithConflictError("409")
+    backend = ContextHubBackend("-/test-agent", client=mock_client)
+
+    result = backend.write("/local.md", "local")
+
+    assert "Hub unavailable" in (result.error or "")
+    assert mock_client.push_agent.call_count == 4
+    assert mock_client.pull_agent.call_count == 4
+    assert backend._worker is None
+
+
+def test_later_same_path_enqueue_wins_coalesced_batch() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")
+
+    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0), ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(backend.write, "/same.md", "first")
+        _wait_for_content(backend, "/same.md", "first")
+        second = pool.submit(backend.write, "/same.md", "second")
+        _wait_for_content(backend, "/same.md", "second")
+        _flush_pending(backend, 2)
+        assert first.result(timeout=2).error is None
+        assert second.result(timeout=2).error is None
+
+    mock_client.push_agent.assert_called_once()
+    payload = mock_client.push_agent.call_args.kwargs["files"]
+    assert payload["same.md"].content == "second"
+
+
+def test_edit_uses_visible_in_flight_write_in_enqueue_order() -> None:
+    backend, mock_client = _make_backend()
+    backend.read("/missing.md")
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls: list[dict[str, Any]] = []
+
+    def push_agent(identifier: str, **kwargs: Any) -> str:
+        index = len(calls)
+        calls.append(kwargs)
+        if index == 0:
+            first_started.set()
+            if not release_first.wait(timeout=2):
+                msg = "timed out waiting to release first commit"
+                raise TimeoutError(msg)
+        return f"https://host/hub/{identifier}:{index + 1:08x}"
+
+    mock_client.push_agent.side_effect = push_agent
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        write = pool.submit(backend.write, "/chain.md", "hello")
+        assert first_started.wait(timeout=1)
+        edit = pool.submit(backend.edit, "/chain.md", "hello", "goodbye")
+        try:
+            _wait_for_content(backend, "/chain.md", "goodbye", timeout=0.5)
+        finally:
+            release_first.set()
+        assert write.result(timeout=2).error is None
+        edit_result = edit.result(timeout=2)
+
+    assert edit_result.error is None
+    assert edit_result.occurrences == 1
+    assert len(calls) == 2
+    assert calls[1]["files"]["chain.md"].content == "goodbye"

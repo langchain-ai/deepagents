@@ -548,7 +548,7 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   assert.match(calls.createComment[0].body, /Keep the version heading intact\. To regenerate with steering/);
   assert.match(calls.createComment[0].body, /@release-bot draft <instructions>/);
   // No instructions were recorded in state, so nothing is echoed.
-  assert.ok(!calls.createComment[0].body.includes('Drafted with maintainer instructions'));
+  assert.ok(!calls.createComment[0].body.includes('<details>'));
 
   const stale = makeGithub({ pr: releasePr({ head: { ...releasePr().head, sha: 'c'.repeat(40) } }) });
   await assert.rejects(
@@ -567,12 +567,31 @@ test('posts a draft that echoes the maintainer instructions it used', async t =>
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
   assert.equal(calls.createComment.length, 1);
-  assert.match(calls.createComment[0].body, /Drafted with maintainer instructions: emphasize the breaking SDK change/);
+  assert.match(calls.createComment[0].body, /<details>\n<summary>📝 <strong>Drafted with maintainer instructions<\/strong><\/summary>\n\nemphasize the breaking SDK change\n<\/details>/);
   // The echo sits outside the marked metadata block and the editable content
   // markers, so it cannot corrupt either parser.
   const body = calls.createComment[0].body;
   assert.ok(body.indexOf('-->') < body.indexOf('Drafted with maintainer instructions'));
   assert.ok(body.indexOf('Drafted with maintainer instructions') < body.indexOf('release-notes-content-start'));
+});
+
+test('escapes HTML in echoed instructions so the details toggle cannot be broken', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING, instructions: 'describe the section after </details> and <details open>' }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const { github, calls } = makeGithub();
+  await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.equal(calls.createComment.length, 1);
+  const body = calls.createComment[0].body;
+  // Raw closing/opening tags must not appear inside the details block.
+  assert.match(body, /&lt;\/details&gt;/);
+  assert.match(body, /&lt;details open&gt;/);
+  // Only one real <details> and one real </details> should exist.
+  assert.equal(body.split('<details>').length - 1, 1);
+  assert.equal(body.split('</details>').length - 1, 1);
 });
 
 test('prepare apply replaces only the changelog section and records immutable hashes', async t => {

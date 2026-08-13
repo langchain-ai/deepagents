@@ -14,6 +14,27 @@ CacheWriteBucket = Literal["generic", "5m", "1h"]
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")
 
+_ANTHROPIC_MINIMUM_TOKENS: tuple[tuple[str, int], ...] = (
+    ("claude-opus-5", 512),
+    ("claude-fable-5", 512),
+    ("claude-mythos-5", 512),
+    ("claude-opus-4-7", 2048),
+    ("claude-mythos-preview", 2048),
+    ("claude-haiku-3-5", 2048),
+    ("claude-opus-4-6", 4096),
+    ("claude-opus-4-5", 4096),
+    ("claude-haiku-4-5", 4096),
+)
+"""Prefixes for Claude models whose cache minimum differs from 1,024 tokens.
+
+From the per-model minimums in Anthropic's prompt-caching docs. Order matters:
+the first matching prefix wins, so `claude-mythos-preview` must precede a bare
+`claude-mythos` entry if one is ever added.
+"""
+
+_ANTHROPIC_DEFAULT_MINIMUM_TOKENS = 1024
+"""Cache minimum for the Claude models the table above does not name."""
+
 
 @dataclass(frozen=True, slots=True)
 class PromptCachePolicy:
@@ -55,6 +76,19 @@ def _openai_uses_thirty_minute_cache(model_name: str) -> bool:
     return (major, minor) >= (5, 6)
 
 
+def _anthropic_minimum_tokens(model_name: str) -> int:
+    """Return the documented minimum cacheable prefix for a Claude model."""
+    normalized = model_name.lower()
+    return next(
+        (
+            minimum
+            for prefix, minimum in _ANTHROPIC_MINIMUM_TOKENS
+            if normalized.startswith(prefix)
+        ),
+        _ANTHROPIC_DEFAULT_MINIMUM_TOKENS,
+    )
+
+
 def resolve_prompt_cache_policy(
     model_spec: str,
     model_params: dict[str, Any] | None = None,
@@ -78,22 +112,29 @@ def resolve_prompt_cache_policy(
     if provider == "anthropic":
         if not _official_endpoint(base_url, "api.anthropic.com"):
             return None
+        minimum = _anthropic_minimum_tokens(model_name)
         cache_control = params.get("cache_control")
         ttl = cache_control.get("ttl") if isinstance(cache_control, dict) else None
-        if ttl in {"1h", "3600s"}:
-            return PromptCachePolicy("Anthropic", 3600, "expired", 1024, "1h")
-        return PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m")
+        if ttl == "1h":
+            return PromptCachePolicy("Anthropic", 3600, "expired", minimum, "1h")
+        return PromptCachePolicy("Anthropic", 300, "expired", minimum, "5m")
 
     if provider != "openai" or not _official_endpoint(base_url, "api.openai.com"):
         return None
     if _openai_uses_thirty_minute_cache(model_name):
-        return PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+        # 30 minutes is the documented guaranteed minimum for GPT-5.6+; past
+        # the window the prefix can only be treated as expired.
+        return PromptCachePolicy("OpenAI", 1800, "expired", 1024, "generic")
 
     retention = params.get("prompt_cache_retention")
+    # `in_memory` and `24h` are documented maximums ("up to one hour", "a
+    # maximum, not a guarantee"): entries may be evicted earlier, so a warning
+    # is only defensible once the maximum has passed -- and even then the entry
+    # may linger, so the confidence stays "may_be_cold".
     if retention == "in_memory":
-        return PromptCachePolicy("OpenAI", 3600, "expired", 1024, "generic")
+        return PromptCachePolicy("OpenAI", 3600, "may_be_cold", 1024, "generic")
     if retention == "24h":
-        return PromptCachePolicy("OpenAI", 86400, "expired", 1024, "generic")
+        return PromptCachePolicy("OpenAI", 86400, "may_be_cold", 1024, "generic")
     return None
 
 

@@ -29,11 +29,36 @@ def test_resolves_anthropic_default_and_one_hour_policies() -> None:
     assert extended == PromptCachePolicy("Anthropic", 3600, "expired", 1024, "1h")
 
 
+@pytest.mark.parametrize(
+    ("model", "minimum"),
+    [
+        ("claude-opus-5", 512),
+        ("claude-fable-5", 512),
+        ("claude-mythos-5", 512),
+        ("claude-opus-4-8", 1024),
+        ("claude-sonnet-5", 1024),
+        ("claude-sonnet-4-6", 1024),
+        ("claude-opus-4-7", 2048),
+        ("claude-mythos-preview", 2048),
+        ("claude-opus-4-6", 4096),
+        ("claude-opus-4-5", 4096),
+        ("claude-haiku-4-5", 4096),
+    ],
+)
+def test_resolves_anthropic_per_model_minimums(model: str, minimum: int) -> None:
+    policy = resolve_prompt_cache_policy(f"anthropic:{model}")
+
+    assert policy is not None
+    assert policy.minimum_tokens == minimum
+
+
 @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5.6-pro", "gpt-6"])
 def test_resolves_current_openai_minimum_retention(model: str) -> None:
     policy = resolve_prompt_cache_policy(f"openai:{model}")
 
-    assert policy == PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+    # 30 minutes is the documented guaranteed minimum, so past the window the
+    # prefix is treated as expired.
+    assert policy == PromptCachePolicy("OpenAI", 1800, "expired", 1024, "generic")
 
 
 def test_resolves_explicit_older_openai_retention() -> None:
@@ -46,10 +71,30 @@ def test_resolves_explicit_older_openai_retention() -> None:
         {"prompt_cache_retention": "24h"},
     )
 
-    assert in_memory is not None
-    assert in_memory.window_seconds == 3600
-    assert extended is not None
-    assert extended.window_seconds == 86400
+    # Both windows are documented maximums ("up to"), so past the window the
+    # cache may still be warm.
+    assert in_memory == PromptCachePolicy(
+        "OpenAI", 3600, "may_be_cold", 1024, "generic"
+    )
+    assert extended == PromptCachePolicy(
+        "OpenAI", 86400, "may_be_cold", 1024, "generic"
+    )
+
+
+def test_estimate_rewarm_cost_respects_per_model_anthropic_minimum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 4,096-token floor rejects 3,000 tokens on Haiku but not on Opus 5."""
+    monkeypatch.setattr(
+        "deepagents_code.cost_tracking.estimate_cost", lambda *_args: 1.0
+    )
+    haiku = resolve_prompt_cache_policy("anthropic:claude-haiku-4-5")
+    opus = resolve_prompt_cache_policy("anthropic:claude-opus-5")
+
+    assert haiku is not None
+    assert opus is not None
+    assert estimate_rewarm_cost(3000, "anthropic:claude-haiku-4-5", haiku) is None
+    assert estimate_rewarm_cost(3000, "anthropic:claude-opus-5", opus) is not None
 
 
 def test_skips_unresolved_or_custom_provider_policies() -> None:

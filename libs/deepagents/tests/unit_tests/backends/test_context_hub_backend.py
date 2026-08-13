@@ -555,7 +555,7 @@ def test_grep_glob_does_not_brace_expand() -> None:
     assert paths == {"/literal.{py,md}"}
 
 
-def test_grep_treats_pattern_literally() -> None:
+def test_grep_with_special_characters() -> None:
     backend, _ = _make_backend(**{"notes.md": FileEntry(type="file", content="items[0]\n")})
     result = backend.grep("[")
     assert result.error is None

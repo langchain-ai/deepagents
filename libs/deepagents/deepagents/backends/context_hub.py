@@ -302,12 +302,25 @@ class ContextHubBackend(BackendProtocol):
 
     def _reload_after_conflict(self, conflict: LangSmithConflictError) -> None:
         cache, linked_entries, commit_hash = self._fetch_tree()
+        failed_pending: list[_Mutation] = []
         with self._mutations.condition:
-            mutations = [*self._mutations.in_flight, *self._mutations.pending]
-            self._rematerialize_locked(mutations, cache, conflict)
+            self._rematerialize_locked(self._mutations.in_flight, cache, conflict)
+            pending_cache = dict(cache)
+            for mutation in self._mutations.in_flight:
+                self._overlay(pending_cache, mutation.changes)
+            try:
+                self._rematerialize_locked(self._mutations.pending, pending_cache, conflict)
+            except LangSmithConflictError as exc:
+                failed_pending = self._mutations.pending
+                self._mutations.pending = []
+                self._mutations.deadline = None
+                for mutation in failed_pending:
+                    mutation.error = exc
             self._cache = cache
             self._linked_entries = linked_entries
             self._commit_hash = commit_hash
+        for mutation in failed_pending:
+            mutation.done.set()
 
     def _extract_commit_hash(self, url: str) -> str | None:
         try:

@@ -1141,13 +1141,14 @@ def test_in_flight_failure_rejects_queued_waiter_and_recovers_next_burst() -> No
     assert content.file_data["content"] == "recovered"
 
 
-def test_conflict_replays_ordered_mutation_intent_against_remote() -> None:
+def test_conflict_replays_in_flight_batch_and_rejects_invalid_pending_edit() -> None:
     initial = SimpleNamespace(
         commit_id="initial",
         commit_hash=_COMMIT_HASH,
         files={
             "base.md": FileEntry(type="file", content="before\nkeep"),
             "folder/old.md": FileEntry(type="file", content="old"),
+            "pending.md": FileEntry(type="file", content="edit me"),
         },
     )
     remote_hash = "feedface" * 8
@@ -1158,23 +1159,45 @@ def test_conflict_replays_ordered_mutation_intent_against_remote() -> None:
             "base.md": FileEntry(type="file", content="remote header\nbefore\nkeep"),
             "folder/old.md": FileEntry(type="file", content="old"),
             "folder/remote.md": FileEntry(type="file", content="remote"),
+            "pending.md": FileEntry(type="file", content="changed remotely"),
         },
     )
+    reload_started = threading.Event()
+    release_reload = threading.Event()
     mock_client = MagicMock()
-    mock_client.pull_agent.side_effect = [initial, reloaded]
+
+    def pull_agent(_identifier: str) -> SimpleNamespace:
+        if mock_client.pull_agent.call_count == 1:
+            return initial
+        reload_started.set()
+        if not release_reload.wait(timeout=2):
+            msg = "timed out waiting to release conflict reload"
+            raise TimeoutError(msg)
+        return reloaded
+
+    mock_client.pull_agent.side_effect = pull_agent
     mock_client.push_agent.side_effect = [LangSmithConflictError("409"), _COMMIT_URL]
     backend = ContextHubBackend("-/test-agent", client=mock_client)
 
-    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0), ThreadPoolExecutor(max_workers=2) as pool:
+    with patch("deepagents.backends.context_hub._BATCH_WINDOW_SECONDS", 10.0), ThreadPoolExecutor(max_workers=3) as pool:
         edit = pool.submit(backend.edit, "/base.md", "before", "after")
         delete = pool.submit(backend.delete, "/folder")
         _flush_pending(backend, 2)
+        assert reload_started.wait(timeout=1)
+        try:
+            pending = pool.submit(backend.edit, "/pending.md", "edit me", "edited")
+            with backend._mutations.condition:
+                assert backend._mutations.condition.wait_for(lambda: len(backend._mutations.pending) == 1, timeout=1)
+        finally:
+            release_reload.set()
         edit_result = edit.result(timeout=2)
         delete_result = delete.result(timeout=2)
+        pending_result = pending.result(timeout=2)
 
     assert edit_result.error is None
     assert edit_result.occurrences == 1
     assert delete_result.error is None
+    assert "Hub unavailable" in (pending_result.error or "")
     assert mock_client.push_agent.call_count == 2
     first, second = mock_client.push_agent.call_args_list
     assert first.kwargs["parent_commit"] == _COMMIT_HASH
@@ -1187,6 +1210,9 @@ def test_conflict_replays_ordered_mutation_intent_against_remote() -> None:
     assert second.kwargs["files"]["base.md"].content == "remote header\nafter\nkeep"
     assert second.kwargs["files"]["folder/old.md"] is None
     assert second.kwargs["files"]["folder/remote.md"] is None
+    pending_read = backend.read("/pending.md")
+    assert pending_read.file_data is not None
+    assert pending_read.file_data["content"] == "changed remotely"
 
 
 def test_conflict_stops_after_three_retries() -> None:

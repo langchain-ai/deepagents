@@ -117,7 +117,7 @@ Zero or negative disables the suggestion.
 SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
 """Default warning threshold in USD; zero or negative disables the warning."""
 
-COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT = 0.10
+COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT = 0.50
 """Default incremental re-warm cost that triggers a cold-cache warning."""
 
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"

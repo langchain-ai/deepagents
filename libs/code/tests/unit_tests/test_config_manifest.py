@@ -117,7 +117,7 @@ def test_cold_cache_warning_threshold_default() -> None:
     """Cold-cache warning uses the material incremental-cost default."""
     option = get_option("warnings.cold_cache_min_delta_usd")
     assert option is not None
-    assert resolve_scalar(option, toml_data={}) == (0.10, "default")
+    assert resolve_scalar(option, toml_data={}) == (0.50, "default")
 
 
 def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:

@@ -163,7 +163,9 @@ jobs:
         # subsequent step; this step only emits a log line so the run
         # history shows why no PR was opened.
         if: steps.raise.outputs.changed != 'true'
-        run: echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
+        run: |
+          echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
+          echo "No in-scope minimum needed raising; no PR opened." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Skip if PR already open for this package
         id: existing
@@ -180,6 +182,10 @@ jobs:
             pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
             echo "Open PR already exists for $BRANCH; skipping."
             echo "::notice::Open dependency minimums PR already exists: $pr_url"
+            # The "Raise dependency minimums" step already wrote its raised-bounds
+            # summary; append the outcome link so it is visible without digging
+            # through the step log for the ::notice:: annotation.
+            printf '\n**PR:** %s (already open; no new PR created)\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Generate GitHub App token
@@ -279,6 +285,7 @@ jobs:
             --body-file "$body_file")
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"
+          printf '\n**PR:** %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
 
       - name: File a tracking issue on failure
         # Nobody watches a green cron, and nobody watches a red one either

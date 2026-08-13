@@ -3006,7 +3006,6 @@ async def _run_acp_cli_async(
                 build_agent,
                 models=models,
                 load_sessions=True,
-                checkpoint_metadata={"agent_name": assistant_id},
             )
             await run_acp_agent(server)
     except KeyboardInterrupt:

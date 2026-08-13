@@ -54,11 +54,31 @@ _MAX_CONFLICT_RETRIES = 3
 _TreeSnapshot = tuple[dict[str, str], dict[str, str], str | None]
 
 
+@dataclass(frozen=True)
+class _WriteIntent:
+    changes: dict[str, str | None]
+
+
+@dataclass(frozen=True)
+class _EditIntent:
+    path: str
+    old_string: str
+    new_string: str
+    replace_all: bool
+
+
+@dataclass(frozen=True)
+class _DeleteIntent:
+    path: str
+
+
 @dataclass
 class _Mutation:
     """One accepted mutation and the caller waiting for its durability."""
 
+    intent: _WriteIntent | _EditIntent | _DeleteIntent
     changes: dict[str, str | None]
+    occurrences: int | None = None
     done: threading.Event = field(default_factory=threading.Event)
     error: BaseException | None = None
 
@@ -160,8 +180,19 @@ class ContextHubBackend(BackendProtocol):
             self._ensure_cache_locked()
             return self._commit_hash is not None
 
-    def _queue_changes_locked(self, changes: dict[str, str | None]) -> _Mutation:
-        mutation = _Mutation(changes=dict(changes))
+    def _queue_changes_locked(
+        self,
+        changes: dict[str, str | None],
+        *,
+        intent: _WriteIntent | _EditIntent | _DeleteIntent | None = None,
+        occurrences: int | None = None,
+    ) -> _Mutation:
+        accepted_changes = dict(changes)
+        mutation = _Mutation(
+            intent=intent or _WriteIntent(changes=dict(accepted_changes)),
+            changes=accepted_changes,
+            occurrences=occurrences,
+        )
         queue = self._mutations
         if not queue.pending:
             queue.deadline = time.monotonic() + _BATCH_WINDOW_SECONDS
@@ -223,13 +254,60 @@ class ContextHubBackend(BackendProtocol):
             changes.update(mutation.changes)
         return changes
 
-    def _reload_remote(self) -> str | None:
+    @staticmethod
+    def _rematerialize_mutation(
+        mutation: _Mutation,
+        cache: dict[str, str],
+        conflict: LangSmithConflictError,
+    ) -> tuple[dict[str, str | None], int | None]:
+        intent = mutation.intent
+        if isinstance(intent, _WriteIntent):
+            return dict(intent.changes), None
+        if isinstance(intent, _EditIntent):
+            current = cache.get(intent.path)
+            if current is None:
+                raise conflict
+            result = perform_string_replacement(
+                current,
+                intent.old_string,
+                intent.new_string,
+                intent.replace_all,
+            )
+            if isinstance(result, str):
+                raise conflict
+            content, occurrences = result
+            return {intent.path: content}, occurrences
+
+        base = intent.path
+        prefix = base + "/"
+        paths = [path for path in cache if path == base or path.startswith(prefix)]
+        return dict.fromkeys(paths, None), None
+
+    def _rematerialize_locked(
+        self,
+        mutations: list[_Mutation],
+        cache: dict[str, str],
+        conflict: LangSmithConflictError,
+    ) -> None:
+        materialized: list[tuple[_Mutation, dict[str, str | None], int | None]] = []
+        visible = dict(cache)
+        for mutation in mutations:
+            changes, occurrences = self._rematerialize_mutation(mutation, visible, conflict)
+            materialized.append((mutation, changes, occurrences))
+            self._overlay(visible, changes)
+
+        for mutation, changes, occurrences in materialized:
+            mutation.changes = changes
+            mutation.occurrences = occurrences
+
+    def _reload_after_conflict(self, conflict: LangSmithConflictError) -> None:
         cache, linked_entries, commit_hash = self._fetch_tree()
         with self._mutations.condition:
+            mutations = [*self._mutations.in_flight, *self._mutations.pending]
+            self._rematerialize_locked(mutations, cache, conflict)
             self._cache = cache
             self._linked_entries = linked_entries
             self._commit_hash = commit_hash
-        return commit_hash
 
     def _extract_commit_hash(self, url: str) -> str | None:
         try:
@@ -246,36 +324,39 @@ class ContextHubBackend(BackendProtocol):
                     return commit_hash
         return None
 
-    def _push_changes(self, changes: dict[str, str | None]) -> tuple[str, _TreeSnapshot | None]:
-        payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
-            path: FileEntry(type="file", content=content) if content is not None else None for path, content in changes.items()
-        }
-
+    def _push_batch(self, batch: list[_Mutation]) -> tuple[dict[str, str | None], str | None, _TreeSnapshot | None]:
         for attempt in range(_MAX_CONFLICT_RETRIES + 1):
             with self._mutations.condition:
+                changes = self._merge_batch(batch)
                 parent_commit = self._commit_hash
+            if not changes:
+                return changes, parent_commit, None
+
+            payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
+                path: FileEntry(type="file", content=content) if content is not None else None for path, content in changes.items()
+            }
             try:
                 url = self._client.push_agent(
                     self._identifier,
                     files=payload,
                     parent_commit=parent_commit,
                 )
-            except LangSmithConflictError:
+            except LangSmithConflictError as conflict:
                 if attempt == _MAX_CONFLICT_RETRIES:
                     raise
-                self._reload_remote()
+                self._reload_after_conflict(conflict)
                 continue
 
             commit_hash = self._extract_commit_hash(url)
             if commit_hash is not None:
-                return commit_hash, None
+                return changes, commit_hash, None
 
             snapshot = self._fetch_tree()
             commit_hash = snapshot[2]
             if commit_hash is None:
                 msg = "Context Hub commit succeeded but its hash could not be resolved"
                 raise RuntimeError(msg)
-            return commit_hash, snapshot
+            return changes, commit_hash, snapshot
 
         msg = "Context Hub conflict retry loop exhausted unexpectedly"
         raise RuntimeError(msg)
@@ -284,23 +365,39 @@ class ContextHubBackend(BackendProtocol):
         self,
         batch: list[_Mutation],
         changes: dict[str, str | None],
-        commit_hash: str,
+        commit_hash: str | None,
         *,
         authoritative_snapshot: _TreeSnapshot | None,
     ) -> bool:
+        failed_pending: list[_Mutation] = []
         with self._mutations.condition:
             if authoritative_snapshot is None:
                 cache = dict(self._ensure_cache_locked())
                 self._overlay(cache, changes)
                 self._cache = cache
             else:
-                self._cache, self._linked_entries, _ = authoritative_snapshot
+                cache, linked_entries, _ = authoritative_snapshot
+                if self._mutations.pending:
+                    msg = "Context Hub changed before a pending mutation could be applied"
+                    pending_conflict = LangSmithConflictError(msg)
+                    try:
+                        self._rematerialize_locked(self._mutations.pending, cache, pending_conflict)
+                    except LangSmithConflictError as exc:
+                        failed_pending = self._mutations.pending
+                        self._mutations.pending = []
+                        self._mutations.deadline = None
+                        for mutation in failed_pending:
+                            mutation.error = exc
+                self._cache = cache
+                self._linked_entries = linked_entries
             self._commit_hash = commit_hash
             self._mutations.in_flight = []
             drained = not self._mutations.pending
             if drained:
                 self._worker = None
         for mutation in batch:
+            mutation.done.set()
+        for mutation in failed_pending:
             mutation.done.set()
         return drained
 
@@ -327,8 +424,7 @@ class ContextHubBackend(BackendProtocol):
                 if next_batch is None:
                     return
                 batch = next_batch
-                changes = self._merge_batch(batch)
-                commit_hash, authoritative_snapshot = self._push_changes(changes)
+                changes, commit_hash, authoritative_snapshot = self._push_batch(batch)
                 drained = self._complete_batch(
                     batch,
                     changes,
@@ -399,12 +495,21 @@ class ContextHubBackend(BackendProtocol):
                     return EditResult(error=result)
 
                 new_content, occurrences = result
-                mutation = self._queue_changes_locked({hub_path: new_content})
+                mutation = self._queue_changes_locked(
+                    {hub_path: new_content},
+                    intent=_EditIntent(
+                        path=hub_path,
+                        old_string=old_string,
+                        new_string=new_string,
+                        replace_all=replace_all,
+                    ),
+                    occurrences=occurrences,
+                )
             self._wait_for_mutation(mutation)
         except LangSmithError as exc:
             logger.exception("Hub edit failed for %r", self._identifier)
             return EditResult(error=f"Hub unavailable: {exc}")
-        return EditResult(path=file_path, occurrences=occurrences)
+        return EditResult(path=file_path, occurrences=mutation.occurrences)
 
     def delete(self, file_path: str) -> DeleteResult:
         """Delete a file or directory by committing its removal from the hub repo.
@@ -428,7 +533,10 @@ class ContextHubBackend(BackendProtocol):
                 to_delete = [key for key in cache if key == base or key.startswith(prefix)]
                 if not to_delete:
                     return DeleteResult(error=f"Error: File '{file_path}' not found")
-                mutation = self._queue_changes_locked(dict.fromkeys(to_delete, None))
+                mutation = self._queue_changes_locked(
+                    dict.fromkeys(to_delete, None),
+                    intent=_DeleteIntent(path=base),
+                )
             self._wait_for_mutation(mutation)
         except LangSmithError as exc:
             logger.exception("Hub delete failed for %r", self._identifier)

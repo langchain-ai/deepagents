@@ -146,19 +146,17 @@ def test_persists_across_backend_instances(backend: ContextHubBackend, identifie
 
 
 def test_parent_commit_conflict_recovers(backend: ContextHubBackend, identifier: str) -> None:
-    """A stale writer reloads the remote tree and reapplies its local delta."""
-    assert backend.write("/shared.md", "v0").error is None
+    """A stale edit preserves non-overlapping remote changes when retried."""
+    assert backend.write("/shared.md", "first\nedit me\n").error is None
 
     stale_client = Client()
     stale = ContextHubBackend(identifier, client=stale_client)
     primed = stale.read("/shared.md")
     assert primed.file_data is not None
-    assert primed.file_data["content"] == "v0"
+    assert primed.file_data["content"] == "first\nedit me\n"
 
-    # `backend` advances the repo.
-    assert backend.write("/shared.md", "v1").error is None
+    assert backend.edit("/shared.md", "first\n", "first\nremote line\n").error is None
 
-    # `stale` retries against the new parent without losing the unrelated update.
     push_calls: list[dict[str, Any]] = []
     original_push = type(stale_client).push_agent
 
@@ -167,8 +165,9 @@ def test_parent_commit_conflict_recovers(backend: ContextHubBackend, identifier:
         return original_push(self, identifier, **kwargs)
 
     with patch.object(type(stale_client), "push_agent", spy_push):
-        result = stale.write("/other.md", "recovered")
+        result = stale.edit("/shared.md", "edit me", "edited")
     assert result.error is None
+    assert result.occurrences == 1
     assert len(push_calls) == 2
     first_push, retry_push = push_calls
     assert first_push["parent_commit"] != retry_push["parent_commit"]
@@ -176,10 +175,7 @@ def test_parent_commit_conflict_recovers(backend: ContextHubBackend, identifier:
     fresh = ContextHubBackend(identifier, client=Client())
     shared = fresh.read("/shared.md")
     assert shared.file_data is not None
-    assert shared.file_data["content"] == "v1"
-    other = fresh.read("/other.md")
-    assert other.file_data is not None
-    assert other.file_data["content"] == "recovered"
+    assert shared.file_data["content"] == "first\nremote line\nedited\n"
 
 
 def test_upload_files_produces_single_commit(identifier: str) -> None:

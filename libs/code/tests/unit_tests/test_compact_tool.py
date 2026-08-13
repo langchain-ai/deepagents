@@ -537,10 +537,10 @@ class TestCLICompactionMiddleware:
         summarization._filter_summary_messages.side_effect = lambda messages: messages
 
         async def sdk_offload(
-            guarded: BackendProtocol, messages: list[AnyMessage]
+            guarded: BackendProtocol, messages: list[AnyMessage], session_id: str
         ) -> str | None:
             return await SummarizationMiddleware._aoffload_to_backend(
-                summarization, guarded, messages
+                summarization, guarded, messages, session_id
             )
 
         summarization._aoffload_to_backend = AsyncMock(side_effect=sdk_offload)

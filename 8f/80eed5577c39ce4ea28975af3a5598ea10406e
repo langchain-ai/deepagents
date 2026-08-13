@@ -1,0 +1,23 @@
+.github/scripts/evals/unified_prep.py
+  s_028bb85c35227a::t_039c960d0fd202 55
+libs/evals/UNIFIED_EVALS.md
+  s_028bb85c35227a::t_0293bd6292e85f 53,80,87,109,139,143
+.github/workflows/harbor.yml
+  s_028bb85c35227a::t_525494a1b4d89b 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "8f80eed5577c39ce4ea28975af3a5598ea10406e",
+  "prompts": {},
+  "sessions": {
+    "s_028bb85c35227a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b66ee054-a627-481e-b371-666c9afef3f2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

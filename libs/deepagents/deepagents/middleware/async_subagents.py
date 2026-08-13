@@ -18,7 +18,7 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -26,6 +26,7 @@ from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langgraph_sdk.schema import Run
 from pydantic import BaseModel, Field
 
+from deepagents.middleware._state import prepare_subagent_state
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -246,6 +247,8 @@ def _build_start_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
     tool_description: str,
+    *,
+    private_state_keys: frozenset[str] = frozenset(),
 ) -> StructuredTool:
     """Build the `start_async_task` tool."""
 
@@ -261,10 +264,12 @@ def _build_start_tool(
         try:
             client = clients.get_sync(subagent_type)
             thread = client.threads.create()
+            subagent_state = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
+            subagent_state["messages"] = [HumanMessage(content=description)]
             run = client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
-                input={"messages": [{"role": "user", "content": description}]},
+                input=subagent_state,
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -301,10 +306,12 @@ def _build_start_tool(
         try:
             client = clients.get_async(subagent_type)
             thread = await client.threads.create()
+            subagent_state = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
+            subagent_state["messages"] = [HumanMessage(content=description)]
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
-                input={"messages": [{"role": "user", "content": description}]},
+                input=subagent_state,
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -814,11 +821,14 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
 def _build_async_subagent_tools(
     agents: list[AsyncSubAgent],
+    *,
+    private_state_keys: frozenset[str] = frozenset(),
 ) -> list[StructuredTool]:
     """Build the async subagent tools from agent specs.
 
     Args:
         agents: List of async subagent specifications.
+        private_state_keys: Parent-state keys that must not be sent to remote subagents.
 
     Returns:
         List of `StructuredTools` for launch, check, update, cancel, and list operations.
@@ -829,7 +839,7 @@ def _build_async_subagent_tools(
     launch_desc = ASYNC_TASK_TOOL_DESCRIPTION.format(available_agents=agents_desc)
 
     return [
-        _build_start_tool(agent_map, clients, launch_desc),
+        _build_start_tool(agent_map, clients, launch_desc, private_state_keys=private_state_keys),
         _build_check_tool(clients),
         _build_update_tool(agent_map, clients),
         _build_cancel_tool(clients),
@@ -859,6 +869,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             optional — omit it to use ASGI transport for local servers.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
+        private_state_keys: State keys marked with `PrivateStateAttr` that
+            must not be forwarded to remote subagents.
 
     Example:
         ```python
@@ -887,6 +899,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         *,
         async_subagents: list[AsyncSubAgent],
         system_prompt: str | None = None,
+        private_state_keys: frozenset[str] | None = None,
     ) -> None:
         """Initialize the `AsyncSubAgentMiddleware`."""
         super().__init__()
@@ -900,13 +913,25 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             msg = f"Duplicate async subagent names: {dupes}"
             raise ValueError(msg)
 
-        self.tools = _build_async_subagent_tools(async_subagents)
+        self._specs = async_subagents
+        self._private_state_keys = private_state_keys or frozenset()
+        self.tools = _build_async_subagent_tools(async_subagents, private_state_keys=self._private_state_keys)
 
         if system_prompt:
             agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
             self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt
+
+    @property
+    def private_state_keys(self) -> frozenset[str]:
+        """State keys stripped from parent state before launching remote subagents."""
+        return self._private_state_keys
+
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
+        self.tools = _build_async_subagent_tools(self._specs, private_state_keys=value)
 
     def wrap_model_call(
         self,

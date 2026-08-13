@@ -395,19 +395,8 @@ _EXCLUDED_STATE_KEYS = {
     "structured_response",
     _FORKED_CONTEXT_KEY,
 }
-"""State keys that are excluded when passing state to subagents and when
-returning updates from subagents.
+"""State keys excluded when passing state to isolated subagents."""
 
-When returning updates:
-
-1. The messages key is handled explicitly to ensure only the final message
-    is included
-2. The todos and `structured_response` keys are excluded as they do not have
-    a defined reducer and no clear meaning for returning them from a subagent
-    to the main agent.
-3. Agent-private fields on middleware state schemas are excluded from both
-    subagent output and subagent inputs.
-"""
 
 
 class TaskToolSchema(BaseModel):
@@ -684,7 +673,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = prepare_subagent_state(result, private_state_keys=private_state_keys)
 
         structured = result.get("structured_response")
         if structured is not None:

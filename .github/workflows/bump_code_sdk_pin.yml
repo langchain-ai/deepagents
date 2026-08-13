@@ -51,7 +51,18 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The clone is anonymous on purpose. The default `persist-credentials`
+      # would store the read-only `GITHUB_TOKEN` as an
+      # `http.https://github.com/.extraheader` credential, and git sends that
+      # `Authorization` header while ignoring the app token embedded in the
+      # push URL — git cannot send two `Authorization` headers, so the config
+      # credential wins and the push runs as `github-actions[bot]` with
+      # `contents: read` and is denied (403). The only write in this job
+      # authenticates explicitly with the app token below, so nothing is
+      # lost; the fetch path in the push step also uses that app-token URL.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
@@ -141,6 +152,18 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+
+          # The push and PR calls authenticate as the Org Membership App
+          # installation, not `github-actions[bot]` (whose `GITHUB_TOKEN` is
+          # `contents: read` here and whose PRs would not trigger
+          # `pull_request` workflows). With checkout credentials no longer
+          # persisted, an empty app token would now degrade these to an
+          # anonymous 403; fail fast instead so the cause is obvious.
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
+            exit 1
+          fi
+
           code_pyproject="libs/code/pyproject.toml"
           lockfile="libs/code/uv.lock"
 

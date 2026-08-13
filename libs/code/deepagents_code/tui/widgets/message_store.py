@@ -217,6 +217,9 @@ class MessageData:
     diff cannot come back holding counts it also declares fictional.
     """
 
+    diff_show_numbers: bool = True
+    """Whether file-relative line numbers are shown in this DIFF message."""
+
     diff_show_caveat: bool = True
     """Whether the DIFF renders its outcome's caveat, or leaves it to its row.
 
@@ -413,6 +416,7 @@ class MessageData:
                     stats=self.diff_stats,
                     outcome=self.diff_outcome,
                     show_caveat=self.diff_show_caveat,
+                    show_numbers=self.diff_show_numbers,
                     id=self.id,
                 )
 
@@ -534,6 +538,7 @@ class MessageData:
                 diff_stats=widget._stats,
                 diff_outcome=widget._outcome,
                 diff_show_caveat=widget._show_caveat,
+                diff_show_numbers=widget._show_numbers,
             )
 
         if isinstance(widget, SummarizationMessage):

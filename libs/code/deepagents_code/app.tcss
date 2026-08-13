@@ -146,8 +146,9 @@ Screen {
 
 /* Status bar */
 #status-bar {
-    height: 1;
+    height: 2;
     dock: bottom;
+    padding: 0;
 }
 
 /* Tool approval widgets */
@@ -368,16 +369,11 @@ ToolCallMessage.-ascii:hover {
 .ask-user-menu .ask-user-question {
     height: auto;
     margin-bottom: 1;
-}
-
-.ask-user-menu .ask-user-question-active {
-    border-left: thick $success;
-    padding-left: 1;
+    padding-left: 2;
 }
 
 .ask-user-menu .ask-user-question-inactive {
     opacity: 0.5;
-    padding-left: 2;
 }
 
 .ask-user-menu .ask-user-question-text {

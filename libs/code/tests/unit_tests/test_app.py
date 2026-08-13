@@ -179,6 +179,34 @@ class TestDisplayModelLabel:
         assert _display_model_label(spec) == expected
 
 
+async def test_context_prefers_checkpoint_total_after_offload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._context_tokens = 200
+    app._tokens_approximate = True
+    monkeypatch.setattr(
+        app, "_get_context_usage_counts", AsyncMock(return_value=(1_000, 200))
+    )
+    push_screen = MagicMock()
+    monkeypatch.setattr(app, "push_screen", push_screen)
+    focus = MagicMock()
+    monkeypatch.setattr(app, "_focus_chat_input_after_refresh", focus)
+
+    with (
+        patch("deepagents_code.app.ContextUsageScreen") as screen_type,
+        patch("deepagents_code.config.settings") as settings,
+    ):
+        settings.model_provider = "anthropic"
+        settings.model_name = "claude-sonnet"
+        settings.model_context_limit = 2_000
+        await app._handle_command("/context")
+
+    assert screen_type.call_args.kwargs["context_tokens"] == 1_000
+    push_screen.call_args.args[1](None)
+    focus.assert_called_once_with()
+
+
 class TestWhatsNewMessage:
     """Tests for the post-upgrade banner content."""
 
@@ -2543,6 +2571,47 @@ class TestAppCSSValidation:
             await pilot.pause()
             # If we get here without exception, CSS is valid
             assert app.is_running
+
+    async def test_chat_input_aligns_with_status_rows(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+
+            input_box = app.query_one("#input-box")
+            session = app.query_one(".status-session")
+            metrics = app.query_one(".status-metrics")
+            assert input_box.region.x == session.region.x == metrics.region.x
+            assert (
+                input_box.region.right == session.region.right == metrics.region.right
+            )
+
+
+class TestCacheStatus:
+    """Tests for active-thread cache metrics forwarded to the status bar."""
+
+    def test_refresh_includes_matching_inflight_input_total(self) -> None:
+        """The hit-rate denominator should cover persisted and in-flight usage."""
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._status_bar = MagicMock()
+        app._thread_stats = SessionStats(
+            input_tokens=1_000,
+            cache_read_tokens=800,
+            cache_write_tokens=100,
+        )
+        app._inflight_turn_stats = SessionStats(
+            input_tokens=500,
+            cache_read_tokens=400,
+            cache_write_tokens=50,
+        )
+        app._inflight_thread_id = app._lc_thread_id
+
+        app._refresh_cache_display()
+
+        app._status_bar.set_cache_tokens.assert_called_once_with(
+            1_200,
+            150,
+            input_tokens=1_500,
+        )
 
 
 class TestThreadCachePrewarm:
@@ -5462,6 +5531,7 @@ class TestMessageQueue:
                 adapter._on_user_visible_output_started
                 == app._on_user_visible_output_started
             )
+            assert adapter._show_diff_line_numbers is app._show_diff_line_numbers
 
     async def test_interrupt_restores_before_cancelling_worker(self) -> None:
         """Restore reads the gate before the worker's cleanup can reset it.
@@ -7358,7 +7428,7 @@ class TestCopyCommand:
             copy_mock.assert_called_once_with(app, markdown)
             assert any(w._content == "/copy" for w in app.query(UserMessage))
             assert any(
-                str(w._content) == "Copied latest assistant message to clipboard."
+                str(w._content) == "Copied latest response to clipboard."
                 for w in app.query(AppMessage)
             )
 
@@ -13564,7 +13634,8 @@ class TestAutoClassifierModelCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "already the default for future sessions" in rendered
+            assert "reviews gated actions from the next turn." in rendered
+            assert "already the default for future sessions" not in rendered
             assert "Press Ctrl+S" not in rendered
             assert "config.toml" not in rendered
 
@@ -15509,6 +15580,84 @@ class TestScrollbarToggle:
         assert result.message is not None
 
 
+class TestDiffLineNumbersCommand:
+    """Tests for the `/line-numbers` toggle and its persistence."""
+
+    def test_save_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving then loading returns the saved value, both directions."""
+        from deepagents_code.app import (
+            _load_show_diff_line_numbers,
+            _save_show_diff_line_numbers_result,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _save_show_diff_line_numbers_result(False).ok is True
+        assert _load_show_diff_line_numbers() is False
+        assert _save_show_diff_line_numbers_result(True).ok is True
+        assert _load_show_diff_line_numbers() is True
+
+    def test_save_preserves_other_ui_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persisting the toggle leaves unrelated `[ui]` keys intact."""
+        import tomllib
+
+        from deepagents_code.app import _save_show_diff_line_numbers_result
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ntheme = "langchain"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _save_show_diff_line_numbers_result(False).ok is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+        assert data["ui"]["show_diff_line_numbers"] is False
+
+    async def test_command_toggles_state_and_toasts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/line-numbers` flips the app and adapter flags and toasts."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._show_diff_line_numbers is True
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/line-numbers")
+                await pilot.pause()
+
+            assert app._show_diff_line_numbers is False
+            assert app._ui_adapter is not None
+            assert app._ui_adapter._show_diff_line_numbers is False
+            notify_mock.assert_called_once()
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers hidden for new diffs."
+            )
+            assert notify_mock.call_args.kwargs.get("severity") == "information"
+            assert notify_mock.call_args.kwargs.get("markup") is False
+
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/line-numbers")
+                await pilot.pause()
+
+            assert app._show_diff_line_numbers is True
+            assert app._ui_adapter._show_diff_line_numbers is True
+            notify_mock.assert_called_once()
+            assert (
+                notify_mock.call_args.args[0]
+                == "Diff line numbers shown for new diffs."
+            )
+
+
 class TestDebugConsoleClickToCopyPreference:
     """Tests for the persisted Debug Console click-to-copy preference."""
 
@@ -17328,6 +17477,7 @@ class TestRequestApprovalBranching:
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = None
         app._auto_mode_eligible = eligible
+        app._show_diff_line_numbers = False
 
         async def fake_mount_before_queued(  # noqa: RUF029
             _container: object, _widget: object
@@ -17354,6 +17504,7 @@ class TestRequestApprovalBranching:
         # flag, so this asserts the value actually crossed the app→widget seam.
         assert app._pending_approval_widget is not None
         assert app._pending_approval_widget._show_auto_option is eligible
+        assert app._pending_approval_widget._show_diff_line_numbers is False
 
 
 class TestDeferredShowApproval:
@@ -18261,6 +18412,37 @@ class TestEditorSlashCommand:
             app._chat_input = MagicMock()
             await app._handle_command("/editor")
         mock.assert_awaited_once()
+
+
+class TestHelpEditorHint:
+    """Tests for the editor name shown by `/help`."""
+
+    async def test_names_configured_editor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", "code --wait")
+        app = DeepAgentsApp(agent=MagicMock())
+        mount_message = AsyncMock()
+
+        with patch.object(app, "_mount_message", mount_message):
+            await app._handle_command("/help")
+
+        assert mount_message.await_count == 2
+        message = mount_message.await_args_list[-1].args[0]
+        assert "Ctrl+X          Open prompt in code" in str(message._content)
+
+    async def test_uses_generic_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        app = DeepAgentsApp(agent=MagicMock())
+        mount_message = AsyncMock()
+
+        with patch.object(app, "_mount_message", mount_message):
+            await app._handle_command("/help")
+
+        assert mount_message.await_count == 2
+        message = mount_message.await_args_list[-1].args[0]
+        assert "Ctrl+X          Open prompt in external editor" in str(message._content)
 
 
 class TestApprovalModeSlashCommands:
@@ -23331,7 +23513,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/copy", "/docs", "/feedback", "/mcp"):
+            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
                 assert app._can_bypass_queue(cmd) is True
 
     async def test_queued_commands_do_not_bypass(self) -> None:
@@ -23339,8 +23521,21 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/help", "/clear", "/tokens"):
+            for cmd in ("/help", "/clear", "/copy", "/tokens"):
                 assert app._can_bypass_queue(cmd) is False
+
+    async def test_copy_queues_while_agent_is_running(self) -> None:
+        """`/copy` waits for the active assistant response to complete."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/copy", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/copy"
 
     async def test_can_bypass_queue_empty_string(self) -> None:
         """Empty string should not bypass the queue."""

@@ -30,6 +30,9 @@
 #   `pull_request` workflows, so the required checks would never run.
 # - Idempotent: if a PR for the target version already exists (or the pin is
 #   already current), the workflow exits without creating a duplicate.
+# - Because this runs unattended, a failure would otherwise be invisible: the
+#   final step files (or refreshes) a tracking issue so a broken bump does
+#   not just stop happening.
 
 name: "Bump Code SDK pin"
 
@@ -50,8 +53,21 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      # For the failure-tracking issue in the final step.
+      issues: write
     steps:
+      # The clone is anonymous on purpose. The default `persist-credentials`
+      # would store the read-only `GITHUB_TOKEN` as an
+      # `http.https://github.com/.extraheader` credential, and git sends that
+      # `Authorization` header while ignoring the app token embedded in the
+      # push URL — git cannot send two `Authorization` headers, so the config
+      # credential wins and the push runs as `github-actions[bot]` with
+      # `contents: read` and is denied (403). The only write in this job
+      # authenticates explicitly with the app token below, so nothing is
+      # lost; the fetch path in the push step also uses that app-token URL.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
@@ -97,12 +113,16 @@ jobs:
           echo "Code pin:    $code_pin"
           echo "Stale:       $stale"
 
-      - name: Log if nothing to do
+      - name: Annotate the run if nothing to do
         # The actual skip is implemented by the `if:` guards on every
-        # subsequent step; this step only emits a log line so the run
-        # history shows why no PR was opened.
+        # subsequent step; this step only explains the skip. Use ::notice::
+        # (not plain echo) so the outcome shows up as a run annotation in
+        # the Actions UI, not just buried in the step log.
         if: steps.versions.outputs.stale != 'true'
-        run: echo "Code SDK pin is not behind the workspace SDK version; nothing to do."
+        env:
+          SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
+          CODE_PIN: ${{ steps.versions.outputs.code_pin }}
+        run: 'echo "::notice::Nothing to do: Code SDK pin $CODE_PIN is not behind the workspace SDK version $SDK_VERSION."'
 
       - name: Skip if PR already open for this version
         id: existing
@@ -141,6 +161,18 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+
+          # The push and PR calls authenticate as the Org Membership App
+          # installation, not `github-actions[bot]` (whose `GITHUB_TOKEN` is
+          # `contents: read` here and whose PRs would not trigger
+          # `pull_request` workflows). With checkout credentials no longer
+          # persisted, an empty app token would now degrade these to an
+          # anonymous 403; fail fast instead so the cause is obvious.
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
+            exit 1
+          fi
+
           code_pyproject="libs/code/pyproject.toml"
           lockfile="libs/code/uv.lock"
 
@@ -216,3 +248,50 @@ jobs:
             --body-file "$body_file")
           echo "Opened SDK pin bump PR: $pr_url"
           echo "::notice::Opened SDK pin bump PR: $pr_url"
+
+      - name: File a tracking issue on failure
+        # A failed dispatch is otherwise invisible until the next Code
+        # release trips the pin gate. Funnel every failure into a single
+        # deduplicated issue so the bump stopping is visible exactly once.
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const marker = '<!-- bump-code-sdk-pin-failure -->';
+            const { owner, repo } = context.repo;
+            const runUrl = process.env.RUN_URL;
+            const title = 'Code SDK pin bump is failing';
+            const body = [
+              marker,
+              '`bump_code_sdk_pin.yml` failed, so the `deepagents` pin in `libs/code/pyproject.toml` is not being bumped automatically after SDK releases.',
+              '',
+              `Most recent failed run: ${runUrl}`,
+              '',
+              'This issue is reused by later failures rather than duplicated. Close it once the workflow is green again.',
+            ].join('\n');
+
+            try {
+              const existing = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', per_page: 100 },
+              );
+              const found = existing.find(
+                i => !i.pull_request && (i.body ?? '').startsWith(marker),
+              );
+              if (found) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: found.number,
+                  body: `Still failing: ${runUrl}`,
+                });
+                core.info(`Commented on existing tracking issue #${found.number}.`);
+              } else {
+                const created = await github.rest.issues.create({ owner, repo, title, body });
+                core.info(`Filed tracking issue #${created.data.number}.`);
+              }
+            } catch (err) {
+              // Never mask the real failure with a reporting failure — the job
+              // is already red for the reason that matters.
+              core.warning(`Could not file the SDK pin bump tracking issue: ${err.message}`);
+            }

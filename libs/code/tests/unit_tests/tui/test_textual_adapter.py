@@ -3152,7 +3152,12 @@ class TestExecuteTaskTextualFileOpDiffs:
         return mounted
 
     @staticmethod
-    async def _run_write(target: Path, content: str) -> list[object]:
+    async def _run_write(
+        target: Path,
+        content: str,
+        *,
+        show_diff_line_numbers: bool = True,
+    ) -> list[object]:
         """Run a tracked `write_file` and return the widgets it mounted.
 
         Returns:
@@ -3183,6 +3188,7 @@ class TestExecuteTaskTextualFileOpDiffs:
                 mount_message=mount_message,
                 update_status=_noop_status,
                 request_approval=_mock_approval,
+                show_diff_line_numbers=show_diff_line_numbers,
             ),
         )
         return mounted
@@ -3278,6 +3284,24 @@ class TestExecuteTaskTextualFileOpDiffs:
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
         assert tool._status == "success"
         assert tool.display is True, "a write_file row was hidden behind its diff"
+
+    async def test_diff_line_number_preference_reaches_live_messages(
+        self, tmp_path: Path
+    ) -> None:
+        """The adapter carries the app preference into mounted diff messages."""
+        target = tmp_path / "a.py"
+        target.write_text("value = 2\n", encoding="utf-8")
+
+        read = _PhasedRead(pre_image=lambda _path: ("value = 1\n", None))
+        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
+            mounted = await self._run_write(
+                target,
+                "value = 2\n",
+                show_diff_line_numbers=False,
+            )
+
+        diff = next(message for message in mounted if isinstance(message, DiffMessage))
+        assert diff._show_numbers is False
 
     async def test_a_write_file_caveat_is_kept_out_of_its_group(
         self, tmp_path: Path

@@ -345,3 +345,54 @@ class TestInstalledDebugLogPath:
             # suite with DEEPAGENTS_CODE_DEBUG exported in their shell).
             with patch.dict(os.environ, {}, clear=True):
                 importlib.reload(deepagents_code)
+
+
+class TestSweepDebugHandlers:
+    """Tests for the conftest sweep that closes leaked debug handlers.
+
+    The negative case is the one worth pinning: every other test in this file
+    installs its handlers inside the test body, i.e. after the setup-only
+    `_close_leaked_debug_handlers` fixture has already run, so none of them
+    would notice if the sweep started closing handlers it did not own.
+    """
+
+    def test_leaves_untagged_file_handler_attached_and_open(
+        self, tmp_path, sweep_debug_handlers
+    ) -> None:
+        """An unrelated `FileHandler` must survive the sweep untouched."""
+        logger = logging.getLogger("test.sweep.untagged")
+        foreign = logging.FileHandler(tmp_path / "foreign.log")
+        logger.addHandler(foreign)
+        try:
+            sweep_debug_handlers()
+
+            assert foreign in logger.handlers
+            assert foreign.stream is not None
+            assert not foreign.stream.closed
+        finally:
+            logger.removeHandler(foreign)
+            foreign.close()
+
+    def test_closes_and_detaches_tagged_file_handler(
+        self, tmp_path, sweep_debug_handlers
+    ) -> None:
+        """A `configure_debug_logging` handler is removed and closed."""
+        logger = logging.getLogger("test.sweep.tagged")
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_FILE": str(tmp_path / "debug.log"),
+            },
+        ):
+            configure_debug_logging(logger)
+        tagged = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+        assert tagged, "configure_debug_logging installed no FileHandler"
+
+        sweep_debug_handlers()
+
+        assert not [h for h in logger.handlers if isinstance(h, logging.FileHandler)], (
+            "sweep left a tagged handler attached"
+        )
+        for handler in tagged:
+            assert handler.stream is None or handler.stream.closed

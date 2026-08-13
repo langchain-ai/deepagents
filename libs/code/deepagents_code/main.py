@@ -5013,53 +5013,38 @@ def cli_main() -> None:
             timeout = getattr(args, "timeout", None)
             try:
                 exit_code = asyncio.run(
-                    asyncio.wait_for(
-                        run_non_interactive(
-                            message=args.non_interactive_message,
-                            assistant_id=assistant_id,
-                            model_name=getattr(args, "model", None),
-                            model_params=model_params,
-                            profile_override=profile_override,
-                            sandbox_type=args.sandbox,
-                            sandbox_id=args.sandbox_id,
-                            sandbox_snapshot_name=args.sandbox_snapshot_name,
-                            sandbox_setup=getattr(args, "sandbox_setup", None),
-                            initial_skill=getattr(args, "initial_skill", None),
-                            startup_cmd=getattr(args, "startup_cmd", None),
-                            quiet=args.quiet,
-                            stream=not args.no_stream,
-                            mcp_config_path=getattr(args, "mcp_config", None),
-                            no_mcp=getattr(args, "no_mcp", False),
-                            trust_project_mcp=getattr(args, "trust_project_mcp", False),
-                            trust_project_hooks=getattr(
-                                args, "trust_project_hooks", False
-                            ),
-                            enable_interpreter=enable_interpreter,
-                            interpreter_ptc=interpreter_ptc,
-                            allow_fs_tools=allow_fs_tools,
-                            max_turns=getattr(args, "max_turns", None),
-                            rubric=rubric_text,
-                            rubric_model=getattr(args, "rubric_model", None),
-                            rubric_max_iterations=getattr(
-                                args, "rubric_max_iterations", None
-                            ),
-                            recursion_limit=getattr(args, "recursion_limit", None),
+                    run_non_interactive(
+                        message=args.non_interactive_message,
+                        assistant_id=assistant_id,
+                        model_name=getattr(args, "model", None),
+                        model_params=model_params,
+                        profile_override=profile_override,
+                        sandbox_type=args.sandbox,
+                        sandbox_id=args.sandbox_id,
+                        sandbox_snapshot_name=args.sandbox_snapshot_name,
+                        sandbox_setup=getattr(args, "sandbox_setup", None),
+                        initial_skill=getattr(args, "initial_skill", None),
+                        startup_cmd=getattr(args, "startup_cmd", None),
+                        quiet=args.quiet,
+                        stream=not args.no_stream,
+                        mcp_config_path=getattr(args, "mcp_config", None),
+                        no_mcp=getattr(args, "no_mcp", False),
+                        trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                        trust_project_hooks=getattr(args, "trust_project_hooks", False),
+                        enable_interpreter=enable_interpreter,
+                        interpreter_ptc=interpreter_ptc,
+                        allow_fs_tools=allow_fs_tools,
+                        max_turns=getattr(args, "max_turns", None),
+                        rubric=rubric_text,
+                        rubric_model=getattr(args, "rubric_model", None),
+                        rubric_max_iterations=getattr(
+                            args, "rubric_max_iterations", None
                         ),
-                        timeout=timeout,
+                        recursion_limit=getattr(args, "recursion_limit", None),
+                        output_format=output_format,
+                        time_limit=timeout,
                     )
                 )
-            except TimeoutError:
-                # `asyncio.wait_for` raises `asyncio.TimeoutError`, which is
-                # an alias of the builtin on Python >= 3.11 (the project's
-                # minimum).
-                from rich.console import Console as _Console
-
-                _Console(stderr=True).print(
-                    f"[bold red]Error:[/bold red] agent timed out after "
-                    f"{timeout}s. Retry with a larger --timeout, or use "
-                    "--max-turns for a turn-count limit."
-                )
-                sys.exit(124)
             except KeyboardInterrupt:
                 # `asyncio.run` re-raises `KeyboardInterrupt` past the inner
                 # `run_non_interactive` handler when the signal hits during

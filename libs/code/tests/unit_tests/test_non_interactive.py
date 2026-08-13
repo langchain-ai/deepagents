@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import logging
 import signal
 import sys
@@ -32,6 +33,7 @@ from deepagents_code.client.non_interactive import (
     InFlightToolCall,
     StreamState,
     ThreadUrlLookupState,
+    _await_with_time_limit,
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _compaction_result_id,
@@ -858,6 +860,180 @@ class TestNoStreamMode:
         text_writes = [w for w in stdout_writes if w != "\n"]
         assert len(text_writes) == 1
         assert text_writes[0] == "Hello world"
+
+    async def test_json_capture_returns_response_without_writing_text(self) -> None:
+        """Machine output must capture the response before JSON serialization."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "review complete"}]
+        agent = MagicMock()
+        agent.astream = MagicMock(
+            return_value=_async_iter([("", "messages", (ai_msg, {}))])
+        )
+        stdout_buf = io.StringIO()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch.object(sys, "stdout", stdout_buf),
+        ):
+            response = await _run_agent_loop(
+                agent,
+                "task",
+                {"configurable": {"thread_id": "t1"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+                stream=False,
+                write_response=False,
+            )
+
+        assert response == "review complete"
+        assert stdout_buf.getvalue() == ""
+
+
+class TestJsonOutput:
+    """Tests for the stable headless machine-output contract."""
+
+    @staticmethod
+    async def _run(
+        loop_effect: str | BaseException | None,
+        *,
+        max_turns: int | None = None,
+        time_limit: float | None = None,
+    ) -> tuple[int, dict[str, Any], str]:
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+
+        async def fake_loop(*_args: Any, **_kwargs: Any) -> str:
+            if loop_effect is None:
+                await asyncio.sleep(1)
+                return "too late"
+            if isinstance(loop_effect, BaseException):
+                raise loop_effect
+            return loop_effect
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._run_agent_loop",
+                new=fake_loop,
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch.object(sys, "stdout", stdout_buf),
+            patch.object(sys, "stderr", stderr_buf),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+            exit_code = await run_non_interactive(
+                message="task",
+                output_format="json",
+                max_turns=max_turns,
+                time_limit=time_limit,
+            )
+
+        return exit_code, json.loads(stdout_buf.getvalue()), stderr_buf.getvalue()
+
+    async def test_success_is_one_json_document(self) -> None:
+        exit_code, payload, _stderr = await self._run("review complete")
+
+        assert exit_code == 0
+        assert payload == {
+            "schema_version": 1,
+            "command": "run",
+            "data": {
+                "status": "success",
+                "response": "review complete",
+                "exit_code": 0,
+                "termination_reason": "completed",
+                "error": None,
+            },
+        }
+
+    async def test_agent_error_is_machine_readable(self) -> None:
+        exit_code, payload, _stderr = await self._run(ValueError("bad [input]"))
+
+        assert exit_code == 1
+        assert payload["data"] == {
+            "status": "error",
+            "response": "",
+            "exit_code": 1,
+            "termination_reason": "agent_error",
+            "error": {"type": "ValueError", "message": "bad [input]"},
+        }
+
+    async def test_max_turns_is_distinct_from_timeout(self) -> None:
+        error = HITLIterationLimitError("Exceeded 3 agentic turns (--max-turns 3).")
+        exit_code, payload, _stderr = await self._run(error, max_turns=3)
+
+        assert exit_code == 124
+        assert payload["data"]["termination_reason"] == "max_turns"
+        assert payload["data"]["max_turns"] == 3
+
+    async def test_timeout_is_machine_readable(self) -> None:
+        exit_code, payload, _stderr = await self._run(None, time_limit=0.01)
+
+        assert exit_code == 124
+        assert payload["data"]["termination_reason"] == "timeout"
+        assert payload["data"]["timeout_seconds"] == pytest.approx(0.01)
+        assert payload["data"]["error"] == {
+            "type": "HeadlessTimeoutError",
+            "message": "agent timed out after 0.01s",
+        }
+
+    async def test_agent_timeout_error_is_not_wall_timeout(self) -> None:
+        async def raises_from_agent() -> None:
+            await asyncio.sleep(0)
+            msg = "provider timeout"
+            raise TimeoutError(msg)
+
+        with pytest.raises(TimeoutError, match="provider timeout"):
+            await _await_with_time_limit(raises_from_agent(), 1)
+
+    async def test_missing_skill_is_machine_readable(self) -> None:
+        stdout_buf = io.StringIO()
+        with (
+            patch(
+                "deepagents_code.skills.invocation.discover_skills_and_roots",
+                return_value=([], []),
+            ),
+            patch.object(sys, "stdout", stdout_buf),
+        ):
+            exit_code = await run_non_interactive(
+                message="task",
+                initial_skill="missing",
+                output_format="json",
+            )
+
+        payload = json.loads(stdout_buf.getvalue())
+        assert exit_code == 1
+        assert payload["data"]["termination_reason"] == "configuration_error"
+        assert payload["data"]["error"] == {
+            "type": "SkillNotFoundError",
+            "message": "Skill not found: missing",
+        }
 
     async def test_stream_mode_writes_incrementally(self) -> None:
         """Default stream mode should write text chunks as they arrive."""

@@ -21,6 +21,7 @@ agent's response text.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sys
 import threading
@@ -77,6 +78,7 @@ from deepagents_code.hooks import (
     drain_pending_hooks,
 )
 from deepagents_code.model_config import ModelConfigError
+from deepagents_code.output import OutputFormat, write_json
 from deepagents_code.sessions import generate_thread_id
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
@@ -111,6 +113,14 @@ logger = logging.getLogger(__name__)
 
 class HITLIterationLimitError(RuntimeError):
     """Raised when the HITL interrupt loop exceeds `_MAX_HITL_ITERATIONS` rounds."""
+
+
+class SkillNotFoundError(RuntimeError):
+    """Raised when a requested headless skill cannot be discovered."""
+
+
+class HeadlessTimeoutError(TimeoutError):
+    """Raised when the configured headless wall-clock limit expires."""
 
 
 def _raise_hitl_iteration_limit(message: str) -> NoReturn:
@@ -1401,6 +1411,7 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    write_response: bool = True,
     message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
@@ -1410,7 +1421,7 @@ async def _run_agent_loop(
     hooks: HooksManager | None = None,
     approval_mode: ApprovalMode | None = None,
     prompt_id: UUID | None = None,
-) -> None:
+) -> str:
     """Run the agent and handle HITL interrupts until the task completes.
 
     The loop is capped at `max_turns` when set,
@@ -1428,6 +1439,8 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        write_response: Write the accumulated response to stdout. Machine-output
+            callers disable this so stdout can contain one JSON document.
         message_kwargs: Extra fields merged into the initial HumanMessage
             dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
@@ -1450,6 +1463,9 @@ async def _run_agent_loop(
         hooks: Preloaded Hooks v2 coordinator; one is built when omitted.
         approval_mode: Effective client approval policy. Defaults to manual.
         prompt_id: Stable identifier for the headless turn.
+
+    Returns:
+        The complete text response accumulated from the agent stream.
 
     Raises:
         ClientHookStopError: If a client-owned hook stops processing.
@@ -1680,9 +1696,10 @@ async def _run_agent_loop(
 
     wall_time = time.monotonic() - start_time
 
-    if state.full_response:
+    response = "".join(state.full_response)
+    if response and write_response:
         if not state.stream:
-            _write_text("".join(state.full_response))
+            _write_text(response)
         _write_newline()
 
     if not quiet:
@@ -1716,6 +1733,83 @@ async def _run_agent_loop(
         await dispatch_hook("session.end", {"thread_id": thread_id})
     if notification_stop is not None:
         raise notification_stop
+    return response
+
+
+def _write_run_result(
+    *,
+    status: str,
+    response: str,
+    exit_code: int,
+    termination_reason: str,
+    error: BaseException | None = None,
+    max_turns: int | None = None,
+    timeout_seconds: float | None = None,
+) -> None:
+    """Write one stable machine-readable result for a headless run."""
+    data: dict[str, Any] = {
+        "status": status,
+        "response": response,
+        "exit_code": exit_code,
+        "termination_reason": termination_reason,
+        "error": (
+            {"type": type(error).__name__, "message": str(error)}
+            if error is not None
+            else None
+        ),
+    }
+    if max_turns is not None:
+        data["max_turns"] = max_turns
+    if timeout_seconds is not None:
+        data["timeout_seconds"] = timeout_seconds
+    write_json("run", data)
+
+
+def _return_configuration_error(
+    console: Console,
+    error: BaseException,
+    *,
+    json_output: bool,
+) -> int:
+    """Render a startup failure and preserve the JSON stdout contract.
+
+    Returns:
+        Exit code `1` for the configuration failure.
+    """
+    console.print(f"[bold red]Error:[/bold red] {escape_markup(str(error))}")
+    if json_output:
+        _write_run_result(
+            status="error",
+            response="",
+            exit_code=1,
+            termination_reason="configuration_error",
+            error=error,
+        )
+    return 1
+
+
+async def _await_with_time_limit(coro: Any, limit: float | None) -> Any:  # noqa: ANN401
+    """Await a headless run while distinguishing its errors from wall timeout.
+
+    Returns:
+        The coroutine's result.
+
+    Raises:
+        HeadlessTimeoutError: If the wall-clock limit expires.
+    """
+    if limit is None:
+        return await coro
+
+    task = asyncio.create_task(coro)
+    done, _pending = await asyncio.wait({task}, timeout=limit)
+    if task in done:
+        return await task
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    msg = f"agent timed out after {limit}s"
+    raise HeadlessTimeoutError(msg)
 
 
 def _build_non_interactive_header(
@@ -1871,6 +1965,8 @@ async def run_non_interactive(
     rubric_max_iterations: int | None = None,
     recursion_limit: int | None = None,
     trust_project_hooks: bool = False,
+    output_format: OutputFormat = "text",
+    time_limit: float | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -1952,6 +2048,9 @@ async def run_non_interactive(
 
             Defaults to `False` so untrusted repositories cannot execute hook
             commands without an explicit `--trust-project-hooks` opt-in.
+        output_format: Output mode. JSON mode emits exactly one result document
+            on stdout and routes human-readable diagnostics to stderr.
+        time_limit: Optional wall-clock limit for the agent execution.
 
     Returns:
         Exit code: 0 for success or an intentional hook stop, 1 for error, 124
@@ -1962,7 +2061,9 @@ async def run_non_interactive(
 
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
-    console = Console(stderr=True) if quiet else Console()
+    json_output = output_format == "json"
+    effective_quiet = quiet or json_output
+    console = Console(stderr=True) if effective_quiet else Console()
 
     if startup_cmd and startup_cmd.strip():
         await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
@@ -1998,26 +2099,23 @@ async def run_non_interactive(
             skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
             skill = next((s for s in skills if s["name"] == normalized_skill), None)
         except OSError as e:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not load skill: {escape_markup(normalized_skill)}. "
-                f"Filesystem error: {escape_markup(str(e))}"
+            error = OSError(
+                f"Could not load skill: {normalized_skill}. Filesystem error: {e}"
             )
-            return 1
+            return _return_configuration_error(console, error, json_output=json_output)
         except Exception as e:  # noqa: BLE001
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Error loading skill: {escape_markup(normalized_skill)}. "
-                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            error = RuntimeError(
+                f"Error loading skill: {normalized_skill}. "
+                f"Unexpected error: {type(e).__name__}: {e}"
             )
-            return 1
+            return _return_configuration_error(console, error, json_output=json_output)
 
         if skill is None:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Skill not found: {escape_markup(normalized_skill)}"
+            return _return_configuration_error(
+                console,
+                SkillNotFoundError(f"Skill not found: {normalized_skill}"),
+                json_output=json_output,
             )
-            return 1
 
         try:
             content = load_skill_content(
@@ -2025,39 +2123,32 @@ async def run_non_interactive(
                 allowed_roots=allowed_roots,
             )
         except PermissionError as e:
-            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(e))}")
-            return 1
+            return _return_configuration_error(console, e, json_output=json_output)
         except OSError as e:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not load skill: {escape_markup(normalized_skill)}. "
-                f"Filesystem error: {escape_markup(str(e))}"
+            error = OSError(
+                f"Could not load skill: {normalized_skill}. Filesystem error: {e}"
             )
-            return 1
+            return _return_configuration_error(console, error, json_output=json_output)
         except Exception as e:  # noqa: BLE001
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Error loading skill: {escape_markup(normalized_skill)}. "
-                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            error = RuntimeError(
+                f"Error loading skill: {normalized_skill}. "
+                f"Unexpected error: {type(e).__name__}: {e}"
             )
-            return 1
+            return _return_configuration_error(console, error, json_output=json_output)
         if content is None:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not read content for skill: {escape_markup(normalized_skill)}. "
+            error = RuntimeError(
+                f"Could not read content for skill: {normalized_skill}. "
                 "Check that the SKILL.md file exists, is readable, "
                 "and is saved as UTF-8."
             )
-            return 1
+            return _return_configuration_error(console, error, json_output=json_output)
 
         if not content.strip():
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Skill '{escape_markup(normalized_skill)}' has an empty "
-                "SKILL.md file. "
+            error = RuntimeError(
+                f"Skill '{normalized_skill}' has an empty SKILL.md file. "
                 "Add instructions to the file before invoking."
             )
-            return 1
+            return _return_configuration_error(console, error, json_output=json_output)
 
         envelope = build_skill_invocation_envelope(skill, content, message)
         message = envelope.prompt
@@ -2070,8 +2161,7 @@ async def run_non_interactive(
             profile_overrides=profile_override,
         )
     except ModelConfigError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        return 1
+        return _return_configuration_error(console, e, json_output=json_output)
 
     result.apply_to_settings()
 
@@ -2220,30 +2310,64 @@ async def run_non_interactive(
 
             file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
 
-            await _run_agent_loop(
-                agent,
-                message,
-                config,
-                console,
-                file_op_tracker,
-                quiet=quiet,
-                stream=stream,
-                message_kwargs=message_kwargs,
-                thread_url_lookup=thread_url_lookup,
-                max_turns=max_turns,
-                rubric=rubric,
-                show_rubric_iterations=rubric_max_iterations is not None,
-                trust_project_hooks=trust_project_hooks,
-                hooks=hooks,
-                approval_mode=approval_mode,
-                prompt_id=turn_id,
+            response = await _await_with_time_limit(
+                _run_agent_loop(
+                    agent,
+                    message,
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=effective_quiet,
+                    stream=False if json_output else stream,
+                    write_response=not json_output,
+                    message_kwargs=message_kwargs,
+                    thread_url_lookup=thread_url_lookup,
+                    max_turns=max_turns,
+                    rubric=rubric,
+                    show_rubric_iterations=rubric_max_iterations is not None,
+                    trust_project_hooks=trust_project_hooks,
+                    hooks=hooks,
+                    approval_mode=approval_mode,
+                    prompt_id=turn_id,
+                ),
+                time_limit,
             )
 
+    except HeadlessTimeoutError as e:
+        console.print(
+            f"\n[red]Error: {escape_markup(str(e))}[/red] Retry with a larger "
+            "--timeout, or use --max-turns for a turn-count limit."
+        )
+        if json_output:
+            _write_run_result(
+                status="error",
+                response="",
+                exit_code=124,
+                termination_reason="timeout",
+                error=e,
+                timeout_seconds=time_limit,
+            )
+        return 124
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
+        if json_output:
+            _write_run_result(
+                status="error",
+                response="",
+                exit_code=130,
+                termination_reason="interrupted",
+                error=KeyboardInterrupt(),
+            )
         return 130
     except ClientHookStopError as exc:
         console.print(Text(f"\nOperation stopped by hook: {exc}", style="yellow"))
+        if json_output:
+            _write_run_result(
+                status="success",
+                response="",
+                exit_code=0,
+                termination_reason="hook_stop",
+            )
         return 0
     except HITLIterationLimitError as e:
         console.print(f"\n[red]{escape_markup(str(e))}[/red]")
@@ -2254,10 +2378,27 @@ async def run_non_interactive(
         )
         # Dedicated exit code (matches GNU `timeout`) so CI can distinguish
         # a turn-budget hit from a generic failure that also returns 1.
+        if json_output:
+            _write_run_result(
+                status="error",
+                response="",
+                exit_code=124,
+                termination_reason="max_turns",
+                error=e,
+                max_turns=max_turns,
+            )
         return 124
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
         console.print(f"\n[red]Error: {escape_markup(str(e))}[/red]")
+        if json_output:
+            _write_run_result(
+                status="error",
+                response="",
+                exit_code=1,
+                termination_reason="agent_error",
+                error=e,
+            )
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
@@ -2265,8 +2406,23 @@ async def run_non_interactive(
             f"\n[red]Unexpected error ({type(e).__name__}): "
             f"{escape_markup(str(e))}[/red]"
         )
+        if json_output:
+            _write_run_result(
+                status="error",
+                response="",
+                exit_code=1,
+                termination_reason="agent_error",
+                error=e,
+            )
         return 1
     else:
+        if json_output:
+            _write_run_result(
+                status="success",
+                response=response,
+                exit_code=0,
+                termination_reason="completed",
+            )
         return 0
     finally:
         # Fire-and-forget hooks (tool.use/tool.result) run as background tasks;

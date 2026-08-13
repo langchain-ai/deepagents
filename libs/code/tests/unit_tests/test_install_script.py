@@ -357,12 +357,23 @@ def _invoke_interactive(
         text=True,
     )
     os.close(secondary)
-    for line in answers:
-        payload = b"\x04" if line is _CTRL_D else f"{line}\n".encode()
-        os.write(primary, payload)
-    output = proc.stdout.read() if proc.stdout else ""
-    proc.wait(timeout=30)
-    os.close(primary)
+    try:
+        for line in answers:
+            payload = b"\x04" if line is _CTRL_D else f"{line}\n".encode()
+            os.write(primary, payload)
+        assert proc.stdout is not None
+        output = proc.stdout.read()
+        proc.wait(timeout=30)
+    finally:
+        # A `TimeoutExpired` here would otherwise leak the pipe and the pty and
+        # orphan the child — precisely when a cascade of unraisable warnings
+        # would obscure the real failure.
+        if proc.stdout is not None:
+            proc.stdout.close()
+        os.close(primary)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
     return proc.returncode, clean, tmp_path / "uv-args.txt"
 
@@ -5345,10 +5356,20 @@ def _invoke_with_local_dcode_not_on_path(
             text=True,
         )
         os.close(secondary)
-        os.write(primary, f"{answer}\n".encode())
-        output = proc.stdout.read() if proc.stdout else ""
-        proc.wait(timeout=30)
-        os.close(primary)
+        try:
+            os.write(primary, f"{answer}\n".encode())
+            assert proc.stdout is not None
+            output = proc.stdout.read()
+            proc.wait(timeout=30)
+        finally:
+            # See `_invoke_interactive`: the timeout path must not leak the
+            # pipe and pty or orphan the child.
+            if proc.stdout is not None:
+                proc.stdout.close()
+            os.close(primary)
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
         clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
         return subprocess.CompletedProcess(
             args=["bash", str(SCRIPT)],

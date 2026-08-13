@@ -4426,6 +4426,36 @@ api_key_env = "FIREWORKS_API_KEY"
         assert kwargs["base_url"] == "https://api.fireworks.ai/inference/v1"
         assert kwargs["api_key"] == "test-key"
 
+    def test_builtin_base_url_supplies_endpoint_for_inworld(
+        self, tmp_path: Path
+    ) -> None:
+        """Returns the built-in base_url when config declares none."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"INWORLD_API_KEY": "test-key"}, clear=True),
+        ):
+            kwargs = _get_provider_kwargs("inworld")
+
+        assert kwargs["base_url"] == "https://api.inworld.ai/v1"
+        assert kwargs["api_key"] == "test-key"
+
+    def test_config_base_url_outranks_builtin_default(self, tmp_path: Path) -> None:
+        """A configured endpoint wins over the built-in default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.inworld]
+base_url = "https://proxy.internal/v1"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            kwargs = _get_provider_kwargs("inworld")
+
+        assert kwargs["base_url"] == "https://proxy.internal/v1"
+
     def test_returns_api_key_from_config(self, tmp_path: Path) -> None:
         """Returns resolved api_key from config-file api_key_env."""
         config_path = tmp_path / "config.toml"

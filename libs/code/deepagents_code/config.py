@@ -4591,11 +4591,11 @@ def _get_provider_kwargs(
     Returns:
         Dictionary of provider-specific kwargs.
     """
-    from deepagents_code.model_config import ModelConfig
+    from deepagents_code.model_config import BUILTIN_PROVIDER_BASE_URLS, ModelConfig
 
     config = ModelConfig.load()
     result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
-    base_url = config.get_base_url(provider)
+    base_url = config.get_base_url(provider) or BUILTIN_PROVIDER_BASE_URLS.get(provider)
     if base_url:
         result["base_url"] = base_url
     from deepagents_code.model_config import (
@@ -5187,6 +5187,18 @@ def create_model(
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:
+        from deepagents_code.model_config import discovered_model_profile
+
+        # Discovery sits below config.toml so a hand-written profile still wins.
+        catalog_profile = discovered_model_profile(provider, model_name)
+        if catalog_profile:
+            _apply_profile_overrides(
+                model,
+                catalog_profile,
+                model_name,
+                label=f"{provider} catalog discovery",
+            )
+
         config_profile_overrides = config.get_profile_overrides(
             provider, model_name=model_name
         )

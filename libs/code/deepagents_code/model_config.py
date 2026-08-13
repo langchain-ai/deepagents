@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 import tomli_w
 
-from deepagents_code import _env_vars, auth_store
+from deepagents_code import _env_vars, auth_store, inworld_catalog
 from deepagents_code._git import find_git_common_dir
 
 if TYPE_CHECKING:
@@ -599,6 +599,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "groq": "GROQ_API_KEY",
     "huggingface": "HUGGINGFACEHUB_API_TOKEN",
     "ibm": "WATSONX_APIKEY",
+    "inworld": "INWORLD_API_KEY",
     "litellm": "LITELLM_API_KEY",
     "meta": "MODEL_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
@@ -689,6 +690,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "google_genai": "max_retries",
     "google_vertexai": "max_retries",
     "groq": "max_retries",
+    "inworld": "max_retries",
     "litellm": "max_retries",
     "meta": "max_retries",
     "mistralai": "max_retries",
@@ -736,6 +738,8 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #   huggingface   the integration and huggingface_hub both read
     #                 HF_INFERENCE_ENDPOINT.
     #   ibm           ChatWatsonx reads WATSONX_URL.
+    #   inworld       no integration or SDK reads this name; deepagents itself
+    #                 resolves INWORLD_BASE_URL and passes it as base_url.
     #   meta          ChatMetaModel reads MODEL_API_BASE.
     #   mistralai     ChatMistralAI reads MISTRAL_BASE_URL.
     #   nvidia        ChatNVIDIA reads NVIDIA_BASE_URL.
@@ -747,8 +751,8 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #   together      ChatTogether reads TOGETHER_API_BASE (alias base_url).
     #   xai           ChatXAI reads XAI_API_BASE (alias base_url).
     #
-    # OpenAI-compatible providers (deepseek, openrouter, together, xai, baseten)
-    # sit on the openai SDK, whose only base-URL env var is the shared
+    # OpenAI-compatible providers (deepseek, openrouter, together, xai, baseten,
+    # inworld) sit on the openai SDK, whose only base-URL env var is the shared
     # OPENAI_BASE_URL. That name is intentionally NOT listed under those
     # providers: writing or clearing it under another provider's name would
     # clobber the user's real OpenAI endpoint. Each is listed above under its own
@@ -770,6 +774,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     "groq": ("GROQ_BASE_URL", "GROQ_API_BASE"),
     "huggingface": ("HF_INFERENCE_ENDPOINT",),
     "ibm": ("WATSONX_URL",),
+    "inworld": ("INWORLD_BASE_URL",),
     "meta": ("MODEL_API_BASE",),
     "mistralai": ("MISTRAL_BASE_URL",),
     "nvidia": ("NVIDIA_BASE_URL",),
@@ -832,6 +837,30 @@ PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 
 PROVIDER_CUSTOM_HEADERS_ENV: dict[str, str] = {"anthropic": "ANTHROPIC_CUSTOM_HEADERS"}
 """Provider SDK env vars that inject custom request headers (e.g. gateway auth)."""
+
+BUILTIN_PROVIDER_CLASS_PATHS: dict[str, str] = {
+    inworld_catalog.PROVIDER: "langchain_openai:ChatOpenAI",
+}
+"""Chat model classes for providers `init_chat_model` cannot resolve on its own.
+
+`init_chat_model` dispatches on LangChain's provider registry, so a provider
+with no integration package is unroutable through it. These providers are
+OpenAI-compatible, so they need only a class to construct and (via
+`BUILTIN_PROVIDER_BASE_URLS`) an endpoint to point it at.
+
+Read through `ModelConfig.get_class_path`, so a user's `class_path` still wins.
+"""
+
+BUILTIN_PROVIDER_BASE_URLS: dict[str, str] = {
+    inworld_catalog.PROVIDER: inworld_catalog.DEFAULT_BASE_URL,
+}
+"""Default endpoints for providers whose chat model class has none of its own.
+
+Without these, the generic class from `BUILTIN_PROVIDER_CLASS_PATHS` would
+target its own vendor's API. Applied by `_get_provider_kwargs` only when
+nothing else resolves an endpoint, so `config.toml`, the env vars, and a
+`/auth`-stored endpoint all take precedence.
+"""
 
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 """Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
@@ -899,6 +928,7 @@ def clear_caches() -> None:
     _ollama_installed_models_cache.clear()
     _ollama_unreachable_endpoints.clear()
     _ollama_model_profiles_cache.clear()
+    inworld_catalog.clear_cache()
     _profiles_cache = None
     _profiles_override_cache = None
     invalidate_thread_config_cache()
@@ -1187,6 +1217,16 @@ def get_available_models() -> dict[str, list[str]]:
                 endpoint or OLLAMA_DEFAULT_BASE_URL,
             )
 
+    # Inworld ships no LangChain package, so its lineup comes from the router's
+    # own catalog. Cached with the rest of `available`; `clear_caches()` resets.
+    inworld_models = _get_inworld_model_profiles(config)
+    if inworld_models:
+        available[inworld_catalog.PROVIDER] = list(
+            dict.fromkeys(
+                [*available.get(inworld_catalog.PROVIDER, []), *inworld_models]
+            )
+        )
+
     # Mirror the curated `CODEX_MODELS` subset of `openai` models under a
     # dedicated `openai_codex` provider entry so the switcher offers them under
     # their own ChatGPT-OAuth auth context. Eligibility is filtered by the
@@ -1424,6 +1464,19 @@ def get_model_profiles(
                 result[spec] = _build_entry(base, overrides, cli_override)
                 seen_specs.add(spec)
 
+    # The catalog carries per-model capabilities, so discovered entries land
+    # with full profiles rather than the "no capability profile" fallback.
+    for model_name, profile in _get_inworld_model_profiles(config).items():
+        spec = f"{inworld_catalog.PROVIDER}:{model_name}"
+        existing = result.get(spec)
+        base = dict(existing["profile"]) if existing is not None else {}
+        base.update(profile)
+        overrides = config.get_profile_overrides(
+            inworld_catalog.PROVIDER, model_name=model_name
+        )
+        result[spec] = _build_entry(base, overrides, cli_override)
+        seen_specs.add(spec)
+
     frozen = MappingProxyType(result)
     if cli_override is None:
         _profiles_cache = frozen
@@ -1464,6 +1517,58 @@ def _is_local_endpoint(url: object) -> bool:
     except ValueError:
         return False
     return parsed.hostname in _LOCAL_HOSTNAMES
+
+
+def _get_inworld_model_profiles(config: ModelConfig) -> dict[str, dict[str, Any]]:
+    """Return Inworld router models discovered from its catalog.
+
+    Only tool-calling models are returned, matching how registry-derived
+    providers are filtered -- a model that cannot call tools cannot drive the
+    agent. The probe is skipped when the provider is disabled, under
+    `DEEPAGENTS_CODE_OFFLINE`, or with no credential.
+
+    Args:
+        config: Loaded model configuration.
+
+    Returns:
+        Mapping of model id to profile fields; empty when the provider is
+            disabled.
+    """
+    provider = inworld_catalog.PROVIDER
+    if not config.is_provider_enabled(provider):
+        return {}
+    api_key = (
+        None
+        if _env_vars.is_env_truthy(_env_vars.OFFLINE)
+        else resolve_provider_credential(provider)
+    )
+    discovered = inworld_catalog.model_profiles(config.get_base_url(provider), api_key)
+    return {
+        model: profile
+        for model, profile in discovered.items()
+        if profile.get("tool_calling", False)
+    }
+
+
+def discovered_model_profile(provider: str, model_name: str) -> dict[str, Any]:
+    """Return catalog-discovered profile fields for one model.
+
+    Providers routed through a generic class carry no upstream profile data, so
+    a freshly constructed model has no context length or capability flags.
+    Applying discovery at construction is what gives the session a token budget
+    to compact against. Reads the cache the selector already populated.
+
+    Args:
+        provider: Resolved provider name.
+        model_name: Model identifier within that provider.
+
+    Returns:
+        Profile fields for the model, or an empty mapping when the provider
+            has no catalog or the model is absent from it.
+    """
+    if provider != inworld_catalog.PROVIDER:
+        return {}
+    return _get_inworld_model_profiles(ModelConfig.load()).get(model_name, {})
 
 
 def _get_provider_endpoint(provider: str, config: ModelConfig) -> str | None:
@@ -2981,6 +3086,9 @@ class ModelConfig:
     def get_class_path(self, provider_name: str) -> str | None:
         """Get the custom class path for a provider.
 
+        A `class_path` in `config.toml` wins over the built-in default, so a
+        user can point a built-in provider at their own `BaseChatModel`.
+
         Args:
             provider_name: The provider to look up.
 
@@ -2988,7 +3096,8 @@ class ModelConfig:
             Class path in `module.path:ClassName` format, or None.
         """
         provider = self.providers.get(provider_name)
-        return provider.get("class_path") if provider else None
+        configured = provider.get("class_path") if provider else None
+        return configured or BUILTIN_PROVIDER_CLASS_PATHS.get(provider_name)
 
     def get_kwargs(
         self, provider_name: str, *, model_name: str | None = None

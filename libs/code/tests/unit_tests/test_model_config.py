@@ -1738,6 +1738,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
         assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
+        assert PROVIDER_API_KEY_ENV["inworld"] == "INWORLD_API_KEY"
         assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
@@ -1761,6 +1762,10 @@ class TestProviderBaseUrlEnv:
     def test_meta_matches_langchain_meta(self) -> None:
         """Meta reads its dedicated model API base URL variable."""
         assert PROVIDER_BASE_URL_ENV["meta"] == ("MODEL_API_BASE",)
+
+    def test_inworld_uses_its_own_var_not_the_shared_openai_one(self) -> None:
+        """Inworld maps to its own var, not the shared `OPENAI_BASE_URL`."""
+        assert PROVIDER_BASE_URL_ENV["inworld"] == ("INWORLD_BASE_URL",)
 
 
 class TestModelConfigLoad:
@@ -3532,6 +3537,166 @@ models = ["qwen3:4b"]
 
         fetch_profiles.assert_called_once_with(None, ["qwen3:4b"])
         assert profiles["ollama:qwen3:4b"]["profile"]["max_input_tokens"] == 262144
+
+
+class TestBuiltinProviderClassPaths:
+    """Tests for providers `init_chat_model` cannot resolve on its own."""
+
+    def test_builtin_class_path_is_used_without_config(self, tmp_path: Path) -> None:
+        """Returns the built-in class path when config declares none."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            config = ModelConfig.load()
+
+        assert config.get_class_path("inworld") == "langchain_openai:ChatOpenAI"
+
+    def test_config_class_path_outranks_builtin(self, tmp_path: Path) -> None:
+        """Config `class_path` overrides the built-in default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.inworld]
+class_path = "my_pkg:MyChatModel"
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            config = ModelConfig.load()
+
+        assert config.get_class_path("inworld") == "my_pkg:MyChatModel"
+
+    def test_unknown_provider_has_no_class_path(self, tmp_path: Path) -> None:
+        """Returns None for a provider with no built-in class path."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            config = ModelConfig.load()
+
+        assert config.get_class_path("openai") is None
+
+
+class TestInworldModelDiscovery:
+    """Tests for populating the switcher from the Inworld router catalog."""
+
+    _CATALOG: ClassVar[dict[str, dict[str, Any]]] = {
+        "auto": {"tool_calling": True},
+        "openai/gpt-5.2": {"max_input_tokens": 272000, "tool_calling": True},
+        "google-ai-studio/gemini-2.5-flash-image": {"tool_calling": False},
+        "deepinfra/Sao10K/L3-8B-Lunaris-v1-Turbo": {"max_input_tokens": 8192},
+    }
+
+    @staticmethod
+    def _patch_catalog(
+        catalog: dict[str, dict[str, Any]] | None = None,
+    ) -> AbstractContextManager[MagicMock]:
+        """Patch catalog discovery to return a fixed lineup."""
+        return patch.object(
+            model_config.inworld_catalog,
+            "model_profiles",
+            return_value=dict(
+                catalog if catalog is not None else TestInworldModelDiscovery._CATALOG
+            ),
+        )
+
+    @staticmethod
+    def _patch_credential() -> AbstractContextManager[object]:
+        """Patch the provider credential lookup to report a stored key."""
+        return patch.object(
+            model_config, "resolve_provider_credential", return_value="key"
+        )
+
+    def test_discovery_populates_switcher(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovered tool-calling models populate `available["inworld"]`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE", raising=False)
+
+        with (
+            self._patch_catalog(),
+            self._patch_credential(),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert models["inworld"] == ["auto", "openai/gpt-5.2"]
+
+    def test_discovery_populates_profiles(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovered capabilities are exposed as model profiles."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE", raising=False)
+
+        with (
+            self._patch_catalog(),
+            self._patch_credential(),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["inworld:openai/gpt-5.2"]
+        assert entry["profile"]["max_input_tokens"] == 272000
+
+    def test_config_profile_overrides_win(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Config profile overrides replace discovered values."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.inworld.profile."openai/gpt-5.2"]
+max_input_tokens = 4096
+""")
+        monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE", raising=False)
+
+        with (
+            self._patch_catalog(),
+            self._patch_credential(),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["inworld:openai/gpt-5.2"]
+        assert entry["profile"]["max_input_tokens"] == 4096
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_disabled_provider_skips_discovery(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`enabled = false` hides the provider and skips the probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.inworld]
+enabled = false
+""")
+        monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE", raising=False)
+
+        with (
+            self._patch_catalog() as discover,
+            self._patch_credential(),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        discover.assert_not_called()
+        assert "inworld" not in models
+
+    def test_offline_withholds_the_credential(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CODE_OFFLINE` suppresses the network probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.setenv("DEEPAGENTS_CODE_OFFLINE", "1")
+
+        with (
+            self._patch_catalog() as discover,
+            self._patch_credential(),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            get_available_models()
+
+        assert discover.call_args.args[1] is None
 
 
 class _BytesContext:

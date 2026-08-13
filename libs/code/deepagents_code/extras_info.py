@@ -1016,6 +1016,7 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
         "groq",
         "huggingface",
         "ibm",
+        "inworld",
         "litellm",
         "meta",
         "mistralai",

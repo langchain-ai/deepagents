@@ -113,6 +113,9 @@ google-genai = ["langchain-google-genai>=4.3.2,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.0,<2.0.0"]
+# The Inworld router is OpenAI-compatible and has no integration package of its
+# own; the extra exists so installs and prompts can name the provider.
+inworld = ["langchain-openai>=1.4.1,<2.0.0"]
 litellm = ["langchain-litellm>=0.7.0,<2.0.0"]
 meta = ["langchain-meta>=0.5.0,<2.0.0"]
 mistralai = ["langchain-mistralai>=1.1.6,<2.0.0"]
@@ -128,7 +131,7 @@ together = ["langchain-together>=0.4.0,<2.0.0"]
 vertex = ["langchain-google-vertexai>=3.2.4,<4.0.0"]
 xai = ["langchain-xai>=1.3.0,<2.0.0"]
 all-providers = [
-    "deepagents-code[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,meta,mistralai,nvidia,ollama,openai,openrouter,perplexity,together,vertex,xai]",
+    "deepagents-code[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,inworld,litellm,meta,mistralai,nvidia,ollama,openai,openrouter,perplexity,together,vertex,xai]",
 ]
 
 # Sandbox providers

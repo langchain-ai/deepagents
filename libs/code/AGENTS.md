@@ -166,6 +166,8 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 - **Never list another provider's shared var.** OpenAI-compatible providers (e.g. `deepseek`, `openrouter`, `together`, `xai`, `baseten`) sit on the `openai` SDK, whose only endpoint var is the shared `OPENAI_BASE_URL`. Listing it under those providers would clobber the user's real OpenAI endpoint when their credential is written or cleared — list only the provider's own var (e.g. `DEEPSEEK_API_BASE`), or nothing.
 - **Omit providers with no dedicated var.** When the endpoint is a hardcoded default plus a constructor arg (`baseten`), an `api_base` arg resolved per-provider inside the library (`litellm`), or derived from the region (`google_vertexai`), leave the provider out. A `/auth` endpoint still resolves through `get_base_url`'s stored-credential step and reaches the model as the `base_url` kwarg.
 
+A provider shipping no `langchain-*` integration is unroutable through `init_chat_model`; if it is OpenAI-compatible, register the class and endpoint in `BUILTIN_PROVIDER_CLASS_PATHS` and `BUILTIN_PROVIDER_BASE_URLS` (`model_config.py`) instead of writing a `BaseChatModel` subclass. See `inworld_catalog.py` for the worked example.
+
 **Not required** unless the provider's models have a distinctive name prefix (like `gpt-*`, `claude*`, `gemini*`):
 
 - `detect_provider()` in `config.py` — only needed for auto-detection from bare model names

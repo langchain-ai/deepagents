@@ -648,6 +648,26 @@ class MessageStore:
         return len(self._messages)
 
     @property
+    def turn_count(self) -> int:
+        """Number of user-authored rows stored, including local-only commands.
+
+        Counts `USER` and `SKILL` rows. A `/skill` invocation mounts a `SKILL` row
+        *instead of* a `USER` row, so each skill turn contributes exactly one;
+        agent-authored rows (`ASSISTANT`, `TOOL`, `APP`, ...) are excluded.
+
+        This counts rendered rows, not server turns, so -- like `USER` itself (see
+        `_SERVER_OUTPUT_MESSAGE_TYPES`) -- it includes local-only flows such as
+        `!shell` and most slash commands, which mount a `UserMessage` without ever
+        invoking the server. It is therefore a broader population than the
+        "conversation turns" the offload report derives from graph state, which
+        counts only non-internal `HumanMessage`s the model actually saw.
+        """
+        return sum(
+            message.type in {MessageType.USER, MessageType.SKILL}
+            for message in self._messages
+        )
+
+    @property
     def visible_count(self) -> int:
         """Number of messages currently visible (as widgets)."""
         return self._visible_end - self._visible_start

@@ -617,15 +617,25 @@ class TestMessageStore:
         """Test appending messages and counting."""
         store = MessageStore()
         assert store.total_count == 0
+        assert store.turn_count == 0
         assert store.visible_count == 0
 
         store.append(MessageData(type=MessageType.USER, content="msg1"))
         assert store.total_count == 1
+        assert store.turn_count == 1
         assert store.visible_count == 1
 
         store.append(MessageData(type=MessageType.ASSISTANT, content="msg2"))
         assert store.total_count == 2
+        assert store.turn_count == 1
         assert store.visible_count == 2
+
+        store.append(
+            MessageData(type=MessageType.SKILL, content="msg3", skill_name="test")
+        )
+        assert store.total_count == 3
+        assert store.turn_count == 2
+        assert store.visible_count == 3
 
     def test_append_preserves_hidden_tail(self):
         """Appending while scrolled up should keep newer messages hidden."""

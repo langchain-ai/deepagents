@@ -1846,10 +1846,13 @@ class TestDebugConsoleToggle:
             assert thread_field.copyable is False
             assert thread_field.thread_id is None
 
-    async def test_build_snapshot_counts_thread_messages(self) -> None:
+    async def test_build_snapshot_counts_thread_messages_and_turns(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         async with app.run_test():
-            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
+            assert (
+                _snapshot_dict(app._build_debug_snapshot())["Messages"]
+                == "0 messages (0 turns)"
+            )
 
             for index in range(3):
                 app._message_store.append(
@@ -1857,7 +1860,23 @@ class TestDebugConsoleToggle:
                 )
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
-            assert snapshot["Messages"] == "3 (3 rendered)"
+            assert snapshot["Messages"] == "3 messages (3 turns, 3 rendered)"
+
+    async def test_build_snapshot_turns_include_skills_but_not_agent_rows(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            messages = [
+                MessageData(type=MessageType.USER, content="user"),
+                MessageData(type=MessageType.SKILL, content="skill", skill_name="test"),
+                MessageData(type=MessageType.ASSISTANT, content="assistant"),
+                MessageData(type=MessageType.TOOL, content="tool", tool_name="test"),
+                MessageData(type=MessageType.APP, content="app"),
+            ]
+            for message in messages:
+                app._message_store.append(message)
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "5 messages (2 turns, 5 rendered)"
 
     async def test_build_snapshot_message_count_reports_rendered_window(self) -> None:
         """A virtualized thread reports its full count, not the mounted window."""
@@ -1872,8 +1891,8 @@ class TestDebugConsoleToggle:
             )
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
-            assert (
-                snapshot["Messages"] == f"{total} ({MessageStore.WINDOW_SIZE} rendered)"
+            assert snapshot["Messages"] == (
+                f"{total} messages ({total} turns, {MessageStore.WINDOW_SIZE} rendered)"
             )
 
     async def test_build_snapshot_message_count_resets_with_transcript(self) -> None:
@@ -1883,11 +1902,17 @@ class TestDebugConsoleToggle:
             app._message_store.append(
                 MessageData(type=MessageType.USER, content="hello")
             )
-            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] != "0"
+            assert (
+                _snapshot_dict(app._build_debug_snapshot())["Messages"]
+                != "0 messages (0 turns)"
+            )
 
             await app._clear_messages()
 
-            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
+            assert (
+                _snapshot_dict(app._build_debug_snapshot())["Messages"]
+                == "0 messages (0 turns)"
+            )
 
     async def test_open_debug_console_wires_live_snapshot_provider(self) -> None:
         """The host refreshes message count while the console stays open."""
@@ -1917,7 +1942,13 @@ class TestDebugConsoleToggle:
             await pilot.pause()
 
             after_total = before_total + 1
-            expected = f"{after_total} ({app._message_store.visible_count} rendered)"
+            turns = app._message_store.turn_count
+            message_label = "message" if after_total == 1 else "messages"
+            turn_label = "turn" if turns == 1 else "turns"
+            expected = (
+                f"{after_total} {message_label} "
+                f"({turns} {turn_label}, {app._message_store.visible_count} rendered)"
+            )
             after_value = _snapshot_dict(screen._snapshot)["Messages"]
             assert after_value != before_value
             assert after_value == expected

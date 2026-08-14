@@ -37950,6 +37950,62 @@ class TestColdCacheWarningFlow:
 
         process.assert_awaited_once_with("continue", "normal")
 
+    async def test_warning_emits_notification_hook_before_showing_modal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code.hooks.models.domain import DcodeNotificationKind
+
+        app = DeepAgentsApp()
+        warning = _ColdCacheWarning(
+            policy=PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+            estimate=RewarmEstimate(0.35, 0.25),
+            context_tokens=50_000,
+            age_seconds=3600,
+            identity_changed=False,
+        )
+        notify_hook = AsyncMock()
+        monkeypatch.setattr(HooksManager, "notify", notify_hook)
+        monkeypatch.setattr(
+            app,
+            "_cold_cache_warning_for",
+            AsyncMock(return_value=warning),
+        )
+        monkeypatch.setattr(app, "_process_message", AsyncMock())
+
+        def reject(
+            coro: Coroutine[Any, Any, None],
+            *,
+            context: str,
+        ) -> None:
+            assert context == "cold-cache:confirm"
+            coro.close()
+
+        monkeypatch.setattr(app, "_schedule_off_message_pump", reject)
+
+        await app._dispatch_queued_message(QueuedMessage("continue", "normal"))
+
+        notify_hook.assert_awaited_once_with(
+            DcodeNotificationKind.COLD_CACHE_WARNING,
+            "Prompt cache may be cold: re-warming this context could add $0.25.",
+            title="Warning: cache may be cold",
+        )
+
+    async def test_queue_stays_blocked_while_agent_is_running(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = DeepAgentsApp()
+        app._agent_running = True
+        app._pending_messages.append(QueuedMessage("later", "normal"))
+        dispatch = AsyncMock()
+        monkeypatch.setattr(app, "_dispatch_queued_message", dispatch)
+
+        await app._process_next_from_queue()
+
+        assert list(app._pending_messages) == [QueuedMessage("later", "normal")]
+        dispatch.assert_not_awaited()
+
     async def test_cancel_restores_draft_without_dispatch(
         self,
         monkeypatch: pytest.MonkeyPatch,

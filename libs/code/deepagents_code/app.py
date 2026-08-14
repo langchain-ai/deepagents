@@ -11037,6 +11037,29 @@ class DeepAgentsApp(App):
             markup=False,
         )
 
+    async def _emit_cold_cache_warning_hook(
+        self,
+        warning: _ColdCacheWarning,
+    ) -> None:
+        """Notify Hooks v2 before displaying a cold-cache confirmation.
+
+        The notification describes the potential cost without including the
+        queued prompt, which may contain sensitive user input. A hook may not
+        suppress the confirmation: the modal remains the user's decision.
+        """
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.hooks.models.domain import DcodeNotificationKind
+
+        try:
+            await self._hooks.notify(
+                DcodeNotificationKind.COLD_CACHE_WARNING,
+                "Prompt cache may be cold: re-warming this context could add "
+                f"{format_cost(warning.estimate.incremental_cost_usd)}.",
+                title="Warning: cache may be cold",
+            )
+        except ClientHookStopError:
+            logger.info("Cold-cache warning notification was stopped by a hook")
+
     async def _confirm_cold_cache_message(
         self,
         message: QueuedMessage,
@@ -11126,11 +11149,12 @@ class DeepAgentsApp(App):
             )
 
     async def _dispatch_queued_message(self, message: QueuedMessage) -> None:
-        """Dispatch one idle message, interposing an advisory cache warning."""
+        """Dispatch one queue-head message, interposing an advisory warning."""
         warning = await self._cold_cache_warning_for(message)
         if warning is None:
             await self._process_message(message.text, message.mode)
             return
+        await self._emit_cold_cache_warning_hook(warning)
         task = self._schedule_off_message_pump(
             self._confirm_cold_cache_message(
                 message,
@@ -17384,7 +17408,10 @@ class DeepAgentsApp(App):
         """
         if (
             self._processing_pending
+            or self._agent_running
+            or self._agent_reconciling
             or self._goal_state_mutating
+            or self._shell_running
             or self._modal_command_running()
             or not self._pending_messages
             or self._exit

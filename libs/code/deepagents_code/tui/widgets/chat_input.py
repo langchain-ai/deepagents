@@ -517,6 +517,7 @@ class ChatTextArea(PasteBurstTextArea):
             *,
             dropped_path: str,
             failure: ProbeFailure | None = None,
+            remaining_text: str = "",
         ) -> None:
             """Initialize with the parsed entry payload.
 
@@ -525,12 +526,35 @@ class ChatTextArea(PasteBurstTextArea):
                 paths: Entries that resolved successfully.
                 dropped_path: Leading source span classified as a drop.
                 failure: Most relevant failed filesystem probe, if any.
+                remaining_text: Raw text after `dropped_path` that was not
+                    resolved to a filesystem entry (for example the unreadable
+                    tail of a mixed drop). Empty when every token resolved.
             """
             self.raw_text = raw_text
             self.paths = paths
             self.dropped_path = dropped_path
             self.failure = failure
+            self.remaining_text = remaining_text
             super().__init__()
+
+    @staticmethod
+    def _unresolved_pasted_span(payload: str, prefix: str) -> str:
+        """Return the part of a paste payload that did not resolve as an entry.
+
+        `classify_pasted_entry_payload` may accept only the leading path of a
+        mixed drop (for example `'<image> <denied>'`): `prefix` then covers the
+        resolved head and the remainder still belongs in the draft as text.
+
+        Args:
+            payload: Raw terminal payload.
+            prefix: Leading span the classifier consumed.
+
+        Returns:
+            The remainder with its separating whitespace stripped.
+        """
+        if prefix and payload.startswith(prefix):
+            return payload[len(prefix) :].lstrip()
+        return ""
 
     class PastedText(Message):
         """Message sent when a paste is large enough to be collapsed.
@@ -944,6 +968,7 @@ class ChatTextArea(PasteBurstTextArea):
                     list(parsed.paths),
                     dropped_path=parsed.prefix,
                     failure=parsed.failure,
+                    remaining_text=self._unresolved_pasted_span(payload, parsed.prefix),
                 )
             )
             return
@@ -1264,6 +1289,9 @@ class ChatTextArea(PasteBurstTextArea):
                     list(parsed.paths),
                     dropped_path=parsed.prefix,
                     failure=parsed.failure,
+                    remaining_text=self._unresolved_pasted_span(
+                        event.text, parsed.prefix
+                    ),
                 )
             )
             return
@@ -2667,7 +2695,9 @@ class ChatInput(Vertical):
             self._warn_unreadable_dropped_path(event.failure)
 
         was_empty = not self._text_area.text
-        self._insert_pasted_paths(event.raw_text, event.paths)
+        self._insert_pasted_paths(
+            event.raw_text, event.paths, remaining_text=event.remaining_text
+        )
         text = self._text_area.text
         if was_empty:
             self.mode = "normal"
@@ -2679,6 +2709,13 @@ class ChatInput(Vertical):
             if token:
                 self._set_dropped_path(token)
                 self._pending_dropped_path_change_events += 1
+        # A partial classification inserts the media placeholder for the
+        # resolved head but keeps the unreadable tail as `/`-leading text.
+        # That text is still the rest of the drop, not a command, so it needs
+        # the same draft tracking a leading path would get.
+        elif event.remaining_text.startswith("/"):
+            self._set_dropped_path(text)
+            self._pending_dropped_path_change_events += 1
 
     def on_chat_text_area_pasted_text(self, event: ChatTextArea.PastedText) -> None:
         """Handle large pastes by collapsing into a compact placeholder.
@@ -2723,6 +2760,9 @@ class ChatInput(Vertical):
                     list(parsed.paths),
                     dropped_path=parsed.prefix,
                     failure=parsed.failure,
+                    remaining_text=ChatTextArea._unresolved_pasted_span(
+                        pasted, parsed.prefix
+                    ),
                 )
             )
         elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
@@ -2798,18 +2838,23 @@ class ChatInput(Vertical):
         self._text_area.insert(placeholder)
         self.app.notify(_PASTE_COLLAPSED_TOAST, timeout=5, markup=False)
 
-    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
+    def _insert_pasted_paths(
+        self, raw_text: str, paths: list[Path], *, remaining_text: str = ""
+    ) -> None:
         """Insert pasted path payload, attaching images when possible.
 
         Args:
             raw_text: Original paste payload text.
             paths: Resolved file paths parsed from the payload.
+            remaining_text: Unresolved tail of a partial classification (for
+                example the unreadable entry of a mixed drop). Kept as text so
+                a media replacement does not silently discard it.
 
         """
         if not self._text_area:
             return
         replacement, attached = self._build_path_replacement(
-            raw_text, paths, add_trailing_space=True
+            raw_text, paths, add_trailing_space=True, remaining_text=remaining_text
         )
         inserted = replacement if attached else raw_text
         selection = self._text_area.selection
@@ -2826,6 +2871,7 @@ class ChatInput(Vertical):
         paths: list[Path],
         *,
         add_trailing_space: bool,
+        remaining_text: str = "",
     ) -> tuple[str, bool]:
         """Build replacement text for dropped paths and attach any images.
 
@@ -2834,6 +2880,11 @@ class ChatInput(Vertical):
             paths: Resolved file paths parsed from the payload.
             add_trailing_space: Whether to append a trailing space after the
                 last token when paths are separated by spaces.
+            remaining_text: Unresolved tail of a partial classification (for
+                example the unreadable entry of a mixed drop). When given, it
+                stays in the replacement; building it from `paths` alone would
+                silently discard text the probe-failure warning told the user
+                was kept.
 
         Returns:
             Tuple of `(replacement, attached)` where `attached` indicates whether
@@ -2897,6 +2948,10 @@ class ChatInput(Vertical):
         replacement = separator.join(parts)
         if separator == " " and add_trailing_space:
             replacement += " "
+        if remaining_text:
+            if separator == " " and replacement.endswith(" "):
+                replacement = replacement.removesuffix(" ")
+            replacement += separator + remaining_text
         return replacement, True
 
     def _replace_submitted_paths_with_images(self, value: str) -> str:

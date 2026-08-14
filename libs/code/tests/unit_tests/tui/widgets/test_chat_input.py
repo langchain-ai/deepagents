@@ -4402,6 +4402,48 @@ class TestDroppedFolderPaste:
             assert notifications
             assert str(denied) in notifications[0][0]
 
+    async def test_partial_media_drop_keeps_unreadable_suffix_as_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A media head must not swallow the unreadable tail of a mixed drop.
+
+        `classify_pasted_entry_payload` resolves the leading image but returns
+        a probe failure for the denied folder. Building the replacement from
+        only the resolved paths would insert `[image 1]` and drop the denied
+        path entirely, contradicting the warning's "kept as text" claim.
+        """
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="blue")
+        image.save(tmp_path / "drop.png", format="PNG")
+        img_path = tmp_path / "drop.png"
+        denied = tmp_path / "denied"
+        denied.mkdir()
+        _deny_stat_for(monkeypatch, denied)
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
+            assert chat._text_area is not None
+
+            await chat._text_area._on_paste(events.Paste(f"{img_path} {denied}"))
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"[image 1] {denied}"
+            assert len(app.tracker.get_images()) == 1
+            assert chat._dropped_path_draft == f"[image 1] {denied}"
+            assert notifications
+            assert str(denied) in notifications[0][0]
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == f"[image 1] {denied}"
+            assert app.submitted[0].mode == "normal"
+
     async def test_backspacing_to_root_slash_restores_command_mode(
         self, tmp_path: Path
     ) -> None:

@@ -74,6 +74,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
+    "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
     "baseten:moonshotai/Kimi-K3": "Kimi K3",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.2": "GLM 5.2",
@@ -82,6 +83,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
         "DeepSeek V4 Flash 0731"
     ),
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
     "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",

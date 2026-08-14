@@ -81,6 +81,13 @@ protocol spec (functional key definitions) for background.
 _FILE_CACHE_WORKER_GROUP = "file-cache"
 """Textual worker group for all `@` file-completion cache warmers."""
 
+_CHAT_INPUT_AUTO_MAX_HEIGHT = 8
+_CHAT_INPUT_BOX_MAX_HEIGHT = 25
+_CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
+_CHAT_INPUT_MIN_NON_COMPOSER_ROWS = 7
+_COMPLETION_POPUP_MAX_HEIGHT = 12
+_DOUBLE_CLICK_CHAIN = 2
+
 _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
 """Window after a terminal focus regain during which a click only refocuses.
 
@@ -302,6 +309,14 @@ class CompletionPopup(VerticalScroll):
     }
     """
 
+    class RowsChanged(Message):
+        """Message sent when the popup's visible row count changes."""
+
+        def __init__(self, rows: int) -> None:
+            """Initialize with the visible row count."""
+            super().__init__()
+            self.rows = rows
+
     class OptionClicked(Message):
         """Message sent when a completion option is clicked."""
 
@@ -438,10 +453,16 @@ class CompletionPopup(VerticalScroll):
         self._pending_suggestions = []
         self._rebuild_generation += 1  # Cancel any in-flight rebuild
         self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values at runtime
+        self.post_message(self.RowsChanged(0))
 
     def show(self) -> None:
         """Show the popup."""
         self.styles.display = "block"
+        self.post_message(
+            self.RowsChanged(
+                min(len(self._pending_suggestions), _COMPLETION_POPUP_MAX_HEIGHT)
+            )
+        )
 
 
 class ChatTextArea(PasteBurstTextArea):
@@ -1323,6 +1344,123 @@ class _CompletionViewAdapter:
         )
 
 
+class ChatInputBox(Vertical):
+    """Bordered chat-input box with a draggable top edge."""
+
+    ALLOW_SELECT = False
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize drag state."""
+        super().__init__(**kwargs)
+        self._completion_rows = 0
+        self._drag_start_y: int | None = None
+        self._drag_start_height = 1
+        self._manual_height: int | None = None
+
+    def _is_top_border(self, event: events.MouseEvent) -> bool:
+        """Return whether a mouse event targets this box's top border."""
+        return event.widget is self and event.y == 0
+
+    def _maximum_height(self) -> int:
+        """Return the largest safe manual composer height."""
+        return max(
+            1,
+            min(
+                _CHAT_INPUT_MANUAL_MAX_HEIGHT,
+                self.screen.size.height - _CHAT_INPUT_MIN_NON_COMPOSER_ROWS,
+            ),
+        )
+
+    def _set_manual_height(self, height: int) -> None:
+        """Store and apply a clamped fixed height to the composer."""
+        self._manual_height = max(1, min(height, self._maximum_height()))
+        self._apply_manual_height()
+
+    def _apply_manual_height(self) -> None:
+        """Fit the manual composer height around visible completions."""
+        if self._manual_height is None:
+            return
+        available = max(
+            1,
+            _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - self._completion_rows,
+        )
+        height = min(self._manual_height, available)
+        text_area = self.query_one(ChatTextArea)
+        text_area.styles.height = height
+        text_area.styles.max_height = height
+        text_area.call_after_refresh(text_area.scroll_cursor_visible)
+
+    def _reset_height(self) -> None:
+        """Restore content-driven composer sizing."""
+        text_area = self.query_one(ChatTextArea)
+        self._manual_height = None
+        text_area.styles.height = "auto"
+        text_area.styles.max_height = _CHAT_INPUT_AUTO_MAX_HEIGHT
+        text_area.call_after_refresh(text_area.scroll_cursor_visible)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Begin resizing from a left press on the top border."""
+        if event.button != 1 or not self._is_top_border(event):
+            return
+        self._drag_start_y = event.screen_y
+        self._drag_start_height = max(1, self.query_one(ChatTextArea).size.height)
+        self.styles.pointer = "ns-resize"
+        self.capture_mouse()
+        event.stop()
+        event.prevent_default()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Resize during a drag or update the border pointer."""
+        if self._drag_start_y is None:
+            self.styles.pointer = (
+                "ns-resize" if self._is_top_border(event) else "default"
+            )
+            return
+        self._set_manual_height(
+            self._drag_start_height + self._drag_start_y - event.screen_y
+        )
+        event.stop()
+        event.prevent_default()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        """Finish an active left-button resize."""
+        if self._drag_start_y is None or event.button != 1:
+            return
+        self._drag_start_y = None
+        self.release_mouse()
+        event.stop()
+        event.prevent_default()
+
+    def on_click(self, event: Click) -> None:
+        """Reset automatic sizing when the top border is double-clicked."""
+        if (
+            event.button == 1
+            and event.chain >= _DOUBLE_CLICK_CHAIN
+            and self._is_top_border(event)
+        ):
+            self._reset_height()
+            event.stop()
+            event.prevent_default()
+
+    def on_completion_popup_rows_changed(
+        self, event: CompletionPopup.RowsChanged
+    ) -> None:
+        """Fit a manual composer around the completion popup."""
+        self._completion_rows = event.rows
+        self._apply_manual_height()
+        event.stop()
+
+    def on_resize(self, _event: events.Resize) -> None:
+        """Clamp a manual height after terminal resizes."""
+        if self._manual_height is not None:
+            self._set_manual_height(self._manual_height)
+
+    def on_unmount(self) -> None:
+        """Release mouse capture during teardown."""
+        self._drag_start_y = None
+        self.release_mouse()
+
+
 class ChatInput(Vertical):
     """Chat input widget with prompt, multi-line text, autocomplete, and history.
 
@@ -1468,7 +1606,7 @@ class ChatInput(Vertical):
         super().__init__(**kwargs)
         self._cwd = Path(cwd) if cwd else Path.cwd()
         self._image_tracker = image_tracker
-        self._input_box: Vertical | None = None
+        self._input_box: ChatInputBox | None = None
         self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
@@ -1540,7 +1678,7 @@ class ChatInput(Vertical):
         # The bordered box owns the prompt, text area, and completion popup so
         # the action buttons (a sibling) can float on its top border line; a
         # widget can only render on its sibling's border, not its parent's.
-        with Vertical(id="input-box"):
+        with ChatInputBox(id="input-box"):
             with Horizontal(classes="input-row"):
                 yield Static(">", classes="input-prompt", id="prompt")
                 yield ChatTextArea(id="chat-input")
@@ -1564,7 +1702,7 @@ class ChatInput(Vertical):
 
     def on_mount(self) -> None:
         """Initialize components after mount."""
-        self._input_box = self.query_one("#input-box", Vertical)
+        self._input_box = self.query_one("#input-box", ChatInputBox)
         self._action_buttons = self.query_one("#input-actions", Horizontal)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)

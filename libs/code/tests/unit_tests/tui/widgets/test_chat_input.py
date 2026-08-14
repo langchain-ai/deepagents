@@ -24,6 +24,7 @@ from deepagents_code.tui.widgets import (
 from deepagents_code.tui.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.tui.widgets.chat_input import (
     ChatInput,
+    ChatInputBox,
     ChatTextArea,
     CompletionOption,
     CompletionPopup,
@@ -218,6 +219,24 @@ class _ChatInputTestApp(App[None]):
         yield ChatInput(id="chat-input")
 
 
+class _ChatInputResizeTestApp(App[None]):
+    """App that positions the chat input at the bottom for drag tests."""
+
+    CSS = """
+    Screen {
+        layout: vertical;
+    }
+
+    #spacer {
+        height: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="spacer")
+        yield ChatInput(id="chat-input")
+
+
 class _RecordingApp(App[None]):
     """App that records ChatInput.Submitted events for assertion."""
 
@@ -363,6 +382,154 @@ class TestChatInputFileCacheRefresh:
                 chat_input_module._FILE_CACHE_REFRESH_INTERVAL_SECONDS,
                 chat._refresh_file_cache,
             ) in interval_calls
+
+
+class TestChatInputResize:
+    """Tests for resizing the chat input from its top border."""
+
+    async def test_drag_resizes_and_releases_capture(self) -> None:
+        """Dragging the top border adjusts rows and releases outside the box."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+            start_y = box.region.y
+            x = box.region.x + 5
+
+            assert text_area.size.height == 1
+            await pilot.mouse_down(box, offset=(5, 0))
+            assert app.mouse_captured is box
+
+            await pilot.hover(offset=(x, start_y - 4))
+            assert text_area.size.height == 5
+
+            await pilot.mouse_up(offset=(x, start_y - 4))
+            assert app.mouse_captured is None
+
+            start_y = box.region.y
+            await pilot.mouse_down(box, offset=(5, 0))
+            await pilot.hover(offset=(x, start_y + 3))
+            await pilot.mouse_up(offset=(x, start_y + 3))
+
+            assert text_area.size.height == 2
+
+    async def test_drag_height_is_clamped(self) -> None:
+        """Manual resizing stays within one row and the screen-aware maximum."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+            x = box.region.x + 5
+
+            await pilot.mouse_down(box, offset=(5, 0))
+            await pilot.hover(offset=(x, 0))
+            await pilot.mouse_up(offset=(x, 0))
+            assert text_area.size.height == 17
+
+            await pilot.mouse_down(box, offset=(5, 0))
+            await pilot.hover(offset=(x, 23))
+            await pilot.mouse_up(offset=(x, 23))
+            assert text_area.size.height == 1
+
+    async def test_double_click_restores_auto_height(self) -> None:
+        """Double-clicking the top border restores content-driven sizing."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+            box._set_manual_height(5)
+            await pilot.pause()
+            assert text_area.size.height == 5
+
+            await pilot.double_click(box, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._manual_height is None
+            assert text_area.size.height == 1
+            assert text_area._settled_content_height() == 8
+
+    async def test_completion_popup_temporarily_reduces_manual_height(self) -> None:
+        """Visible completions fit inside the box without losing manual size."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, 30)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            popup = app.query_one(CompletionPopup)
+            box._set_manual_height(20)
+            popup.update_suggestions([(str(i), str(i)) for i in range(12)], 0)
+            await pilot.pause()
+            await pilot.pause()
+
+            assert box._manual_height == 20
+            assert text_area.size.height == 11
+            assert popup.region.bottom <= box.region.bottom
+
+            popup.hide()
+            await pilot.pause()
+
+            assert text_area.size.height == 20
+
+    async def test_terminal_resize_reclamps_manual_height(self) -> None:
+        """Shrinking the terminal reduces an oversized manual composer."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            box._set_manual_height(17)
+            await pilot.pause()
+            assert text_area.size.height == 17
+
+            await pilot.resize_terminal(80, 12)
+
+            assert box._manual_height == 5
+            assert text_area.size.height == 5
+
+    async def test_only_left_press_on_top_border_starts_drag(self) -> None:
+        """Other buttons and descendant presses leave resize inactive."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test() as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+            y = box.region.y
+
+            box.on_mouse_down(
+                events.MouseDown(
+                    box,
+                    1,
+                    0,
+                    0,
+                    0,
+                    2,
+                    False,
+                    False,
+                    False,
+                    screen_x=box.region.x + 1,
+                    screen_y=y,
+                )
+            )
+            assert box._drag_start_y is None
+
+            box.on_mouse_down(
+                events.MouseDown(
+                    text_area,
+                    1,
+                    0,
+                    0,
+                    0,
+                    1,
+                    False,
+                    False,
+                    False,
+                    screen_x=text_area.region.x + 1,
+                    screen_y=text_area.region.y,
+                )
+            )
+            assert box._drag_start_y is None
+            assert app.mouse_captured is None
 
 
 class TestChatInputScrollbar:

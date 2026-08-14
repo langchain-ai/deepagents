@@ -28,9 +28,7 @@ if TYPE_CHECKING:
     from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
-_prompt: ContextVar[tuple[str, str] | None] = ContextVar(
-    "acp_auto_prompt", default=None
-)
+_prompt: ContextVar[str | None] = ContextVar("acp_auto_prompt", default=None)
 
 
 class _AutoGraph:
@@ -40,7 +38,7 @@ class _AutoGraph:
         self._graph = graph
         self._store = store
         self.checkpointer = graph.checkpointer
-        self._turns: dict[str, tuple[str, str]] = {}
+        self._turn_id = ""
 
     async def astream(
         self,
@@ -52,10 +50,7 @@ class _AutoGraph:
         session_id = config["configurable"]["thread_id"]
         prompt = _prompt.get()
         if prompt is not None:
-            turn_id = uuid4().hex
-            self._turns[session_id] = (turn_id, prompt[1])
-        else:
-            turn_id, _text = self._turns[session_id]
+            self._turn_id = uuid4().hex
         key = approval_mode_key(session_id)
         self._store.put(
             APPROVAL_MODE_NAMESPACE,
@@ -69,7 +64,7 @@ class _AutoGraph:
                     content=messages[-1]["content"],
                     additional_kwargs={
                         USER_PROMPT_METADATA_KEY: user_prompt_metadata(
-                            prompt[1], [], turn_id=turn_id
+                            prompt, [], turn_id=self._turn_id
                         )
                     },
                 )
@@ -79,7 +74,7 @@ class _AutoGraph:
             auto_approve=True,
             approval_mode_key=key,
             thread_id=session_id,
-            turn_id=turn_id,
+            turn_id=self._turn_id,
         )
         graph = cast("Any", self._graph)
         async for chunk in graph.astream(
@@ -99,9 +94,8 @@ class _AutoGraph:
     ) -> RunnableConfig:
         return await self._graph.aupdate_state(config, values, as_node=as_node)
 
-    async def aget_state_history(self, config: RunnableConfig) -> AsyncIterator[object]:
-        async for state in self._graph.aget_state_history(config):
-            yield state
+    def aget_state_history(self, config: RunnableConfig) -> AsyncIterator[Any]:
+        return self._graph.aget_state_history(config)
 
 
 class AgentServerACP(BaseAgentServerACP):
@@ -109,28 +103,17 @@ class AgentServerACP(BaseAgentServerACP):
 
     def __init__(
         self,
-        agent: Pregel[Any, Any, Any, Any]
-        | Callable[[AgentSessionContext], Pregel[Any, Any, Any, Any]],
+        agent: Callable[[AgentSessionContext], Pregel[Any, Any, Any, Any]],
         *,
         store: BaseStore,
         **kwargs: Any,
     ) -> None:
         """Initialize the Auto-aware ACP server."""
-        self._store = store
-        if callable(agent):
-            factory = cast(
-                "Callable[[AgentSessionContext], Pregel[Any, Any, Any, Any]]", agent
-            )
 
-            def build(context: AgentSessionContext) -> _AutoGraph:
-                return _AutoGraph(factory(context), store)
+        def build(context: AgentSessionContext) -> _AutoGraph:
+            return _AutoGraph(agent(context), store)
 
-            super().__init__(cast("Any", build), **kwargs)
-        else:
-            super().__init__(cast("Any", agent), **kwargs)
-            wrapped = _AutoGraph(agent, store)
-            self._agent_factory = cast("Any", wrapped)
-            self._agent = cast("Any", wrapped)
+        super().__init__(cast("Any", build), **kwargs)
 
     async def prompt(
         self,
@@ -147,7 +130,7 @@ class AgentServerACP(BaseAgentServerACP):
         text = "\n".join(
             block.text for block in prompt if isinstance(block, TextContentBlock)
         )
-        token = _prompt.set((session_id, text))
+        token = _prompt.set(text)
         try:
             return await super().prompt(
                 list(prompt), session_id, message_id=message_id, **kwargs

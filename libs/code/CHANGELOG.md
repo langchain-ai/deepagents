@@ -2,6 +2,24 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.56](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.55...deepagents-code==0.1.56) (2026-08-14)
+
+
+### Features
+
+* **code:** personalize external editor hints ([#5445](https://github.com/langchain-ai/deepagents/issues/5445)) ([b72b3dd](https://github.com/langchain-ai/deepagents/commit/b72b3dd72e0a31962ebf19261dba547462b4e394))
+
+
+### Bug Fixes
+
+* **code:** clarify dependency warning prompt ([#5489](https://github.com/langchain-ai/deepagents/issues/5489)) ([31e4941](https://github.com/langchain-ai/deepagents/commit/31e49418c7538542ff30b2701cf8ac9d1182bbeb))
+* **code:** hide invalid cache metrics ([#5475](https://github.com/langchain-ai/deepagents/issues/5475)) ([33a57cb](https://github.com/langchain-ai/deepagents/commit/33a57cbe6808e3da5f4067b7567f77845578ff61))
+* **code:** queue `/copy` during active generation ([#5447](https://github.com/langchain-ai/deepagents/issues/5447)) ([8dfe282](https://github.com/langchain-ai/deepagents/commit/8dfe282006108dd0c47c50d5a1e3a41558e14723))
+* **code:** shorten Auto classifier selection message ([#5446](https://github.com/langchain-ai/deepagents/issues/5446)) ([c43919c](https://github.com/langchain-ai/deepagents/commit/c43919c5c05643d03cf00009339cd0e4d3c17d6d))
+* **code:** simplify paste expansion toast ([#5443](https://github.com/langchain-ai/deepagents/issues/5443)) ([217b9eb](https://github.com/langchain-ai/deepagents/commit/217b9eb372fa51b0439434f31abc3ac22e6cd7f2))
+* **code:** stop passing removed `checkpoint_metadata` ([#5473](https://github.com/langchain-ai/deepagents/issues/5473)) ([61ae398](https://github.com/langchain-ai/deepagents/commit/61ae398a60a2f6c23954d89332950570e0b6b431))
+* **code:** thread `session_id` through forced-compaction fork ([#5492](https://github.com/langchain-ai/deepagents/issues/5492)) ([33d323c](https://github.com/langchain-ai/deepagents/commit/33d323c98bda90c7fe75bcf4a44fb083ed87fa81))
+
 ## [0.1.55](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.54...deepagents-code==0.1.55) (2026-08-12)
 
 ### Features

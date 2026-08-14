@@ -7750,6 +7750,8 @@ class DeepAgentsApp(App):
             inputs += self._inflight_turn_stats.input_tokens
             reads += self._inflight_turn_stats.cache_read_tokens
             writes += self._inflight_turn_stats.cache_write_tokens
+        cache_display = self._status_bar.query_one("#cache-display")
+        cache_display.visible = self._thread_has_completed_turn and writes > 0
         self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(

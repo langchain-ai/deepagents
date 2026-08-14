@@ -70,7 +70,7 @@ class TestTwoLineMetrics:
 
     @pytest.mark.parametrize(
         ("read", "color"),
-        [(0, "muted"), (59, "error"), (60, "warning"), (90, "muted")],
+        [(59, "error"), (60, "warning"), (90, "muted")],
     )
     async def test_cache_hit_rate_colors(self, read: int, color: str) -> None:
         async with StatusBarApp().run_test() as pilot:

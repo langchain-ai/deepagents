@@ -204,6 +204,21 @@
       "exclude-paths": [
         "libs/partners/quickjs/tests"
       ]
+    },
+    "libs/partners/createos": {
+      "release-type": "python",
+      "package-name": "langchain-createos",
+      "component": "langchain-createos",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_createos/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/createos/tests"
+      ]
     }
   },
   "tag-separator": "==",

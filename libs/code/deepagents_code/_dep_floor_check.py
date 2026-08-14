@@ -10,7 +10,7 @@ editable `direct_url.json` record and skip the check entirely, so end
 users pay no startup cost here.
 
 Interactive launches on a terminal stop on a blocking pre-TUI prompt
-(continue / mute / abort); headless launches, subcommands, and interactive
+(refresh / continue / mute / abort); headless launches, subcommands, and interactive
 launches whose stdin is piped get a single stderr warning per launch instead,
 since they have no answerable prompt and must never block. A dismissed
 (muted) mismatch is remembered per checkout as a fingerprint of the offending
@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import shlex
-import subprocess  # noqa: S404  # only `list2cmdline` string quoting, never executed
+import subprocess  # noqa: S404  # fixed-argv environment refresh and Windows quoting
 import sys
 import tempfile
 import threading
@@ -39,6 +39,8 @@ from deepagents_code.config import _is_editable_install
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from rich.console import Console
 
     from deepagents_code.main import _TrustPromptOutcome
 
@@ -259,17 +261,72 @@ def _checkout_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _refresh_args() -> list[str]:
+    """Build the fixed argv used to refresh this editable environment.
+
+    Returns:
+        Arguments for the user-approved `uv pip install` process.
+    """
+    checkout = _checkout_root()
+    args = [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "-e",
+        str(checkout),
+    ]
+    deepagents = checkout.parent / "deepagents"
+    acp = checkout.parent / "acp"
+    if deepagents.is_dir() and acp.is_dir():
+        args.extend(["-e", str(deepagents), "-e", str(acp)])
+    args.append("--upgrade")
+    return args
+
+
 def refresh_command() -> str:
     """Return the shell command that refreshes this editable environment.
 
-    Shared by the stderr warning and the interactive prompt so the two
-    channels cannot drift apart.
+    Workspace sibling editables are included explicitly because resolving only
+    `libs/code` would replace `deepagents` and `deepagents-acp` with PyPI wheels.
+    The warning and interactive refresh share this argv so they cannot drift.
     """
-    return (
-        "uv pip install --python "
-        f"{_quote_arg(sys.executable)} -e {_quote_arg(str(_checkout_root()))} "
-        "--upgrade"
-    )
+    return " ".join(_quote_arg(arg) for arg in _refresh_args())
+
+
+def _refresh_environment(console: Console) -> bool:
+    """Refresh the active environment after the user explicitly requests it.
+
+    Args:
+        console: Console used for progress and failure messages.
+
+    Returns:
+        `True` when `uv` exits successfully, otherwise `False`.
+    """
+    console.print("[dim]Refreshing environment...[/dim]", highlight=False)
+    try:
+        result = subprocess.run(  # noqa: S603  # fixed uv argv, never a shell command
+            _refresh_args(),
+            check=False,
+            shell=False,
+        )
+    except OSError as exc:
+        from rich.markup import escape
+
+        console.print(
+            f"[yellow]Environment refresh failed: {escape(str(exc))}[/yellow]",
+            highlight=False,
+        )
+        return False
+    if result.returncode != 0:
+        console.print(
+            "[yellow]Environment refresh failed with exit code "
+            f"{result.returncode}; choose another action or try again.[/yellow]",
+            highlight=False,
+        )
+        return False
+    return True
 
 
 def _collect_violations() -> list[_FloorViolation]:
@@ -516,7 +573,7 @@ def warn_if_editable_deps_stale() -> None:
 
 
 def prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
-    """Block on a continue/mute/abort prompt when an interactive launch is stale.
+    """Block on a refresh/continue/mute/abort prompt for a stale interactive launch.
 
     Prompts only when violations exist and the exact mismatch was not muted
     for this checkout. The prompt itself is implemented in `main` next to the
@@ -552,36 +609,54 @@ def _prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
     violations = _collect_violations()
     if not violations:
         return None
-    fingerprint = _mismatch_fingerprint(violations)
-    if is_dep_floor_mismatch_muted(fingerprint):
+    if is_dep_floor_mismatch_muted(_mismatch_fingerprint(violations)):
         return None
 
     console = Console(stderr=True)
-    action = prompt_for_dep_floor_mismatch(console, violations)
-    if action in {_TrustPromptOutcome.INTERRUPTED, _TrustPromptOutcome.CANCELLED}:
-        return action
-    if action is _TrustAction.REMEMBER:
-        if mute_dep_floor_mismatch(fingerprint):
+    while True:
+        fingerprint = _mismatch_fingerprint(violations)
+        action = prompt_for_dep_floor_mismatch(console, violations)
+        if action in {
+            _TrustPromptOutcome.INTERRUPTED,
+            _TrustPromptOutcome.CANCELLED,
+        }:
+            return action
+        if action is _TrustAction.REFRESH:
+            if not _refresh_environment(console):
+                continue
+            violations = _collect_violations()
+            if violations:
+                continue
             console.print(
-                "[dim]Muted until the dependency mismatch changes.[/dim]",
+                "[dim]Environment refreshed; continuing.[/dim]",
+                highlight=False,
+            )
+            return None
+        if action is _TrustAction.REMEMBER:
+            if mute_dep_floor_mismatch(fingerprint):
+                console.print(
+                    "[dim]Muted until the dependency mismatch changes.[/dim]",
+                    highlight=False,
+                )
+            else:
+                console.print(
+                    "[yellow]The dismissal could not be saved; you will be asked "
+                    "again next launch.[/yellow]",
+                    highlight=False,
+                )
+        elif action is _TrustAction.ALLOW_ONCE:
+            console.print(
+                "[dim]Continuing this session; you will be asked again next "
+                "launch.[/dim]",
                 highlight=False,
             )
         else:
-            console.print(
-                "[yellow]The dismissal could not be saved; you will be asked "
-                "again next launch.[/yellow]",
-                highlight=False,
+            # `abort_on_deny` should have collapsed a refusal into `CANCELLED`
+            # already, so `DENY` (or any future outcome) only lands here if that
+            # mapping regresses. Refuse rather than continuing: matching "continue"
+            # by default is what previously turned "Abort launch" into a launch.
+            logger.debug(
+                "Unexpected dependency floor prompt outcome %r; aborting", action
             )
-    elif action is _TrustAction.ALLOW_ONCE:
-        console.print(
-            "[dim]Continuing this session; you will be asked again next launch.[/dim]",
-            highlight=False,
-        )
-    else:
-        # `abort_on_deny` should have collapsed a refusal into `CANCELLED`
-        # already, so `DENY` (or any future outcome) only lands here if that
-        # mapping regresses. Refuse rather than continuing: matching "continue"
-        # by default is what previously turned "Abort launch" into a launch.
-        logger.debug("Unexpected dependency floor prompt outcome %r; aborting", action)
-        return _TrustPromptOutcome.CANCELLED
-    return None
+            return _TrustPromptOutcome.CANCELLED
+        return None

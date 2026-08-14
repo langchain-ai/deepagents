@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -214,6 +215,47 @@ class TestQuoteArg:
         assert _quote_arg("C:\\Python\\python.exe") == "C:\\Python\\python.exe"
         assert _quote_arg("C:\\Program Files\\Python\\python.exe") == (
             '"C:\\Program Files\\Python\\python.exe"'
+        )
+
+
+class TestRefreshCommand:
+    """The remediation preserves workspace editables when they are available."""
+
+    def test_workspace_siblings_are_included(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit sibling editables prevent `uv` from replacing them with wheels."""
+        libs = tmp_path / "repo" / "libs"
+        code = libs / "code"
+        deepagents = libs / "deepagents"
+        acp = libs / "acp"
+        for checkout in (code, deepagents, acp):
+            checkout.mkdir(parents=True)
+        monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
+        monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
+        monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
+
+        command = dep_floor_check.refresh_command()
+
+        assert command == (
+            "uv pip install --python /venv/bin/python "
+            f"-e {code} -e {deepagents} -e {acp} --upgrade"
+        )
+
+    def test_missing_sibling_uses_standalone_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A partial or standalone checkout retains the original safe fallback."""
+        libs = tmp_path / "repo" / "libs"
+        code = libs / "code"
+        (libs / "deepagents").mkdir(parents=True)
+        code.mkdir()
+        monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
+        monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
+        monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
+
+        assert dep_floor_check.refresh_command() == (
+            f"uv pip install --python /venv/bin/python -e {code} --upgrade"
         )
 
 
@@ -542,6 +584,100 @@ class TestInteractivePrompt:
         assert prompt_if_editable_deps_stale() is None
         assert "could not be saved" in capsys.readouterr().err
 
+    def test_refresh_success_rechecks_and_continues(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A successful refresh continues only after a clean dependency scan."""
+        scans = iter([list(_VIOLATIONS), []])
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(dep_floor_check, "_collect_violations", lambda: next(scans))
+        self._stub_prompt(monkeypatch, _TrustAction.REFRESH)
+
+        def _run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen["args"] = args
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(args, 0)
+
+        monkeypatch.setattr(dep_floor_check.subprocess, "run", _run)
+
+        assert prompt_if_editable_deps_stale() is None
+        assert seen["args"] == dep_floor_check._refresh_args()
+        assert seen["check"] is False
+        assert seen["shell"] is False
+        text = capsys.readouterr().err
+        assert "Refreshing environment..." in text
+        assert "Environment refreshed; continuing." in text
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            pytest.param(subprocess.CompletedProcess(["uv"], 2), id="non-zero"),
+            pytest.param(OSError("uv unavailable"), id="launch-error"),
+        ],
+    )
+    def test_refresh_failure_reprompts(
+        self,
+        result: subprocess.CompletedProcess[str] | OSError,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An installer failure leaves launch control with the user."""
+        actions = iter([_TrustAction.REFRESH, _TrustAction.ALLOW_ONCE])
+        prompts: list[list[_FloorViolation]] = []
+
+        def _prompt(
+            _console: object, violations: list[_FloorViolation]
+        ) -> _TrustAction:
+            prompts.append(violations)
+            return next(actions)
+
+        def _run(
+            _args: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if isinstance(result, OSError):
+                raise result
+            return result
+
+        monkeypatch.setattr(main_module, "prompt_for_dep_floor_mismatch", _prompt)
+        monkeypatch.setattr(dep_floor_check.subprocess, "run", _run)
+
+        assert prompt_if_editable_deps_stale() is None
+        assert prompts == [list(_VIOLATIONS), list(_VIOLATIONS)]
+        assert "Environment refresh failed" in capsys.readouterr().err
+
+    def test_refresh_that_remains_stale_reprompts_with_new_violations(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful install does not continue while a newer floor is still unmet."""
+        changed = [
+            _FloorViolation(
+                dist_name="quickjs-rs",
+                installed="0.2.5",
+                floor="0.3.0",
+                required="quickjs-rs>=0.3.0",
+            )
+        ]
+        scans = iter([list(_VIOLATIONS), changed])
+        actions = iter([_TrustAction.REFRESH, _TrustAction.ALLOW_ONCE])
+        prompts: list[list[_FloorViolation]] = []
+
+        def _prompt(
+            _console: object, violations: list[_FloorViolation]
+        ) -> _TrustAction:
+            prompts.append(violations)
+            return next(actions)
+
+        monkeypatch.setattr(dep_floor_check, "_collect_violations", lambda: next(scans))
+        monkeypatch.setattr(main_module, "prompt_for_dep_floor_mismatch", _prompt)
+        monkeypatch.setattr(
+            dep_floor_check.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(["uv"], 0),
+        )
+
+        assert prompt_if_editable_deps_stale() is None
+        assert prompts == [list(_VIOLATIONS), changed]
+
     def test_cancelled_aborts_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._stub_prompt(monkeypatch, _TrustPromptOutcome.CANCELLED)
         assert prompt_if_editable_deps_stale() is _TrustPromptOutcome.CANCELLED
@@ -708,6 +844,7 @@ def test_dep_floor_prompt_separates_guidance_and_actions(
     assert "\n\nRefresh the active environment:" in text
     assert "  uv sync\n\nRunning stale source" in text
     assert "hard-to-diagnose ways.\n\n" in text
+    assert picker["refresh_label"] == "Refresh environment now"
     assert picker["remember_label"] == "Continue and hide until versions change"
 
 

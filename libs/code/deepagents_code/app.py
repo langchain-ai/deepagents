@@ -6252,10 +6252,11 @@ class DeepAgentsApp(App):
     async def _handle_update_command(self, command: str = "/update") -> None:
         """Handle the `/update` slash command — check for and install updates.
 
-        Parses optional `--prerelease` and `--deps` flags from the raw command
-        line; any other option is rejected with a usage message. `--deps`
+        Parses optional `--prerelease`, `--deps`, and `--log` flags from the raw
+        command line; any other option is rejected with a usage message. `--deps`
         re-resolves dependencies to their newest in-range versions even when
-        `deepagents-code` itself is already current.
+        `deepagents-code` itself is already current. `--log` displays the latest
+        persisted update log without checking for updates.
 
         Args:
             command: The raw slash-command line as typed, including any options.
@@ -6266,18 +6267,28 @@ class DeepAgentsApp(App):
         # loudly instead of silently downgrading to a stable update — mirroring
         # the headless path, which also refuses unknown options rather than
         # silently ignoring them.
-        allowed_options = {"--prerelease", "--deps"}
-        unknown = [opt for opt in parts[1:] if opt not in allowed_options]
+        options = parts[1:]
+        allowed_options = {"--prerelease", "--deps", "--log"}
+        unknown = [opt for opt in options if opt not in allowed_options]
         if unknown:
             await self._mount_message(
                 AppMessage(
                     f"Unknown option(s) for /update: {' '.join(unknown)}. "
-                    "Usage: /update [--deps] [--prerelease]",
+                    "Usage: /update [--deps] [--prerelease] | /update --log",
                 ),
             )
             return
-        prerelease_requested = "--prerelease" in parts[1:]
-        deps_only = "--deps" in parts[1:]
+        prerelease_requested = "--prerelease" in options
+        deps_only = "--deps" in options
+        log_requested = "--log" in options
+        if log_requested and options != ["--log"]:
+            await self._mount_message(
+                AppMessage(
+                    "The --log option cannot be combined with other options. "
+                    "Usage: /update --log",
+                ),
+            )
+            return
         include_prereleases = True if prerelease_requested else None
         try:
             from deepagents_code._version import __version__ as cli_version
@@ -6288,11 +6299,24 @@ class DeepAgentsApp(App):
                 format_age_suffix,
                 format_dependency_changes,
                 is_update_available,
+                latest_update_log,
                 parse_dependency_changes,
                 perform_dependency_refresh_dry_run,
                 prerelease_upgrade_supported,
                 release_requires_prereleases,
             )
+
+            if log_requested:
+                log = await asyncio.to_thread(latest_update_log)
+                if log is None:
+                    await self._mount_message(AppMessage("No update log found."))
+                    return
+                log_path, contents = log
+                body = contents.rstrip() or "(empty log)"
+                await self._mount_message(
+                    AppMessage(f"Latest update log ({log_path}):\n{body}"),
+                )
+                return
 
             if await asyncio.to_thread(_is_editable_install):
                 age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
@@ -6571,7 +6595,6 @@ class DeepAgentsApp(App):
         from deepagents_code.update_check import (
             _PRERELEASE_UNSUPPORTED_MESSAGE,
             detect_shadowed_dcode_safe,
-            format_dependency_changes,
             format_installed_age_suffix,
             format_release_age_parenthetical,
             format_shadowed_dcode_warning,
@@ -6635,8 +6658,6 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
-            # The upgrade re-resolves the whole environment, so surface any
-            # dependency bumps that rode along with the dcode release.
             dep_changes = [
                 change
                 for change in parse_dependency_changes(output)
@@ -6645,8 +6666,7 @@ class DeepAgentsApp(App):
             if dep_changes:
                 await self._mount_message(
                     AppMessage(
-                        "Dependencies updated:\n"
-                        f"{format_dependency_changes(dep_changes)}",
+                        "Dependencies updated. Run /update --log to view details.",
                     ),
                 )
         else:

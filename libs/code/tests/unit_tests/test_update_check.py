@@ -86,6 +86,7 @@ from deepagents_code.update_check import (
     is_update_cache_fresh,
     is_valid_extra_name,
     is_valid_package_name,
+    latest_update_log,
     mark_auto_update_default_acknowledged,
     mark_startup_auto_update_failed,
     mark_update_notified,
@@ -2340,6 +2341,21 @@ class TestUpdateLogs:
         path = create_update_log_path()
         assert path.parent == update_log_dir
         assert path.name.endswith("-update.log")
+
+    def test_latest_update_log_reads_newest_file(self, update_log_dir) -> None:
+        update_log_dir.mkdir(parents=True)
+        older = update_log_dir / "older-update.log"
+        newer = update_log_dir / "newer-update.log"
+        older.write_text("old", encoding="utf-8")
+        newer.write_text("new", encoding="utf-8")
+        os.utime(older, (1, 1))
+        os.utime(newer, (2, 2))
+
+        assert latest_update_log() == (newer, "new")
+
+    def test_latest_update_log_returns_none_without_logs(self, update_log_dir) -> None:
+        assert not update_log_dir.exists()
+        assert latest_update_log() is None
 
     def test_cleanup_update_logs_removes_old_and_excess(self, update_log_dir) -> None:
         update_log_dir.mkdir(parents=True)

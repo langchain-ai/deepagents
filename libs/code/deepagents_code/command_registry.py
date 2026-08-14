@@ -284,8 +284,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/update",
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="upgrade dependencies deps refresh",
-        argument_hint="[--deps] [--prerelease]",
+        hidden_keywords="upgrade dependencies deps refresh log",
+        argument_hint="[--deps] [--prerelease] | --log",
     ),
     SlashCommand(
         name="/install",

@@ -861,6 +861,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             file_path = summarization._offload_to_backend(
                 self._guarded_backend(), to_summarize, session_id
             )
+            # The inherited `_build_compact_result` produces the same event and
+            # tool message as the SDK's gated path via model-independent helpers
+            # (string formatting + a staticmethod), so the runtime-selected
+            # summarizer is not needed to build it. Kept inside the `try` so a
+            # failure here still returns a ToolMessage rather than raising.
             return self._build_compact_result(
                 runtime, to_summarize, summary, file_path, event, cutoff, session_id
             )
@@ -891,6 +896,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             file_path = await summarization._aoffload_to_backend(
                 self._guarded_backend(), to_summarize, session_id
             )
+            # See `_run_forced_compact` for why the inherited builder is reused
+            # and why it stays inside the `try`.
             return self._build_compact_result(
                 runtime, to_summarize, summary, file_path, event, cutoff, session_id
             )

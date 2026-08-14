@@ -53,6 +53,10 @@ class CreateOSSandbox(BaseSandbox):
         """Return the CreateOS sandbox id."""
         return self._sandbox_id
 
+    def close(self) -> None:
+        """Close the HTTP client owned by this backend."""
+        self._client.close()
+
     def execute(
         self,
         command: str,

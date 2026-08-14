@@ -102,8 +102,6 @@ filterwarnings = [
     # pytest 9.x deprecates class-scoped fixtures as instance methods; the base
     # `SandboxIntegrationTests` from `langchain-tests` still uses this pattern.
     "ignore:Class-scoped fixture defined as instance method is deprecated:pytest.PytestRemovedIn10Warning",
-    # httpx.Client closed during fixture teardown leaves an SSL socket unclosed.
-    "ignore:.*unclosed.*ssl.SSLSocket.*:ResourceWarning",
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]

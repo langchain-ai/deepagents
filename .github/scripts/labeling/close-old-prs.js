@@ -214,6 +214,30 @@ async function ensureIssueLabel({ github, owner, repo, issueNumber, name, existi
   existingLabels.push(name);
 }
 
+// Applies the bypass label unless it is already present. Unlike the write
+// side of ensureIssueLabel, the check is done live rather than against labels
+// captured earlier: keep_open_on_comment.yml races with a maintainer adding
+// the label by hand, and the redundant add would still emit a `labeled` event
+// — retriggering every workflow listening for one (clear_pending_deletion.yml
+// among them).
+async function applyBypassLabel({ github, owner, repo, issueNumber, bypassLabel = DEFAULT_BYPASS_LABEL }) {
+  const { data: issue } = await github.rest.issues.get({
+    owner,
+    repo,
+    issue_number: issueNumber,
+  });
+  if ((issue.labels ?? []).some(label => label.name === bypassLabel)) {
+    return false;
+  }
+  await github.rest.issues.addLabels({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    labels: [bypassLabel],
+  });
+  return true;
+}
+
 // Returns true only when this call actually removed the label, so callers can
 // count real removals rather than no-ops.
 async function removeIssueLabel({ github, owner, repo, issueNumber, name, existingLabels }) {
@@ -295,7 +319,7 @@ function warningBody({ warningDays, closeDays, bypassLabel }) {
     COMMENT_MARKER,
     `This PR has been open for at least ${warningDays} days.`,
     '',
-    `It will be closed automatically once it has been open for at least ${closeDays} days and this warning is at least ${noticeDays} days old, unless the \`${bypassLabel}\` label is applied.`,
+    `It will be closed automatically once it has been open for at least ${closeDays} days and this warning is at least ${noticeDays} days old, unless a maintainer applies the \`${bypassLabel}\` label or comments \`!keep-open\`.`,
   ].join('\n');
 }
 
@@ -304,7 +328,7 @@ function closeBody({ closeDays, bypassLabel }) {
     COMMENT_MARKER,
     `This PR has been open for at least ${closeDays} days and is being closed automatically.`,
     '',
-    `If this work is still active, feel free to reopen it or open a fresh PR. Add the \`${bypassLabel}\` label to exempt a PR from this cleanup.`,
+    `If this work is still active, feel free to reopen it or open a fresh PR. The \`${bypassLabel}\` label (or a maintainer commenting \`!keep-open\`) exempts a PR from this cleanup.`,
   ].join('\n');
 }
 
@@ -902,6 +926,10 @@ module.exports = {
   // label name. The workflow's `if:` expression cannot reference JS, so the
   // literal there is still duplicated — a test pins the two together.
   minimizeMarkerComment,
+  // Required by keep_open_on_comment.yml, which applies the bypass label when a
+  // maintainer comments the keep-open phrase. Sharing the helper keeps the
+  // label name from drifting from DEFAULT_BYPASS_LABEL.
+  applyBypassLabel,
   DEFAULT_PENDING_DELETION_LABEL,
   DEFAULT_BYPASS_LABEL,
   warningBody,

@@ -7953,6 +7953,7 @@ class DeepAgentsApp(App):
                         f"{priced_request_count} of {request_count} recorded requests "
                         f"{included_verb} included."
                     ),
+                    "",
                     *self._unpriced_request_lines(),
                 ]
             )
@@ -7980,7 +7981,7 @@ class DeepAgentsApp(App):
             and self._thread_stats.per_kind[kind].priced_request_count
         ]
         if priced_kinds:
-            lines.append("By type since this thread was loaded:")
+            lines.extend(["", "By type since this thread was loaded:"])
             for kind, kind_stats in priced_kinds:
                 lines.append(
                     f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
@@ -7991,7 +7992,7 @@ class DeepAgentsApp(App):
             if model.priced_request_count
         ]
         if priced_models:
-            lines.append("By model since this thread was loaded:")
+            lines.extend(["", "By model since this thread was loaded:"])
             for model in priced_models:
                 label = (
                     f"{model.provider}:{model.model_name}"

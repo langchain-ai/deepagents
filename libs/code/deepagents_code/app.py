@@ -11002,7 +11002,7 @@ class DeepAgentsApp(App):
                 return None
             # `debug_forced` bypasses persistent suppression too, so the env
             # var stays a true override rather than silently no-opping for
-            # anyone who once chose "don't warn again ever".
+            # anyone who once chose "Send and never warn again".
             if not debug_forced and is_warning_suppressed("cold-cache"):
                 return None
             if debug_forced:
@@ -11185,7 +11185,7 @@ class DeepAgentsApp(App):
     async def _suppress_cold_cache_warning(self) -> None:
         """Persistently suppress the cold-cache warning in `config.toml`.
 
-        Used by the warning modal's "don't warn again ever" choice. The
+        Used by the warning modal's "Send and never warn again" choice. The
         setting can be reverted from the `/notifications` settings screen.
         """
         from deepagents_code.model_config import suppress_warning

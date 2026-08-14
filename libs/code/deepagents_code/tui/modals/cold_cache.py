@@ -77,10 +77,7 @@ class _ChoiceOption(Static):
     def _render(self) -> Content:
         glyphs = get_glyphs()
         cursor = glyphs.cursor if self._is_selected else " "
-        text = f"{cursor} {self._label}"
-        if self._choice is ColdCacheChoice.SEND:
-            return Content.styled(text, "bold")
-        return Content(text)
+        return Content(f"{cursor} {self._label}")
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Swallow the click without activating.
@@ -236,7 +233,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
                 ),
                 (
                     ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
-                    "Send and don't warn again ever",
+                    "Send and never warn again",
                 ),
                 (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
             ):

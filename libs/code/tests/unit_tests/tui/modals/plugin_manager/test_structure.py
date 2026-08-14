@@ -107,6 +107,94 @@ async def test_plugin_manager_closes_without_mcp_reconnect() -> None:
     on_close.assert_called_once_with(None)
 
 
+async def test_plugin_manager_keeps_modal_mounted_through_reload_prompt() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def check_reload_required() -> bool:
+        started.set()
+        await release.wait()
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    on_close = MagicMock()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, on_close)
+        await pilot.pause()
+        await pilot.press("escape")
+        await started.wait()
+
+        assert app.screen is screen
+        assert str(screen.query_one("#plugin-manager-status", Static).render()) == (
+            "Checking plugin changes..."
+        )
+        await pilot.press("escape")
+        assert app.screen is screen
+
+        release.set()
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Reload plugins?"
+        )
+        assert "plugin skills and MCP tools" in str(
+            screen.query_one("#plugin-manager-status", Static).render()
+        )
+        await pilot.press("enter")
+        await pilot.pause()
+
+    on_close.assert_called_once_with("reload")
+
+
+async def test_plugin_manager_reload_prompt_escape_defers() -> None:
+    async def check_reload_required() -> bool:
+        await asyncio.sleep(0)
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is screen
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == ["later"]
+
+
+@pytest.mark.parametrize(
+    ("reload_required", "outcome"),
+    [(False, None), (None, "check_failed")],
+)
+async def test_plugin_manager_check_close_outcome(
+    *, reload_required: bool | None, outcome: str | None
+) -> None:
+    async def check_reload_required() -> bool | None:
+        await asyncio.sleep(0)
+        return reload_required
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == [outcome]
+
+
 async def test_plugin_search_filters_and_clears() -> None:
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     screen = PluginManagerScreen()

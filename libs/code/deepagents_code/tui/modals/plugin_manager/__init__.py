@@ -18,7 +18,7 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from deepagents_code.tui.widgets.loading import Spinner
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence, Set as AbstractSet
+    from collections.abc import Awaitable, Callable, Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
     from textual.events import Key
@@ -57,6 +57,7 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _plugin_options,
 )
 from deepagents_code.tui.modals.plugin_manager.models import (
+    PluginManagerResult,
     PluginTab,
     _ManagerState,
 )
@@ -70,16 +71,16 @@ from deepagents_code.tui.modals.plugin_manager.tabs import (
 logger = logging.getLogger(__name__)  # noqa: RUF067  # module-level logger
 
 
-class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
+class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    When plugin state changed while the manager was open, a reload prompt is
-    shown after this screen closes offering to apply the changes via `/reload`;
-    an unchanged close shows nothing.
+    When plugin state changed while the manager was open, the screen transitions
+    directly to a reload prompt before closing; an unchanged close shows nothing.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
+        Binding("enter", "reload_plugins", "Reload", show=False, priority=True),
         # Separate from tab/shift+tab so check_action can release arrows to a
         # non-empty Input for caret movement while keeping Tab as tab cycling.
         Binding(
@@ -117,6 +118,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         mcp_server_info: Sequence[MCPServerInfo] = (),
         loaded_plugin_ids: AbstractSet[str] | None = None,
         on_auto_update_enabled: Callable[[], None] | None = None,
+        check_reload_required: Callable[[], Awaitable[bool | None]] | None = None,
     ) -> None:
         """Initialize the plugin manager.
 
@@ -129,6 +131,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 not loaded, or disabled but still loaded) are shown as pending
                 reload.
             on_auto_update_enabled: Called after auto-update is enabled.
+            check_reload_required: Checks whether manager changes require a reload.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
@@ -136,6 +139,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._mcp_server_info = mcp_server_info
         self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
         self._on_auto_update_enabled = on_auto_update_enabled
+        self._check_reload_required = check_reload_required
+        self._checking_changes = False
+        self._reload_prompt = False
         self._state = _ManagerState((), (), (), ())
         self._status: str | None = None
         self._error: str | None = None
@@ -592,6 +598,12 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             `False` to step a binding aside so the focused widget receives the
                 key; `True` to allow the action.
         """
+        if self._checking_changes or self._reload_prompt:
+            if action == "reload_plugins":
+                return self._reload_prompt
+            return action == "cancel" and self._reload_prompt
+        if action == "reload_plugins":
+            return False
         if action in {"arrow_previous_tab", "arrow_next_tab"}:
             focused = self.focused
             return not (isinstance(focused, Input) and bool(focused.value))
@@ -611,7 +623,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         paints empty with a caret flash (and so `select_on_focus` cannot leave
         the inserted text selected for the next keypress).
         """
-        if not self._search_available():
+        if (
+            self._checking_changes
+            or self._reload_prompt
+            or not self._search_available()
+        ):
             return
 
         search_input = self.query_one("#plugin-manager-search", Input)
@@ -638,9 +654,59 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         """
         self._select_tab(event.tab)
 
+    def _show_close_state(self, title: str, body: str, help_text: str) -> None:
+        """Replace manager content while checking or confirming reload."""
+        self.add_class("plugin-close-state")
+        self.query_one("#plugin-manager-title", Static).update(title)
+        self.query_one("#plugin-manager-tabs", Horizontal).display = False
+        self.query_one("#plugin-manager-divider", Rule).display = False
+        status = self.query_one("#plugin-manager-status", Static)
+        status.update(body)
+        status.display = True
+        self.query_one("#plugin-manager-error", Static).display = False
+        self.query_one("#plugin-manager-search", Input).display = False
+        self.query_one("#plugin-manager-options", OptionList).display = False
+        self.query_one("#plugin-marketplace-source", Input).display = False
+        help_widget = self.query_one("#plugin-manager-help", Static)
+        help_widget.update(help_text)
+        help_widget.display = bool(help_text)
+
+    async def _close_or_prompt(self) -> None:
+        """Check persisted plugin state while keeping the modal mounted."""
+        check_reload_required = self._check_reload_required
+        if check_reload_required is None:
+            self.dismiss(None)
+            return
+        try:
+            reload_required = await check_reload_required()
+        except Exception:
+            logger.exception("Failed to check plugin state before manager close")
+            self.dismiss("check_failed")
+            return
+        self._checking_changes = False
+        if reload_required is None:
+            self.dismiss("check_failed")
+        elif reload_required:
+            self._reload_prompt = True
+            self._show_close_state(
+                "Reload plugins?",
+                "Reload to apply changes to plugin skills and MCP tools.",
+                "Enter to reload, Esc for later",
+            )
+        else:
+            self.dismiss(None)
+
+    def action_reload_plugins(self) -> None:
+        """Apply pending plugin changes from the inline reload prompt."""
+        if self._reload_prompt:
+            self.dismiss("reload")
+
     def action_cancel(self) -> None:
         """Clear a query, leave a prompt or details, or close the manager."""
-        if self._adding_marketplace:
+        if self._adding_marketplace or self._checking_changes:
+            return
+        if self._reload_prompt:
+            self.dismiss("later")
             return
         search_input = self.query_one("#plugin-manager-search", Input)
         if search_input.has_focus:
@@ -669,7 +735,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._error = None
             self._refresh_view()
             return
-        self.dismiss(None)
+        if self._check_reload_required is None:
+            self.dismiss(None)
+            return
+        self._checking_changes = True
+        self._show_close_state("Plugins", "Checking plugin changes...", "")
+        self.run_worker(
+            self._close_or_prompt(),
+            exclusive=True,
+            group="plugin-manager-close",
+        )
 
     def action_focus_search(self) -> None:
         """Focus the plugin filter when it is visible."""

@@ -14,6 +14,7 @@ PluginManagerView = Literal[
     "marketplace_details",
     "confirm_remove_marketplace",
 ]
+PluginManagerResult = Literal["reload", "later", "check_failed"] | None
 PluginLoadState = Literal["disabled", "pending_reload", "enabled", "error"]
 
 

@@ -67,7 +67,7 @@ dependencies = [
     # compatibility promise, and this range spans every 0.1.x patch, so re-verify
     # both against `cost_tracking._build_price_overrides` and
     # `cost_tracking._find_override_model` when widening it.
-    "genai-prices>=0.1.1,<0.2.0",
+    "genai-prices>=0.1.2,<0.2.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",

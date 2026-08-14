@@ -14338,6 +14338,27 @@ class TestChatScrollKeepsInputFocus:
 class TestMessageTimestampFooters:
     """Tests for toggleable message timestamp footers."""
 
+    async def test_spacer_mount_skips_detached_footer_anchor(self) -> None:
+        """Spacer recreation tolerates a footer still listed during removal."""
+        from deepagents_code.app import _MESSAGE_TOP_SPACER_ID
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            footer = Static("", id="stale-timestamp-footer")
+            message = AppMessage("new", id="new-message")
+            await messages.mount(footer, message)
+            footer._detach()
+
+            await app._ensure_transcript_spacers(messages)
+
+            top = app.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
+            assert top.parent is messages
+            assert messages.children.index(top) < messages.children.index(message)
+            footer._parent = messages
+            await footer.remove()
+
     @staticmethod
     def _sync_tz() -> None:
         if hasattr(time, "tzset"):

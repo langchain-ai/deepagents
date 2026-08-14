@@ -58,8 +58,11 @@ def test_openai_copy_preserves_retention_uncertainty() -> None:
     assert "idle for 3h 12m" in body
     assert "30m minimum cache-retention window" in body
     assert "may still have retained" in body
-    assert "$0.42" in body
-    assert "$0.35 more" in body
+    # The `may_be_cold` branch keeps the cost sentence conditional, and both
+    # figures are rounded estimates framed as an upper bound.
+    assert "If the cache has expired" in body
+    assert "may cost up to ~$0.42" in body
+    assert "~$0.35 more" in body
 
 
 def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
@@ -74,6 +77,11 @@ def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
 
     assert "Anthropic's 5m prompt-cache lifetime" in body
     assert "has likely expired" in body
+    # Past a documented maximum the prefix is gone, so the cost sentence is
+    # unconditional but still rounds and frames the figures as upper bounds.
+    assert "If the cache has expired" not in body
+    assert "may cost up to ~$1.3" in body
+    assert "~$1.2 more" in body
 
 
 def test_identity_change_uses_model_specific_copy() -> None:
@@ -89,6 +97,10 @@ def test_identity_change_uses_model_specific_copy() -> None:
 
     assert "active model or prompt-cache settings differ" in body
     assert "previous cached prefix cannot be reused" in body
+    # An identity change guarantees the prefix is unusable, so the cost
+    # sentence is unconditional even though the policy is `may_be_cold`.
+    assert "If the cache has expired" not in body
+    assert "may cost up to ~$0.42" in body
 
 
 async def test_enter_authorizes_send() -> None:

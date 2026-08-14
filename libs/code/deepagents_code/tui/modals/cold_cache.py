@@ -11,7 +11,7 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from deepagents_code._session_stats import format_cost, format_token_count
+from deepagents_code._session_stats import format_cost_estimate, format_token_count
 from deepagents_code.cold_cache import (
     PromptCachePolicy,
     RewarmEstimate,
@@ -202,14 +202,25 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
                 f"{self._policy.provider_name}'s {window} minimum cache-retention "
                 "window. The provider may still have retained the cache."
             )
-        return (
-            f"{status}\n\n"
-            f"Re-processing approximately {format_token_count(self._context_tokens)} "
-            f"history tokens may cost {format_cost(self._estimate.cold_cost_usd)} "
-            "in input tokens, roughly "
-            f"{format_cost(self._estimate.incremental_cost_usd)} more than a warm "
-            "cache hit."
+        # Both figures are worst-case estimates from synthetic usage payloads:
+        # the cache may be partially warm and the actual spend lower, so the
+        # modal rounds them and frames them as "up to" bounds. Under the
+        # `may_be_cold` branch the cache may also be fully intact, so the cost
+        # sentence stays conditional on the cache having expired.
+        conditional = (
+            "If the cache has expired, re-processing"
+            if self._policy.confidence == "may_be_cold" and not self._identity_changed
+            else "Re-processing"
         )
+        cost = (
+            f"{conditional} approximately "
+            f"{format_token_count(self._context_tokens)} history tokens may "
+            f"cost up to {format_cost_estimate(self._estimate.cold_cost_usd)} "
+            f"in input tokens, roughly "
+            f"{format_cost_estimate(self._estimate.incremental_cost_usd)} more "
+            "than a warm cache hit."
+        )
+        return f"{status}\n\n{cost}"
 
     def compose(self) -> ComposeResult:
         """Compose the warning dialog.

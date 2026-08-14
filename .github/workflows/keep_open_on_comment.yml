@@ -1,12 +1,13 @@
 # Apply "do-not-close" when a maintainer comments `!keep-open` on a PR, so
 # exempting a PR from the close_old_prs.yml sweep does not require a trip to
-# the label picker. Applying the label emits the `labeled` event, so
-# clear_pending_deletion.yml then removes any "pending-deletion" label and
-# minimizes the stale auto-close warning — the same end state as adding the
-# label by hand. The reaction toggles 👀 -> 🚀 so the acknowledgement stays
-# correct if the comment is edited or deleted (the edit/delete events do not
-# re-run this workflow, so a removed comment leaves the label behind — the
-# stale 🚀 is the visible trace of why).
+# the label picker. The step also removes any "pending-deletion" label and
+# minimizes the stale auto-close warning itself — the same end state as
+# adding the label by hand — because it cannot rely on
+# clear_pending_deletion.yml for that cleanup (see the token note below).
+# The reaction toggles 👀 -> 🚀 so the acknowledgement stays correct if the
+# comment is edited or deleted (the edit/delete events do not re-run this
+# workflow, so a removed comment leaves the label behind — the stale 🚀 is
+# the visible trace of why).
 #
 # issue_comment runs in the base repository's context and GITHUB_TOKEN is
 # writable here regardless of where the PR head lives (that read-only
@@ -25,12 +26,13 @@
 #
 # No app token is passed to the github-script step, so it runs with the
 # default GITHUB_TOKEN and the resulting `labeled` event does NOT retrigger
-# workflows beyond what a manual label application would do. That is load
-# bearing: sync_priority_labels.yml and a dozen other workflows listen for
-# label events on PRs; an app token would arm all of them from every
-# keep-open comment. clear_pending_deletion.yml is pull_request_target and
-# fires on `labeled` regardless of actor, so the pending-deletion cleanup
-# still runs.
+# workflows at all: GitHub suppresses events produced by the default token.
+# That suppression is load bearing in one direction — sync_priority_labels.yml
+# and a dozen other workflows listen for label events on PRs, and an app
+# token would arm all of them from every keep-open comment — and worked
+# around in the other: clear_pending_deletion.yml listens for exactly that
+# suppressed `labeled` event, so the pending-deletion cleanup runs inline
+# here via the shared clearPendingDeletion helper instead.
 #
 # `!keep-open` (rather than a bare-word match) keeps ordinary prose from
 # exempting a PR, and a substring match (rather than exact equality) lets a
@@ -66,23 +68,24 @@ jobs:
     timeout-minutes: 10
     # A job-level `permissions` block replaces the workflow-level one outright
     # rather than merging with it, so `contents: read` has to be repeated here
-    # or the checkout below has no read access. `issues: write` covers both
-    # addLabels and createReaction (PR conversation labels and comments are
-    # the issues API).
+    # or the checkout below has no read access. `issues: write` covers
+    # addLabels, removeLabel, createReaction, and the minimizeComment mutation
+    # in clearPendingDeletion (PR conversation labels and comments are the
+    # issues API).
     permissions:
       contents: read
       issues: write
       pull-requests: write
 
     steps:
-      # Checked out only so the script step can require the shared
-      # applyBypassLabel helper from close-old-prs.js. This is an issue_comment
-      # workflow, so GITHUB_REF is already the repository default branch —
-      # pinning `ref` (the way clear_pending_deletion.yml must under
-      # pull_request_target) is unnecessary here.
+      # Checked out only so the script step can require the shared helpers
+      # from close-old-prs.js. This is an issue_comment workflow, so
+      # GITHUB_REF is already the repository default branch — pinning `ref`
+      # (the way clear_pending_deletion.yml must under pull_request_target)
+      # is unnecessary here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Apply do-not-close label
+      - name: Apply do-not-close label and clear pending deletion
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # `created` fires exactly once per comment, so unlike the daily
@@ -105,11 +108,16 @@ jobs:
               content: 'eyes',
             });
 
-            const { applyBypassLabel } = require('./.github/scripts/labeling/close-old-prs.js');
+            const {
+              applyBypassLabel,
+              clearPendingDeletion,
+              DEFAULT_PENDING_DELETION_LABEL: pendingDeletionLabel,
+            } = require('./.github/scripts/labeling/close-old-prs.js');
 
-            // The name comes from the script's DEFAULT_BYPASS_LABEL rather
-            // than repeating the literal here, so it cannot drift from what
-            // close_old_prs.yml and clear_pending_deletion.yml use.
+            // The bypass label name comes from the script's
+            // DEFAULT_BYPASS_LABEL rather than repeating the literal here, so
+            // it cannot drift from what close_old_prs.yml and
+            // clear_pending_deletion.yml use.
             const applied = await applyBypassLabel({
               github,
               owner,
@@ -119,7 +127,27 @@ jobs:
 
             if (!applied) {
               console.log(
-                `PR #${issue_number} already carries the bypass label; nothing to do`,
+                `PR #${issue_number} already carries the bypass label`,
+              );
+            }
+
+            // This step's addLabels call uses the default GITHUB_TOKEN, so
+            // GitHub emits no `labeled` event for it and
+            // clear_pending_deletion.yml never runs for a !keep-open comment.
+            // Do the same cleanup inline: drop pending-deletion and minimize
+            // the stale auto-close warning. Unconditional (not gated on
+            // `applied`) because a PR can already carry do-not-close while
+            // still wearing pending-deletion from the daily sweep.
+            const cleared = await clearPendingDeletion({
+              github,
+              core,
+              owner,
+              repo,
+              issueNumber: issue_number,
+            });
+            if (cleared) {
+              console.log(
+                `Removed ${pendingDeletionLabel} from PR #${issue_number}`,
               );
             }
 

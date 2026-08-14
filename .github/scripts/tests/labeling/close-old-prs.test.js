@@ -8,6 +8,7 @@ const closeOldPrs = require('../../labeling/close-old-prs.js');
 const {
   run,
   applyBypassLabel,
+  clearPendingDeletion,
   closeBody,
   ageInDays,
   COMMENT_MARKER,
@@ -194,6 +195,73 @@ test('applyBypassLabel no-ops when the label is already present', async () => {
 
   assert.equal(applied, false);
   assert.deepEqual(calls.addLabels, []);
+});
+
+// clearPendingDeletion is the shared "PR is exempt now" cleanup behind both
+// clear_pending_deletion.yml (manual do-not-close) and keep_open_on_comment.yml
+// (whose GITHUB_TOKEN-authored `labeled` event GitHub suppresses, so the
+// cleanup has to run inline). Its contract: remove pending-deletion, tolerate
+// its absence, and always attempt to minimize the stale warning.
+test('clearPendingDeletion removes the label and minimizes the warning', async () => {
+  const { github, calls } = makeGithub({
+    comments: new Map([[42, [{
+      id: 1,
+      body: COMMENT_MARKER,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+    }]]]),
+  });
+  const core = makeCore();
+
+  const removed = await clearPendingDeletion({
+    github, core, owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+  });
+
+  assert.equal(removed, true);
+  assert.deepEqual(calls.removeLabel, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 42,
+    name: DEFAULT_PENDING_DELETION_LABEL,
+  }]);
+  assert.equal(calls.graphql.length, 1);
+  assert.match(calls.graphql[0].query, /minimizeComment/);
+});
+
+// keep_open_on_comment.yml reaches this branch routinely — a !keep-open PR
+// may never have carried pending-deletion. A 404 must not fail the run, and
+// the warning minimization must still happen: the label and the comment are
+// applied separately, so one can exist without the other.
+test('clearPendingDeletion tolerates an absent label and still minimizes', async () => {
+  const { github, calls } = makeGithub({
+    removeLabelErrors: new Map([[42, httpError('gone', 404)]]),
+    comments: new Map([[42, [{
+      id: 1,
+      body: COMMENT_MARKER,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+    }]]]),
+  });
+  const core = makeCore();
+
+  const removed = await clearPendingDeletion({
+    github, core, owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+  });
+
+  assert.equal(removed, false);
+  assert.equal(core.warnings.length, 1);
+  assert.equal(calls.graphql.length, 1);
+});
+
+test('clearPendingDeletion propagates non-404 removal failures', async () => {
+  const { github } = makeGithub({
+    removeLabelErrors: new Map([[42, httpError('forbidden', 403)]]),
+  });
+
+  await assert.rejects(
+    clearPendingDeletion({
+      github, core: makeCore(), owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+    }),
+    /forbidden/,
+  );
 });
 
 // RELEASE_PLEASE_BRANCH_PREFIX is a hardcoded literal, not derived, and the

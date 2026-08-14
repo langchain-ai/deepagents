@@ -313,6 +313,50 @@ async function minimizeMarkerComment({ github, core, owner, repo, issueNumber })
   }
 }
 
+// The full "PR is exempt now" cleanup: drop pending-deletion and minimize the
+// stale auto-close warning posted alongside it. Shared by
+// clear_pending_deletion.yml (when a maintainer adds do-not-close by hand)
+// and keep_open_on_comment.yml, which cannot rely on that workflow firing:
+// its addLabels call uses the default GITHUB_TOKEN, and GitHub does not emit
+// a `labeled` event for actions taken by that token.
+//
+// Returns true only when this call actually removed the label, so a caller
+// logging the outcome can distinguish a real removal from a no-op.
+async function clearPendingDeletion({ github, core, owner, repo, issueNumber, pendingLabel = DEFAULT_PENDING_DELETION_LABEL }) {
+  let removed = true;
+  try {
+    await github.rest.issues.removeLabel({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      name: pendingLabel,
+    });
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    // clear_pending_deletion.yml's `if:` already saw the label in the event
+    // payload, so a 404 there means a genuine race: the daily close_old_prs
+    // sweep, or a maintainer, got there first. keep_open_on_comment.yml
+    // reaches this branch routinely — the PR may never have carried the
+    // label. (Before the name came from the shared constant, a drifted label
+    // name produced an identical 404 and turned clear_pending_deletion.yml
+    // into a permanent no-op — hence a warning rather than a routine log
+    // line.)
+    core.warning(
+      `removeLabel returned 404 for '${pendingLabel}' on PR ` +
+      `#${issueNumber}; something else removed it first (or it was never ` +
+      `applied): ${error.message}`,
+    );
+    removed = false;
+  }
+
+  // The label is only half of what a maintainer sees: close-old-prs.js posts
+  // a warning comment alongside it that claims the PR will be auto-closed.
+  // Minimize it so the PR does not keep advertising a fate that no longer
+  // applies. Best-effort — the label removal above is the load-bearing part.
+  await minimizeMarkerComment({ github, core, owner, repo, issueNumber });
+  return removed;
+}
+
 function warningBody({ warningDays, closeDays, bypassLabel }) {
   const noticeDays = closeDays - warningDays;
   return [
@@ -930,6 +974,11 @@ module.exports = {
   // maintainer comments the keep-open phrase. Sharing the helper keeps the
   // label name from drifting from DEFAULT_BYPASS_LABEL.
   applyBypassLabel,
+  // Required by both workflows that exempt a PR: clear_pending_deletion.yml
+  // (manual label) and keep_open_on_comment.yml (comment command, whose
+  // GITHUB_TOKEN-authored `labeled` event GitHub suppresses, so it must run
+  // the cleanup itself).
+  clearPendingDeletion,
   DEFAULT_PENDING_DELETION_LABEL,
   DEFAULT_BYPASS_LABEL,
   warningBody,

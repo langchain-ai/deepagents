@@ -116,6 +116,8 @@ loop and swaps in atomically, so it never blocks typing."""
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
+    from textual.color import Color
+    from textual.css.types import EdgeType
     from textual.events import Click
 
     from deepagents_code.config_manifest import CursorStyle
@@ -1345,21 +1347,13 @@ class _CompletionViewAdapter:
 
 
 class ChatInputBox(Vertical):
-    """Bordered chat-input box with a draggable top edge."""
-
-    ALLOW_SELECT = False
+    """Bordered box that owns the chat composer size."""
 
     def __init__(self, **kwargs: Any) -> None:
-        """Initialize drag state."""
+        """Initialize sizing state."""
         super().__init__(**kwargs)
         self._completion_rows = 0
-        self._drag_start_y: int | None = None
-        self._drag_start_height = 1
         self._manual_height: int | None = None
-
-    def _is_top_border(self, event: events.MouseEvent) -> bool:
-        """Return whether a mouse event targets this box's top border."""
-        return event.widget is self and event.y == 0
 
     def _maximum_height(self) -> int:
         """Return the largest safe manual composer height."""
@@ -1398,50 +1392,6 @@ class ChatInputBox(Vertical):
         text_area.styles.max_height = _CHAT_INPUT_AUTO_MAX_HEIGHT
         text_area.call_after_refresh(text_area.scroll_cursor_visible)
 
-    def on_mouse_down(self, event: events.MouseDown) -> None:
-        """Begin resizing from a left press on the top border."""
-        if event.button != 1 or not self._is_top_border(event):
-            return
-        self._drag_start_y = event.screen_y
-        self._drag_start_height = max(1, self.query_one(ChatTextArea).size.height)
-        self.styles.pointer = "ns-resize"
-        self.capture_mouse()
-        event.stop()
-        event.prevent_default()
-
-    def on_mouse_move(self, event: events.MouseMove) -> None:
-        """Resize during a drag or update the border pointer."""
-        if self._drag_start_y is None:
-            self.styles.pointer = (
-                "ns-resize" if self._is_top_border(event) else "default"
-            )
-            return
-        self._set_manual_height(
-            self._drag_start_height + self._drag_start_y - event.screen_y
-        )
-        event.stop()
-        event.prevent_default()
-
-    def on_mouse_up(self, event: events.MouseUp) -> None:
-        """Finish an active left-button resize."""
-        if self._drag_start_y is None or event.button != 1:
-            return
-        self._drag_start_y = None
-        self.release_mouse()
-        event.stop()
-        event.prevent_default()
-
-    def on_click(self, event: Click) -> None:
-        """Reset automatic sizing when the top border is double-clicked."""
-        if (
-            event.button == 1
-            and event.chain >= _DOUBLE_CLICK_CHAIN
-            and self._is_top_border(event)
-        ):
-            self._reset_height()
-            event.stop()
-            event.prevent_default()
-
     def on_completion_popup_rows_changed(
         self, event: CompletionPopup.RowsChanged
     ) -> None:
@@ -1455,10 +1405,96 @@ class ChatInputBox(Vertical):
         if self._manual_height is not None:
             self._set_manual_height(self._manual_height)
 
-    def on_unmount(self) -> None:
-        """Release mouse capture during teardown."""
+
+class ChatInputResizeHandle(Static):
+    """Transparent drag target over the chat input's top border."""
+
+    ALLOW_SELECT = False
+
+    class DragStarted(Message):
+        """Message sent when a resize drag begins."""
+
+    class Dragged(Message):
+        """Message sent with the current drag delta."""
+
+        def __init__(self, delta: int) -> None:
+            """Initialize with an upward-positive row delta."""
+            super().__init__()
+            self.delta = delta
+
+    class HoverChanged(Message):
+        """Message sent when resize hover feedback changes."""
+
+        def __init__(self, highlighted: bool) -> None:
+            """Initialize with the new hover state."""
+            super().__init__()
+            self.highlighted = highlighted
+
+    class Reset(Message):
+        """Message sent when automatic sizing should be restored."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize drag state."""
+        super().__init__("", markup=False, **kwargs)
+        self._drag_start_y: int | None = None
+        self._highlighted = False
+
+    def _set_highlighted(self, *, highlighted: bool) -> None:
+        """Publish top-border hover changes."""
+        if self._highlighted != highlighted:
+            self._highlighted = highlighted
+            self.post_message(self.HoverChanged(highlighted))
+
+    def on_enter(self) -> None:
+        """Highlight the resize target on hover."""
+        self._set_highlighted(highlighted=True)
+
+    def on_leave(self) -> None:
+        """Remove hover feedback outside an active drag."""
+        if self._drag_start_y is None:
+            self._set_highlighted(highlighted=False)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Begin resizing from a left press on the handle."""
+        if event.button != 1:
+            return
+        self._drag_start_y = event.screen_y
+        self._set_highlighted(highlighted=True)
+        self.capture_mouse()
+        self.post_message(self.DragStarted())
+        event.stop()
+        event.prevent_default()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Publish movement during a captured drag."""
+        if self._drag_start_y is None:
+            return
+        self.post_message(self.Dragged(self._drag_start_y - event.screen_y))
+        event.stop()
+        event.prevent_default()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        """Finish an active left-button resize."""
+        if self._drag_start_y is None or event.button != 1:
+            return
         self._drag_start_y = None
         self.release_mouse()
+        self._set_highlighted(highlighted=event.screen_offset in self.region)
+        event.stop()
+        event.prevent_default()
+
+    def on_click(self, event: Click) -> None:
+        """Reset automatic sizing when the handle is double-clicked."""
+        if event.button == 1 and event.chain >= _DOUBLE_CLICK_CHAIN:
+            self.post_message(self.Reset())
+            event.stop()
+            event.prevent_default()
+
+    def on_unmount(self) -> None:
+        """Release mouse capture and hover state during teardown."""
+        self._drag_start_y = None
+        self.release_mouse()
+        self._set_highlighted(highlighted=False)
 
 
 class ChatInput(Vertical):
@@ -1498,6 +1534,20 @@ class ChatInput(Vertical):
         border: solid $mode-incognito;
         border-title-color: $mode-incognito;
         border-title-style: bold;
+    }
+
+    ChatInput #input-box.resize-hover {
+        border-top: solid $primary-lighten-2;
+    }
+
+    ChatInput #input-resize-handle {
+        layer: actions;
+        dock: right;
+        width: 1fr;
+        height: 1;
+        margin-right: 1;
+        background: transparent;
+        pointer: ns-resize;
     }
 
     /* Action buttons float on their own z-layer over the top border line, so
@@ -1607,6 +1657,8 @@ class ChatInput(Vertical):
         self._cwd = Path(cwd) if cwd else Path.cwd()
         self._image_tracker = image_tracker
         self._input_box: ChatInputBox | None = None
+        self._resize_border_top: tuple[EdgeType, Color] | None = None
+        self._resize_start_height = 1
         self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
@@ -1678,11 +1730,14 @@ class ChatInput(Vertical):
         # The bordered box owns the prompt, text area, and completion popup so
         # the action buttons (a sibling) can float on its top border line; a
         # widget can only render on its sibling's border, not its parent's.
-        with ChatInputBox(id="input-box"):
+        input_box = ChatInputBox(id="input-box")
+        with input_box:
             with Horizontal(classes="input-row"):
                 yield Static(">", classes="input-prompt", id="prompt")
                 yield ChatTextArea(id="chat-input")
             yield CompletionPopup(id="completion-popup")
+
+        yield ChatInputResizeHandle(id="input-resize-handle")
 
         # Action buttons float on their own z-layer over the top border line so
         # they cost no content row and never overlap the draft text.
@@ -1736,6 +1791,53 @@ class ChatInput(Vertical):
             self._refresh_file_cache,
         )
         self._text_area.focus()
+
+    def _set_resize_highlighted(self, *, highlighted: bool) -> None:
+        """Toggle resize hover feedback on the top border."""
+        if self._input_box is None:
+            return
+        self._input_box.set_class(highlighted, "resize-hover")
+        if not is_ascii_mode():
+            return
+        if highlighted and self._resize_border_top is None:
+            self._resize_border_top = self._input_box.styles.border_top
+            edge, _color = self._resize_border_top
+            colors = theme.get_theme_colors(self)
+            self._input_box.styles.border_top = (edge, colors.accent)
+        elif not highlighted and self._resize_border_top is not None:
+            self._input_box.styles.border_top = self._resize_border_top
+            self._resize_border_top = None
+
+    def on_chat_input_resize_handle_drag_started(
+        self, event: ChatInputResizeHandle.DragStarted
+    ) -> None:
+        """Record the composer height at the start of a drag."""
+        if self._text_area is not None:
+            self._resize_start_height = max(1, self._text_area.size.height)
+        event.stop()
+
+    def on_chat_input_resize_handle_dragged(
+        self, event: ChatInputResizeHandle.Dragged
+    ) -> None:
+        """Apply a drag delta to the composer height."""
+        if self._input_box is not None:
+            self._input_box._set_manual_height(self._resize_start_height + event.delta)
+        event.stop()
+
+    def on_chat_input_resize_handle_hover_changed(
+        self, event: ChatInputResizeHandle.HoverChanged
+    ) -> None:
+        """Update top-border hover feedback."""
+        self._set_resize_highlighted(highlighted=event.highlighted)
+        event.stop()
+
+    def on_chat_input_resize_handle_reset(
+        self, event: ChatInputResizeHandle.Reset
+    ) -> None:
+        """Restore automatic composer sizing."""
+        if self._input_box is not None:
+            self._input_box._reset_height()
+        event.stop()
 
     def _warm_file_cache(self, *, force: bool = False, exclusive: bool = False) -> None:
         """Schedule an `@` file-completion cache warmer.

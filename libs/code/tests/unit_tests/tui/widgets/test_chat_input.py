@@ -25,6 +25,7 @@ from deepagents_code.tui.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.tui.widgets.chat_input import (
     ChatInput,
     ChatInputBox,
+    ChatInputResizeHandle,
     ChatTextArea,
     CompletionOption,
     CompletionPopup,
@@ -391,15 +392,15 @@ class TestChatInputResize:
         """Dragging the top border adjusts rows and releases outside the box."""
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
-            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
             await pilot.pause()
-            start_y = box.region.y
-            x = box.region.x + 5
+            start_y = handle.region.y
+            x = handle.region.x + 5
 
             assert text_area.size.height == 1
-            await pilot.mouse_down(box, offset=(5, 0))
-            assert app.mouse_captured is box
+            await pilot.mouse_down(handle, offset=(5, 0))
+            assert app.mouse_captured is handle
 
             await pilot.hover(offset=(x, start_y - 4))
             assert text_area.size.height == 5
@@ -407,8 +408,8 @@ class TestChatInputResize:
             await pilot.mouse_up(offset=(x, start_y - 4))
             assert app.mouse_captured is None
 
-            start_y = box.region.y
-            await pilot.mouse_down(box, offset=(5, 0))
+            start_y = handle.region.y
+            await pilot.mouse_down(handle, offset=(5, 0))
             await pilot.hover(offset=(x, start_y + 3))
             await pilot.mouse_up(offset=(x, start_y + 3))
 
@@ -418,17 +419,17 @@ class TestChatInputResize:
         """Manual resizing stays within one row and the screen-aware maximum."""
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
-            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
             await pilot.pause()
-            x = box.region.x + 5
+            x = handle.region.x + 5
 
-            await pilot.mouse_down(box, offset=(5, 0))
+            await pilot.mouse_down(handle, offset=(5, 0))
             await pilot.hover(offset=(x, 0))
             await pilot.mouse_up(offset=(x, 0))
             assert text_area.size.height == 17
 
-            await pilot.mouse_down(box, offset=(5, 0))
+            await pilot.mouse_down(handle, offset=(5, 0))
             await pilot.hover(offset=(x, 23))
             await pilot.mouse_up(offset=(x, 23))
             assert text_area.size.height == 1
@@ -438,13 +439,14 @@ class TestChatInputResize:
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
             box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
             await pilot.pause()
             box._set_manual_height(5)
             await pilot.pause()
             assert text_area.size.height == 5
 
-            await pilot.double_click(box, offset=(5, 0))
+            await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
 
             assert box._manual_height is None
@@ -487,18 +489,37 @@ class TestChatInputResize:
             assert box._manual_height == 5
             assert text_area.size.height == 5
 
-    async def test_only_left_press_on_top_border_starts_drag(self) -> None:
-        """Other buttons and descendant presses leave resize inactive."""
+    async def test_hover_highlights_only_the_top_border(self) -> None:
+        """Hovering the explicit handle highlights the box's top edge."""
         app = _ChatInputResizeTestApp()
         async with app.run_test() as pilot:
             box = app.query_one(ChatInputBox)
-            text_area = app.query_one(ChatTextArea)
+            handle = app.query_one(ChatInputResizeHandle)
             await pilot.pause()
-            y = box.region.y
+            default_border = box.styles.border_top
 
-            box.on_mouse_down(
+            await pilot.hover(handle, offset=(5, 0))
+
+            assert box.has_class("resize-hover")
+            assert box.styles.border_top != default_border
+            assert handle.styles.pointer == "ns-resize"
+
+            await pilot.hover("#spacer")
+
+            assert not box.has_class("resize-hover")
+            assert box.styles.border_top == default_border
+
+    async def test_non_left_press_does_not_start_drag(self) -> None:
+        """A non-left press on the handle leaves resize inactive."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test() as pilot:
+            handle = app.query_one(ChatInputResizeHandle)
+            await pilot.pause()
+            y = handle.region.y
+
+            handle.on_mouse_down(
                 events.MouseDown(
-                    box,
+                    handle,
                     1,
                     0,
                     0,
@@ -507,28 +528,12 @@ class TestChatInputResize:
                     False,
                     False,
                     False,
-                    screen_x=box.region.x + 1,
+                    screen_x=handle.region.x + 1,
                     screen_y=y,
                 )
             )
-            assert box._drag_start_y is None
 
-            box.on_mouse_down(
-                events.MouseDown(
-                    text_area,
-                    1,
-                    0,
-                    0,
-                    0,
-                    1,
-                    False,
-                    False,
-                    False,
-                    screen_x=text_area.region.x + 1,
-                    screen_y=text_area.region.y,
-                )
-            )
-            assert box._drag_start_y is None
+            assert handle._drag_start_y is None
             assert app.mouse_captured is None
 
 
@@ -757,13 +762,15 @@ class TestInputActionButtons:
             await pilot.pause()
 
             box = chat_input.query_one("#input-box")
+            handle = chat_input.query_one(ChatInputResizeHandle)
             clear = chat_input.query_one("#clear-button", Static)
             copy = chat_input.query_one("#copy-button", Static)
 
             # Text area spans the full width inside the border.
             assert text_area.region.right == box.content_region.right
 
-            # Buttons render on the top border row, above the first text row.
+            # The resize handle and buttons render on the top border row.
+            assert handle.region.y == box.region.y
             assert clear.region.y == box.region.y
             assert copy.region.y == box.region.y
             assert text_area.region.y > box.region.y
@@ -771,8 +778,11 @@ class TestInputActionButtons:
             # The top-right corner stays visible (buttons stop short of the edge).
             assert copy.region.right < box.region.right
 
-            # No overlap: a first-row click reaches the text area, and a click on
-            # a button hits the button.
+            # No overlap: each cell resolves to its intended interaction target.
+            handle_widget, _ = app.screen.get_widget_at(
+                handle.region.x + 1, handle.region.y
+            )
+            assert handle_widget is handle
             left_widget, _ = app.screen.get_widget_at(
                 text_area.region.x + 1, text_area.region.y
             )

@@ -83,6 +83,7 @@ _FILE_CACHE_WORKER_GROUP = "file-cache"
 """Textual worker group for all `@` file-completion cache warmers."""
 
 _CHAT_INPUT_AUTO_MAX_HEIGHT = 8
+_CHAT_INPUT_BORDER_CORNER_COLUMNS = 2
 _CHAT_INPUT_BOX_MAX_HEIGHT = 25
 _CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
 _CHAT_INPUT_MIN_NON_COMPOSER_ROWS = 7
@@ -1552,10 +1553,10 @@ class ChatInput(Vertical):
 
     ChatInput #input-resize-handle {
         layer: actions;
-        dock: right;
-        width: 1fr;
+        dock: left;
+        width: 1;
         height: 1;
-        margin-right: 1;
+        offset: 1 0;
         background: transparent;
         color: $primary;
         pointer: ns-resize;
@@ -1685,6 +1686,7 @@ class ChatInput(Vertical):
         self._image_tracker = image_tracker
         self._input_box: ChatInputBox | None = None
         self._resize_border_top: tuple[EdgeType, Color] | None = None
+        self._resize_handle: ChatInputResizeHandle | None = None
         self._resize_start_height = 1
         self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
@@ -1785,6 +1787,9 @@ class ChatInput(Vertical):
     def on_mount(self) -> None:
         """Initialize components after mount."""
         self._input_box = self.query_one("#input-box", ChatInputBox)
+        self._resize_handle = self.query_one(
+            "#input-resize-handle", ChatInputResizeHandle
+        )
         self._action_buttons = self.query_one("#input-actions", Horizontal)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
@@ -1817,7 +1822,20 @@ class ChatInput(Vertical):
             _FILE_CACHE_REFRESH_INTERVAL_SECONDS,
             self._refresh_file_cache,
         )
+        self.call_after_refresh(self._sync_resize_handle_geometry)
         self._text_area.focus()
+
+    def _sync_resize_handle_geometry(self) -> None:
+        """Inset the resize handle so border corners remain visible."""
+        if self._input_box is not None and self._resize_handle is not None:
+            self._resize_handle.styles.width = max(
+                1,
+                self._input_box.region.width - _CHAT_INPUT_BORDER_CORNER_COLUMNS,
+            )
+
+    def on_resize(self, _event: events.Resize) -> None:
+        """Keep the resize handle aligned after layout changes."""
+        self.call_after_refresh(self._sync_resize_handle_geometry)
 
     def _set_resize_highlighted(self, *, highlighted: bool) -> None:
         """Toggle resize hover feedback on the top border."""

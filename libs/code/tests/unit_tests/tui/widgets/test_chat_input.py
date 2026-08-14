@@ -777,6 +777,8 @@ class TestInputActionButtons:
 
             # The resize handle and buttons render on the top border row.
             assert handle.region.y == box.region.y
+            assert handle.region.x == box.region.x + 1
+            assert handle.region.right == box.region.right - 1
             assert clear.region.y == box.region.y
             assert copy.region.y == box.region.y
             assert text_area.region.y > box.region.y

@@ -238,7 +238,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
                     ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
                     "Send and don't warn again ever",
                 ),
-                (ColdCacheChoice.CANCEL, "Keep draft"),
+                (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
             ):
                 option = _ChoiceOption(choice, label)
                 self._options.append(option)
@@ -246,7 +246,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate "
                 f"{glyphs.bullet} Enter select "
-                f"{glyphs.bullet} Esc keep draft"
+                f"{glyphs.bullet} Esc cancel"
             )
             yield Static(help_text, classes="cold-cache-help", markup=False)
 

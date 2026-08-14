@@ -48,7 +48,7 @@ from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
 from textual.worker import NoActiveWorker, get_current_worker
-from typing_extensions import override
+from typing_extensions import Protocol, override, runtime_checkable
 
 # Applied as an import-time side effect; must come before any App is created.
 from deepagents_code import (
@@ -138,6 +138,19 @@ from deepagents_code.tui.widgets.welcome import WelcomeBanner
 logger = logging.getLogger(__name__)
 _GRACEFUL_EXIT_WAIT_SECONDS = 2.0
 _monotonic = time.monotonic
+
+
+@runtime_checkable
+class _SupportsReverseNav(Protocol):
+    """Cursor-style modal that can step its selection up on `shift+tab`.
+
+    The app's priority `shift+tab -> toggle_auto_approve` binding consumes the
+    key before any screen binding fires, so `action_toggle_auto_approve`
+    routes the key to every active screen matching this protocol. A new modal
+    that implements `action_move_up` is routed automatically.
+    """
+
+    def action_move_up(self) -> None: ...
 
 
 async def _wait_for_session_end(
@@ -20250,18 +20263,11 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
-        from deepagents_code.tui.widgets.notification_center import (
-            NotificationCenterScreen,
-        )
-        from deepagents_code.tui.widgets.notification_detail import (
-            NotificationDetailScreen,
-        )
         from deepagents_code.tui.widgets.notification_settings import (
             NotificationSettingsScreen,
         )
         from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
-        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
@@ -20278,17 +20284,20 @@ class DeepAgentsApp(App):
             # never fires because this priority binding consumes the key first).
             self.screen.focus_previous()
             return
-        if isinstance(
-            self.screen,
-            (UpdateAvailableScreen, NotificationCenterScreen, NotificationDetailScreen),
-        ):
-            self.screen.action_move_up()
-            return
         if isinstance(self.screen, MCPViewerScreen):
             self.screen.action_jump_up()
             return
         if isinstance(self.screen, PluginManagerScreen):
             self.screen.action_previous_tab()
+            return
+        if isinstance(self.screen, _SupportsReverseNav):
+            # Covers every cursor-style modal (update-available, cold-cache,
+            # notification center/detail) whose rows have no focusable
+            # children. A new modal with `action_move_up` is picked up here
+            # automatically; without this branch its own priority
+            # `shift+tab -> move_up` binding would never fire because this
+            # app-level priority binding wins dispatch.
+            self.screen.action_move_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
@@ -22577,12 +22586,14 @@ class DeepAgentsApp(App):
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
             binding for the key; stepping aside lets it fall through to the
             console's `key_shift_tab` reverse-focus traversal. Without this the
-            binding fires `action_toggle_auto_approve`, which no-ops under a
-            `ModalScreen` that lacks dedicated `shift+tab` handling (as
-            `DebugConsoleScreen` does), so the key would be silently swallowed.
-            Note this keys on the action, and `toggle_auto_approve` is
-            also bound to `ctrl+t`, so that (harmless, already a no-op
-            under modals) binding is stepped aside too while the console is open.
+            binding fires `action_toggle_auto_approve`, which routes
+            cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
+            under a `ModalScreen` that lacks dedicated `shift+tab` handling
+            (as `DebugConsoleScreen` does), so the key would be silently
+            swallowed. Note this keys on the action, and `toggle_auto_approve`
+            is also bound to `ctrl+t`, so that (harmless, already a no-op
+            under modals) binding is stepped aside too while the console is
+            open.
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys
             this one must be `priority=True` to beat `Screen`'s
             `tab -> app.focus_next`, which means it would otherwise swallow

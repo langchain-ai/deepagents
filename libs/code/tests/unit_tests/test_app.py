@@ -38289,3 +38289,35 @@ class TestColdCacheWarningFlow:
             and "_last_model_request_at" in record.getMessage()
             for record in caplog.records
         )
+
+    async def test_shift_tab_moves_cursor_up(self) -> None:
+        """The app's priority `shift+tab` binding routes to the modal's `move_up`.
+
+        A bare `App` host cannot catch this regression: without it the app's
+        `shift+tab -> toggle_auto_approve` priority binding consumes the key
+        and the modal's own `shift+tab -> move_up` binding never fires.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = ColdCacheWarningScreen(
+                policy=PromptCachePolicy(
+                    "OpenAI", 1800, "may_be_cold", 1024, "generic"
+                ),
+                estimate=RewarmEstimate(0.42, 0.35),
+                context_tokens=84_000,
+                age_seconds=11_520,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._selected == 0
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            # Wraps from the first row to "Don't send (keep draft)"; the
+            # approval-mode toggle must not fire.
+            assert screen._selected == len(screen._options) - 1
+            assert app._approval_mode is ApprovalMode.MANUAL

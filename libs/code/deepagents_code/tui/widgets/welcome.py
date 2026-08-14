@@ -235,6 +235,7 @@ class WelcomeBanner(Static):
         self._show_cwd = is_env_truthy(SPLASH_SHOW_CWD)
         self._hide_cwd = is_env_truthy(HIDE_CWD)
         self._hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
+        self._version = __version__
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id = thread_id
         self._mcp_tool_count = mcp_tool_count
@@ -356,6 +357,16 @@ class WelcomeBanner(Static):
         if self._show_thread_id:
             self.update(self._build_banner())
 
+    def update_version(self, version: str) -> None:
+        """Show the newly installed version after an in-session update.
+
+        Args:
+            version: The newly installed `deepagents-code` version.
+        """
+        self._version = version
+        if not self._hide_version:
+            self.update(self._build_banner())
+
     def set_connected(
         self,
         mcp_tool_count: int = 0,
@@ -448,7 +459,7 @@ class WelcomeBanner(Static):
             ("dcode", "bold"),
         ]
         if not self._hide_version:
-            parts.append((f"  v{__version__}", "dim"))
+            parts.append((f"  v{self._version}", "dim"))
         if self._debug_enabled:
             parts.append(
                 (

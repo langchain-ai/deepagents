@@ -680,6 +680,7 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
     """`/update` lets update helpers infer the channel from the installed version."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -701,6 +702,9 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
         ):
             await app._handle_command("/update")
             await pilot.pause()
+            splash = (
+                app.query_one("#welcome-banner", WelcomeBanner)._build_banner().plain
+            )
 
         is_update_mock.assert_called_once_with(
             bypass_cache=True,
@@ -712,6 +716,8 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
         )
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
+        assert "v99.0.0" in splash
+        assert f"v{__version__}" not in splash
 
 
 async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() -> None:
@@ -814,6 +820,7 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
     """
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
     from deepagents_code.update_check import ShadowedDcode
 
     shadow = ShadowedDcode(
@@ -846,6 +853,9 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
         ):
             await app._handle_command("/update")
             await pilot.pause()
+            splash = (
+                app.query_one("#welcome-banner", WelcomeBanner)._build_banner().plain
+            )
 
         plain_msgs = [
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
@@ -854,6 +864,8 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
         # would not actually use the new version. A regression that kept the
         # success line would show both messages, contradicting itself.
         assert not any("Updated to v99.0.0" in m for m in plain_msgs)
+        assert f"v{__version__}" in splash
+        assert "v99.0.0" not in splash
         # The warning is mounted as an `ErrorMessage` (red), not a generic
         # `AppMessage`, so it visually stands apart from neutral status text.
         error_msgs = [str(m._content) for m in app.query(ErrorMessage)]

@@ -293,6 +293,16 @@ class TestTitle:
         assert f"v{__version__}" in plain
         assert "(local)" not in plain
 
+    def test_updates_version_after_in_session_install(self) -> None:
+        """The banner can show a version installed while the app is running."""
+        banner = _make_banner()
+
+        banner.update_version("99.0.0")
+
+        plain = banner._build_banner().plain
+        assert "v99.0.0" in plain
+        assert f"v{__version__}" not in plain
+
     def test_hides_version_and_local_tag_when_env_set(self) -> None:
         """`HIDE_SPLASH_VERSION` removes version and local-install details."""
         with patch(_EDITABLE, return_value=True):

@@ -6513,6 +6513,10 @@ class DeepAgentsApp(App):
             )
             await self._mount_update_failure(exc)
 
+    def _update_splash_version(self, version: str) -> None:
+        """Show the installed version in the splash after an in-session update."""
+        self.query_one("#welcome-banner", WelcomeBanner).update_version(version)
+
     async def _perform_app_upgrade(
         self,
         *,
@@ -6625,6 +6629,7 @@ class DeepAgentsApp(App):
             # successful upgrade into a "/update failed" message.
             shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
             if shadow is None:
+                self._update_splash_version(latest)
                 await self._mount_message(
                     AppMessage(
                         f"Updated to v{latest}. Quit and relaunch dcode "
@@ -22412,6 +22417,7 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
+                        self._update_splash_version(payload.latest)
                         screen.mark_success()
                         if progress_modal_visible:
                             return

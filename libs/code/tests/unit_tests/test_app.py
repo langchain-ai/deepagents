@@ -25980,8 +25980,9 @@ class TestNotificationCenterIntegration:
         )
 
     async def test_install_success_removes_entry(self) -> None:
-        """Successful install removes the entry and toasts restart hint."""
+        """Successful install removes the entry and updates the splash version."""
         from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
@@ -25995,8 +25996,14 @@ class TestNotificationCenterIntegration:
             ):
                 await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()
+                splash = (
+                    app.query_one("#welcome-banner", WelcomeBanner)
+                    ._build_banner()
+                    .plain
+                )
 
         assert app._notice_registry.get("update:available") is None
+        assert "v2.0.0" in splash
 
     async def test_install_defers_to_another_session(
         self, monkeypatch: pytest.MonkeyPatch

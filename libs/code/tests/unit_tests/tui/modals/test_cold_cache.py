@@ -2,11 +2,33 @@
 
 from textual.app import App
 
-from deepagents_code.cold_cache import PromptCachePolicy, RewarmEstimate
+from deepagents_code.cold_cache import (
+    CacheConfidence,
+    CacheWriteBucket,
+    PromptCachePolicy,
+    RewarmEstimate,
+)
 from deepagents_code.tui.modals.cold_cache import (
     ColdCacheChoice,
     ColdCacheWarningScreen,
 )
+
+
+def _policy(
+    provider_name: str,
+    window_seconds: int,
+    confidence: CacheConfidence,
+    minimum_tokens: int,
+    write_bucket: CacheWriteBucket,
+) -> PromptCachePolicy:
+    """Build a policy positionally to keep expectations readable in tests."""
+    return PromptCachePolicy(
+        provider_name=provider_name,
+        window_seconds=window_seconds,
+        confidence=confidence,
+        minimum_tokens=minimum_tokens,
+        write_bucket=write_bucket,
+    )
 
 
 class _Host(App[None]):
@@ -16,7 +38,7 @@ class _Host(App[None]):
 def _screen() -> ColdCacheWarningScreen:
     """Build a representative warning modal."""
     return ColdCacheWarningScreen(
-        policy=PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+        policy=_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
         estimate=RewarmEstimate(0.42, 0.35),
         context_tokens=84_000,
         age_seconds=11_520,
@@ -25,13 +47,7 @@ def _screen() -> ColdCacheWarningScreen:
 
 def test_openai_copy_preserves_retention_uncertainty() -> None:
     screen = ColdCacheWarningScreen(
-        policy=PromptCachePolicy(
-            "OpenAI",
-            1800,
-            "may_be_cold",
-            1024,
-            "generic",
-        ),
+        policy=_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
         estimate=RewarmEstimate(0.42, 0.35),
         context_tokens=84_000,
         age_seconds=11_520,
@@ -48,7 +64,7 @@ def test_openai_copy_preserves_retention_uncertainty() -> None:
 
 def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
     screen = ColdCacheWarningScreen(
-        policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+        policy=_policy("Anthropic", 300, "expired", 1024, "5m"),
         estimate=RewarmEstimate(1.25, 1.15),
         context_tokens=50_000,
         age_seconds=600,
@@ -62,7 +78,7 @@ def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
 
 def test_identity_change_uses_model_specific_copy() -> None:
     screen = ColdCacheWarningScreen(
-        policy=PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+        policy=_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
         estimate=RewarmEstimate(0.42, 0.35),
         context_tokens=84_000,
         age_seconds=60,
@@ -138,3 +154,26 @@ async def test_escape_cancels_to_keep_draft() -> None:
         await pilot.pause()
 
     assert results == [ColdCacheChoice.CANCEL]
+
+
+async def test_clicking_a_choice_does_not_resolve_the_modal() -> None:
+    """Clicks are swallowed so a stray press cannot authorize spend.
+
+    The rows look clickable, so this pins the deliberate keyboard-only
+    activation described on `_ChoiceOption.on_click`.
+    """
+    app = _Host()
+    results: list[ColdCacheChoice | None] = []
+
+    async with app.run_test() as pilot:
+        await app.push_screen(_screen(), callback=results.append)
+        await pilot.pause()
+        await pilot.click(".cold-cache-choice")
+        await pilot.pause()
+
+        assert results == []
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert results == [ColdCacheChoice.SEND]

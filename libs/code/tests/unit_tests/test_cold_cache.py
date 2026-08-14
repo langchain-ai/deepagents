@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
 from deepagents_code.cold_cache import (
+    CacheConfidence,
     CacheWriteBucket,
     PromptCachePolicy,
     estimate_rewarm_cost,
@@ -18,15 +19,39 @@ from deepagents_code.cold_cache import (
 )
 
 
-def test_resolves_anthropic_default_and_one_hour_policies() -> None:
+def _policy(
+    provider_name: str,
+    window_seconds: int,
+    confidence: CacheConfidence,
+    minimum_tokens: int,
+    write_bucket: CacheWriteBucket,
+) -> PromptCachePolicy:
+    """Build a policy positionally to keep expectations readable in tests."""
+    return PromptCachePolicy(
+        provider_name=provider_name,
+        window_seconds=window_seconds,
+        confidence=confidence,
+        minimum_tokens=minimum_tokens,
+        write_bucket=write_bucket,
+    )
+
+
+def test_anthropic_policy_ignores_user_supplied_cache_control_ttl() -> None:
+    """A user `ttl` never reaches the wire, so it must not widen the window.
+
+    `AnthropicPromptCachingMiddleware` runs inside `ConfigurableModelMiddleware`
+    and overwrites `model_settings["cache_control"]` with its own 5m TTL.
+    Honoring the user's `1h` here would suppress the warning for 55 minutes of
+    a cache that died at five.
+    """
     default = resolve_prompt_cache_policy("anthropic:claude-sonnet-4-6")
-    extended = resolve_prompt_cache_policy(
+    with_ttl = resolve_prompt_cache_policy(
         "anthropic:claude-sonnet-4-6",
         {"cache_control": {"type": "ephemeral", "ttl": "1h"}},
     )
 
-    assert default == PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m")
-    assert extended == PromptCachePolicy("Anthropic", 3600, "expired", 1024, "1h")
+    assert default == _policy("Anthropic", 300, "expired", 1024, "5m")
+    assert with_ttl == default
 
 
 @pytest.mark.parametrize(
@@ -58,7 +83,7 @@ def test_resolves_current_openai_minimum_retention(model: str) -> None:
 
     # 30 minutes is the documented guaranteed minimum, but OpenAI may retain
     # the prefix longer, so past the window it may still be warm.
-    assert policy == PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+    assert policy == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic")
 
 
 def test_resolves_explicit_older_openai_retention() -> None:
@@ -71,13 +96,17 @@ def test_resolves_explicit_older_openai_retention() -> None:
         {"prompt_cache_retention": "24h"},
     )
 
-    # Both windows are documented maximums ("up to"), so past the window the
-    # cache may still be warm.
-    assert in_memory == PromptCachePolicy(
-        "OpenAI", 3600, "may_be_cold", 1024, "generic"
-    )
-    assert extended == PromptCachePolicy(
-        "OpenAI", 86400, "may_be_cold", 1024, "generic"
+    # Both windows are documented maximums ("up to one hour", "a maximum, not
+    # a guarantee"), so once the window passes the entry is gone -- unlike the
+    # GPT-5.6+ minimum, which the provider may exceed.
+    assert in_memory == _policy("OpenAI", 3600, "expired", 1024, "generic")
+    assert extended == _policy("OpenAI", 86400, "expired", 1024, "generic")
+
+
+def test_ignores_non_string_openai_retention() -> None:
+    assert (
+        resolve_prompt_cache_policy("openai:gpt-5.5", {"prompt_cache_retention": 3600})
+        is None
     )
 
 
@@ -117,17 +146,19 @@ def test_skips_unresolved_or_custom_provider_policies() -> None:
 
 
 @pytest.mark.parametrize(
-    ("bucket", "detail_key"),
+    ("bucket", "cold_details"),
     [
-        ("generic", "cache_write"),
-        ("5m", "ephemeral_5m_input_tokens"),
-        ("1h", "ephemeral_1h_input_tokens"),
+        # OpenAI bills a miss at the plain input rate, so the cold side carries
+        # no cache-write detail at all -- tagging one applies a write premium
+        # the provider never charges.
+        ("generic", None),
+        ("5m", {"ephemeral_5m_input_tokens": 50_000}),
     ],
 )
 def test_estimate_rewarm_cost_uses_policy_bucket(
     monkeypatch: pytest.MonkeyPatch,
     bucket: CacheWriteBucket,
-    detail_key: str,
+    cold_details: dict[str, int] | None,
 ) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -139,17 +170,11 @@ def test_estimate_rewarm_cost_uses_policy_bucket(
         calls.append(usage)
         assert model_name == "model"
         assert provider == "anthropic"
-        details = usage["input_token_details"]
+        details = usage.get("input_token_details", {})
         return 0.1 if "cache_read" in details else 1.25
 
     monkeypatch.setattr("deepagents_code.cost_tracking.estimate_cost", fake_estimate)
-    policy = PromptCachePolicy(
-        "Anthropic",
-        300,
-        "expired",
-        1024,
-        bucket,
-    )
+    policy = _policy("Anthropic", 300, "expired", 1024, bucket)
 
     estimate = estimate_rewarm_cost(50_000, "anthropic:model", policy)
 
@@ -158,13 +183,38 @@ def test_estimate_rewarm_cost_uses_policy_bucket(
     assert estimate.incremental_cost_usd == pytest.approx(1.15)
     assert calls[0]["input_tokens"] == 50_000
     assert calls[0]["input_token_details"] == {"cache_read": 50_000}
-    assert calls[1]["input_token_details"] == {detail_key: 50_000}
+    assert calls[1]["input_tokens"] == 50_000
+    assert calls[1].get("input_token_details") == cold_details
+
+
+def test_generic_bucket_prices_a_miss_at_the_plain_input_rate() -> None:
+    """An OpenAI cold turn must cost exactly the uncached input price.
+
+    Guards the real pricing path rather than a fake: the catalog applies a
+    cache-write premium to some models, and forwarding a write key here
+    overstated both the displayed cost and the threshold comparison.
+    """
+    from deepagents_code.cost_tracking import estimate_cost
+
+    policy = resolve_prompt_cache_policy("openai:gpt-5.6-terra")
+    assert policy is not None
+
+    estimate = estimate_rewarm_cost(100_000, "openai:gpt-5.6-terra", policy)
+    plain_input = estimate_cost(
+        {"input_tokens": 100_000, "output_tokens": 0, "total_tokens": 100_000},
+        "gpt-5.6-terra",
+        "openai",
+    )
+
+    assert estimate is not None
+    assert plain_input is not None
+    assert estimate.cold_cost_usd == pytest.approx(plain_input)
 
 
 def test_estimate_rewarm_cost_requires_cacheable_and_priceable_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    policy = PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+    policy = _policy("OpenAI", 1800, "may_be_cold", 1024, "generic")
     assert estimate_rewarm_cost(100, "openai:gpt-5.6", policy) is None
 
     monkeypatch.setattr(
@@ -183,8 +233,43 @@ def test_parse_cache_timestamp_requires_timezone() -> None:
     assert parse_cache_timestamp(None) is None
 
 
+def test_parse_cache_timestamp_normalizes_non_utc_offsets() -> None:
+    """A `+05:00` checkpoint must not read as five hours of extra idle time."""
+    offset = timezone(timedelta(hours=5))
+    local = datetime(2026, 8, 11, 17, 30, tzinfo=offset)
+
+    parsed = parse_cache_timestamp(local.isoformat())
+
+    assert parsed == datetime(2026, 8, 11, 12, 30, tzinfo=UTC)
+    assert parsed is not None
+    assert parsed.tzinfo is UTC
+
+
+def test_explicit_official_endpoints_still_resolve() -> None:
+    assert resolve_prompt_cache_policy(
+        "openai:gpt-5.6", base_url="https://api.openai.com/v1"
+    ) == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+    anthropic = resolve_prompt_cache_policy(
+        "anthropic:claude-sonnet-4-6", base_url="https://api.anthropic.com"
+    )
+    assert anthropic == _policy("Anthropic", 300, "expired", 1024, "5m")
+    # Non-HTTP schemes are not the official API however they parse.
+    assert (
+        resolve_prompt_cache_policy("openai:gpt-5.6", base_url="ftp://api.openai.com")
+        is None
+    )
+
+
+def test_non_dict_cache_control_falls_back_to_default_window() -> None:
+    assert resolve_prompt_cache_policy(
+        "anthropic:claude-sonnet-4-6", {"cache_control": "ephemeral"}
+    ) == _policy("Anthropic", 300, "expired", 1024, "5m")
+
+
 def test_cache_time_formatting() -> None:
     assert format_cache_age(11_520) == "3h 12m"
     assert format_cache_age(300) == "5m"
+    assert format_cache_age(0) == "0m"
+    assert format_cache_age(-30) == "0m"
     assert format_cache_window(1800) == "30m"
     assert format_cache_window(3600) == "1h"

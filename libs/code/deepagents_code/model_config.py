@@ -3561,7 +3561,8 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3630,7 +3631,8 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH

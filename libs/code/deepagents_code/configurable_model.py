@@ -578,16 +578,28 @@ def _checkpoint_command(
 ) -> Command[Any]:
     """Build the private resume-state update for a completed model call.
 
+    Args:
+        resolved: The request as actually sent, after override resolution.
+        request_started_at: UTC ISO timestamp captured before the model call.
+            It only reaches a checkpoint because this runs after `handler()`
+            returned, which is what makes it a successful-call marker.
+
     Returns:
         Command carrying cache timing and effective model metadata.
     """
-    update: dict[str, Any] = {"_last_model_request_at": request_started_at}
-    # Use the resolved spec, not `ctx.model`: when an override fails with
-    # `ModelConfigError`, `_apply_overrides` falls back to the original model
-    # while `ctx.model` still names the rejected override.
+    update: dict[str, Any] = {}
+    # Use the resolved spec, not `_apply_overrides`'s `ctx.model`: when an
+    # override fails with `ModelConfigError`, `_apply_overrides` falls back to
+    # the original model while `ctx.model` still names the rejected override.
+    #
+    # The timestamp is written only alongside a known spec. The two are one
+    # fact -- when the cache was warmed, and for which model -- and a
+    # timestamp without an identity would read back as a permanent "model
+    # changed", warning on every send with copy that names a change that never
+    # happened.
     if resolved.model_spec:
+        update["_last_model_request_at"] = request_started_at
         update["_last_cache_model_spec"] = resolved.model_spec
-    if resolved.model_spec:
         update["_model_spec"] = resolved.model_spec
     if resolved.model_params_known:
         update["_model_params"] = resolved.model_params

@@ -80,7 +80,12 @@ from deepagents_code.app import (
     _ThreadHistoryPayload,
     _warn_discarded_goal_channels,
 )
-from deepagents_code.cold_cache import PromptCachePolicy, RewarmEstimate
+from deepagents_code.cold_cache import (
+    CacheConfidence,
+    CacheWriteBucket,
+    PromptCachePolicy,
+    RewarmEstimate,
+)
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
@@ -37741,6 +37746,68 @@ class TestForcedGoalCriteriaSync:
         remount.assert_not_awaited()
 
 
+def _cold_cache_policy(
+    provider_name: str,
+    window_seconds: int,
+    confidence: CacheConfidence,
+    minimum_tokens: int,
+    write_bucket: CacheWriteBucket,
+) -> PromptCachePolicy:
+    """Build a policy positionally to keep expectations readable in tests."""
+    return PromptCachePolicy(
+        provider_name=provider_name,
+        window_seconds=window_seconds,
+        confidence=confidence,
+        minimum_tokens=minimum_tokens,
+        write_bucket=write_bucket,
+    )
+
+
+def _cold_cache_app(*, last_spec: str = "openai:gpt-5.6") -> DeepAgentsApp:
+    """Build an app parked just past OpenAI's 30m window with identity intact.
+
+    Callers mutate one field to isolate the gate under test; left alone this
+    state produces a warning with a $0.25 delta.
+    """
+    app = DeepAgentsApp()
+    app._model_override = "openai:gpt-5.6"
+    app._model_params_override = None
+    app._last_cache_model_spec = last_spec
+    app._last_cache_model_params = None
+    app._last_model_request_at = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
+    app._context_tokens = 50_000
+    app._cold_cache_warning_threshold_usd = 0.10
+    return app
+
+
+async def _run_cold_cache_gate(
+    app: DeepAgentsApp,
+    *,
+    message: QueuedMessage | None = None,
+) -> _ColdCacheWarning | None:
+    """Run the gate with pricing pinned to a $0.35 cold / $0.10 warm turn."""
+    config = MagicMock()
+    config.get_base_url.return_value = None
+
+    def estimate(usage: dict[str, Any], _model: str, _provider: str) -> float:
+        # The cold side of a `generic` (OpenAI) bucket carries no cache-write
+        # detail at all, so tolerate the key being absent.
+        details = usage.get("input_token_details", {})
+        return 0.10 if "cache_read" in details else 0.35
+
+    with (
+        patch("deepagents_code.model_config.ModelConfig.load", return_value=config),
+        patch(
+            "deepagents_code.model_config.is_warning_suppressed",
+            return_value=False,
+        ),
+        patch("deepagents_code.cost_tracking.estimate_cost", estimate),
+    ):
+        return await app._cold_cache_warning_for(
+            message or QueuedMessage("continue", "normal")
+        )
+
+
 class TestColdCacheWarningFlow:
     """Tests for advisory cold prompt-cache dispatch gating."""
 
@@ -37763,7 +37830,9 @@ class TestColdCacheWarningFlow:
             _model: str,
             _provider: str,
         ) -> float:
-            details = usage["input_token_details"]
+            # The cold side of a `generic` (OpenAI) bucket carries no
+            # cache-write detail at all, so tolerate the key being absent.
+            details = usage.get("input_token_details", {})
             return 0.10 if "cache_read" in details else 0.35
 
         with (
@@ -37823,7 +37892,9 @@ class TestColdCacheWarningFlow:
             _model: str,
             _provider: str,
         ) -> float:
-            details = usage["input_token_details"]
+            # The cold side of a `generic` (OpenAI) bucket carries no
+            # cache-write detail at all, so tolerate the key being absent.
+            details = usage.get("input_token_details", {})
             return 0.10 if "cache_read" in details else 0.35
 
         with (
@@ -37888,7 +37959,13 @@ class TestColdCacheWarningFlow:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The debug override never fires for suppressed warnings or external sends."""
+        """The debug override still honors origin, but overrides suppression.
+
+        Origin is a policy about who may be interrupted, so a programmatic
+        send is never eligible. Persistent suppression is only a user
+        preference, and the env var exists to force the modal for developers
+        who may have dismissed it permanently at some point.
+        """
         monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_COLD_CACHE", "1")
         app = DeepAgentsApp()
         app._model_override = "openai:gpt-5.6"
@@ -37910,21 +37987,27 @@ class TestColdCacheWarningFlow:
             patch(
                 "deepagents_code.model_config.is_warning_suppressed",
                 return_value=True,
-            ),
+            ) as suppressed_check,
         ):
             suppressed = await app._cold_cache_warning_for(
                 QueuedMessage("continue", "normal")
             )
 
-        assert suppressed is None
+        assert suppressed is not None
+        suppressed_check.assert_not_called()
 
-    async def test_modal_admission_failure_sends_once(
+    async def test_modal_admission_failure_keeps_draft_without_sending(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Losing the modal slot must not bill the turn the warning gates.
+
+        `_schedule_off_message_pump` has already told the user to answer the
+        other prompt first, so sending anyway would contradict that toast.
+        """
         app = DeepAgentsApp()
         warning = _ColdCacheWarning(
-            policy=PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+            policy=_cold_cache_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
             estimate=RewarmEstimate(0.35, 0.25),
             context_tokens=50_000,
             age_seconds=3600,
@@ -37945,10 +38028,13 @@ class TestColdCacheWarningFlow:
             coro.close()
 
         monkeypatch.setattr(app, "_schedule_off_message_pump", reject)
+        restore = MagicMock()
+        monkeypatch.setattr(app, "_restore_cold_cache_draft", restore)
 
         await app._dispatch_queued_message(QueuedMessage("continue", "normal"))
 
-        process.assert_awaited_once_with("continue", "normal")
+        process.assert_not_awaited()
+        restore.assert_called_once_with("continue")
 
     async def test_warning_emits_notification_hook_before_showing_modal(
         self,
@@ -37958,7 +38044,7 @@ class TestColdCacheWarningFlow:
 
         app = DeepAgentsApp()
         warning = _ColdCacheWarning(
-            policy=PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+            policy=_cold_cache_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
             estimate=RewarmEstimate(0.35, 0.25),
             context_tokens=50_000,
             age_seconds=3600,
@@ -38023,7 +38109,7 @@ class TestColdCacheWarningFlow:
         chat_input.set_value_at_end.return_value = True
         app._chat_input = chat_input
         warning = _ColdCacheWarning(
-            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(1.25, 1.15),
             context_tokens=50_000,
             age_seconds=600,
@@ -38054,7 +38140,7 @@ class TestColdCacheWarningFlow:
         )
         monkeypatch.setattr(app, "_process_message", process)
         warning = _ColdCacheWarning(
-            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(1.25, 1.15),
             context_tokens=50_000,
             age_seconds=600,
@@ -38122,7 +38208,7 @@ class TestColdCacheWarningFlow:
         monkeypatch.setattr(app, "_process_message", process)
         monkeypatch.setattr(app, "_suppress_cold_cache_warning", suppress)
         warning = _ColdCacheWarning(
-            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(1.25, 1.15),
             context_tokens=50_000,
             age_seconds=600,
@@ -38156,7 +38242,7 @@ class TestColdCacheWarningFlow:
         monkeypatch.setattr(app, "_process_message", process)
         monkeypatch.setattr(app, "_suppress_cold_cache_warning", suppress)
         warning = _ColdCacheWarning(
-            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(1.25, 1.15),
             context_tokens=50_000,
             age_seconds=600,
@@ -38198,7 +38284,7 @@ class TestColdCacheWarningFlow:
             await app._confirm_cold_cache_message(
                 QueuedMessage("continue", "normal"),
                 _ColdCacheWarning(
-                    policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+                    policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
                     estimate=RewarmEstimate(1.25, 1.15),
                     context_tokens=50_000,
                     age_seconds=600,
@@ -38228,7 +38314,7 @@ class TestColdCacheWarningFlow:
         monkeypatch.setattr(app, "_restore_cold_cache_draft", restore)
         monkeypatch.setattr(app, "notify", notify)
         warning = _ColdCacheWarning(
-            policy=PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m"),
+            policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(1.25, 1.15),
             context_tokens=50_000,
             age_seconds=600,
@@ -38346,6 +38432,111 @@ class TestColdCacheWarningFlow:
             for record in caplog.records
         )
 
+    async def test_model_change_warns_inside_the_retention_window(self) -> None:
+        """A different model invalidates the prefix however recent the turn."""
+        app = _cold_cache_app(last_spec="openai:gpt-5.5")
+        app._last_model_request_at = datetime.now(UTC).isoformat()
+
+        warning = await _run_cold_cache_gate(app)
+
+        assert warning is not None
+        assert warning.identity_changed is True
+
+    async def test_model_params_change_warns_inside_the_window(self) -> None:
+        """Invocation params are part of cache identity, not just the name."""
+        app = _cold_cache_app()
+        app._model_params_override = {"prompt_cache_retention": "24h"}
+        app._last_cache_model_params = None
+        app._last_model_request_at = datetime.now(UTC).isoformat()
+
+        warning = await _run_cold_cache_gate(app)
+
+        assert warning is not None
+        assert warning.identity_changed is True
+
+    async def test_unchanged_identity_inside_window_does_not_warn(self) -> None:
+        """The control for the two tests above: a warm cache stays silent."""
+        app = _cold_cache_app()
+        app._last_model_request_at = datetime.now(UTC).isoformat()
+
+        assert await _run_cold_cache_gate(app) is None
+
+    async def test_delta_below_threshold_does_not_warn(self) -> None:
+        """The threshold is what keeps the modal off cheap turns."""
+        app = _cold_cache_app()
+        app._cold_cache_warning_threshold_usd = 0.50
+
+        assert await _run_cold_cache_gate(app) is None
+
+    async def test_delta_just_under_threshold_warns(self) -> None:
+        """Bounds the rejection above: a hair below the delta still warns.
+
+        Exact equality is not asserted because the delta is a float
+        subtraction (0.35 - 0.10 lands just under 0.25), so a threshold set to
+        the delta itself can fall on either side by an epsilon.
+        """
+        app = _cold_cache_app()
+        app._cold_cache_warning_threshold_usd = 0.249
+
+        assert await _run_cold_cache_gate(app) is not None
+
+    async def test_zero_threshold_disables_the_warning(self) -> None:
+        """`cold_cache_min_delta_usd = 0` is the documented opt-out."""
+        app = _cold_cache_app()
+        app._cold_cache_warning_threshold_usd = 0.0
+
+        assert await _run_cold_cache_gate(app) is None
+
+    async def test_slash_commands_never_open_the_warning(self) -> None:
+        """A spend modal must not front `/help`, `/model`, or `/clear`."""
+        app = _cold_cache_app()
+
+        warning = await _run_cold_cache_gate(
+            app, message=QueuedMessage("/help", "command")
+        )
+
+        assert warning is None
+
+    def test_state_without_the_timestamp_channel_preserves_identity(self) -> None:
+        """A partial read must not silently disable warnings for the session.
+
+        Compaction refreshes thread state through this path, and clearing the
+        cache identity there would turn the feature off with no diagnostic.
+        """
+        app = DeepAgentsApp()
+        app._last_model_request_at = "2026-08-11T12:30:00+00:00"
+        app._last_cache_model_spec = "openai:gpt-5.6"
+        app._last_cache_model_params = {"prompt_cache_retention": "24h"}
+
+        app._sync_cache_state_from_state({"_session_cost_usd": 1.0})
+
+        assert app._last_model_request_at == "2026-08-11T12:30:00+00:00"
+        assert app._last_cache_model_spec == "openai:gpt-5.6"
+        assert app._last_cache_model_params == {"prompt_cache_retention": "24h"}
+
+    def test_blank_checkpointed_spec_warns_like_a_missing_one(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """`""` is as unusable as a non-string and must not pass silently."""
+        app = DeepAgentsApp()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            app._sync_cache_state_from_state(
+                {
+                    "_last_model_request_at": "2026-08-11T12:30:00+00:00",
+                    "_last_cache_model_spec": "   ",
+                    "_model_spec": "",
+                }
+            )
+
+        assert app._last_cache_model_spec == ""
+        assert any(
+            record.levelno == logging.WARNING
+            and "_last_cache_model_spec" in record.getMessage()
+            for record in caplog.records
+        )
+
     async def test_shift_tab_moves_cursor_up(self) -> None:
         """The app's priority `shift+tab` binding routes to the modal's `move_up`.
 
@@ -38361,7 +38552,7 @@ class TestColdCacheWarningFlow:
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = ColdCacheWarningScreen(
-                policy=PromptCachePolicy(
+                policy=_cold_cache_policy(
                     "OpenAI", 1800, "may_be_cold", 1024, "generic"
                 ),
                 estimate=RewarmEstimate(0.42, 0.35),

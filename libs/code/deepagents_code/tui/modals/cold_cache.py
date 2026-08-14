@@ -97,9 +97,9 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
 
     Dismisses with the chosen `ColdCacheChoice`, or `None` on a
     programmatic pop. Esc is mapped to `CANCEL` so the user is never
-    forced into a spend they did not explicitly choose; the caller's
-    `if choice is SEND...` handling collapses `None` and `CANCEL` to
-    cancel, so both fail closed.
+    forced into a spend they did not explicitly choose. `None` and
+    `CANCEL` are both non-send outcomes, and callers must treat any
+    non-send value as cancel so the dialog fails closed.
     """
 
     can_focus = True

@@ -10,7 +10,22 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 CacheConfidence = Literal["expired", "may_be_cold"]
-CacheWriteBucket = Literal["generic", "5m", "1h"]
+"""How firmly a passed retention window implies the cached prefix is gone.
+
+`expired` is used when the window is a documented *maximum* (Anthropic's TTL,
+OpenAI's `prompt_cache_retention` ceilings): once it passes, the entry is gone.
+`may_be_cold` is used when the window is a documented *minimum* (GPT-5.6+),
+where the provider is only guaranteed to have kept the entry that long and may
+well have kept it longer.
+"""
+
+CacheWriteBucket = Literal["generic", "5m"]
+"""Which pricing treatment a cold (cache-writing) request receives.
+
+`5m` prices Anthropic's five-minute ephemeral write premium. `generic` covers
+providers that bill a cache miss at the ordinary input rate with no write
+surcharge, which is how OpenAI prices prompt caching.
+"""
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")
 
@@ -35,24 +50,62 @@ the first matching prefix wins, so `claude-mythos-preview` must precede a bare
 _ANTHROPIC_DEFAULT_MINIMUM_TOKENS = 1024
 """Cache minimum for the Claude models the table above does not name."""
 
+_OPENAI_MINIMUM_TOKENS = 1024
+"""Minimum cacheable prefix OpenAI documents, independent of Anthropic's."""
 
-@dataclass(frozen=True, slots=True)
+_ANTHROPIC_MIDDLEWARE_TTL_SECONDS = 300
+"""Retention implied by the `cache_control` this stack actually sends.
+
+`AnthropicPromptCachingMiddleware` runs *inside* `ConfigurableModelMiddleware`
+and unconditionally rewrites `model_settings["cache_control"]` with its own
+`ttl` (5m, the middleware default this stack never overrides). A user-supplied
+`cache_control.ttl` in `model_params` is therefore overwritten before the
+request leaves the process, so honoring it here would promise an hour of
+retention the API never agreed to and suppress the warning for 55 minutes of a
+dead cache. Read the middleware's effective TTL before reintroducing a longer
+window.
+"""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PromptCachePolicy:
-    """Prompt-cache behavior needed to decide and price a warning."""
+    """Prompt-cache behavior needed to decide and price a warning.
+
+    Keyword-only because `window_seconds` and `minimum_tokens` are adjacent
+    bare ints: positionally, transposing them builds a plausible-looking policy
+    that silently misprices and mis-gates.
+    """
 
     provider_name: str
+    """Display name of the provider whose endpoint was validated."""
+
     window_seconds: int
+    """Retention window, past which `confidence` describes what is known."""
+
     confidence: CacheConfidence
+    """Whether `window_seconds` is a documented maximum or minimum."""
+
     minimum_tokens: int
+    """Smallest prefix the provider will cache at all."""
+
     write_bucket: CacheWriteBucket
+    """Pricing treatment for the cold request; see `estimate_rewarm_cost`."""
 
 
 @dataclass(frozen=True, slots=True)
 class RewarmEstimate:
-    """Estimated input cost for a cold prefix and its warm-cache delta."""
+    """Estimated input cost for a cold prefix and its warm-cache delta.
+
+    Both figures are USD, non-negative, and finite; `incremental_cost_usd` is
+    the part of `cold_cost_usd` that a cache hit would have avoided, so it
+    never exceeds it.
+    """
 
     cold_cost_usd: float
+    """Input spend to send the prefix uncached."""
+
     incremental_cost_usd: float
+    """How much of `cold_cost_usd` a warm cache would have saved."""
 
 
 def _official_endpoint(base_url: str | None, hostname: str) -> bool:
@@ -112,31 +165,47 @@ def resolve_prompt_cache_policy(
     if provider == "anthropic":
         if not _official_endpoint(base_url, "api.anthropic.com"):
             return None
-        minimum = _anthropic_minimum_tokens(model_name)
-        cache_control = params.get("cache_control")
-        ttl = cache_control.get("ttl") if isinstance(cache_control, dict) else None
-        if ttl == "1h":
-            return PromptCachePolicy("Anthropic", 3600, "expired", minimum, "1h")
-        return PromptCachePolicy("Anthropic", 300, "expired", minimum, "5m")
+        # Deliberately ignores `params["cache_control"]`: see
+        # `_ANTHROPIC_MIDDLEWARE_TTL_SECONDS` for why a user-set `ttl` never
+        # reaches the wire.
+        return PromptCachePolicy(
+            provider_name="Anthropic",
+            window_seconds=_ANTHROPIC_MIDDLEWARE_TTL_SECONDS,
+            confidence="expired",
+            minimum_tokens=_anthropic_minimum_tokens(model_name),
+            write_bucket="5m",
+        )
 
     if provider != "openai" or not _official_endpoint(base_url, "api.openai.com"):
         return None
     if _openai_uses_thirty_minute_cache(model_name):
-        # 30 minutes is the documented guaranteed minimum for GPT-5.6+, but
+        # 30 minutes is the documented guaranteed *minimum* for GPT-5.6+, but
         # OpenAI may retain the prefix longer, so past the window it can only
         # be treated as possibly cold.
-        return PromptCachePolicy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+        return PromptCachePolicy(
+            provider_name="OpenAI",
+            window_seconds=1800,
+            confidence="may_be_cold",
+            minimum_tokens=_OPENAI_MINIMUM_TOKENS,
+            write_bucket="generic",
+        )
 
-    retention = params.get("prompt_cache_retention")
-    # `in_memory` and `24h` are documented maximums ("up to one hour", "a
+    # `in_memory` and `24h` are documented *maximums* ("up to one hour", "a
     # maximum, not a guarantee"): entries may be evicted earlier, so a warning
-    # is only defensible once the maximum has passed -- and even then the entry
-    # may linger, so the confidence stays "may_be_cold".
-    if retention == "in_memory":
-        return PromptCachePolicy("OpenAI", 3600, "may_be_cold", 1024, "generic")
-    if retention == "24h":
-        return PromptCachePolicy("OpenAI", 86400, "may_be_cold", 1024, "generic")
-    return None
+    # is only defensible once the maximum has passed -- at which point the
+    # entry is gone rather than merely doubtful.
+    retention = params.get("prompt_cache_retention")
+    retention_windows = {"in_memory": 3600, "24h": 86400}
+    window = retention_windows.get(retention) if isinstance(retention, str) else None
+    if window is None:
+        return None
+    return PromptCachePolicy(
+        provider_name="OpenAI",
+        window_seconds=window,
+        confidence="expired",
+        minimum_tokens=_OPENAI_MINIMUM_TOKENS,
+        write_bucket="generic",
+    )
 
 
 def estimate_rewarm_cost(
@@ -146,8 +215,14 @@ def estimate_rewarm_cost(
 ) -> RewarmEstimate | None:
     """Estimate cold input spend and the incremental cost over a cache hit.
 
+    Prices are derived by running two synthetic usage payloads through the
+    ordinary `estimate_cost` path -- one billed as a full cache read, one as a
+    cold request -- so the catalog stays the single source of truth. Outputs
+    are zeroed on both sides so the delta is input-only.
+
     Returns:
-        Price estimate, or `None` when usage cannot be priced defensibly.
+        Price estimate, or `None` when the prefix is below the provider's cache
+            minimum or the usage cannot be priced defensibly.
     """
     if context_tokens < policy.minimum_tokens or ":" not in model_spec:
         return None
@@ -161,17 +236,21 @@ def estimate_rewarm_cost(
         "total_tokens": context_tokens,
         "input_token_details": {"cache_read": context_tokens},
     }
-    detail_key = {
-        "generic": "cache_write",
-        "5m": "ephemeral_5m_input_tokens",
-        "1h": "ephemeral_1h_input_tokens",
-    }[policy.write_bucket]
     cold_usage: dict[str, Any] = {
         "input_tokens": context_tokens,
         "output_tokens": 0,
         "total_tokens": context_tokens,
-        "input_token_details": {detail_key: context_tokens},
     }
+    if policy.write_bucket == "5m":
+        # Anthropic bills a write premium over the ordinary input rate; the
+        # detail key must stay in sync with `cost_tracking._cache_write_counts`.
+        cold_usage["input_token_details"] = {
+            "ephemeral_5m_input_tokens": context_tokens
+        }
+    # The `generic` bucket carries no cache-write detail at all: OpenAI bills a
+    # miss at the plain input rate, so tagging these tokens as a cache write
+    # would apply a premium the provider never charges and overstate both the
+    # displayed cost and the threshold comparison.
 
     from deepagents_code.cost_tracking import estimate_cost
 

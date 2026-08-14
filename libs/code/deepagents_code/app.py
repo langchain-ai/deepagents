@@ -2376,11 +2376,19 @@ class _ThreadHistoryPayload:
     model_params: dict[str, Any] | None = None
     """Persisted `_model_params` from the checkpoint, if any."""
 
-    last_model_request_at: str | None = None
-    """Persisted request-start timestamp for the latest successful model call."""
+    has_cache_state: bool = False
+    """Whether the checkpoint carried a `_last_model_request_at` channel."""
 
-    last_cache_model_spec: str = ""
-    """Requested model identity associated with `last_model_request_at`."""
+    last_model_request_at: object = None
+    """Raw `_last_model_request_at` from the checkpoint.
+
+    Deliberately unvalidated: `_sync_cache_state_from_state` owns the parsing
+    and logs every discard reason, so pre-filtering here would drop malformed
+    values (a non-string written by a newer build, say) without a trace.
+    """
+
+    last_cache_model_spec: object = None
+    """Raw `_last_cache_model_spec` from the checkpoint, validated on use."""
 
     session_cost_usd: float = 0.0
     """Persisted cumulative `_session_cost_usd` from the checkpoint."""
@@ -8509,7 +8517,16 @@ class DeepAgentsApp(App):
         )
 
     def _sync_cache_state_from_state(self, state_values: Mapping[str, Any]) -> None:
-        """Adopt the latest successful model request's prompt-cache identity."""
+        """Adopt the latest successful model request's prompt-cache identity.
+
+        A snapshot without `_last_model_request_at` is a no-op: the three
+        in-memory cache fields are preserved rather than cleared, so a partial
+        state read (a post-compaction refresh, say) cannot silently disable
+        cold-cache warnings for the rest of the session.
+
+        Raw checkpoint values are validated here rather than by callers, so
+        every entry point logs the same discard reasons.
+        """
         if "_last_model_request_at" not in state_values:
             return
         from deepagents_code.cold_cache import parse_cache_timestamp
@@ -8526,13 +8543,22 @@ class DeepAgentsApp(App):
                 type(raw_timestamp).__name__,
             )
         self._last_model_request_at = timestamp.isoformat() if timestamp else None
-        raw_spec = state_values.get("_last_cache_model_spec")
-        if not isinstance(raw_spec, str):
-            raw_spec = state_values.get("_model_spec")
-        if not isinstance(raw_spec, str):
+
+        def _usable_spec(value: object) -> str | None:
+            # Blank is as unusable as a non-string here, and both must reach
+            # the warning below: an empty spec never matches the current model,
+            # so it silently pins every later send to "model changed".
+            return value.strip() if isinstance(value, str) and value.strip() else None
+
+        raw_spec = _usable_spec(
+            state_values.get("_last_cache_model_spec")
+        ) or _usable_spec(state_values.get("_model_spec"))
+        if raw_spec is None:
             # Neither `_last_cache_model_spec` nor the `_model_spec` fallback
-            # gave us a string. Storing "" means the next send never matches
-            # the current model, so it is treated as a model change.
+            # gave us a usable spec. Storing "" means the next send never
+            # matches the current model, so it is treated as a model change --
+            # and the modal then shows its "model changed" copy even though the
+            # real cause is unreadable checkpoint state.
             logger.warning(
                 "Discarding checkpointed _last_cache_model_spec (%s) and "
                 "_model_spec (%s); the next send is treated as a model change "
@@ -8540,7 +8566,7 @@ class DeepAgentsApp(App):
                 type(state_values.get("_last_cache_model_spec")).__name__,
                 type(state_values.get("_model_spec")).__name__,
             )
-        self._last_cache_model_spec = raw_spec if isinstance(raw_spec, str) else ""
+        self._last_cache_model_spec = raw_spec or ""
         raw_params = state_values.get("_model_params")
         self._last_cache_model_params = (
             dict(raw_params) if isinstance(raw_params, dict) else None
@@ -10957,8 +10983,6 @@ class DeepAgentsApp(App):
                 is_warning_suppressed,
             )
 
-            if is_warning_suppressed("cold-cache"):
-                return None
             provider = model_spec.split(":", 1)[0]
             base_url = ModelConfig.load().get_base_url(provider)
             policy = resolve_prompt_cache_policy(
@@ -10966,12 +10990,33 @@ class DeepAgentsApp(App):
                 current_params,
                 base_url=base_url,
             )
+            # Resolved before the suppression lookup so the common
+            # no-policy case skips re-reading and re-parsing config.toml.
+            if policy is None and not debug_forced:
+                logger.debug(
+                    "Skipping cold-cache warning: no documented cache policy "
+                    "for %s (custom base URL: %s)",
+                    model_spec,
+                    base_url is not None,
+                )
+                return None
+            # `debug_forced` bypasses persistent suppression too, so the env
+            # var stays a true override rather than silently no-opping for
+            # anyone who once chose "don't warn again ever".
+            if not debug_forced and is_warning_suppressed("cold-cache"):
+                return None
             if debug_forced:
                 if policy is None:
                     # Stand-in policy so the modal stays reachable on providers
                     # without a documented cache policy; the dollar figures are
                     # then illustrative, not real estimates.
-                    policy = PromptCachePolicy("Anthropic", 300, "expired", 1024, "5m")
+                    policy = PromptCachePolicy(
+                        provider_name="Anthropic",
+                        window_seconds=300,
+                        confidence="expired",
+                        minimum_tokens=1024,
+                        write_bucket="5m",
+                    )
                 tokens = max(context_tokens, policy.minimum_tokens)
                 estimate = estimate_rewarm_cost(tokens, model_spec, policy)
                 if estimate is None:
@@ -11002,7 +11047,19 @@ class DeepAgentsApp(App):
             if not identity_changed and age_seconds <= policy.window_seconds:
                 return None
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
-            if estimate is None or estimate.incremental_cost_usd < threshold:
+            if estimate is None:
+                logger.debug(
+                    "Skipping cold-cache warning: no price available for %s",
+                    model_spec,
+                )
+                return None
+            if estimate.incremental_cost_usd < threshold:
+                logger.debug(
+                    "Skipping cold-cache warning: re-warm delta %.4f is below "
+                    "the %.4f threshold",
+                    estimate.incremental_cost_usd,
+                    threshold,
+                )
                 return None
             return _ColdCacheWarning(
                 policy=policy,
@@ -11089,8 +11146,18 @@ class DeepAgentsApp(App):
         except asyncio.CancelledError:
             raise
         except Exception:
+            # Fail closed, matching the modal's documented contract: a broken
+            # confirmation must not become an affirmative authorization to
+            # spend. The draft is restored below, so nothing is dropped.
             logger.exception("Failed to show the cold prompt-cache warning")
-            choice = ColdCacheChoice.SEND
+            self.notify(
+                "Could not show the cold prompt-cache warning, so the message "
+                "was not sent. Your draft has been restored.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+            choice = ColdCacheChoice.CANCEL
 
         if self._exiting:
             return
@@ -11164,7 +11231,12 @@ class DeepAgentsApp(App):
             context="cold-cache:confirm",
         )
         if task is None:
-            await self._process_message(message.text, message.mode)
+            # Admission failed because another continuation owns the modal
+            # slot, and `_schedule_off_message_pump` has already told the user
+            # to answer that prompt first. Sending anyway would bill the turn
+            # the warning exists to gate while that toast claims the action was
+            # blocked, so keep the draft and let them resend.
+            self._restore_cold_cache_draft(message.text)
 
     async def _submit_input(
         self,
@@ -12642,13 +12714,9 @@ class DeepAgentsApp(App):
             context_tokens,
             model_spec,
             model_params,
-            last_model_request_at=_as_nonblank_str(
-                state_values.get("_last_model_request_at")
-            ),
-            last_cache_model_spec=(
-                _as_nonblank_str(state_values.get("_last_cache_model_spec"))
-                or model_spec
-            ),
+            has_cache_state="_last_model_request_at" in state_values,
+            last_model_request_at=state_values.get("_last_model_request_at"),
+            last_cache_model_spec=state_values.get("_last_cache_model_spec"),
             session_cost_usd=session_cost_usd,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
@@ -18163,7 +18231,10 @@ class DeepAgentsApp(App):
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
             )
-            if payload.last_model_request_at is not None:
+            if payload.has_cache_state:
+                # Raw values on purpose: `_sync_cache_state_from_state` is the
+                # single validator, so a malformed checkpoint logs the same
+                # discard warning here as it does on the live-sync path.
                 self._sync_cache_state_from_state(
                     {
                         "_last_model_request_at": payload.last_model_request_at,

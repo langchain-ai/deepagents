@@ -1558,8 +1558,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="warnings.cold_cache_min_delta_usd",
         group="Warnings",
         summary=(
-            "Warn before a cold prompt-cache turn exceeds this extra cost "
-            "estimate (0 disables)."
+            "Warn before a cold prompt-cache turn whose estimated extra cost "
+            "reaches this amount (0 disables)."
         ),
         kind=OptionKind.FLOAT,
         default=COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
@@ -1805,7 +1805,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="debug.cold_cache",
         group="Debug",
         summary=(
-            "Force the cold prompt-cache warning modal on the next interactive send."
+            "Force the cold prompt-cache warning modal on the next interactive "
+            "send, overriding suppression."
         ),
         kind=OptionKind.BOOL,
         default=False,

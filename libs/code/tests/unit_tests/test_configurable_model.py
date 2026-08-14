@@ -20,10 +20,12 @@ from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
+    _checkpoint_command,
     _get_context,
     _is_anthropic_model,
     _is_fireworks_model,
     _is_openai_model,
+    _ResolvedModelRequest,
 )
 
 
@@ -126,6 +128,55 @@ class TestCheckpointPersistence:
         assert isinstance(update, dict)
         assert update["_last_model_request_at"] == "2026-08-11T12:30:00+00:00"
         assert update["_last_cache_model_spec"] == "openai:gpt-5.6"
+
+    def test_timestamp_is_captured_before_the_model_call(self) -> None:
+        """Cache age must be measured from when the prefix was written.
+
+        Stamping after `handler()` returns would make a twenty-minute turn
+        look twenty minutes fresher than it is, under-warning on exactly the
+        long, expensive turns this feature targets.
+        """
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+        request = _make_request(_make_model("gpt-5.6"))
+        clock = iter(
+            ["2026-08-11T12:30:00+00:00", "2026-08-11T12:50:00+00:00"],
+        )
+
+        def slow_handler(_request: ModelRequest) -> ModelResponse[Any]:
+            # Consumes the second reading, as a real elapsed call would.
+            next(clock)
+            return _make_response()
+
+        with patch(
+            "deepagents_code.configurable_model._utc_now_iso",
+            side_effect=lambda: next(clock),
+        ):
+            result = middleware.wrap_model_call(request, slow_handler)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        update = result.command.update
+        assert isinstance(update, dict)
+        assert update["_last_model_request_at"] == "2026-08-11T12:30:00+00:00"
+
+    def test_timestamp_is_omitted_when_the_model_spec_is_unknown(self) -> None:
+        """Timing and identity are one fact and must be written together.
+
+        A timestamp without a spec reads back as a permanent "model changed",
+        warning on every send with copy naming a change that never happened.
+        """
+        resolved = _ResolvedModelRequest(
+            _make_request(_make_model("gpt-5.6")),
+            None,
+            model_params_known=True,
+        )
+
+        command = _checkpoint_command(resolved, "2026-08-11T12:30:00+00:00")
+
+        update = command.update
+        assert isinstance(update, dict)
+        assert "_last_model_request_at" not in update
+        assert "_last_cache_model_spec" not in update
 
     def test_failed_call_does_not_return_checkpoint_update(self) -> None:
         middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)

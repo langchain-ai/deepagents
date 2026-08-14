@@ -16170,30 +16170,19 @@ class TestShellCommandInterrupt:
         `_cleanup_shell_task` must re-resolve the branch so commands like
         `git checkout` are reflected in the footer.
         """
-        import subprocess
-
+        # The repository is written directly rather than driven through `git`,
+        # matching `test_refresh_git_branch_reads_gitdir_pointer` above.
+        # `_refresh_git_branch` resolves the common layout from `.git/HEAD`
+        # alone, so real subprocesses added no coverage here -- and four of
+        # them behind `asyncio.to_thread` made this test hang intermittently
+        # (`subprocess.run` waiting on captured pipes) once the rest of the
+        # file had run ahead of it.
         repo = tmp_path / "repo"
-        repo.mkdir()
-
-        def _init_repo_on_feature_branch() -> None:
-            env = {
-                **os.environ,
-                "GIT_AUTHOR_NAME": "t",
-                "GIT_AUTHOR_EMAIL": "t@t",
-                "GIT_COMMITTER_NAME": "t",
-                "GIT_COMMITTER_EMAIL": "t@t",
-            }
-            for args in (
-                ["git", "init", "-q", "-b", "main"],
-                ["git", "add", "f"],
-                ["git", "commit", "-q", "-m", "init"],
-                ["git", "checkout", "-q", "-b", "feature"],
-            ):
-                if args[1] == "add":
-                    (repo / "f").write_text("x")
-                subprocess.run(args, cwd=repo, env=env, check=True, capture_output=True)
-
-        await asyncio.to_thread(_init_repo_on_feature_branch)
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".git" / "HEAD").write_text(
+            "ref: refs/heads/feature\n",
+            encoding="utf-8",
+        )
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:

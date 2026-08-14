@@ -497,17 +497,23 @@ class TestChatInputResize:
             handle = app.query_one(ChatInputResizeHandle)
             await pilot.pause()
             default_border = box.styles.border_top
+            default_handle_color = handle.styles.color
+            rendered_border = handle.render()
+            assert rendered_border.strip()
+            assert len(rendered_border) == handle.size.width
 
             await pilot.hover(handle, offset=(5, 0))
 
             assert box.has_class("resize-hover")
             assert box.styles.border_top != default_border
+            assert handle.styles.color != default_handle_color
             assert handle.styles.pointer == "ns-resize"
 
             await pilot.hover("#spacer")
 
             assert not box.has_class("resize-hover")
             assert box.styles.border_top == default_border
+            assert handle.styles.color == default_handle_color
 
     async def test_non_left_press_does_not_start_drag(self) -> None:
         """A non-left press on the handle leaves resize inactive."""

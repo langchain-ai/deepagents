@@ -26,6 +26,7 @@ from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     detect_mode_prefix,
+    get_glyphs,
     is_ascii_mode,
 )
 from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
@@ -1439,10 +1440,19 @@ class ChatInputResizeHandle(Static):
         self._drag_start_y: int | None = None
         self._highlighted = False
 
+    def render(self) -> str:
+        """Render the border line beneath the drag target.
+
+        Returns:
+            A charset-compatible horizontal rule spanning the handle.
+        """
+        return get_glyphs().box_horizontal * self.size.width
+
     def _set_highlighted(self, *, highlighted: bool) -> None:
         """Publish top-border hover changes."""
         if self._highlighted != highlighted:
             self._highlighted = highlighted
+            self.set_class(highlighted, "resize-hover")
             self.post_message(self.HoverChanged(highlighted))
 
     def on_enter(self) -> None:
@@ -1547,7 +1557,24 @@ class ChatInput(Vertical):
         height: 1;
         margin-right: 1;
         background: transparent;
+        color: $primary;
         pointer: ns-resize;
+    }
+
+    ChatInput.mode-shell #input-resize-handle {
+        color: $mode-bash;
+    }
+
+    ChatInput.mode-command #input-resize-handle {
+        color: $mode-command;
+    }
+
+    ChatInput.mode-shell-incognito #input-resize-handle {
+        color: $mode-incognito;
+    }
+
+    ChatInput #input-resize-handle.resize-hover {
+        color: $primary-lighten-2;
     }
 
     /* Action buttons float on their own z-layer over the top border line, so

@@ -5665,7 +5665,11 @@ class TestCreateCliAgentInterpreterWiring:
         assert "app.py" in messages["glob"].content
         assert "app.py" in messages["grep"].content
         for grader_tool in tools.values():
-            assert "runtime" in grader_tool.get_input_schema().model_fields
+            # The wrapper's `runtime` must be recognized as injected (it is
+            # resolved from concrete annotations, not the reused SDK schema) and
+            # must stay out of the model-facing schema, which keeps the SDK's
+            # per-argument descriptions.
+            assert "runtime" in grader_tool._injected_args_keys
             properties = grader_tool.tool_call_schema.model_json_schema()["properties"]
             assert "runtime" not in properties
             assert all("description" in field for field in properties.values())

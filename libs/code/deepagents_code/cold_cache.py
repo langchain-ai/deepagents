@@ -19,12 +19,15 @@ where the provider is only guaranteed to have kept the entry that long and may
 well have kept it longer.
 """
 
-CacheWriteBucket = Literal["generic", "5m"]
+CacheWriteBucket = Literal["generic", "generic_write", "5m"]
 """Which pricing treatment a cold (cache-writing) request receives.
 
-`5m` prices Anthropic's five-minute ephemeral write premium. `generic` covers
-providers that bill a cache miss at the ordinary input rate with no write
-surcharge, which is how OpenAI prices prompt caching.
+`5m` prices Anthropic's five-minute ephemeral write premium. `generic_write`
+tags the miss as a cache write for models whose catalog entry publishes a
+write rate -- GPT-5.6+ bills writes at 1.25x the uncached input rate, and
+omitting the detail would price the miss at plain input. `generic` covers
+misses with no write surcharge, which is how OpenAI priced prompt caching
+before GPT-5.6.
 """
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")
@@ -187,7 +190,7 @@ def resolve_prompt_cache_policy(
             window_seconds=1800,
             confidence="may_be_cold",
             minimum_tokens=_OPENAI_MINIMUM_TOKENS,
-            write_bucket="generic",
+            write_bucket="generic_write",
         )
 
     # `in_memory` and `24h` are documented *maximums* ("up to one hour", "a
@@ -247,10 +250,16 @@ def estimate_rewarm_cost(
         cold_usage["input_token_details"] = {
             "ephemeral_5m_input_tokens": context_tokens
         }
-    # The `generic` bucket carries no cache-write detail at all: OpenAI bills a
-    # miss at the plain input rate, so tagging these tokens as a cache write
-    # would apply a premium the provider never charges and overstate both the
-    # displayed cost and the threshold comparison.
+    elif policy.write_bucket == "generic_write":
+        # GPT-5.6+ bills a miss as a cache write at 1.25x the input rate, and
+        # the catalog carries that rate, so the write detail must reach
+        # `estimate_cost`; omitting it would price the miss at plain input.
+        # `cache_write` is the generic alias `_cache_write_counts` reads.
+        cold_usage["input_token_details"] = {"cache_write": context_tokens}
+    # The plain `generic` bucket carries no cache-write detail at all: pre-5.6
+    # OpenAI bills a miss at the ordinary input rate, so tagging those tokens
+    # as a cache write would apply a premium the provider never charges and
+    # overstate both the displayed cost and the threshold comparison.
 
     from deepagents_code.cost_tracking import estimate_cost
 

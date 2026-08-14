@@ -82,8 +82,9 @@ def test_resolves_current_openai_minimum_retention(model: str) -> None:
     policy = resolve_prompt_cache_policy(f"openai:{model}")
 
     # 30 minutes is the documented guaranteed minimum, but OpenAI may retain
-    # the prefix longer, so past the window it may still be warm.
-    assert policy == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+    # the prefix longer, so past the window it may still be warm. GPT-5.6+
+    # bills cache writes at a premium over plain input, hence `generic_write`.
+    assert policy == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic_write")
 
 
 def test_resolves_explicit_older_openai_retention() -> None:
@@ -148,10 +149,13 @@ def test_skips_unresolved_or_custom_provider_policies() -> None:
 @pytest.mark.parametrize(
     ("bucket", "cold_details"),
     [
-        # OpenAI bills a miss at the plain input rate, so the cold side carries
-        # no cache-write detail at all -- tagging one applies a write premium
-        # the provider never charges.
+        # Pre-5.6 OpenAI bills a miss at the plain input rate, so the cold side
+        # carries no cache-write detail at all -- tagging one applies a write
+        # premium the provider never charges.
         ("generic", None),
+        # GPT-5.6+ bills a miss as a cache write; the generic `cache_write`
+        # alias is what `_cache_write_counts` forwards to the catalog.
+        ("generic_write", {"cache_write": 50_000}),
         ("5m", {"ephemeral_5m_input_tokens": 50_000}),
     ],
 )
@@ -187,12 +191,12 @@ def test_estimate_rewarm_cost_uses_policy_bucket(
     assert calls[1].get("input_token_details") == cold_details
 
 
-def test_generic_bucket_prices_a_miss_at_the_plain_input_rate() -> None:
-    """An OpenAI cold turn must cost exactly the uncached input price.
+def test_generic_write_bucket_prices_a_miss_at_the_catalog_write_rate() -> None:
+    """A GPT-5.6+ cold turn must cost the 1.25x cache-write rate, not plain input.
 
-    Guards the real pricing path rather than a fake: the catalog applies a
-    cache-write premium to some models, and forwarding a write key here
-    overstated both the displayed cost and the threshold comparison.
+    Guards the real pricing path rather than a fake: omitting the write detail
+    prices a 100k-token GPT-5.6 miss at plain input, which can skip the
+    warning for a turn that actually costs more than the threshold.
     """
     from deepagents_code.cost_tracking import estimate_cost
 
@@ -203,6 +207,33 @@ def test_generic_bucket_prices_a_miss_at_the_plain_input_rate() -> None:
     plain_input = estimate_cost(
         {"input_tokens": 100_000, "output_tokens": 0, "total_tokens": 100_000},
         "gpt-5.6-terra",
+        "openai",
+    )
+
+    assert estimate is not None
+    assert plain_input is not None
+    assert estimate.cold_cost_usd == pytest.approx(plain_input * 1.25)
+
+
+def test_generic_bucket_prices_a_miss_at_the_plain_input_rate() -> None:
+    """A pre-5.6 OpenAI cold turn must cost exactly the uncached input price.
+
+    The plain `generic` bucket forwards no cache-write detail; even if the
+    catalog grows a write rate for the matched model, the miss must stay at
+    the input rate the provider actually charges.
+    """
+    from deepagents_code.cost_tracking import estimate_cost
+
+    policy = resolve_prompt_cache_policy(
+        "openai:gpt-5.5", {"prompt_cache_retention": "24h"}
+    )
+    assert policy is not None
+    assert policy.write_bucket == "generic"
+
+    estimate = estimate_rewarm_cost(100_000, "openai:gpt-5.5", policy)
+    plain_input = estimate_cost(
+        {"input_tokens": 100_000, "output_tokens": 0, "total_tokens": 100_000},
+        "gpt-5.5",
         "openai",
     )
 
@@ -248,7 +279,7 @@ def test_parse_cache_timestamp_normalizes_non_utc_offsets() -> None:
 def test_explicit_official_endpoints_still_resolve() -> None:
     assert resolve_prompt_cache_policy(
         "openai:gpt-5.6", base_url="https://api.openai.com/v1"
-    ) == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic")
+    ) == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic_write")
     anthropic = resolve_prompt_cache_policy(
         "anthropic:claude-sonnet-4-6", base_url="https://api.anthropic.com"
     )

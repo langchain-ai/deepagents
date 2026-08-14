@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -11,6 +11,8 @@ from langchain_createos.sandbox import CreateOSSandbox
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+from deepagents.backends.protocol import ExecuteResponse
 
 _FAKE_REQUEST = httpx.Request("GET", "https://test.example.com")
 
@@ -130,3 +132,15 @@ def test_close_closes_http_client() -> None:
         sandbox.close()
 
     close.assert_called_once_with()
+
+
+async def test_awrite_existing_file_fails(sandbox: CreateOSSandbox) -> None:
+    check = ExecuteResponse(output="", exit_code=0)
+    with (
+        patch.object(sandbox, "aexecute", AsyncMock(return_value=check)),
+        patch.object(sandbox, "aupload_files", AsyncMock()) as upload,
+    ):
+        result = await sandbox.awrite("/app/existing.txt", "new content")
+
+    assert result.error == "Error: file '/app/existing.txt' already exists"
+    upload.assert_not_awaited()

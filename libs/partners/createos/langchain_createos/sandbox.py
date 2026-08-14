@@ -102,6 +102,9 @@ class CreateOSSandbox(BaseSandbox):
         Args:
             file_path: Absolute path for the file.
             content: UTF-8 text content to write.
+
+        Returns:
+            `WriteResult` with the written path on success or an error message.
         """
         check = self.execute(f"test -e {shlex.quote(file_path)}")
         if check.exit_code == 0:
@@ -114,6 +117,35 @@ class CreateOSSandbox(BaseSandbox):
         responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:
             msg = f"upload_files returned {len(responses)} results"
+            raise AssertionError(msg)
+        response = responses[0]
+        if response.error:
+            return WriteResult(
+                error=f"Failed to write file '{file_path}': {response.error}"
+            )
+        return WriteResult(path=file_path)
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        """Write content to a new file asynchronously.
+
+        Args:
+            file_path: Absolute path for the file.
+            content: UTF-8 text content to write.
+
+        Returns:
+            `WriteResult` with the written path on success or an error message.
+        """
+        check = await self.aexecute(f"test -e {shlex.quote(file_path)}")
+        if check.exit_code == 0:
+            return WriteResult(error=f"Error: file '{file_path}' already exists")
+
+        preflight_error = await self._awrite_preflight(file_path)
+        if preflight_error is not None:
+            return preflight_error
+
+        responses = await self.aupload_files([(file_path, content.encode("utf-8"))])
+        if not responses:
+            msg = f"aupload_files returned {len(responses)} results"
             raise AssertionError(msg)
         response = responses[0]
         if response.error:

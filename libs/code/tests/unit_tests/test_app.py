@@ -7428,7 +7428,7 @@ class TestCopyCommand:
             copy_mock.assert_called_once_with(app, markdown)
             assert any(w._content == "/copy" for w in app.query(UserMessage))
             assert any(
-                str(w._content) == "Copied latest assistant message to clipboard."
+                str(w._content) == "Copied latest response to clipboard."
                 for w in app.query(AppMessage)
             )
 
@@ -13634,7 +13634,8 @@ class TestAutoClassifierModelCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "already the default for future sessions" in rendered
+            assert "reviews gated actions from the next turn." in rendered
+            assert "already the default for future sessions" not in rendered
             assert "Press Ctrl+S" not in rendered
             assert "config.toml" not in rendered
 
@@ -18411,6 +18412,37 @@ class TestEditorSlashCommand:
             app._chat_input = MagicMock()
             await app._handle_command("/editor")
         mock.assert_awaited_once()
+
+
+class TestHelpEditorHint:
+    """Tests for the editor name shown by `/help`."""
+
+    async def test_names_configured_editor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", "code --wait")
+        app = DeepAgentsApp(agent=MagicMock())
+        mount_message = AsyncMock()
+
+        with patch.object(app, "_mount_message", mount_message):
+            await app._handle_command("/help")
+
+        assert mount_message.await_count == 2
+        message = mount_message.await_args_list[-1].args[0]
+        assert "Ctrl+X          Open prompt in code" in str(message._content)
+
+    async def test_uses_generic_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        app = DeepAgentsApp(agent=MagicMock())
+        mount_message = AsyncMock()
+
+        with patch.object(app, "_mount_message", mount_message):
+            await app._handle_command("/help")
+
+        assert mount_message.await_count == 2
+        message = mount_message.await_args_list[-1].args[0]
+        assert "Ctrl+X          Open prompt in external editor" in str(message._content)
 
 
 class TestApprovalModeSlashCommands:
@@ -23481,7 +23513,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/copy", "/docs", "/feedback", "/mcp"):
+            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
                 assert app._can_bypass_queue(cmd) is True
 
     async def test_queued_commands_do_not_bypass(self) -> None:
@@ -23489,8 +23521,21 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/help", "/clear", "/tokens"):
+            for cmd in ("/help", "/clear", "/copy", "/tokens"):
                 assert app._can_bypass_queue(cmd) is False
+
+    async def test_copy_queues_while_agent_is_running(self) -> None:
+        """`/copy` waits for the active assistant response to complete."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("/copy", "command"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "/copy"
 
     async def test_can_bypass_queue_empty_string(self) -> None:
         """Empty string should not bypass the queue."""

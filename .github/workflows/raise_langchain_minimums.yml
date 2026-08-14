@@ -37,6 +37,9 @@
 #   no bound needs raising), the workflow exits without creating a duplicate. A
 #   cron `all` run and a manual single-package run use different branches, so
 #   they are not serialized against each other.
+# - Because this runs unattended, a failure would otherwise be invisible: the
+#   final step files (or refreshes) a tracking issue so a broken bump does
+#   not just stop happening.
 
 name: "Raise dependency minimums"
 
@@ -82,8 +85,21 @@ jobs:
       # `gh pr list` below reads with `github.token`; without this the
       # duplicate-PR guard would fail open and post a second PR.
       pull-requests: read
+      # For the failure-tracking issue in the final step.
+      issues: write
     steps:
+      # The clone is anonymous on purpose. The default `persist-credentials`
+      # would store the read-only `GITHUB_TOKEN` as an
+      # `http.https://github.com/.extraheader` credential, and git sends that
+      # `Authorization` header while ignoring the app token embedded in the
+      # push URL — git cannot send two `Authorization` headers, so the config
+      # credential wins and the push runs as `github-actions[bot]` with
+      # `contents: read` and is denied (403). The only write in this job
+      # authenticates explicitly with the app token below, so nothing is
+      # lost; the fetch path in the push step also uses that app-token URL.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
@@ -147,7 +163,9 @@ jobs:
         # subsequent step; this step only emits a log line so the run
         # history shows why no PR was opened.
         if: steps.raise.outputs.changed != 'true'
-        run: echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
+        run: |
+          echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
+          echo "No in-scope minimum needed raising; no PR opened." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Skip if PR already open for this package
         id: existing
@@ -164,6 +182,10 @@ jobs:
             pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
             echo "Open PR already exists for $BRANCH; skipping."
             echo "::notice::Open dependency minimums PR already exists: $pr_url"
+            # The "Raise dependency minimums" step already wrote its raised-bounds
+            # summary; append the outcome link so it is visible without digging
+            # through the step log for the ::notice:: annotation.
+            printf '\n**PR:** %s (already open; no new PR created)\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Generate GitHub App token
@@ -189,6 +211,17 @@ jobs:
           BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
         run: |
           set -euo pipefail
+
+          # The push and PR calls authenticate as the Org Membership App
+          # installation, not `github-actions[bot]` (whose `GITHUB_TOKEN` is
+          # `contents: read` here and whose PRs would not trigger
+          # `pull_request` workflows). With checkout credentials no longer
+          # persisted, an empty app token would now degrade these to an
+          # anonymous 403; fail fast instead so the cause is obvious.
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
+            exit 1
+          fi
 
           # Recreate an orphan branch from a prior run that pushed but failed
           # before `gh pr create` (the no-open-PR check above already ran, so any
@@ -235,7 +268,7 @@ jobs:
             lockfiles+=("$dir/uv.lock")
           done
           git add -- "${files[@]}" "${lockfiles[@]}"
-          git commit -m "chore(deps): raise dependency minimums for $PACKAGE"
+          git commit -m "chore(deps): raise dependency minimums for \`$PACKAGE\`"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
@@ -248,7 +281,56 @@ jobs:
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): raise dependency minimums for $PACKAGE" \
+            --title "chore(deps): raise dependency minimums for \`$PACKAGE\`" \
             --body-file "$body_file")
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"
+          printf '\n**PR:** %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: File a tracking issue on failure
+        # Nobody watches a green cron, and nobody watches a red one either
+        # once it has been red for a week. Funnel every failure into a single
+        # deduplicated issue so the minimums raising stopping is visible
+        # exactly once.
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const marker = '<!-- raise-langchain-minimums-failure -->';
+            const { owner, repo } = context.repo;
+            const runUrl = process.env.RUN_URL;
+            const title = 'Dependency minimums raising is failing';
+            const body = [
+              marker,
+              '`raise_langchain_minimums.yml` failed, so LangChain-ecosystem dependency lower bounds are no longer being raised weekly.',
+              '',
+              `Most recent failed run: ${runUrl}`,
+              '',
+              'This issue is reused by later failures rather than duplicated. Close it once the workflow is green again.',
+            ].join('\n');
+
+            try {
+              const existing = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', per_page: 100 },
+              );
+              const found = existing.find(
+                i => !i.pull_request && (i.body ?? '').startsWith(marker),
+              );
+              if (found) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: found.number,
+                  body: `Still failing: ${runUrl}`,
+                });
+                core.info(`Commented on existing tracking issue #${found.number}.`);
+              } else {
+                const created = await github.rest.issues.create({ owner, repo, title, body });
+                core.info(`Filed tracking issue #${created.data.number}.`);
+              }
+            } catch (err) {
+              // Never mask the real failure with a reporting failure — the job
+              // is already red for the reason that matters.
+              core.warning(`Could not file the minimums tracking issue: ${err.message}`);
+            }

@@ -937,14 +937,30 @@ class TestAskUserMenu:
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+J newline" in str(help_text)
 
-    async def test_help_text_shows_editor_hint_for_text_question(self) -> None:
-        """Footer advertises Ctrl+X while the free-text field holds focus."""
+    async def test_help_text_personalizes_editor_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footer names the configured editor while a text field holds focus."""
+        monkeypatch.setenv("VISUAL", "nvim")
         app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
 
         async with app.run_test() as pilot:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             assert isinstance(app.focused, AskUserTextArea)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X edit in nvim" in str(help_text)
+
+    async def test_help_text_uses_generic_editor_hint_without_configuration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+X external editor" in str(help_text)
 
@@ -960,7 +976,7 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X external editor" in str(help_text)
+            assert "Ctrl+X" in str(help_text)
 
     async def test_help_text_omits_editor_hint_for_multiple_choice(self) -> None:
         """Footer omits Ctrl+X when only choices (no free-text field) are shown."""
@@ -1006,7 +1022,7 @@ class TestAskUserMenu:
             assert other_input.display is True
             assert app.focused is other_input
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X external editor" in str(help_text)
+            assert "Ctrl+X" in str(help_text)
 
     async def test_help_text_hides_editor_hint_when_leaving_other(self) -> None:
         """Moving off Other hides its field and retracts the Ctrl+X hint."""
@@ -1113,9 +1129,7 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert app.focused is text_input
-            assert "Ctrl+X external editor" in str(
-                menu.query_one(".ask-user-help").render()
-            )
+            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
 
     async def test_help_text_editor_hint_follows_active_question(self) -> None:
         """Mixed prompts only advertise Ctrl+X for the active free-text field."""
@@ -1149,6 +1163,32 @@ class TestAskUserMenu:
             await pilot.pause()
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+X" not in str(help_text)
+
+    async def test_single_question_hides_number_label(self) -> None:
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            source = menu._question_widgets[0].query_one(Markdown).source
+            assert source == "Name? *(required)*"
+
+    async def test_multiple_questions_show_number_labels(self) -> None:
+        app = _AskUserTestApp(
+            [
+                {"question": "Name?", "type": "text"},
+                {"question": "Color?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            sources = [qw.query_one(Markdown).source for qw in menu._question_widgets]
+            assert sources == [
+                "**1.** Name? *(required)*",
+                "**2.** Color? *(required)*",
+            ]
 
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""

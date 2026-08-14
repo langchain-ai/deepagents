@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     )
 
 from deepagents_code.config import get_glyphs
+from deepagents_code.editor import editor_display_name
 from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
     InlinePromptOption,
@@ -169,7 +170,7 @@ class AskUserMenu(Container):
 
         with Vertical(classes="ask-user-questions"):
             for i, q in enumerate(self._questions):
-                qw = _QuestionWidget(q, index=i)
+                qw = _QuestionWidget(q, index=i, show_number=count > 1)
                 self._question_widgets.append(qw)
                 yield qw
 
@@ -183,9 +184,8 @@ class AskUserMenu(Container):
     def _render_help(self) -> str:
         """Build the footer hint text for the current menu state.
 
-        The `Ctrl+X external editor` hint is included only while one of this
-        menu's text areas holds focus, matching the routing in
-        `App.action_open_editor`.
+        The `Ctrl+X` editor hint is included only while one of this menu's text
+        areas holds focus, matching the routing in `App.action_open_editor`.
 
         Returns:
             The bullet-joined footer hint string.
@@ -197,7 +197,12 @@ class AskUserMenu(Container):
             newline_hint(),
         ]
         if self._show_editor_hint():
-            parts.append("Ctrl+X external editor")
+            editor = editor_display_name()
+            parts.append(
+                f"Ctrl+X edit in {editor}"
+                if editor is not None
+                else "Ctrl+X external editor"
+            )
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
         parts.append("Esc to cancel")
@@ -387,11 +392,19 @@ class _QuestionWidget(Vertical):
     can_focus = True
     can_focus_children = True
 
-    def __init__(self, question: Question, index: int, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        question: Question,
+        index: int,
+        *,
+        show_number: bool = True,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(classes="ask-user-question", **kwargs)
         question_type = question.get("type", "text")
         self._question: Question = question
         self._index: int = index
+        self._show_number = show_number
         self._q_type: Literal["text", "multiple_choice"] = (
             "multiple_choice" if question_type == "multiple_choice" else "text"
         )
@@ -405,11 +418,11 @@ class _QuestionWidget(Vertical):
 
     def compose(self) -> ComposeResult:
         q_text = _TRAILING_ANNOTATION_RE.sub("", self._question.get("question", ""))
-        num = self._index + 1
+        prefix = f"**{self._index + 1}.** " if self._show_number else ""
         suffix = " *(required)*" if self._required else ""
         # q_text is agent-authored; rendered as markdown intentionally so
         # agents can use inline formatting, links, and code spans in questions.
-        yield Markdown(f"**{num}.** {q_text}{suffix}", classes="ask-user-question-text")
+        yield Markdown(f"{prefix}{q_text}{suffix}", classes="ask-user-question-text")
 
         if self._q_type == "multiple_choice" and self._choices:
             for i, choice in enumerate(self._choices):

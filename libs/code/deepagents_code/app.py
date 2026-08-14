@@ -7750,6 +7750,8 @@ class DeepAgentsApp(App):
             inputs += self._inflight_turn_stats.input_tokens
             reads += self._inflight_turn_stats.cache_read_tokens
             writes += self._inflight_turn_stats.cache_write_tokens
+        cache_display = self._status_bar.query_one("#cache-display")
+        cache_display.visible = self._thread_has_completed_turn and writes > 0
         self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(
@@ -14050,17 +14052,24 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             from deepagents_code.command_registry import get_slash_commands
+            from deepagents_code.editor import editor_display_name
 
             command_names = ", ".join(
                 f"{entry.name} {entry.argument_hint}".rstrip()
                 for entry in get_slash_commands()
+            )
+            editor = editor_display_name()
+            editor_help = (
+                f"Open prompt in {editor}"
+                if editor is not None
+                else "Open prompt in external editor"
             )
             help_body = (
                 f"Commands: {command_names}, /skill:<name>\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
-                "  Ctrl+X          Open prompt in external editor\n"
+                f"  Ctrl+X          {editor_help}\n"
                 "  Ctrl+N          Review pending notifications\n"
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
@@ -14185,7 +14194,7 @@ class DeepAgentsApp(App):
             success, error = copy_text_to_clipboard(self, content)
             if success:
                 await self._mount_message(
-                    AppMessage("Copied latest assistant message to clipboard."),
+                    AppMessage("Copied latest response to clipboard."),
                 )
             else:
                 fail_msg = (
@@ -19815,8 +19824,7 @@ class DeepAgentsApp(App):
                 else:
                     message = (
                         f"Auto classifier model set to {display}{revalidated}; it "
-                        "reviews gated actions from the next turn and is already "
-                        "the default for future sessions."
+                        "reviews gated actions from the next turn."
                     )
             else:
                 message = (

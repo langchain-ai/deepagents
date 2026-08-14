@@ -198,9 +198,25 @@ class FilesystemBackend(BackendProtocol):
         Raises:
             ValueError: If path traversal is attempted in `virtual_mode` or if the
                 resolved path escapes the root directory.
-            OSError: If the path is a symlink loop (`ELOOP`).
+            OSError: If a host path is supplied beneath the virtual root or the path is a
+                symlink loop (`ELOOP`).
         """
         if self.virtual_mode:
+            host_path = Path(key)
+            # A shell paired with this backend reports paths on the host filesystem,
+            # while file tools consume virtual paths. Reject a host path that points
+            # inside the virtual root rather than silently nesting it below that root.
+            if host_path.is_absolute() and self.cwd != self.cwd.parent:
+                try:
+                    # `relative_to` raises ValueError outside the workspace and returns
+                    # the workspace-relative path when the input is inside it.
+                    virtual_path = "/" + host_path.resolve().relative_to(self.cwd).as_posix()
+                except ValueError:
+                    pass
+                else:
+                    msg = f"Use '{virtual_path}' instead: file-tool paths are already relative to the workspace"
+                    raise OSError(msg)
+
             vpath = key if key.startswith("/") else "/" + key
             if ".." in vpath or vpath.startswith("~"):
                 msg = "Path traversal not allowed"

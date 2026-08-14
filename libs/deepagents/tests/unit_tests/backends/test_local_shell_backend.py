@@ -152,6 +152,22 @@ def test_local_shell_backend_integration_shell_and_filesystem() -> None:
         assert "Shell created" in content.file_data["content"]
 
 
+def test_local_shell_backend_rejects_host_path_from_execute(tmp_path: Path) -> None:
+    """Host paths returned by the shell must not silently become virtual paths."""
+    backend = LocalShellBackend(root_dir=tmp_path, virtual_mode=True)
+
+    shell_result = backend.execute("pwd")
+    assert shell_result.exit_code == 0
+    requested_path = Path(shell_result.output.strip()) / "fib.py"
+
+    write_result = backend.write(str(requested_path), "def fib(n: int) -> int:\n    return n\n")
+
+    assert write_result.error is not None
+    assert "Use '/fib.py' instead: file-tool paths are already relative to the workspace" in write_result.error
+    assert not (tmp_path / "fib.py").exists()
+    assert not (tmp_path / str(requested_path).lstrip("/")).exists()
+
+
 def test_local_shell_backend_ls_info() -> None:
     """Test listing directory contents."""
     with tempfile.TemporaryDirectory() as tmpdir:

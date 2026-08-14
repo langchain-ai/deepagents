@@ -7282,10 +7282,12 @@ class TestTraceCommand:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._connecting = True
 
             await app._handle_command("/plugins")
             await pilot.pause()
             assert isinstance(app.screen, PluginManagerScreen)
+            assert app.screen._mcp_connecting is True
 
 
 class TestClearCommand:

@@ -115,6 +115,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self,
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
+        mcp_connecting: bool = False,
         loaded_plugin_ids: AbstractSet[str] | None = None,
         on_auto_update_enabled: Callable[[], None] | None = None,
     ) -> None:
@@ -124,6 +125,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             mcp_server_info: Live MCP server metadata from the running session,
                 used to show connection status for plugins that declare MCP
                 servers.
+            mcp_connecting: Whether MCP connection status is still loading.
             loaded_plugin_ids: Plugin ids loaded into the current session.
                 Plugins whose enabled state differs from this set (enabled but
                 not loaded, or disabled but still loaded) are shown as pending
@@ -134,6 +136,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._tab: PluginTab = "discover"
         self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
+        self._mcp_connecting = mcp_connecting
         self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
         self._on_auto_update_enabled = on_auto_update_enabled
         self._state = _ManagerState((), (), (), ())
@@ -555,6 +558,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._state = await asyncio.to_thread(
             _load_manager_state,
             self._mcp_server_info,
+            mcp_connecting=self._mcp_connecting,
             loaded_plugin_ids=self._loaded_plugin_ids,
         )
         self._auto_update_enabled, self._auto_update_source = await asyncio.to_thread(

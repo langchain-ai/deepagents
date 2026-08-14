@@ -22884,6 +22884,7 @@ class DeepAgentsApp(App):
         self.push_screen(
             PluginManagerScreen(
                 mcp_server_info=self._mcp_server_info or [],
+                mcp_connecting=self._connecting,
                 loaded_plugin_ids=self._session_plugin_ids,
                 on_auto_update_enabled=(
                     self._start_plugin_auto_update

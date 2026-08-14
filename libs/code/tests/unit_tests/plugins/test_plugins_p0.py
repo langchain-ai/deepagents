@@ -1723,6 +1723,39 @@ def test_manager_state_keeps_pending_reload_after_disable_while_loaded(
     assert row.load_state == "pending_reload"
 
 
+def test_manager_state_defers_mcp_reload_hint_while_connecting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    loaded_plugin_ids = frozenset({plugin_id})
+
+    connecting_state = _load_manager_state(
+        mcp_connecting=True,
+        loaded_plugin_ids=loaded_plugin_ids,
+    )
+    settled_state = _load_manager_state(loaded_plugin_ids=loaded_plugin_ids)
+    connecting_row = next(
+        row for row in connecting_state.installed_plugins if row.plugin_id == plugin_id
+    )
+    settled_row = next(
+        row for row in settled_state.installed_plugins if row.plugin_id == plugin_id
+    )
+
+    assert connecting_row.load_state == "enabled"
+    assert connecting_row.mcp_connected is None
+    assert settled_row.mcp_connected is False
+
+
 def test_manager_state_previews_local_discover_components(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -9,7 +9,7 @@ import tomllib
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 
@@ -707,6 +707,7 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
             include_prereleases=None,
         )
         perform_upgrade_mock.assert_awaited_once_with(
+            log_path=ANY,
             include_prereleases=None,
             target_version="99.0.0",
         )
@@ -714,11 +715,12 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
         assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
 
 
-async def test_update_slash_command_hides_dependency_details_by_default() -> None:
-    """A normal app upgrade keeps dependency churn behind `/update --log`."""
+async def test_update_slash_command_links_log_instead_of_listing_dependencies() -> None:
+    """A normal app upgrade keeps dependency churn in its exact update log."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
 
+    log_path = Path("/tmp/dcode update.log")
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -732,6 +734,10 @@ async def test_update_slash_command_hides_dependency_details_by_default() -> Non
                 return_value=(True, "99.0.0"),
             ),
             patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=log_path,
+            ),
+            patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
                 return_value=(
@@ -743,15 +749,21 @@ async def test_update_slash_command_hides_dependency_details_by_default() -> Non
                         " + anthropic==0.122.0\n"
                     ),
                 ),
-            ),
+            ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update")
             await pilot.pause()
 
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path=log_path,
+            include_prereleases=None,
+            target_version="99.0.0",
+        )
         content = "\n".join(
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         )
-        assert "Dependencies updated. Run /update --log to view details." in content
+        assert "Update log: tail -f '/tmp/dcode update.log'" in content
+        assert "Dependencies updated:" not in content
         assert "anthropic  0.120.2 -> 0.122.0" not in content
 
 
@@ -789,6 +801,7 @@ async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() ->
             await pilot.pause()
 
     perform_upgrade_mock.assert_awaited_once_with(
+        log_path=ANY,
         include_prereleases=None,
         target_version="99.0.0",
     )
@@ -832,6 +845,7 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
             include_prereleases=True,
         )
         perform_upgrade_mock.assert_awaited_once_with(
+            log_path=ANY,
             include_prereleases=True,
             target_version="99.0.0rc1",
         )
@@ -960,74 +974,6 @@ async def test_update_slash_command_rejects_unknown_option() -> None:
         assert "Unknown option(s) for /update: --prereleases" in str(
             app_msgs[-1]._content
         )
-
-
-async def test_update_slash_command_displays_latest_log() -> None:
-    """`/update --log` shows the latest persisted updater output."""
-    from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.tui.widgets.messages import AppMessage
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with (
-            patch(
-                "deepagents_code.update_check.latest_update_log",
-                return_value=(
-                    Path("/tmp/latest-update.log"),
-                    "$ uv tool upgrade\n+ dep==2",
-                ),
-            ),
-            patch(
-                "deepagents_code.update_check.is_update_available",
-            ) as is_update_mock,
-        ):
-            await app._handle_command("/update --log")
-            await pilot.pause()
-
-        is_update_mock.assert_not_called()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        content = str(app_msgs[-1]._content)
-        assert "Latest update log (/tmp/latest-update.log):" in content
-        assert "$ uv tool upgrade\n+ dep==2" in content
-
-
-async def test_update_slash_command_reports_missing_log() -> None:
-    """`/update --log` explains when no persisted updater output exists."""
-    from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.tui.widgets.messages import AppMessage
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with patch(
-            "deepagents_code.update_check.latest_update_log",
-            return_value=None,
-        ):
-            await app._handle_command("/update --log")
-            await pilot.pause()
-
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert "No update log found." in str(app_msgs[-1]._content)
-
-
-async def test_update_slash_command_rejects_log_with_other_options() -> None:
-    """`--log` is a read-only action and cannot trigger an update."""
-    from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.tui.widgets.messages import AppMessage
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        with patch(
-            "deepagents_code.update_check.latest_update_log",
-        ) as latest_log_mock:
-            await app._handle_command("/update --log --deps")
-            await pilot.pause()
-
-        latest_log_mock.assert_not_called()
-        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert "The --log option cannot be combined" in str(app_msgs[-1]._content)
 
 
 async def test_update_deps_refreshes_when_dcode_current() -> None:
@@ -1194,6 +1140,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
         confirm_mock.assert_not_awaited()
         refresh_mock.assert_not_awaited()
         perform_upgrade_mock.assert_awaited_once_with(
+            log_path=ANY,
             include_prereleases=None,
             target_version="1.1.0",
         )

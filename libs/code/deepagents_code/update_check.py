@@ -1911,29 +1911,6 @@ def cleanup_update_logs(
         logger.debug("Failed to clean up update logs", exc_info=True)
 
 
-def latest_update_log() -> tuple[Path, str] | None:
-    """Return the newest readable update log and its contents."""
-    try:
-        logs = sorted(
-            (
-                (path.stat().st_mtime, path)
-                for path in UPDATE_LOG_DIR.glob("*.log")
-                if path.is_file()
-            ),
-            reverse=True,
-        )
-    except OSError:
-        logger.debug("Could not list update logs", exc_info=True)
-        return None
-
-    for _, path in logs:
-        try:
-            return path, path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            logger.debug("Could not read update log at %s", path, exc_info=True)
-    return None
-
-
 def create_update_log_path() -> Path:
     """Return a new timestamped update log path and clean stale logs."""
     cleanup_update_logs()

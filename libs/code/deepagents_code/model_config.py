@@ -658,6 +658,18 @@ source, model class, and request endpoint all differ. See
 `deepagents_code.integrations.openai_codex` for the OAuth flow.
 """
 
+XAI_OAUTH_PROVIDER = "xai_oauth"
+"""Provider name for `ChatXAI` models authenticated via xAI OAuth (device flow).
+
+Distinct from `"xai"` (which uses an `XAI_API_KEY`) because the auth source
+differs, exactly the way `"openai"` and `CODEX_PROVIDER` coexist. Unlike the
+Codex integration, there is no `langchain_xai` OAuth module to delegate to,
+so the device-code flow, token storage, and refresh logic live directly in
+`deepagents_code.integrations.xai_oauth`. This OAuth surface is unofficial
+and undocumented by xAI, and requires a SuperGrok / X Premium+ entitlement
+that `XAI_API_KEY` users don't need — see that module's docstring.
+"""
+
 CODEX_MODELS: frozenset[str] = frozenset(
     {
         "gpt-5.6-luna",
@@ -1214,6 +1226,28 @@ def get_available_models() -> dict[str, list[str]]:
                     reordered[CODEX_PROVIDER] = codex_models
             available = reordered
 
+    # Mirror the full `xai` model list under a dedicated `xai_oauth` provider
+    # entry so the switcher offers them under their own OAuth auth context.
+    # Unlike Codex, there is no curated allowlist here: xAI OAuth serves the
+    # same model lineup as the API-key path (no evidence to date of a
+    # narrower backend), so every discovered `xai` model is mirrored.
+    if config.is_provider_enabled(XAI_OAUTH_PROVIDER):
+        xai_models = available.get("xai")
+        if xai_models:
+            oauth_models = list(
+                dict.fromkeys([*available.get(XAI_OAUTH_PROVIDER, []), *xai_models])
+            )
+            # Place `xai_oauth` directly after `xai`, mirroring how
+            # `openai_codex` is kept adjacent to `openai` above.
+            reordered_xai: dict[str, list[str]] = {}
+            for name, models in available.items():
+                if name == XAI_OAUTH_PROVIDER:
+                    continue
+                reordered_xai[name] = models
+                if name == "xai":
+                    reordered_xai[XAI_OAUTH_PROVIDER] = oauth_models
+            available = reordered_xai
+
     _available_models_cache = available
     return available
 
@@ -1336,6 +1370,19 @@ def get_model_profiles(
                 )
                 result[codex_spec] = _build_entry(
                     upstream_profile, codex_overrides, cli_override
+                )
+            # Mirror every `xai` profile under the `xai_oauth` provider so
+            # `/model xai_oauth:<model>` resolves to the same upstream
+            # profile without duplicating data. No allowlist — see the note
+            # in `get_available_models`.
+            if provider == "xai" and config.is_provider_enabled(XAI_OAUTH_PROVIDER):
+                xai_oauth_spec = f"{XAI_OAUTH_PROVIDER}:{model_name}"
+                seen_specs.add(xai_oauth_spec)
+                xai_oauth_overrides = config.get_profile_overrides(
+                    XAI_OAUTH_PROVIDER, model_name=model_name
+                )
+                result[xai_oauth_spec] = _build_entry(
+                    upstream_profile, xai_oauth_overrides, cli_override
                 )
 
     # Add config-only models and class_path provider profiles.
@@ -2060,6 +2107,49 @@ def _get_codex_auth_status() -> ProviderAuthStatus:
     )
 
 
+def _get_xai_oauth_auth_status() -> ProviderAuthStatus:
+    """Translate the xAI OAuth on-disk state into a `ProviderAuthStatus`.
+
+    Mirrors `_get_codex_auth_status`: the `xai_oauth` provider uses a
+    file-backed OAuth token store rather than `auth_store`'s API-key map, so
+    it gets its own branch in `get_provider_auth_status`. The `STORED`
+    source is reused only to satisfy the `ProviderAuthStatus` "CONFIGURED
+    implies a source" invariant; `format_auth_badge` routes this provider to
+    its own badges before the source is ever consulted.
+
+    Returns:
+        `CONFIGURED` / `STORED` when a token bundle sits at the xAI OAuth
+            store path; `MISSING` otherwise. Expired access tokens are still
+            reported as configured because the file-backed model provider
+            can refresh them with the saved refresh token when the model is
+            constructed.
+    """
+    from deepagents_code.integrations import xai_oauth
+
+    status = xai_oauth.get_status()
+    if status.unreadable_reason:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=XAI_OAUTH_PROVIDER,
+            detail=f"token store unreadable: {status.unreadable_reason}",
+        )
+    if not status.logged_in:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=XAI_OAUTH_PROVIDER,
+            detail="not signed in to xAI",
+        )
+    detail = "signed in to xAI"
+    if status.is_expired:
+        detail = f"{detail}; access token will refresh on use"
+    return ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=XAI_OAUTH_PROVIDER,
+        source=ProviderAuthSource.STORED,
+        detail=detail,
+    )
+
+
 def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     """Return credential readiness details for a provider.
 
@@ -2105,6 +2195,11 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     # detail.
     if provider == CODEX_PROVIDER:
         return _get_codex_auth_status()
+
+    # xAI-OAuth-backed provider similarly has no env var and stores tokens
+    # in its own on-disk JSON.
+    if provider == XAI_OAUTH_PROVIDER:
+        return _get_xai_oauth_auth_status()
 
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()

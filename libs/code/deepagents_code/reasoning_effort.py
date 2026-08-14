@@ -11,7 +11,12 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from deepagents_code.model_config import CODEX_PROVIDER, ModelSpec, get_model_profiles
+from deepagents_code.model_config import (
+    CODEX_PROVIDER,
+    XAI_OAUTH_PROVIDER,
+    ModelSpec,
+    get_model_profiles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +195,7 @@ def _effort_paths(provider: str) -> tuple[tuple[str, ...], ...]:
         )
     if provider == "fireworks":
         return (("reasoning_effort",), ("model_kwargs", "reasoning_effort"))
-    if provider == "xai":
+    if provider in {"xai", XAI_OAUTH_PROVIDER}:
         return (("reasoning_effort",), ("extra_body", "reasoning_effort"))
     return (("reasoning_effort",),)
 
@@ -308,7 +313,7 @@ def without_effort_model_params(
         _remove_nested_key(cleaned, "thinking_config", "thinking_level")
     elif provider == "fireworks":
         _remove_nested_key(cleaned, "model_kwargs", "reasoning_effort")
-    elif provider == "xai":
+    elif provider in {"xai", XAI_OAUTH_PROVIDER}:
         _remove_nested_key(cleaned, "extra_body", "reasoning_effort")
     return cleaned or None
 

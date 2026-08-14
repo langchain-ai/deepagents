@@ -613,54 +613,33 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_select = screen.query_one("#thread-sort-select", Select)
-                thread_id_switch = screen.query_one(
-                    f"#{ThreadSelectorScreen._switch_id('thread_id')}",
-                    Checkbox,
-                )
-                agent_name_switch = screen.query_one(
-                    f"#{ThreadSelectorScreen._switch_id('agent_name')}",
-                    Checkbox,
-                )
-                messages_switch = screen.query_one(
-                    f"#{ThreadSelectorScreen._switch_id('messages')}",
-                    Checkbox,
-                )
-
-                agent_select = screen.query_one("#thread-agent-select", Select)
+                expected_controls = [
+                    screen.query_one("#thread-scope-select", Select),
+                    screen.query_one("#thread-sort-select", Select),
+                    screen.query_one("#thread-agent-select", Select),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('thread_id')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('agent_name')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('messages')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('created_at')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('updated_at')}", Checkbox
+                    ),
+                    screen.query_one("#thread-relative-time", Checkbox),
+                ]
                 assert filter_input.has_focus
 
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert scope_select.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert sort_select.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert agent_select.has_focus
-
-                relative_time_switch = screen.query_one(
-                    "#thread-relative-time", Checkbox
-                )
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert relative_time_switch.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert thread_id_switch.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert agent_name_switch.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert messages_switch.has_focus
+                for control in expected_controls:
+                    screen.action_focus_next_filter()
+                    await pilot.pause()
+                    assert control.has_focus
 
     async def test_shift_tab_moves_focus_backward_through_controls(self) -> None:
         """Shift+Tab should move focus backward through the controls."""
@@ -820,10 +799,7 @@ class TestThreadSelectorTabSort:
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
                 filter_input = screen.query_one("#thread-filter", Input)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
 
@@ -847,10 +823,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
 
@@ -877,10 +850,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
 
@@ -909,10 +879,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
                 assert relative_switch.value is True
@@ -2928,6 +2895,81 @@ class TestThreadSelectorColumnConfig:
         with _patch_columns():
             screen = ThreadSelectorScreen(current_thread=None)
         assert screen._columns == THREAD_COLUMN_DEFAULTS
+
+    async def test_relative_time_follows_timestamp_columns(self) -> None:
+        """Relative timestamps should appear after both timestamp columns."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                toggle_ids = [
+                    toggle.id
+                    for toggle in screen.query(".thread-column-toggle").results(
+                        Checkbox
+                    )
+                ]
+
+                created_id = screen._switch_id("created_at")
+                updated_id = screen._switch_id("updated_at")
+                relative_index = toggle_ids.index("thread-relative-time")
+                assert toggle_ids[relative_index - 2 : relative_index] == [
+                    created_id,
+                    updated_id,
+                ]
+
+    async def test_relative_time_visibility_tracks_timestamp_columns(self) -> None:
+        """Relative timestamps should hide unless a timestamp column is enabled."""
+        from deepagents_code.model_config import THREAD_COLUMN_DEFAULTS
+
+        columns = {
+            **THREAD_COLUMN_DEFAULTS,
+            "created_at": False,
+            "updated_at": False,
+        }
+        with (
+            _patch_list_threads(),
+            _patch_columns(columns),
+            patch(
+                "deepagents_code.model_config.save_thread_columns",
+                return_value=True,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                created_switch = screen.query_one(
+                    f"#{screen._switch_id('created_at')}", Checkbox
+                )
+                updated_switch = screen.query_one(
+                    f"#{screen._switch_id('updated_at')}", Checkbox
+                )
+                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
+
+                assert relative_switch.display is False
+                assert relative_switch not in screen._filter_focus_order()
+
+                created_switch.value = True
+                await pilot.pause()
+                assert relative_switch.display is True
+                assert relative_switch in screen._filter_focus_order()
+
+                updated_switch.value = True
+                created_switch.value = False
+                await pilot.pause()
+                assert relative_switch.display is True
+
+                updated_switch.value = False
+                await pilot.pause()
+                assert relative_switch.display is False
+                assert relative_switch not in screen._filter_focus_order()
 
     async def test_switch_toggles_column_and_persists(self) -> None:
         """Clicking a column switch should hide the column and save the choice."""

@@ -712,6 +712,41 @@ class _ConfigWriteResult:
     """Toast severity to use when `message` is shown."""
 
 
+@dataclass(frozen=True)
+class _ServerRespawnResult:
+    """Result of restarting the app-owned server."""
+
+    restarted: bool
+    mcp_server_info: list[MCPServerInfo] | None = None
+
+
+def _format_mcp_server_changes(
+    previous: list[MCPServerInfo] | None,
+    current: list[MCPServerInfo] | None,
+) -> str:
+    """Format MCP server additions and removals for `/reload`.
+
+    Returns:
+        A user-facing MCP server change summary.
+    """
+    if previous is None or current is None:
+        return "MCP server changes couldn't be determined; use /mcp to check."
+
+    previous_names = {server.name for server in previous}
+    current_names = {server.name for server in current}
+    loaded = sorted(current_names - previous_names)
+    removed = sorted(previous_names - current_names)
+    if not loaded and not removed:
+        return "MCP server changes: no changes detected."
+
+    lines = ["MCP server changes:"]
+    if loaded:
+        lines.append(f"  - Loaded: {', '.join(loaded)}")
+    if removed:
+        lines.append(f"  - Removed: {', '.join(removed)}")
+    return "\n".join(lines)
+
+
 ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
@@ -13874,7 +13909,7 @@ class DeepAgentsApp(App):
             self._server_proc.update_env(
                 **{env_key: env_value},
             )
-            restarted = await self._respawn_server(
+            restart_result = await self._respawn_server(
                 log_message=("Server restart failed while changing max iterations"),
                 mcp_failure_log=(
                     "MCP metadata preload after max-iterations change failed"
@@ -13883,7 +13918,7 @@ class DeepAgentsApp(App):
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
                 ),
             )
-            if not restarted:
+            if not restart_result.restarted:
                 self._rubric_max_iterations = previous
                 if self._server_kwargs is not None:
                     self._server_kwargs["rubric_max_iterations"] = previous
@@ -14000,7 +14035,7 @@ class DeepAgentsApp(App):
             self._server_proc.update_env(
                 **{env_key: env_value},
             )
-            restarted = await self._respawn_server(
+            restart_result = await self._respawn_server(
                 log_message=(
                     f"Server restart failed while changing {label.lower()} model"
                 ),
@@ -14011,7 +14046,7 @@ class DeepAgentsApp(App):
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
                 ),
             )
-            if not restarted:
+            if not restart_result.restarted:
                 self._rubric_model = previous
                 if self._server_kwargs is not None:
                     self._server_kwargs["rubric_model"] = previous
@@ -14407,8 +14442,9 @@ class DeepAgentsApp(App):
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
 
-            # Snapshot pre-reload skill names so the report can show diff.
+            # Snapshot pre-reload state so the report can show diffs.
             old_skill_names = {s["name"] for s in self._discovered_skills}
+            old_mcp_server_info = self._mcp_server_info
 
             try:
                 changes = settings.reload_from_environment()
@@ -14589,7 +14625,6 @@ class DeepAgentsApp(App):
                         "during load."
                     )
 
-                restarted = False
                 if self._server_proc is not None and self._server_kwargs is not None:
                     if self._agent_running and self._agent_worker:
                         self._cancel_worker(self._agent_worker)
@@ -14599,10 +14634,14 @@ class DeepAgentsApp(App):
                         self._set_agent_running(False)
                     else:
                         self._discard_queue()
-                    restarted = await self._restart_server_manual()
-                    if restarted:
+                    restart_result = await self._restart_server_manual_result()
+                    if restart_result.restarted:
                         self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
+                        report += "\n" + _format_mcp_server_changes(
+                            old_mcp_server_info,
+                            restart_result.mcp_server_info,
+                        )
                     else:
                         report += (
                             "\nAgent server was not restarted; plugin MCP may be stale."
@@ -24598,6 +24637,14 @@ class DeepAgentsApp(App):
         Returns:
             Whether the server was restarted successfully.
         """
+        return (await self._restart_server_manual_result()).restarted
+
+    async def _restart_server_manual_result(self) -> _ServerRespawnResult:
+        """Respawn the server and retain refreshed MCP metadata for `/reload`.
+
+        Returns:
+            Restart status and refreshed MCP server metadata.
+        """
         return await self._respawn_server(
             log_message="Manual /restart of server failed",
             mcp_failure_log="MCP metadata preload after /restart failed",
@@ -24665,7 +24712,7 @@ class DeepAgentsApp(App):
         mcp_failure_log: str,
         mcp_failure_toast: str,
         restart_timeout: float = 30.0,
-    ) -> bool:
+    ) -> _ServerRespawnResult:
         """Stop the app-owned server subprocess and rebuild the agent.
 
         Used by `_restart_server_manual` (the `/restart` command) and
@@ -24685,11 +24732,11 @@ class DeepAgentsApp(App):
                 deadlock the handler.
 
         Returns:
-            Whether the server was restarted successfully.
+            Restart status and refreshed MCP server metadata.
         """
         server_proc = self._server_proc
         if self._server_kwargs is None or server_proc is None:
-            return False
+            return _ServerRespawnResult(restarted=False)
 
         try:
             self._connecting = True
@@ -24714,7 +24761,7 @@ class DeepAgentsApp(App):
                 self._sync_status_connection()
                 logger.exception(log_message)
                 self.post_message(self.ServerStartFailed(error=exc))
-                return False
+                return _ServerRespawnResult(restarted=False)
 
             from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
             from deepagents_code.main import _preload_session_mcp_server_info
@@ -24749,7 +24796,10 @@ class DeepAgentsApp(App):
             self._sync_status_connection()
             raise
         else:
-            return True
+            return _ServerRespawnResult(
+                restarted=True,
+                mcp_server_info=mcp_info,
+            )
         finally:
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)

@@ -70,9 +70,11 @@ from deepagents_code.app import (
     _ChatScroll,
     _display_model_label,
     _extra_is_ready,
+    _format_mcp_server_changes,
     _GoalApplication,
     _GoalGradeObservation,
     _parse_rubric_max_iterations,
+    _ServerRespawnResult,
     _ThreadHistoryPayload,
     _warn_discarded_goal_channels,
 )
@@ -9772,7 +9774,7 @@ class TestGoalCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ):
                 await app._handle_command("/goal model clear")
                 await pilot.pause()
@@ -12737,7 +12739,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ) as respawn:
                 await app._set_rubric_max_iterations(12)
             await pilot.pause()
@@ -12767,7 +12769,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=False,
+                return_value=_ServerRespawnResult(restarted=False),
             ):
                 await app._set_rubric_max_iterations(12)
 
@@ -12918,7 +12920,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ) as respawn:
                 await app._set_rubric_max_iterations(None)
             await pilot.pause()
@@ -12948,7 +12950,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ):
                 await app._handle_command("/rubric max-iterations clear")
             await pilot.pause()
@@ -13101,7 +13103,7 @@ class TestRubricCommand:
                     app,
                     "_respawn_server",
                     new_callable=AsyncMock,
-                    return_value=True,
+                    return_value=_ServerRespawnResult(restarted=True),
                 ) as respawn,
             ):
                 # Attach the env-staging calls and the respawn to a shared
@@ -13152,7 +13154,7 @@ class TestRubricCommand:
                     app,
                     "_respawn_server",
                     new_callable=AsyncMock,
-                    return_value=False,
+                    return_value=_ServerRespawnResult(restarted=False),
                 ),
             ):
                 await app._set_rubric_model("openai:gpt-5.1")
@@ -13180,7 +13182,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ) as respawn:
                 await app._set_rubric_model(None)
             await pilot.pause()
@@ -32752,6 +32754,50 @@ class TestRestartCommand:
             assert len(app._pending_messages) == 0
 
 
+class TestFormatMcpServerChanges:
+    """MCP server change summaries shown after `/reload`."""
+
+    def test_lists_loaded_and_removed_servers_in_sorted_order(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(name="removed-b", transport="stdio"),
+            MCPServerInfo(name="kept", transport="stdio"),
+            MCPServerInfo(name="removed-a", transport="stdio"),
+        ]
+        current = [
+            MCPServerInfo(name="loaded-b", transport="stdio"),
+            MCPServerInfo(name="kept", transport="stdio"),
+            MCPServerInfo(name="loaded-a", transport="stdio"),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Loaded: loaded-a, loaded-b\n"
+            "  - Removed: removed-a, removed-b"
+        )
+
+    def test_reports_no_changes(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [MCPServerInfo(name="notion", transport="stdio")]
+
+        assert (
+            _format_mcp_server_changes(servers, servers)
+            == "MCP server changes: no changes detected."
+        )
+
+    @pytest.mark.parametrize(("previous", "current"), [(None, []), ([], None)])
+    def test_reports_unavailable_metadata(
+        self,
+        previous: list[Any] | None,
+        current: list[Any] | None,
+    ) -> None:
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes couldn't be determined; use /mcp to check."
+        )
+
+
 class TestRespawnServer:
     """Direct coverage of `_respawn_server` — invoked via `_restart_server_manual`."""
 
@@ -32840,16 +32886,22 @@ class TestRespawnServer:
         """`/reload` may restart inline without retaining its message-loop caller."""
         from deepagents_code import theme
         from deepagents_code.config import settings
+        from deepagents_code.mcp_tools import MCPServerInfo
 
-        app = DeepAgentsApp(agent=MagicMock())
+        removed = MCPServerInfo(name="removed-plugin:server", transport="stdio")
+        loaded = MCPServerInfo(name="loaded-plugin:server", transport="stdio")
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[removed])
         async with app.run_test() as pilot:
             await pilot.pause()
             proc = await self._prepare(app)
             app._plugin_fingerprints = {}
 
-            async def restart_manual() -> bool:
+            async def restart_manual() -> _ServerRespawnResult:
                 await app._restart_server_process(proc)
-                return True
+                return _ServerRespawnResult(
+                    restarted=True,
+                    mcp_server_info=[loaded],
+                )
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -32866,7 +32918,7 @@ class TestRespawnServer:
                 "_discover_plugins_with_fingerprints",
                 lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
             )
-            monkeypatch.setattr(app, "_restart_server_manual", restart_manual)
+            monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(
                 app,
                 "_maybe_start_deferred_server_from_default",
@@ -32879,6 +32931,13 @@ class TestRespawnServer:
             proc.restart.assert_awaited_once()
             assert caller not in app._server_restart_tasks
             assert not app._server_restart_tasks
+            reports = [str(message._content) for message in app.query(AppMessage)]
+            assert any(
+                "MCP server changes:\n"
+                "  - Loaded: loaded-plugin:server\n"
+                "  - Removed: removed-plugin:server" in report
+                for report in reports
+            )
 
     async def test_pending_mcp_reconnect_does_not_leave_restart_registration(
         self, monkeypatch: pytest.MonkeyPatch
@@ -32926,9 +32985,10 @@ class TestRespawnServer:
             posted: list[Any] = []
             monkeypatch.setattr(app, "post_message", posted.append)
 
-            result = await app._restart_server_manual()
+            result = await app._restart_server_manual_result()
 
-            assert result is True
+            assert result.restarted is True
+            assert result.mcp_server_info == ["info"]
             proc.restart.assert_awaited_once()
             ready = [m for m in posted if isinstance(m, app.ServerReady)]
             assert len(ready) == 1
@@ -32983,7 +33043,8 @@ class TestRespawnServer:
                 restart_timeout=0.01,
             )
 
-            assert result is False
+            assert result.restarted is False
+            assert result.mcp_server_info is None
             failed = [m for m in posted if isinstance(m, app.ServerStartFailed)]
             assert len(failed) == 1
             assert isinstance(failed[0].error, asyncio.TimeoutError)
@@ -33047,7 +33108,8 @@ class TestRespawnServer:
                 mcp_failure_toast="",
             )
 
-            assert result is False
+            assert result.restarted is False
+            assert result.mcp_server_info is None
             assert not any(
                 isinstance(m, (app.ServerReady, app.ServerStartFailed)) for m in posted
             )

@@ -434,17 +434,22 @@ class TestChatInputResize:
             await pilot.mouse_up(offset=(x, 23))
             assert text_area.size.height == 1
 
-    async def test_double_click_restores_auto_height(self) -> None:
-        """Double-clicking the top border restores content-driven sizing."""
+    async def test_double_click_toggles_expanded_and_auto_height(self) -> None:
+        """Double-click expands auto sizing and collapses any manual height."""
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
             await pilot.pause()
-            box._set_manual_height(5)
+            assert box._manual_height is None
+            assert text_area.size.height == 1
+
+            await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
-            assert text_area.size.height == 5
+
+            assert box._manual_height == 17
+            assert text_area.size.height == 17
 
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
@@ -452,6 +457,14 @@ class TestChatInputResize:
             assert box._manual_height is None
             assert text_area.size.height == 1
             assert text_area._settled_content_height() == 8
+
+            box._set_manual_height(5)
+            await pilot.pause()
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._manual_height is None
+            assert text_area.size.height == 1
 
     async def test_completion_popup_temporarily_reduces_manual_height(self) -> None:
         """Visible completions fit inside the box without losing manual size."""
@@ -489,10 +502,11 @@ class TestChatInputResize:
             assert box._manual_height == 5
             assert text_area.size.height == 5
 
-    async def test_hover_highlights_only_the_top_border(self) -> None:
-        """Hovering the explicit handle highlights the box's top edge."""
+    async def test_hover_highlights_interior_with_mode_color(self) -> None:
+        """Hover changes only the inset rule using the active mode's color."""
         app = _ChatInputResizeTestApp()
         async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             await pilot.pause()
@@ -504,16 +518,31 @@ class TestChatInputResize:
 
             await pilot.hover(handle, offset=(5, 0))
 
-            assert box.has_class("resize-hover")
-            assert box.styles.border_top != default_border
-            assert handle.styles.color != default_handle_color
+            normal_hover_color = handle.styles.color
+            assert box.styles.border_top == default_border
+            assert normal_hover_color != default_handle_color
             assert handle.styles.pointer == "ns-resize"
 
             await pilot.hover("#spacer")
 
-            assert not box.has_class("resize-hover")
             assert box.styles.border_top == default_border
             assert handle.styles.color == default_handle_color
+
+            chat_input.mode = "shell"
+            await pilot.pause()
+            await pilot.pause()
+            shell_border = box.styles.border_top
+            shell_handle_color = handle.styles.color
+            assert shell_handle_color != default_handle_color
+
+            await pilot.hover(handle, offset=(5, 0))
+
+            assert box.styles.border_top == shell_border
+            assert handle.styles.color != shell_handle_color
+            assert handle.styles.color != normal_hover_color
+
+            await pilot.hover("#spacer")
+            assert handle.styles.color == shell_handle_color
 
     async def test_non_left_press_does_not_start_drag(self) -> None:
         """A non-left press on the handle leaves resize inactive."""

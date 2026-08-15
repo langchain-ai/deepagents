@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
@@ -87,6 +88,7 @@ _CHAT_INPUT_BORDER_CORNER_COLUMNS = 2
 _CHAT_INPUT_BOX_MAX_HEIGHT = 25
 _CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
 _CHAT_INPUT_MIN_NON_COMPOSER_ROWS = 7
+_CHAT_INPUT_RESIZE_HOVER_LIGHTEN = 0.15
 _COMPLETION_POPUP_MAX_HEIGHT = 12
 _DOUBLE_CLICK_CHAIN = 2
 
@@ -118,8 +120,6 @@ loop and swaps in atomically, so it never blocks typing."""
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
-    from textual.color import Color
-    from textual.css.types import EdgeType
     from textual.events import Click
 
     from deepagents_code.config_manifest import CursorStyle
@@ -1394,6 +1394,13 @@ class ChatInputBox(Vertical):
         text_area.styles.max_height = _CHAT_INPUT_AUTO_MAX_HEIGHT
         text_area.call_after_refresh(text_area.scroll_cursor_visible)
 
+    def _toggle_expanded(self) -> None:
+        """Toggle between maximum manual height and automatic sizing."""
+        if self._manual_height is None:
+            self._set_manual_height(self._maximum_height())
+        else:
+            self._reset_height()
+
     def on_completion_popup_rows_changed(
         self, event: CompletionPopup.RowsChanged
     ) -> None:
@@ -1432,8 +1439,8 @@ class ChatInputResizeHandle(Static):
             super().__init__()
             self.highlighted = highlighted
 
-    class Reset(Message):
-        """Message sent when automatic sizing should be restored."""
+    class ToggleExpanded(Message):
+        """Message sent when expanded sizing should be toggled."""
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize drag state."""
@@ -1453,7 +1460,6 @@ class ChatInputResizeHandle(Static):
         """Publish top-border hover changes."""
         if self._highlighted != highlighted:
             self._highlighted = highlighted
-            self.set_class(highlighted, "resize-hover")
             self.post_message(self.HoverChanged(highlighted))
 
     def on_enter(self) -> None:
@@ -1495,9 +1501,9 @@ class ChatInputResizeHandle(Static):
         event.prevent_default()
 
     def on_click(self, event: Click) -> None:
-        """Reset automatic sizing when the handle is double-clicked."""
+        """Toggle expanded sizing when the handle is double-clicked."""
         if event.button == 1 and event.chain >= _DOUBLE_CLICK_CHAIN:
-            self.post_message(self.Reset())
+            self.post_message(self.ToggleExpanded())
             event.stop()
             event.prevent_default()
 
@@ -1547,10 +1553,6 @@ class ChatInput(Vertical):
         border-title-style: bold;
     }
 
-    ChatInput #input-box.resize-hover {
-        border-top: solid $primary-lighten-2;
-    }
-
     ChatInput #input-resize-handle {
         layer: actions;
         dock: left;
@@ -1572,10 +1574,6 @@ class ChatInput(Vertical):
 
     ChatInput.mode-shell-incognito #input-resize-handle {
         color: $mode-incognito;
-    }
-
-    ChatInput #input-resize-handle.resize-hover {
-        color: $primary-lighten-2;
     }
 
     /* Action buttons float on their own z-layer over the top border line, so
@@ -1685,8 +1683,8 @@ class ChatInput(Vertical):
         self._cwd = Path(cwd) if cwd else Path.cwd()
         self._image_tracker = image_tracker
         self._input_box: ChatInputBox | None = None
-        self._resize_border_top: tuple[EdgeType, Color] | None = None
         self._resize_handle: ChatInputResizeHandle | None = None
+        self._resize_hovered = False
         self._resize_start_height = 1
         self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
@@ -1823,6 +1821,7 @@ class ChatInput(Vertical):
             self._refresh_file_cache,
         )
         self.call_after_refresh(self._sync_resize_handle_geometry)
+        self._sync_resize_handle_color()
         self._text_area.focus()
 
     def _sync_resize_handle_geometry(self) -> None:
@@ -1837,21 +1836,25 @@ class ChatInput(Vertical):
         """Keep the resize handle aligned after layout changes."""
         self.call_after_refresh(self._sync_resize_handle_geometry)
 
+    def _sync_resize_handle_color(self) -> None:
+        """Match the resize line to the active input mode and hover state."""
+        if self._resize_handle is None:
+            return
+        colors = theme.get_theme_colors(self)
+        mode_colors = {
+            "shell": colors.mode_bash,
+            "command": colors.mode_command,
+            "shell_incognito": colors.mode_incognito,
+        }
+        color = Color.parse(mode_colors.get(self.mode, colors.primary))
+        if self._resize_hovered:
+            color = color.lighten(_CHAT_INPUT_RESIZE_HOVER_LIGHTEN)
+        self._resize_handle.styles.color = color
+
     def _set_resize_highlighted(self, *, highlighted: bool) -> None:
-        """Toggle resize hover feedback on the top border."""
-        if self._input_box is None:
-            return
-        self._input_box.set_class(highlighted, "resize-hover")
-        if not is_ascii_mode():
-            return
-        if highlighted and self._resize_border_top is None:
-            self._resize_border_top = self._input_box.styles.border_top
-            edge, _color = self._resize_border_top
-            colors = theme.get_theme_colors(self)
-            self._input_box.styles.border_top = (edge, colors.accent)
-        elif not highlighted and self._resize_border_top is not None:
-            self._input_box.styles.border_top = self._resize_border_top
-            self._resize_border_top = None
+        """Toggle resize hover feedback on the interior border line."""
+        self._resize_hovered = highlighted
+        self._sync_resize_handle_color()
 
     def on_chat_input_resize_handle_drag_started(
         self, event: ChatInputResizeHandle.DragStarted
@@ -1876,12 +1879,12 @@ class ChatInput(Vertical):
         self._set_resize_highlighted(highlighted=event.highlighted)
         event.stop()
 
-    def on_chat_input_resize_handle_reset(
-        self, event: ChatInputResizeHandle.Reset
+    def on_chat_input_resize_handle_toggle_expanded(
+        self, event: ChatInputResizeHandle.ToggleExpanded
     ) -> None:
-        """Restore automatic composer sizing."""
+        """Toggle maximum and automatic composer sizing."""
         if self._input_box is not None:
-            self._input_box._reset_height()
+            self._input_box._toggle_expanded()
         event.stop()
 
     def _warm_file_cache(self, *, force: bool = False, exclusive: bool = False) -> None:
@@ -2929,6 +2932,7 @@ class ChatInput(Vertical):
                 self._input_box.border_title = (
                     "incognito" if mode == "shell_incognito" else None
                 )
+            self._sync_resize_handle_color()
 
         self.call_next(_apply)
         self.post_message(self.ModeChanged(mode))

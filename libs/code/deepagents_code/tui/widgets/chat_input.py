@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from textual.app import NoScreen
 from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
@@ -84,13 +85,72 @@ _FILE_CACHE_WORKER_GROUP = "file-cache"
 """Textual worker group for all `@` file-completion cache warmers."""
 
 _CHAT_INPUT_AUTO_MAX_HEIGHT = 8
+"""Rows the composer grows to on its own before the draft starts scrolling.
+
+Also caps the manual-resize floor: a drag will not shrink the composer below
+the visible draft, but that refusal itself stops at this many rows, so a long
+draft cannot pin the composer open. Interpolated into `ChatInput.DEFAULT_CSS`
+as the `ChatTextArea` `max-height` so the stylesheet and the sizing math cannot
+drift apart.
+"""
+
 _CHAT_INPUT_BORDER_CORNER_COLUMNS = 2
+"""Columns the resize handle gives up so both top border corners stay drawn.
+
+The handle occludes whatever it covers (see `ChatInputResizeHandle.render`), so
+it is inset one column at each end — paired with `offset: 1 0` in the CSS — to
+leave the box's corner glyphs visible.
+"""
+
 _CHAT_INPUT_BOX_MAX_HEIGHT = 25
+"""Rows the bordered input box may occupy, including its border and any popup.
+
+`ChatInputBox._apply_manual_height` subtracts the gutter and the completion
+popup from this to derive the composer budget, so it is load-bearing arithmetic
+rather than a cosmetic cap. Interpolated into `ChatInput.DEFAULT_CSS` as the
+`#input-box` `max-height`.
+"""
+
 _CHAT_INPUT_MANUAL_MAX_HEIGHT = 20
-_CHAT_INPUT_MIN_NON_COMPOSER_ROWS = 7
+"""Rows a drag may stretch the composer to, before screen-size clamping.
+
+Five rows short of `_CHAT_INPUT_BOX_MAX_HEIGHT` so that a composer dragged to
+its limit still leaves room inside the box for the border and a few rows of
+completion popup, rather than immediately fighting the popup for space.
+"""
+
+_CHAT_INPUT_RESERVED_SCREEN_ROWS = 7
+"""Screen rows kept away from the composer text so the app stays usable.
+
+Subtracted from the screen height to bound a manual resize. It counts rows
+*outside* the composer's own text area but excludes the input box's 2-row
+border, which is charged separately via `gutter.height`. So on a 24-row
+terminal the composer maxes at 17 rows, the bordered box occupies 19, and about
+5 rows remain for the transcript and status bar.
+"""
+
 _CHAT_INPUT_RESIZE_HOVER_LIGHTEN = 0.15
+"""How far to lighten the resize line while the pointer is over it.
+
+Enough to read as a distinct affordance against the same-colored box border it
+sits on, but below the point where the top border looks like a different UI
+element from the other three sides.
+"""
+
 _COMPLETION_POPUP_MAX_HEIGHT = 12
+"""Rows the completion popup may occupy inside the input box.
+
+`ChatInputBox` reserves this much space when fitting a manual composer height,
+so it must match what the popup actually renders. Interpolated into
+`CompletionPopup.DEFAULT_CSS` as its `max-height` to keep the two in step.
+"""
+
 _DOUBLE_CLICK_CHAIN = 2
+"""Textual `Click.chain` count that marks a click as a double-click.
+
+Compared with `>=`, so triple and faster clicks also toggle rather than being
+silently ignored partway through a rapid click sequence.
+"""
 
 _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
 """Window after a terminal focus regain during which a click only refocuses.
@@ -121,6 +181,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
+    from textual.screen import Screen
 
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
@@ -305,19 +366,23 @@ class InputActionButton(Static):
 class CompletionPopup(VerticalScroll):
     """Popup widget that displays completion suggestions as clickable options."""
 
-    DEFAULT_CSS = """
-    CompletionPopup {
+    DEFAULT_CSS = f"""
+    CompletionPopup {{
         display: none;
         height: auto;
-        max-height: 12;
-    }
+        max-height: {_COMPLETION_POPUP_MAX_HEIGHT};
+    }}
     """
 
     class RowsChanged(Message):
-        """Message sent when the popup's visible row count changes."""
+        """Message sent when the popup's visible row count changes.
+
+        Deduplicated by the sender, so receiving this always means the rendered
+        row count actually moved.
+        """
 
         def __init__(self, rows: int) -> None:
-            """Initialize with the visible row count."""
+            """Initialize with the visible row count (0 when hidden)."""
             super().__init__()
             self.rows = rows
 
@@ -336,6 +401,7 @@ class CompletionPopup(VerticalScroll):
         self._options: list[CompletionOption] = []
         self._selected_index = 0
         self._pending_suggestions: list[tuple[str, str]] = []
+        self._reported_rows = 0
         self._pending_selected: int = 0
         self._rebuild_generation: int = 0
 
@@ -423,7 +489,7 @@ class CompletionPopup(VerticalScroll):
         if generation != self._rebuild_generation:
             return
 
-        self.show()
+        self.show(len(self._options))
 
         if 0 <= selected_index < len(self._options):
             self._options[selected_index].scroll_visible()
@@ -452,21 +518,30 @@ class CompletionPopup(VerticalScroll):
         event.stop()
         self.post_message(self.OptionClicked(event.index))
 
+    def _report_rows(self, rows: int) -> None:
+        """Announce the popup's rendered row count when it changes."""
+        if self._reported_rows != rows:
+            self._reported_rows = rows
+            self.post_message(self.RowsChanged(rows))
+
     def hide(self) -> None:
         """Hide the popup."""
         self._pending_suggestions = []
         self._rebuild_generation += 1  # Cancel any in-flight rebuild
         self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values at runtime
-        self.post_message(self.RowsChanged(0))
+        self._report_rows(0)
 
-    def show(self) -> None:
-        """Show the popup."""
+    def show(self, suggestion_count: int) -> None:
+        """Show the popup and report how many rows it will render.
+
+        Args:
+            suggestion_count: Number of suggestions about to be displayed. Taken
+                as an argument rather than read from internal state so the
+                reported height is tied to the caller's list, which is the thing
+                `ChatInputBox` must reserve space for.
+        """
         self.styles.display = "block"
-        self.post_message(
-            self.RowsChanged(
-                min(len(self._pending_suggestions), _COMPLETION_POPUP_MAX_HEIGHT)
-            )
-        )
+        self._report_rows(min(suggestion_count, _COMPLETION_POPUP_MAX_HEIGHT))
 
 
 class ChatTextArea(PasteBurstTextArea):
@@ -1348,72 +1423,205 @@ class _CompletionViewAdapter:
         )
 
 
+def _manual_height_ceiling(screen_height: int) -> int:
+    """Return the largest composer height a drag may request.
+
+    Args:
+        screen_height: Current screen height in rows.
+
+    Returns:
+        The manual-resize ceiling, at least 1 row.
+    """
+    return max(
+        1,
+        min(
+            _CHAT_INPUT_MANUAL_MAX_HEIGHT,
+            screen_height - _CHAT_INPUT_RESERVED_SCREEN_ROWS,
+        ),
+    )
+
+
+def _content_height_floor(text_area: ChatTextArea) -> int:
+    """Return the rows the draft currently occupies, capped at auto growth.
+
+    Uses `virtual_size`, so soft-wrapped lines count as the rows they actually
+    render as rather than as one row per newline. A drag cannot shrink the
+    composer below this, which stops resizing from hiding visible text.
+
+    Args:
+        text_area: The composer whose draft height to measure.
+
+    Returns:
+        The floor in rows, between 1 and `_CHAT_INPUT_AUTO_MAX_HEIGHT`.
+    """
+    return max(1, min(text_area.virtual_size.height, _CHAT_INPUT_AUTO_MAX_HEIGHT))
+
+
 class ChatInputBox(Vertical):
-    """Bordered box that owns the chat composer size."""
+    """Bordered box that owns the chat composer size.
+
+    Sizing is either automatic (content-driven, the default) or manual, and
+    `_requested_height` is the discriminator: `None` means automatic.
+
+    A manual size separates *intent* from what is *rendered*. The requested
+    height is what the user dragged to and is preserved verbatim; the applied
+    height is re-derived on every relayout by fitting that request between a
+    content floor and whichever ceiling is currently tightest. So a completion
+    popup can transiently squeeze the composer and it springs back when the
+    popup closes, and a terminal shrink does not destroy the request.
+
+    `ChatInput` composes the children and drives this box through
+    `set_manual_height`, `toggle_expanded`, and `refresh_content_height`.
+    """
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize sizing state."""
         super().__init__(**kwargs)
         self._completion_rows = 0
-        self._manual_height: int | None = None
+        self._requested_height: int | None = None
+        self._applied_height: int | None = None
 
-    def _maximum_height(self) -> int:
-        """Return the largest safe manual composer height."""
-        return max(
-            1,
-            min(
-                _CHAT_INPUT_MANUAL_MAX_HEIGHT,
-                self.screen.size.height - _CHAT_INPUT_MIN_NON_COMPOSER_ROWS,
-            ),
+    def on_mount(self) -> None:
+        """Re-fit the composer whenever the screen relayouts.
+
+        A manual height pins the composer, so once it has been squeezed by a
+        smaller terminal nothing about this box's own geometry changes when the
+        terminal grows back -- it never receives another `Resize`. The screen's
+        layout-refresh signal does still fire, so that is what restores the
+        height the user asked for.
+        """
+        self.screen.screen_layout_refresh_signal.subscribe(
+            self, self._on_layout_refresh
         )
 
-    def _content_height_floor(self) -> int:
-        """Return the visual content height capped at normal auto growth."""
-        text_area = self.query_one(ChatTextArea)
-        return max(1, min(text_area.virtual_size.height, _CHAT_INPUT_AUTO_MAX_HEIGHT))
-
-    def _set_manual_height(self, height: int) -> None:
-        """Store and apply a physically clamped requested height."""
-        self._manual_height = max(1, min(height, self._maximum_height()))
+    def _on_layout_refresh(self, _screen: Screen) -> None:
+        """Re-fit a manual height against the new layout."""
         self._apply_manual_height()
 
-    def _ensure_content_height(self) -> None:
-        """Reapply a manual height as the visual content floor changes."""
-        if self._manual_height is not None:
+    def _composer(self) -> ChatTextArea | None:
+        """Return the composer, or `None` when the box is mid-teardown.
+
+        Returns:
+            The child text area, or `None` if it is no longer mounted.
+        """
+        try:
+            return self.query_one(ChatTextArea)
+        except NoMatches:
+            logger.warning("ChatInputBox: composer not found; skipping height update")
+            return None
+
+    def _screen_height(self) -> int | None:
+        """Return the screen height, or `None` when detached from a screen.
+
+        Returns:
+            The screen's row count, or `None` if this box has no screen.
+        """
+        try:
+            return self.screen.size.height
+        except NoScreen:
+            logger.warning("ChatInputBox: no screen; skipping height update")
+            return None
+
+    def set_manual_height(self, height: int) -> None:
+        """Request a manual composer height and render it.
+
+        The request is stored clamped only by the screen ceiling; the popup and
+        content constraints are applied at render time so they stay reversible.
+
+        Args:
+            height: Desired composer height in rows.
+        """
+        screen_height = self._screen_height()
+        if screen_height is None:
+            return
+        self._requested_height = max(
+            1, min(height, _manual_height_ceiling(screen_height))
+        )
+        self._apply_manual_height()
+
+    def refresh_content_height(self) -> None:
+        """Re-fit a manual height after the draft's rendered height changes."""
+        if self._requested_height is not None:
             self._apply_manual_height()
 
     def _apply_manual_height(self) -> None:
-        """Fit the requested height around content and visible completions."""
-        if self._manual_height is None:
+        """Render the requested height against the current constraints.
+
+        Three ceilings compete, and the tightest wins:
+
+        - the screen ceiling, which reserves rows for the rest of the app;
+        - the box ceiling, `_CHAT_INPUT_BOX_MAX_HEIGHT` minus the border gutter
+          and any completion popup, so the popup renders inside the border
+          rather than overflowing it;
+        - the same screen budget again but with the popup subtracted, since a
+          popup adds rows to the box that the plain screen ceiling ignores.
+
+        The result is then floored by the visible draft, so a manual height
+        never hides text. Both `height` and `max_height` are set because
+        `max_height` alone would leave Textual's `auto` growth in charge.
+        """
+        if self._requested_height is None:
             return
+        text_area = self._composer()
+        screen_height = self._screen_height()
+        if text_area is None or screen_height is None:
+            return
+        # The plain screen cap already allows for the composer's own gutter; a
+        # popup needs it reserved explicitly because it adds rows to the box.
+        popup_gutter = self.gutter.height if self._completion_rows else 0
+        screen_available = (
+            screen_height
+            - _CHAT_INPUT_RESERVED_SCREEN_ROWS
+            - self._completion_rows
+            - popup_gutter
+        )
         available = min(
-            self._maximum_height(),
+            _manual_height_ceiling(screen_height),
             max(
                 1,
                 _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - self._completion_rows,
             ),
+            max(1, screen_available),
         )
-        minimum = min(self._content_height_floor(), available)
-        height = max(minimum, min(self._manual_height, available))
-        text_area = self.query_one(ChatTextArea)
+        minimum = min(_content_height_floor(text_area), available)
+        height = max(minimum, min(self._requested_height, available))
+        # Writing styles schedules another layout, which republishes the signal
+        # this method runs from. Bail when nothing moved so the two cannot feed
+        # each other.
+        if height == self._applied_height:
+            return
+        self._applied_height = height
         text_area.styles.height = height
         text_area.styles.max_height = height
         text_area.call_after_refresh(text_area.scroll_cursor_visible)
 
     def _reset_height(self) -> None:
         """Restore content-driven composer sizing."""
-        text_area = self.query_one(ChatTextArea)
-        self._manual_height = None
+        self._requested_height = None
+        self._applied_height = None
+        text_area = self._composer()
+        if text_area is None:
+            return
         text_area.styles.height = "auto"
         text_area.styles.max_height = _CHAT_INPUT_AUTO_MAX_HEIGHT
         text_area.call_after_refresh(text_area.scroll_cursor_visible)
 
-    def _toggle_expanded(self) -> None:
-        """Toggle between maximum manual height and automatic sizing."""
-        if self._manual_height is None:
-            self._set_manual_height(self._maximum_height())
-        else:
+    def toggle_expanded(self) -> None:
+        """Toggle between the maximum manual height and automatic sizing.
+
+        Branches on whether the composer is already at its maximum rather than
+        on whether a manual height exists at all, so a drag of a row or two
+        (including the incidental jitter of a double-click) still leaves the
+        next double-click meaning "expand".
+        """
+        screen_height = self._screen_height()
+        if screen_height is None:
+            return
+        maximum = _manual_height_ceiling(screen_height)
+        if self._requested_height == maximum:
             self._reset_height()
+        else:
+            self.set_manual_height(maximum)
 
     def on_completion_popup_rows_changed(
         self, event: CompletionPopup.RowsChanged
@@ -1424,13 +1632,25 @@ class ChatInputBox(Vertical):
         event.stop()
 
     def on_resize(self, _event: events.Resize) -> None:
-        """Clamp a manual height after terminal resizes."""
-        if self._manual_height is not None:
-            self._set_manual_height(self._manual_height)
+        """Re-fit a manual height after this box is resized.
+
+        Deliberately re-renders rather than re-requesting: the stored request
+        survives, so shrinking the terminal and growing it back restores the
+        height the user actually chose.
+        """
+        self._apply_manual_height()
 
 
 class ChatInputResizeHandle(Static):
-    """Transparent drag target over the chat input's top border."""
+    """Drag target docked over the chat input's top border.
+
+    Only the background is transparent: the handle sits on the layer above the
+    box's border and would blank the line it covers, so `render` repaints the
+    horizontal rule itself.
+
+    The handle reports pointer geometry and knows nothing about heights; the
+    parent decides what a drag means.
+    """
 
     ALLOW_SELECT = False
 
@@ -1441,9 +1661,16 @@ class ChatInputResizeHandle(Static):
         """Message sent with the current drag delta."""
 
         def __init__(self, delta: int) -> None:
-            """Initialize with an upward-positive row delta."""
+            """Initialize with a row delta, cumulative since the drag started.
+
+            Positive is upward — screen Y grows downward, so this is the
+            negation of the raw pointer movement.
+            """
             super().__init__()
             self.delta = delta
+
+    class DragEnded(Message):
+        """Message sent when a resize drag stops, however it stopped."""
 
     class HoverChanged(Message):
         """Message sent when resize hover feedback changes."""
@@ -1476,13 +1703,18 @@ class ChatInputResizeHandle(Static):
             self._highlighted = highlighted
             self.post_message(self.HoverChanged(highlighted))
 
-    def on_enter(self) -> None:
+    def on_enter(self, event: events.Enter) -> None:
         """Highlight the resize target on hover."""
-        self._set_highlighted(highlighted=True)
+        if event.node is self:
+            self._set_highlighted(highlighted=True)
 
-    def on_leave(self) -> None:
-        """Remove hover feedback outside an active drag."""
-        if self._drag_start_y is None:
+    def on_leave(self, event: events.Leave) -> None:
+        """Remove hover feedback, but never mid-drag.
+
+        A drag routinely travels outside the handle; dropping the highlight
+        there would make the border flicker off the moment resizing starts.
+        """
+        if event.node is self and self._drag_start_y is None:
             self._set_highlighted(highlighted=False)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
@@ -1500,22 +1732,62 @@ class ChatInputResizeHandle(Static):
         """Publish movement during a captured drag."""
         if self._drag_start_y is None:
             return
-        self.post_message(self.Dragged(self._drag_start_y - event.screen_y))
+        delta = self._drag_start_y - event.screen_y
+        # A double-click registers only when both presses land on the same cell,
+        # which is exactly when the pointer drifts away and back — emitting a
+        # zero-delta move. Reporting it would establish a manual height and flip
+        # the meaning of the click that follows.
+        if delta:
+            self.post_message(self.Dragged(delta))
         event.stop()
         event.prevent_default()
 
     def on_mouse_up(self, event: events.MouseUp) -> None:
-        """Finish an active left-button resize."""
+        """Finish an active left-button resize.
+
+        Hover feedback drops here rather than being re-derived from the pointer
+        position: releasing the capture makes Textual recompute what the mouse
+        is over and deliver a `Leave` anyway, and the next real movement back
+        onto the handle re-highlights it through `on_enter`.
+        """
         if self._drag_start_y is None or event.button != 1:
             return
-        self._drag_start_y = None
-        self.release_mouse()
-        self._set_highlighted(highlighted=event.screen_offset in self.region)
+        self._end_drag(highlighted=False)
         event.stop()
         event.prevent_default()
 
+    def _end_drag(self, *, highlighted: bool, notify: bool = True) -> None:
+        """Clear drag state, drop mouse capture, and settle hover feedback.
+
+        Args:
+            highlighted: Hover state to leave the handle in.
+            notify: Whether to announce `DragEnded`. Suppressed during teardown,
+                where the message pump is closing and nothing can receive it.
+        """
+        was_dragging = self._drag_start_y is not None
+        self._drag_start_y = None
+        self.release_mouse()
+        self._set_highlighted(highlighted=highlighted)
+        if was_dragging and notify:
+            self.post_message(self.DragEnded())
+
+    def on_mouse_release(self, _event: events.MouseRelease) -> None:
+        """Abandon a drag when the app revokes this widget's mouse capture.
+
+        Without this the handle keeps a phantom drag alive: `on_leave` refuses
+        to clear the highlight, and later pointer movement resizes from a stale
+        baseline with no press behind it.
+        """
+        if self._drag_start_y is not None:
+            logger.debug("Resize drag ended without a mouse up; clearing drag state")
+        self._end_drag(highlighted=False)
+
+    def on_hide(self, _event: events.Hide) -> None:
+        """Abandon a drag when the composer is hidden mid-gesture."""
+        self._end_drag(highlighted=False)
+
     def on_click(self, event: Click) -> None:
-        """Toggle expanded sizing when the handle is double-clicked."""
+        """Toggle expanded sizing on a double-click (or a faster chain)."""
         if event.button == 1 and event.chain >= _DOUBLE_CLICK_CHAIN:
             self.post_message(self.ToggleExpanded())
             event.stop()
@@ -1523,9 +1795,7 @@ class ChatInputResizeHandle(Static):
 
     def on_unmount(self) -> None:
         """Release mouse capture and hover state during teardown."""
-        self._drag_start_y = None
-        self.release_mouse()
-        self._set_highlighted(highlighted=False)
+        self._end_drag(highlighted=False, notify=False)
 
 
 class ChatInput(Vertical):
@@ -1536,9 +1806,12 @@ class ChatInput(Vertical):
     - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
     - Autocomplete for @ (files) and / (commands)
+    - Drag the top border to resize the composer; double-click it to toggle
+      between the maximum height and content-driven sizing
     """
 
-    DEFAULT_CSS = """
+    DEFAULT_CSS = (
+        """
     ChatInput {
         height: auto;
         layers: base actions;
@@ -1547,7 +1820,6 @@ class ChatInput(Vertical):
     ChatInput #input-box {
         height: auto;
         min-height: 3;
-        max-height: 25;
         padding: 0;
         background: $background;
         border: solid $primary;
@@ -1567,6 +1839,11 @@ class ChatInput(Vertical):
         border-title-style: bold;
     }
 
+    /* Pre-mount default only. `_sync_resize_handle_color` sets the color as an
+       inline style, which outranks this rule, because the hover highlight must
+       persist while a drag travels outside the handle -- something `:hover`
+       cannot express. Mode-specific rules here would be dead code, so mode
+       colors live in that method instead. */
     ChatInput #input-resize-handle {
         layer: actions;
         dock: left;
@@ -1576,18 +1853,6 @@ class ChatInput(Vertical):
         background: transparent;
         color: $primary;
         pointer: ns-resize;
-    }
-
-    ChatInput.mode-shell #input-resize-handle {
-        color: $mode-bash;
-    }
-
-    ChatInput.mode-command #input-resize-handle {
-        color: $mode-command;
-    }
-
-    ChatInput.mode-shell-incognito #input-resize-handle {
-        color: $mode-incognito;
     }
 
     /* Action buttons float on their own z-layer over the top border line, so
@@ -1632,7 +1897,6 @@ class ChatInput(Vertical):
         width: 1fr;
         height: auto;
         min-height: 1;
-        max-height: 8;
         border: none;
         background: transparent;
         padding: 0;
@@ -1648,6 +1912,20 @@ class ChatInput(Vertical):
         border: none;
     }
     """
+        f"""
+    /* Sizes the composer sizing math depends on, interpolated from the module
+       constants so the stylesheet cannot silently drift from the arithmetic in
+       `ChatInputBox`. Appended rather than inlined above to keep the rest of
+       this block free of doubled braces. */
+    ChatInput #input-box {{
+        max-height: {_CHAT_INPUT_BOX_MAX_HEIGHT};
+    }}
+
+    ChatInput ChatTextArea {{
+        max-height: {_CHAT_INPUT_AUTO_MAX_HEIGHT};
+    }}
+    """
+    )
     """Border and prompt glyph change color per mode for immediate visual feedback."""
 
     class Submitted(Message):
@@ -1699,7 +1977,7 @@ class ChatInput(Vertical):
         self._input_box: ChatInputBox | None = None
         self._resize_handle: ChatInputResizeHandle | None = None
         self._resize_hovered = False
-        self._resize_start_height = 1
+        self._resize_start_height: int | None = None
         self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
@@ -1840,11 +2118,19 @@ class ChatInput(Vertical):
 
     def _sync_resize_handle_geometry(self) -> None:
         """Inset the resize handle so border corners remain visible."""
-        if self._input_box is not None and self._resize_handle is not None:
-            self._resize_handle.styles.width = max(
-                1,
-                self._input_box.region.width - _CHAT_INPUT_BORDER_CORNER_COLUMNS,
-            )
+        if self._input_box is None or self._resize_handle is None:
+            return
+        # `Widget.region` swallows NoScreen/NoWidget and returns a null region,
+        # so a zero width means "not laid out yet" rather than a real size.
+        # Writing it through would collapse the whole drag target to one column.
+        box_width = self._input_box.region.width
+        if not box_width:
+            logger.debug("Chat input box not laid out yet; deferring handle geometry")
+            return
+        self._resize_handle.styles.width = max(
+            1,
+            box_width - _CHAT_INPUT_BORDER_CORNER_COLUMNS,
+        )
 
     def on_resize(self, _event: events.Resize) -> None:
         """Keep the resize handle aligned after layout changes."""
@@ -1860,6 +2146,14 @@ class ChatInput(Vertical):
             "command": colors.mode_command,
             "shell_incognito": colors.mode_incognito,
         }
+        if self.mode != "normal" and self.mode not in mode_colors:
+            # A mode added to config without a color here would render the resize
+            # line in the default color while the border and prompt follow the
+            # new mode -- a mismatch that is hard to trace back to this method.
+            logger.warning(
+                "No resize handle color for mode %r; falling back to primary",
+                self.mode,
+            )
         color = Color.parse(mode_colors.get(self.mode, colors.primary))
         if self._resize_hovered:
             color = color.lighten(_CHAT_INPUT_RESIZE_HOVER_LIGHTEN)
@@ -1882,8 +2176,21 @@ class ChatInput(Vertical):
         self, event: ChatInputResizeHandle.Dragged
     ) -> None:
         """Apply a drag delta to the composer height."""
+        if self._resize_start_height is None:
+            # No baseline means no DragStarted arrived; resizing from a stale
+            # one would jump the composer to an unrelated size.
+            logger.debug("Ignoring resize drag with no recorded start height")
+            event.stop()
+            return
         if self._input_box is not None:
-            self._input_box._set_manual_height(self._resize_start_height + event.delta)
+            self._input_box.set_manual_height(self._resize_start_height + event.delta)
+        event.stop()
+
+    def on_chat_input_resize_handle_drag_ended(
+        self, event: ChatInputResizeHandle.DragEnded
+    ) -> None:
+        """Drop the drag baseline so a later delta cannot reuse it."""
+        self._resize_start_height = None
         event.stop()
 
     def on_chat_input_resize_handle_hover_changed(
@@ -1898,7 +2205,7 @@ class ChatInput(Vertical):
     ) -> None:
         """Toggle maximum and automatic composer sizing."""
         if self._input_box is not None:
-            self._input_box._toggle_expanded()
+            self._input_box.toggle_expanded()
         event.stop()
 
     def _warm_file_cache(self, *, force: bool = False, exclusive: bool = False) -> None:
@@ -2034,7 +2341,7 @@ class ChatInput(Vertical):
         # whitespace-only draft is still clearable/copyable without the buttons.
         self._set_action_buttons_visible(visible=bool(text.strip()))
         if self._input_box is not None:
-            self._input_box._ensure_content_height()
+            self._input_box.refresh_content_height()
         # Drag-drop / bracketed paste arrive as one Changed event with a
         # multi-character inserted span. Normal typing arrives one character at
         # a time. Checking the changed span (rather than net length delta)
@@ -2942,6 +3249,10 @@ class ChatInput(Vertical):
                                 markup=False,
                             )
                     self.mode = "normal"
+                # The handle color is an inline style, so backing out of a mode
+                # does not repaint it on its own; a stale incognito-colored line
+                # would outlive the mode it advertises.
+                self._sync_resize_handle_color()
                 return
             prompt.update(glyph or ">")
             if self._input_box is not None:

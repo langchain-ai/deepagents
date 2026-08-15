@@ -23,6 +23,10 @@ from deepagents_code.tui.widgets import (
 )
 from deepagents_code.tui.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.tui.widgets.chat_input import (
+    _CHAT_INPUT_AUTO_MAX_HEIGHT,
+    _CHAT_INPUT_MANUAL_MAX_HEIGHT,
+    _CHAT_INPUT_RESERVED_SCREEN_ROWS,
+    _COMPLETION_POPUP_MAX_HEIGHT,
     ChatInput,
     ChatInputBox,
     ChatInputResizeHandle,
@@ -385,18 +389,29 @@ class TestChatInputFileCacheRefresh:
             ) in interval_calls
 
 
+_RESIZE_SCREEN_HEIGHT = 24
+"""Terminal height the resize tests run at, so expectations can be derived."""
+
+_EXPANDED_HEIGHT = min(
+    _CHAT_INPUT_MANUAL_MAX_HEIGHT,
+    _RESIZE_SCREEN_HEIGHT - _CHAT_INPUT_RESERVED_SCREEN_ROWS,
+)
+"""Composer height a fully expanded drag reaches at `_RESIZE_SCREEN_HEIGHT`."""
+
+
 class TestChatInputResize:
     """Tests for resizing the chat input from its top border."""
 
     async def test_drag_resizes_and_releases_capture(self) -> None:
         """Dragging the top border adjusts rows and releases outside the box."""
         app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
             await pilot.pause()
             start_y = handle.region.y
             x = handle.region.x + 5
+            default_handle_color = handle.styles.color
 
             assert text_area.size.height == 1
             await pilot.mouse_down(handle, offset=(5, 0))
@@ -404,9 +419,17 @@ class TestChatInputResize:
 
             await pilot.hover(offset=(x, start_y - 4))
             assert text_area.size.height == 5
+            # The pointer is now well above the handle: the highlight has to
+            # survive the Leave, or the border flickers off mid-drag.
+            assert handle._highlighted is True
 
             await pilot.mouse_up(offset=(x, start_y - 4))
             assert app.mouse_captured is None
+            # Releasing away from the handle is the normal end of a drag, so the
+            # highlight must clear rather than stay lit forever.
+            assert handle._highlighted is False
+            assert handle.styles.color == default_handle_color
+            assert text_area.has_focus
 
             start_y = handle.region.y
             await pilot.mouse_down(handle, offset=(5, 0))
@@ -418,7 +441,7 @@ class TestChatInputResize:
     async def test_drag_height_is_clamped(self) -> None:
         """Manual resizing stays within one row and the screen-aware maximum."""
         app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
             await pilot.pause()
@@ -427,46 +450,65 @@ class TestChatInputResize:
             await pilot.mouse_down(handle, offset=(5, 0))
             await pilot.hover(offset=(x, 0))
             await pilot.mouse_up(offset=(x, 0))
-            assert text_area.size.height == 17
+            assert text_area.size.height == _EXPANDED_HEIGHT
 
             await pilot.mouse_down(handle, offset=(5, 0))
-            await pilot.hover(offset=(x, 23))
-            await pilot.mouse_up(offset=(x, 23))
+            await pilot.hover(offset=(x, _RESIZE_SCREEN_HEIGHT - 1))
+            await pilot.mouse_up(offset=(x, _RESIZE_SCREEN_HEIGHT - 1))
+            assert text_area.size.height == 1
+
+    async def test_pointer_movement_without_a_press_does_not_resize(self) -> None:
+        """Hovering across the handle leaves the composer height alone."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+
+            await pilot.hover(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(9, 0))
+
+            assert box._requested_height is None
             assert text_area.size.height == 1
 
     async def test_drag_cannot_shrink_below_visible_draft(self) -> None:
         """A draft at the auto-growth cap keeps all eight rows visible."""
         app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
-            text_area.insert("\n".join(str(index) for index in range(8)))
+            text_area.insert(
+                "\n".join(str(index) for index in range(_CHAT_INPUT_AUTO_MAX_HEIGHT))
+            )
             await pilot.pause()
-            assert text_area.virtual_size.height == 8
-            assert text_area.size.height == 8
+            assert text_area.virtual_size.height == _CHAT_INPUT_AUTO_MAX_HEIGHT
+            assert text_area.size.height == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
             x = handle.region.x + 5
             await pilot.mouse_down(handle, offset=(5, 0))
-            await pilot.hover(offset=(x, 23))
-            await pilot.mouse_up(offset=(x, 23))
+            await pilot.hover(offset=(x, _RESIZE_SCREEN_HEIGHT - 1))
+            await pilot.mouse_up(offset=(x, _RESIZE_SCREEN_HEIGHT - 1))
 
-            assert box._manual_height == 1
-            assert text_area.size.height == 8
+            assert box._requested_height == 1
+            assert text_area.size.height == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
     async def test_manual_height_tracks_growing_and_shrinking_draft(self) -> None:
         """The viewport follows content while preserving its requested height."""
         app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             text_area = app.query_one(ChatTextArea)
-            box._set_manual_height(1)
-            text_area.insert("\n".join(str(index) for index in range(8)))
+            box.set_manual_height(1)
+            text_area.insert(
+                "\n".join(str(index) for index in range(_CHAT_INPUT_AUTO_MAX_HEIGHT))
+            )
             await pilot.pause()
 
-            assert text_area.virtual_size.height == 8
-            assert box._manual_height == 1
-            assert text_area.size.height == 8
+            assert text_area.virtual_size.height == _CHAT_INPUT_AUTO_MAX_HEIGHT
+            assert box._requested_height == 1
+            assert text_area.size.height == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
             text_area.move_cursor_to_end()
             await pilot.press(*("backspace" for _ in range(len(text_area.text) - 1)))
@@ -474,78 +516,209 @@ class TestChatInputResize:
 
             assert text_area.text == "0"
             assert text_area.virtual_size.height == 1
-            assert box._manual_height == 1
+            assert box._requested_height == 1
             assert text_area.size.height == 1
 
-    async def test_double_click_toggles_expanded_and_auto_height(self) -> None:
-        """Double-click expands auto sizing and collapses any manual height."""
+    async def test_manual_height_above_content_survives_draft_shrinking(self) -> None:
+        """A composer dragged taller than its draft stays put as text is cut."""
         app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            requested = _EXPANDED_HEIGHT - 2
+            box.set_manual_height(requested)
+            await pilot.pause()
+            assert text_area.size.height == requested
+
+            text_area.insert(
+                "\n".join(str(index) for index in range(_CHAT_INPUT_AUTO_MAX_HEIGHT))
+            )
+            await pilot.pause()
+            assert text_area.size.height == requested
+
+            text_area.move_cursor_to_end()
+            await pilot.press(*("backspace" for _ in range(len(text_area.text) - 1)))
+            await pilot.pause()
+
+            # The draft is one row again, but the user asked for `requested`.
+            assert text_area.virtual_size.height == 1
+            assert box._requested_height == requested
+            assert text_area.size.height == requested
+
+    async def test_double_click_toggles_expanded_and_auto_height(self) -> None:
+        """Double-click expands to the maximum, and toggles back to auto."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
             await pilot.pause()
-            assert box._manual_height is None
+            assert box._requested_height is None
             assert text_area.size.height == 1
 
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
 
-            assert box._manual_height == 17
-            assert text_area.size.height == 17
+            assert box._requested_height == _EXPANDED_HEIGHT
+            assert text_area.size.height == _EXPANDED_HEIGHT
 
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
 
-            assert box._manual_height is None
+            assert box._requested_height is None
             assert text_area.size.height == 1
-            assert text_area._settled_content_height() == 8
+            assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
-            box._set_manual_height(5)
+    async def test_double_click_from_a_partial_manual_height_expands(self) -> None:
+        """A part-way manual height still expands rather than collapsing.
+
+        The toggle keys off "already at the maximum", so a drag of a row or two
+        -- including the incidental jitter of a real double-click -- cannot
+        invert what the next double-click means.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            box.set_manual_height(5)
             await pilot.pause()
+
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
 
-            assert box._manual_height is None
+            assert box._requested_height == _EXPANDED_HEIGHT
+            assert text_area.size.height == _EXPANDED_HEIGHT
+
+    async def test_zero_delta_move_does_not_establish_a_manual_height(self) -> None:
+        """Pointer jitter within one cell leaves sizing automatic.
+
+        A double-click only registers when both presses land on the same cell,
+        which is exactly when the pointer drifts away and back, emitting a
+        zero-delta move mid-gesture.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(5, 0))
+            await pilot.mouse_up(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height is None
+            assert text_area.size.height == 1
+
+    async def test_single_click_does_not_toggle_expanded(self) -> None:
+        """One click near the top border leaves the composer size alone.
+
+        The handle spans nearly the whole border, so a click that expanded the
+        composer would fire constantly during ordinary use.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+
+            await pilot.click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height is None
             assert text_area.size.height == 1
 
     async def test_completion_popup_temporarily_reduces_manual_height(self) -> None:
-        """Visible completions fit inside the box without losing manual size."""
+        """Visible completions fit on screen without losing manual size."""
         app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, 30)) as pilot:
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             text_area = app.query_one(ChatTextArea)
             popup = app.query_one(CompletionPopup)
-            box._set_manual_height(20)
-            popup.update_suggestions([(str(i), str(i)) for i in range(12)], 0)
+            box.set_manual_height(_CHAT_INPUT_MANUAL_MAX_HEIGHT)
+            popup.update_suggestions(
+                [(str(i), str(i)) for i in range(_COMPLETION_POPUP_MAX_HEIGHT)], 0
+            )
             await pilot.pause()
             await pilot.pause()
 
-            assert box._manual_height == 20
-            assert text_area.size.height == 11
-            assert popup.region.bottom <= box.region.bottom
+            assert box._requested_height == _EXPANDED_HEIGHT
+            assert text_area.size.height == 3
+            assert box.region.bottom <= app.screen.region.bottom
 
             popup.hide()
             await pilot.pause()
 
-            assert text_area.size.height == 20
+            assert text_area.size.height == _EXPANDED_HEIGHT
 
-    async def test_terminal_resize_reclamps_manual_height(self) -> None:
-        """Shrinking the terminal reduces an oversized manual composer."""
+    async def test_overlong_completion_list_is_clamped_to_the_popup_cap(self) -> None:
+        """More suggestions than the popup renders do not over-shrink the box.
+
+        Without the clamp the reserved rows would exceed what is on screen and
+        crush the composer to its floor.
+        """
         app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             text_area = app.query_one(ChatTextArea)
-            text_area.insert("\n".join(str(index) for index in range(8)))
+            popup = app.query_one(CompletionPopup)
+            box.set_manual_height(_CHAT_INPUT_MANUAL_MAX_HEIGHT)
+            popup.update_suggestions(
+                [(str(i), str(i)) for i in range(_COMPLETION_POPUP_MAX_HEIGHT + 8)],
+                0,
+            )
             await pilot.pause()
-            box._set_manual_height(17)
             await pilot.pause()
-            assert text_area.size.height == 17
 
-            await pilot.resize_terminal(80, 12)
+            assert text_area.size.height == 3
+            assert box.region.bottom <= app.screen.region.bottom
 
-            assert box._manual_height == 5
-            assert text_area.size.height == 5
+    async def test_terminal_resize_preserves_the_requested_height(self) -> None:
+        """Shrinking the terminal squeezes the composer but keeps the request."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            text_area.insert(
+                "\n".join(str(index) for index in range(_CHAT_INPUT_AUTO_MAX_HEIGHT))
+            )
+            await pilot.pause()
+            box.set_manual_height(_EXPANDED_HEIGHT)
+            await pilot.pause()
+            assert text_area.size.height == _EXPANDED_HEIGHT
+
+            short_screen = 12
+            await pilot.resize_terminal(80, short_screen)
+
+            assert text_area.size.height == (
+                short_screen - _CHAT_INPUT_RESERVED_SCREEN_ROWS
+            )
+            # The request survives the squeeze, so restoring the terminal
+            # restores the size the user actually chose.
+            assert box._requested_height == _EXPANDED_HEIGHT
+
+            await pilot.resize_terminal(80, _RESIZE_SCREEN_HEIGHT)
+
+            assert text_area.size.height == _EXPANDED_HEIGHT
+
+    async def test_handle_geometry_follows_terminal_resizes(self) -> None:
+        """The handle keeps both border corners clear at any terminal width."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            await pilot.pause()
+            assert handle.region.x == box.region.x + 1
+            assert handle.region.right == box.region.right - 1
+
+            await pilot.resize_terminal(50, 20)
+            await pilot.pause()
+
+            assert handle.region.x == box.region.x + 1
+            assert handle.region.right == box.region.right - 1
 
     async def test_hover_highlights_interior_with_mode_color(self) -> None:
         """Hover changes only the inset rule using the active mode's color."""
@@ -589,32 +762,83 @@ class TestChatInputResize:
             await pilot.hover("#spacer")
             assert handle.styles.color == shell_handle_color
 
+    async def test_each_mode_gives_the_handle_a_distinct_color(self) -> None:
+        """Every input mode maps the resize line to its own color."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            handle = app.query_one(ChatInputResizeHandle)
+            await pilot.pause()
+
+            colors: dict[str, object] = {}
+            for mode in ("normal", "shell", "command", "shell_incognito"):
+                chat_input.mode = mode
+                await pilot.pause()
+                await pilot.pause()
+                colors[mode] = handle.styles.color
+
+            assert len(set(colors.values())) == len(colors)
+
     async def test_non_left_press_does_not_start_drag(self) -> None:
         """A non-left press on the handle leaves resize inactive."""
         app = _ChatInputResizeTestApp()
         async with app.run_test() as pilot:
             handle = app.query_one(ChatInputResizeHandle)
             await pilot.pause()
-            y = handle.region.y
 
-            handle.on_mouse_down(
-                events.MouseDown(
-                    handle,
-                    1,
-                    0,
-                    0,
-                    0,
-                    2,
-                    False,
-                    False,
-                    False,
-                    screen_x=handle.region.x + 1,
-                    screen_y=y,
-                )
-            )
+            await pilot.mouse_down(handle, offset=(5, 0), button=2)
 
             assert handle._drag_start_y is None
             assert app.mouse_captured is None
+
+    async def test_unmount_mid_drag_releases_mouse_capture(self) -> None:
+        """Tearing the input down during a drag does not strand the capture.
+
+        A leaked capture would leave the whole app deaf to mouse input.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            chat_input = app.query_one(ChatInput)
+            handle = app.query_one(ChatInputResizeHandle)
+            await pilot.pause()
+
+            await pilot.mouse_down(handle, offset=(5, 0))
+            assert app.mouse_captured is handle
+
+            await chat_input.remove()
+            await pilot.pause()
+
+            assert app.mouse_captured is None
+
+    async def test_losing_mouse_capture_abandons_the_drag(self) -> None:
+        """A revoked capture clears drag state instead of leaving it stuck.
+
+        Otherwise the handle keeps a phantom drag alive: the highlight never
+        clears and later pointer movement resizes with no press behind it.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+            x = handle.region.x + 5
+            start_y = handle.region.y
+
+            await pilot.mouse_down(handle, offset=(5, 0))
+            # Another widget taking the capture posts MouseRelease to the handle.
+            app.capture_mouse(box)
+            await pilot.pause()
+
+            assert handle._drag_start_y is None
+            assert handle._highlighted is False
+
+            app.capture_mouse(None)
+            await pilot.hover(offset=(x, start_y - 4))
+            await pilot.pause()
+
+            assert box._requested_height is None
+            assert text_area.size.height == 1
 
 
 class TestChatInputScrollbar:

@@ -6613,12 +6613,17 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped update install (debug mode)."),
             )
             return
-        success, output = await perform_upgrade(
+        success, output, installed = await perform_upgrade(
             include_prereleases=include_prereleases,
             target_version=latest,
         )
         if success:
             self._update_available = (False, None)
+            # The install command is unpinned, so the installer may have
+            # resolved a release newer than the one the update check observed
+            # (a release published while the session sat open). Report what
+            # actually landed on disk rather than the stale check result.
+            upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
             # `dcode` from a former `pipx` install). Detect that before
@@ -6629,10 +6634,10 @@ class DeepAgentsApp(App):
             # successful upgrade into a "/update failed" message.
             shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
             if shadow is None:
-                self._update_splash_version(latest)
+                self._update_splash_version(upgraded_to)
                 await self._mount_message(
                     AppMessage(
-                        f"Updated to v{latest}. Quit and relaunch dcode "
+                        f"Updated to v{upgraded_to}. Quit and relaunch dcode "
                         "to use the new version."
                     ),
                 )
@@ -22389,7 +22394,7 @@ class DeepAgentsApp(App):
                             show_toast=not progress_modal_visible,
                         )
                         return
-                    success, output = await perform_upgrade(
+                    success, output, installed = await perform_upgrade(
                         progress=screen.append_line,
                         log_path=log_path,
                         target_version=payload.latest,
@@ -22417,12 +22422,18 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
-                        self._update_splash_version(payload.latest)
+                        # The install command is unpinned, so the installer
+                        # may have resolved a release newer than the one this
+                        # notification advertised (a release published while
+                        # the notice sat open). Report what actually landed on
+                        # disk rather than the stale payload version.
+                        upgraded_to = installed or payload.latest
+                        self._update_splash_version(upgraded_to)
                         screen.mark_success()
                         if progress_modal_visible:
                             return
                         self.notify(
-                            f"Updated to v{payload.latest}. "
+                            f"Updated to v{upgraded_to}. "
                             "Quit and relaunch dcode to use the new version.",
                             severity="information",
                             timeout=10,

@@ -697,7 +697,7 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update")
@@ -747,7 +747,7 @@ async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() ->
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update")
@@ -786,7 +786,7 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0rc1"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --prerelease")
@@ -842,7 +842,7 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ),
             # Override the module-level autouse `None` patch with the
             # positive case. Innermost patch wins.
@@ -1034,6 +1034,7 @@ async def test_update_deps_routes_outdated_dcode_through_regular_update(
                 return_value=(
                     True,
                     " - deepagents-code==1.0.0\n + deepagents-code==1.1.0\n",
+                    "1.1.0",
                 ),
             ),
         ):
@@ -1087,6 +1088,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
                 return_value=(
                     True,
                     " - deepagents-code==1.0.0\n + deepagents-code==1.1.0\n",
+                    "1.1.0",
                 ),
             ) as perform_upgrade_mock,
         ):
@@ -1788,7 +1790,7 @@ async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(False, "resolver: conflict"),
+                return_value=(False, "resolver: conflict", None),
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
@@ -1862,10 +1864,12 @@ async def test_perform_app_upgrade_holds_the_lock_during_install() -> None:
 
     held_during_install: list[bool] = []
 
-    async def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:  # noqa: RUF029
+    async def _record_lock_state(  # noqa: RUF029
+        **_kwargs: object,
+    ) -> tuple[bool, str, str | None]:
         with update_install_lock() as holding:
             held_during_install.append(holding)
-        return True, ""
+        return True, "", "1.1.0"
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:

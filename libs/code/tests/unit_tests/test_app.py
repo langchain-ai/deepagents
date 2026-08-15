@@ -25992,7 +25992,7 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.0.0")),
             ):
                 await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()
@@ -26004,6 +26004,39 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
         assert "v2.0.0" in splash
+
+    async def test_install_success_reports_installed_version_over_checked_version(
+        self,
+    ) -> None:
+        """The splash shows what the installer resolved, not the stale check.
+
+        The install command is unpinned, so a release published between the
+        update check and the install is what lands on disk. `perform_upgrade`
+        reads that back; the splash must use the readback version.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry(latest="2.0.0")
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.1.0")),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+                splash = (
+                    app.query_one("#welcome-banner", WelcomeBanner)
+                    ._build_banner()
+                    .plain
+                )
+
+        assert "v2.1.0" in splash
+        assert "v2.0.0" not in splash
 
     async def test_install_defers_to_another_session(
         self, monkeypatch: pytest.MonkeyPatch
@@ -26064,7 +26097,7 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
         app._notice_registry.add(entry)
-        upgrade_mock = AsyncMock(return_value=(False, "resolver: conflict"))
+        upgrade_mock = AsyncMock(return_value=(False, "resolver: conflict", None))
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -26183,7 +26216,9 @@ class TestNotificationCenterIntegration:
             with (
                 patch(
                     "deepagents_code.update_check.perform_upgrade",
-                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                    new=AsyncMock(
+                        return_value=(True, "Updated deepagents-code", "2.0.0")
+                    ),
                 ),
                 # Override the autouse `None` patch.
                 patch(
@@ -26263,7 +26298,9 @@ class TestNotificationCenterIntegration:
             with (
                 patch(
                     "deepagents_code.update_check.perform_upgrade",
-                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                    new=AsyncMock(
+                        return_value=(True, "Updated deepagents-code", "2.0.0")
+                    ),
                 ),
                 patch(
                     "deepagents_code.update_check.detect_shadowed_dcode",
@@ -26314,7 +26351,7 @@ class TestNotificationCenterIntegration:
             monkeypatch.setenv(DEBUG_UPDATE, "1")
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.0.0")),
             ) as mock_upgrade:
                 with patch(
                     "deepagents_code.app.asyncio.sleep",
@@ -26349,7 +26386,7 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(return_value=(False, "ERROR: network unreachable")),
+                new=AsyncMock(return_value=(False, "ERROR: network unreachable", None)),
             ):
                 await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()
@@ -26370,13 +26407,13 @@ class TestNotificationCenterIntegration:
 
         def fail_immediately(
             **kwargs: Any,
-        ) -> tuple[bool, str]:
+        ) -> tuple[bool, str, None]:
             assert kwargs["progress"] is not None
             assert kwargs["log_path"] is not None
             assert isinstance(app.screen, UpdateProgressScreen)
             assert app.screen._status_widget is not None
             assert app.screen._tail_widget is not None
-            return False, "brew: command not found"
+            return False, "brew: command not found", None
 
         async with app.run_test() as pilot:
             await pilot.pause()

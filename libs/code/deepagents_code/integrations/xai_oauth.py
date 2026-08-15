@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from langchain_core.language_models import BaseChatModel
+    from langchain_xai import ChatXAI  # ty: ignore[unresolved-import]
 
     from deepagents_code.mcp_auth import FileTokenStorage
 
@@ -323,9 +324,10 @@ def logout(*, storage: FileTokenStorage | None = None) -> bool:
     """
     store = storage or default_storage()
     path = store.path
-    if not path.exists():
+    try:
+        path.unlink()
+    except FileNotFoundError:
         return False
-    path.unlink()
     return True
 
 
@@ -405,7 +407,9 @@ async def run_device_login(
 
     Raises:
         XaiOAuthProtocolError: The device-code or token endpoint returned an
-            unexpected response.
+            unexpected response. Also raised (wrapping `filelock.Timeout`)
+            if the cross-process refresh lock could not be acquired while
+            persisting the new token via `_persist_token`.
     """
     from deepagents_code.mcp_auth import _run_device_flow
 
@@ -490,10 +494,22 @@ def _persist_token(storage: FileTokenStorage, token: OAuthToken) -> None:
     Args:
         storage: The token storage to write to.
         token: The token to persist.
+
+    Raises:
+        XaiOAuthProtocolError: The cross-process refresh lock could not be
+            acquired within `_REFRESH_LOCK_TIMEOUT_SECONDS` (wraps
+            `filelock.Timeout`).
     """
     lock = FileLock(str(storage.refresh_lock_path), thread_local=True)
-    with lock:
-        _write_token_data(storage, token)
+    try:
+        with lock.acquire(timeout=_REFRESH_LOCK_TIMEOUT_SECONDS):
+            _write_token_data(storage, token)
+    except Timeout as exc:
+        msg = (
+            "Could not acquire the xAI OAuth refresh lock in time; another "
+            "process may be refreshing the same session. Try again."
+        )
+        raise XaiOAuthProtocolError(msg) from exc
 
 
 def _needs_refresh(expires_at: float | None, lifetime_seconds: float | None) -> bool:
@@ -675,7 +691,12 @@ def build_chat_model(
 
     Returns:
         A configured `ChatXAI` instance, narrowed to `BaseChatModel` so
-            `create_model` can splice it into the standard return path.
+            `create_model` can splice it into the standard return path. Its
+            underlying HTTP clients fetch a fresh token from `storage` on
+            every request (see `_wire_refreshing_clients`) rather than
+            reusing the token captured here at construction time, so a
+            single instance stays usable for the lifetime of a long-running
+            session.
 
     Raises:
         FileNotFoundError: No token has been stored yet. Surfaces as a
@@ -687,12 +708,91 @@ def build_chat_model(
             Premium+ entitlement this OAuth surface requires. Surfaces as a
             distinct `MissingCredentialsError` pointing at `XAI_API_KEY`.
     """  # noqa: DOC502  # all three are raised by `_ensure_valid_access_token`, not literally in this body
-    from langchain_xai import ChatXAI
+    from langchain_xai import ChatXAI  # ty: ignore[unresolved-import]
     from pydantic import SecretStr
 
     store = storage or default_storage()
+    # A valid token is still required up front so a missing/dead session
+    # surfaces as `FileNotFoundError` / `XaiOAuthReauthRequiredError` /
+    # `XaiOAuthTierDeniedError` here (the same up-front-failure contract
+    # `create_model` relies on), and so `ChatXAI`'s own credential check
+    # (which rejects a `None`/empty `api_key`) has something to validate.
+    # It is otherwise unused for authentication once `_wire_refreshing_clients`
+    # replaces the clients below.
     access_token = _ensure_valid_access_token(store)
-    return ChatXAI(model=model_name, api_key=SecretStr(access_token), **kwargs)
+    model = ChatXAI(model=model_name, api_key=SecretStr(access_token), **kwargs)
+    _wire_refreshing_clients(model, store)
+    return model
+
+
+def _wire_refreshing_clients(model: ChatXAI, storage: FileTokenStorage) -> None:
+    """Rebuild `model`'s OpenAI clients to fetch a fresh token on every request.
+
+    `ChatXAI.validate_environment` (a `langchain_xai` internal, not this
+    module's code) bakes the access token passed to its constructor into a
+    *static* `api_key` string on the `openai.OpenAI` / `openai.AsyncOpenAI`
+    clients it builds. That defeats this module's proactive refresh
+    (`_ensure_valid_access_token`, `_needs_refresh`): in a long-running
+    session, the token captured at construction time would eventually
+    expire and every subsequent request would fail with an auth error, even
+    though the token stored on disk has since been refreshed.
+
+    `openai.OpenAI`/`AsyncOpenAI` accept `api_key` as a callable (sync for
+    `OpenAI`, a coroutine function for `AsyncOpenAI`) that is invoked fresh
+    immediately before every request (`_refresh_api_key` in
+    `openai._client`), rather than only once at client-construction time.
+    This replaces `model`'s four client attributes (`client`, `async_client`,
+    `root_client`, `root_async_client` — `ChatXAI` builds these as two
+    independent client pairs, not derived from one another) with clients
+    built the same way `ChatXAI.validate_environment` builds them, except
+    with that callable wired to `_ensure_valid_access_token(storage)` in
+    place of the static token string. Everything else about request
+    construction (base URL, timeout, headers, retries, the caller-supplied
+    `http_client`/`http_async_client`) is read back off the already-built
+    `model` so it stays exactly what `ChatXAI` resolved from its own
+    defaults and the caller's kwargs.
+
+    Args:
+        model: A freshly constructed `ChatXAI` instance (already validated,
+            with its default clients in place).
+        storage: The token storage `_ensure_valid_access_token` reads from
+            and refreshes into on each call.
+    """
+    import asyncio
+
+    import openai
+
+    def _sync_token_provider() -> str:
+        return _ensure_valid_access_token(storage)
+
+    async def _async_token_provider() -> str:
+        return await asyncio.to_thread(_ensure_valid_access_token, storage)
+
+    client_params: dict[str, Any] = {
+        "base_url": model.xai_api_base,
+        "timeout": model.request_timeout,
+        "default_headers": model.default_headers,
+        "default_query": model.default_query,
+    }
+    if model.max_retries is not None:
+        client_params["max_retries"] = model.max_retries
+
+    model.client = openai.OpenAI(
+        api_key=_sync_token_provider, http_client=model.http_client, **client_params
+    ).chat.completions
+    model.root_client = openai.OpenAI(
+        api_key=_sync_token_provider, http_client=model.http_client, **client_params
+    )
+    model.async_client = openai.AsyncOpenAI(
+        api_key=_async_token_provider,
+        http_client=model.http_async_client,
+        **client_params,
+    ).chat.completions
+    model.root_async_client = openai.AsyncOpenAI(
+        api_key=_async_token_provider,
+        http_client=model.http_async_client,
+        **client_params,
+    )
 
 
 __all__ = [

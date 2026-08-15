@@ -165,6 +165,13 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 test = [
     "textual-dev>=1.8.0,<2.0.0",
     "build>=1.5.0,<2.0.0",
+    # `TestBuildChatModel` in test_xai_oauth_integration.py constructs a real
+    # `ChatXAI` and asserts on it (unlike other optional-provider integrations,
+    # which are exercised with mocks/monkeypatches and don't need the actual
+    # package installed to run their tests). `xai` is intentionally not a
+    # core dependency (see the `xai` extra above), so it's pulled in here
+    # instead of relying on `uv sync --group test` picking it up implicitly.
+    "langchain-xai>=1.3.0,<2.0.0",
     # Build backend; imported by tests that exercise the `hatch_build.py` hook.
     "hatchling>=1.31.0,<2.0.0",
     "ruff>=0.16.0,<1.0.0",

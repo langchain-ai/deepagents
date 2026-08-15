@@ -282,10 +282,17 @@ class XaiOAuthAuthScreen(ModalScreen[bool]):
                 if isinstance(error, WorkerFailed)
                 else error
             )
-            detail = str(inner) if inner else "Sign-in failed."
-            logger.warning("xAI OAuth sign-in failed: %s", detail)
+            # Do not log or display the raw error: it may contain sensitive
+            # details (token fragments, request/response bodies, internal
+            # URLs with query params). Use a fixed, token-safe summary and
+            # only log the exception type name for debugging.
+            logger.warning(
+                "xAI OAuth sign-in failed: %s",
+                type(inner).__name__ if inner else "unknown error",
+            )
             self.app.notify(
-                f"Sign-in failed: {detail}",
+                "Sign-in failed: xAI OAuth login failed. "
+                "Check your network connection and try again.",
                 severity="error",
                 markup=False,
             )

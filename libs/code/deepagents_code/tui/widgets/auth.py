@@ -333,8 +333,9 @@ class AuthConfirmScreen(ModalScreen[bool]):
     that aren't detected, and starting the auth flow is disruptive enough
     that the user should opt in first (e.g. an OAuth flow that launches a
     browser and a multi-minute loopback wait). The caller supplies all copy
-    so the screen carries no provider assumptions; currently only the
-    `openai_codex` model-switcher path uses it.
+    so the screen carries no provider assumptions; it is used by both the
+    `openai_codex` model-switcher path and the xAI OAuth device-code
+    model-switcher path.
 
     Dismissal values:
 

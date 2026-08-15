@@ -434,6 +434,40 @@ class TestChatInputResize:
             await pilot.mouse_up(offset=(x, 23))
             assert text_area.size.height == 1
 
+    async def test_drag_cannot_shrink_below_visible_draft(self) -> None:
+        """A draft at the auto-growth cap keeps all eight rows visible."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            text_area.insert("\n".join(str(index) for index in range(8)))
+            await pilot.pause()
+            assert text_area.virtual_size.height == 8
+            assert text_area.size.height == 8
+
+            x = handle.region.x + 5
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(offset=(x, 23))
+            await pilot.mouse_up(offset=(x, 23))
+
+            assert box._manual_height == 8
+            assert text_area.size.height == 8
+
+    async def test_manual_height_grows_with_visible_draft(self) -> None:
+        """New content raises a short manual viewport up to the auto cap."""
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            box = app.query_one(ChatInputBox)
+            text_area = app.query_one(ChatTextArea)
+            box._set_manual_height(1)
+            text_area.insert("\n".join(str(index) for index in range(8)))
+            await pilot.pause()
+
+            assert text_area.virtual_size.height == 8
+            assert box._manual_height == 8
+            assert text_area.size.height == 8
+
     async def test_double_click_toggles_expanded_and_auto_height(self) -> None:
         """Double-click expands auto sizing and collapses any manual height."""
         app = _ChatInputResizeTestApp()
@@ -493,6 +527,8 @@ class TestChatInputResize:
         async with app.run_test(size=(80, 24)) as pilot:
             box = app.query_one(ChatInputBox)
             text_area = app.query_one(ChatTextArea)
+            text_area.insert("\n".join(str(index) for index in range(8)))
+            await pilot.pause()
             box._set_manual_height(17)
             await pilot.pause()
             assert text_area.size.height == 17

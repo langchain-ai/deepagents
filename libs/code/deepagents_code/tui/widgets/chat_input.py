@@ -1367,10 +1367,22 @@ class ChatInputBox(Vertical):
             ),
         )
 
+    def _content_height_floor(self) -> int:
+        """Return the visual content height capped at normal auto growth."""
+        text_area = self.query_one(ChatTextArea)
+        return max(1, min(text_area.virtual_size.height, _CHAT_INPUT_AUTO_MAX_HEIGHT))
+
     def _set_manual_height(self, height: int) -> None:
-        """Store and apply a clamped fixed height to the composer."""
-        self._manual_height = max(1, min(height, self._maximum_height()))
+        """Store and apply a content-aware clamped composer height."""
+        maximum = self._maximum_height()
+        minimum = min(self._content_height_floor(), maximum)
+        self._manual_height = max(minimum, min(height, maximum))
         self._apply_manual_height()
+
+    def _ensure_content_height(self) -> None:
+        """Raise a manual height when visual content outgrows it."""
+        if self._manual_height is not None:
+            self._set_manual_height(self._manual_height)
 
     def _apply_manual_height(self) -> None:
         """Fit the manual composer height around visible completions."""
@@ -2019,6 +2031,8 @@ class ChatInput(Vertical):
         # paths (esc+esc clear, Ctrl+C copy), which act on the raw value so a
         # whitespace-only draft is still clearable/copyable without the buttons.
         self._set_action_buttons_visible(visible=bool(text.strip()))
+        if self._input_box is not None:
+            self._input_box._ensure_content_height()
         # Drag-drop / bracketed paste arrive as one Changed event with a
         # multi-character inserted span. Normal typing arrives one character at
         # a time. Checking the changed span (rather than net length delta)

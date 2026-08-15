@@ -1805,7 +1805,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="debug.cold_cache",
         group="Debug",
         summary=(
-            "Force the cold prompt-cache warning modal on the next interactive "
+            "Force the cold prompt-cache warning modal on every interactive "
             "send, overriding suppression."
         ),
         kind=OptionKind.BOOL,

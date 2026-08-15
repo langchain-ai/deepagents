@@ -11,6 +11,8 @@ from deepagents_code.cold_cache import (
     CacheConfidence,
     CacheWriteBucket,
     PromptCachePolicy,
+    RewarmEstimate,
+    debug_stand_in_policy,
     estimate_rewarm_cost,
     format_cache_age,
     format_cache_window,
@@ -304,3 +306,45 @@ def test_cache_time_formatting() -> None:
     assert format_cache_age(-30) == "0m"
     assert format_cache_window(1800) == "30m"
     assert format_cache_window(3600) == "1h"
+    assert format_cache_window(86400) == "24h"
+
+
+@pytest.mark.parametrize(
+    "spec",
+    ["anthropic", "", "anthropic:", "anthropic:   ", ":claude-opus-5"],
+    ids=["no-colon", "empty", "empty-model", "blank-model", "empty-provider"],
+)
+def test_malformed_model_specs_resolve_no_policy(spec: str) -> None:
+    """An unparseable spec must not resolve a policy to price against."""
+    assert resolve_prompt_cache_policy(spec) is None
+
+
+def test_haiku_35_minimum_matches_its_real_model_id() -> None:
+    """Haiku 3.5 ships as `claude-3-5-haiku-*`, not `claude-haiku-3-5`.
+
+    A prefix in the family-then-version style would never match and would
+    silently fall through to the 1,024-token default.
+    """
+    policy = resolve_prompt_cache_policy("anthropic:claude-3-5-haiku-latest")
+
+    assert policy is not None
+    assert policy.minimum_tokens == 2048  # Documented minimum.
+
+
+def test_rewarm_estimate_rejects_impossible_figures() -> None:
+    """The delta is part of the total, so it can never exceed it."""
+    with pytest.raises(ValueError, match="cannot exceed"):
+        RewarmEstimate(cold_cost_usd=0.10, incremental_cost_usd=0.50)
+    with pytest.raises(ValueError, match="non-negative"):
+        RewarmEstimate(cold_cost_usd=-1.0, incremental_cost_usd=0.0)
+
+
+def test_debug_stand_in_policy_tracks_the_anthropic_constants() -> None:
+    """The stand-in must not re-hardcode values that live as constants."""
+    real = resolve_prompt_cache_policy("anthropic:claude-sonnet-4-6")
+    stand_in = debug_stand_in_policy()
+
+    assert real is not None
+    assert stand_in.window_seconds == real.window_seconds
+    assert stand_in.minimum_tokens == real.minimum_tokens
+    assert stand_in.write_bucket == real.write_bucket

@@ -922,9 +922,14 @@ def format_cost_estimate(cost_usd: float) -> str:
 
     Used where the figure is a worst-case estimate rather than recorded spend
     (e.g. the cold-cache warning modal, whose cache may be partially warm):
-    rounds to two significant figures so the display does not imply false
-    precision, and prefixes with `~` to signal "approximately". Do not use for
-    recorded session spend -- `format_cost` renders actuals exactly.
+    rounds so the display does not imply false precision, and prefixes with `~`
+    to signal "approximately". Do not use for recorded session spend --
+    `format_cost` renders actuals exactly.
+
+    Rounding is to two significant figures at or above a dime. Between one cent
+    and a dime the figure keeps cent-level precision instead, which is one
+    significant figure (`0.062` renders `~$0.06`); a second digit there would
+    be sub-cent noise.
 
     Args:
         cost_usd: Estimated cost in US dollars.
@@ -940,9 +945,10 @@ def format_cost_estimate(cost_usd: float) -> str:
         return "<$0.01"
     if cost_usd < 0.1:  # noqa: PLR2004  # Keep cent-level precision under a dime.
         return f"~${cost_usd:.2f}"
-    # Quantize through `Decimal(str(...))` so halves round away from zero
-    # (1.25 -> 1.3) without float-representation surprises (1.15 -> 1.1);
-    # for an upper-bound estimate a half must never round the figure down.
+    # Quantize through `Decimal(str(...))` so halves round away from zero:
+    # 1.25 -> 1.3, and 1.15 -> 1.2 rather than the 1.1 a naive float round
+    # gives (0.1 + 0.05 is stored just under 1.15). For an upper-bound
+    # estimate a half must never round the figure down.
     # `normalize().adjusted()` re-derives the magnitude from the rounded
     # value so a decade carry (9.99 -> 10) renders as `$10`, not `$10.0`.
     exponent = math.floor(math.log10(cost_usd))

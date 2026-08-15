@@ -9,6 +9,7 @@ from deepagents_code.cold_cache import (
     RewarmEstimate,
 )
 from deepagents_code.tui.modals.cold_cache import (
+    SEND_CHOICES,
     ColdCacheChoice,
     ColdCacheWarningScreen,
 )
@@ -39,7 +40,7 @@ def _screen() -> ColdCacheWarningScreen:
     """Build a representative warning modal."""
     return ColdCacheWarningScreen(
         policy=_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
-        estimate=RewarmEstimate(0.42, 0.35),
+        estimate=RewarmEstimate(cold_cost_usd=0.42, incremental_cost_usd=0.35),
         context_tokens=84_000,
         age_seconds=11_520,
     )
@@ -48,7 +49,7 @@ def _screen() -> ColdCacheWarningScreen:
 def test_openai_copy_preserves_retention_uncertainty() -> None:
     screen = ColdCacheWarningScreen(
         policy=_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
-        estimate=RewarmEstimate(0.42, 0.35),
+        estimate=RewarmEstimate(cold_cost_usd=0.42, incremental_cost_usd=0.35),
         context_tokens=84_000,
         age_seconds=11_520,
     )
@@ -68,7 +69,7 @@ def test_openai_copy_preserves_retention_uncertainty() -> None:
 def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
     screen = ColdCacheWarningScreen(
         policy=_policy("Anthropic", 300, "expired", 1024, "5m"),
-        estimate=RewarmEstimate(1.25, 1.15),
+        estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
         context_tokens=50_000,
         age_seconds=600,
     )
@@ -87,10 +88,10 @@ def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
 def test_identity_change_uses_model_specific_copy() -> None:
     screen = ColdCacheWarningScreen(
         policy=_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
-        estimate=RewarmEstimate(0.42, 0.35),
+        estimate=RewarmEstimate(cold_cost_usd=0.42, incremental_cost_usd=0.35),
         context_tokens=84_000,
         age_seconds=60,
-        identity_changed=True,
+        reason="identity_changed",
     )
 
     body = screen._body()
@@ -101,6 +102,39 @@ def test_identity_change_uses_model_specific_copy() -> None:
     # sentence is unconditional even though the policy is `may_be_cold`.
     assert "If the cache has expired" not in body
     assert "may cost up to ~$0.42" in body
+
+
+def test_unknown_age_copy_claims_no_idle_time() -> None:
+    """The `age_unknown` branch must not invent an age or a model change."""
+    screen = ColdCacheWarningScreen(
+        policy=_policy("Anthropic", 300, "expired", 1024, "5m"),
+        estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
+        context_tokens=50_000,
+        age_seconds=None,
+        reason="age_unknown",
+    )
+
+    body = screen._body()
+
+    assert "no record of when this thread last reached the model" in body
+    assert "Anthropic keeps entries for 5m" in body
+    # Neither of the other two branches' claims may leak in: no idle duration
+    # is known, and nothing about the model changed.
+    assert "idle for" not in body
+    assert "active model or prompt-cache settings differ" not in body
+    # Unknown age leaves open that the cache is intact, so the cost sentence
+    # stays conditional even though the policy is `expired`.
+    assert "If the cache has expired" in body
+
+
+def test_send_choices_excludes_cancel() -> None:
+    """Spend authorization is a closed set; cancel is never in it."""
+    assert ColdCacheChoice.CANCEL not in SEND_CHOICES
+    assert not ColdCacheChoice.CANCEL.sends
+    assert all(choice.sends for choice in SEND_CHOICES)
+    assert {
+        choice for choice in ColdCacheChoice if choice is not ColdCacheChoice.CANCEL
+    } == SEND_CHOICES
 
 
 async def test_enter_authorizes_send() -> None:

@@ -197,8 +197,11 @@ def _cache_write_counts(details: Mapping[str, Any]) -> tuple[int, int, int]:
     fall back to the generic cache-write rate. Forwarding the five-minute count
     is therefore inert today and kept for when a rate appears.
 
-    Falls back to `cache_creation`, then to a `cache_write` alias that no bundled
-    LangChain integration currently emits, kept only as a defensive spelling.
+    Falls back to `cache_creation`, then to a `cache_write` alias. No bundled
+    LangChain integration emits `cache_write`, but it is not dead: `cold_cache.
+    estimate_rewarm_cost` synthesizes it to price a GPT-5.6+ cache miss at the
+    write rate, so removing the alias would silently reprice those estimates at
+    plain input.
 
     Returns:
         The generic-only, five-minute, and one-hour counts. A TTL breakdown wins

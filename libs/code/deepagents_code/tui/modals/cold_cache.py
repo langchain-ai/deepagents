@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -13,6 +13,7 @@ from textual.widgets import Static
 
 from deepagents_code._session_stats import format_cost_estimate, format_token_count
 from deepagents_code.cold_cache import (
+    ColdCacheReason,
     PromptCachePolicy,
     RewarmEstimate,
     format_cache_age,
@@ -39,6 +40,30 @@ class ColdCacheChoice(Enum):
 
     CANCEL = "cancel"
     """Keep the draft instead of sending."""
+
+    @property
+    def sends(self) -> bool:
+        """Whether this choice authorizes dispatching the turn.
+
+        Returns:
+            `True` for the send variants, `False` for cancel.
+        """
+        return self in SEND_CHOICES
+
+
+SEND_CHOICES: frozenset[ColdCacheChoice] = frozenset(
+    {
+        ColdCacheChoice.SEND,
+        ColdCacheChoice.SEND_SUPPRESS_SESSION,
+        ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
+    }
+)
+"""Choices that authorize spend.
+
+Lives with the enum so callers ask the type rather than restating the set. A
+new variant is excluded until added here, which fails closed: an unlisted
+choice is treated as cancel rather than silently sending.
+"""
 
 
 class _ChoiceOption(Static):
@@ -102,6 +127,11 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
     can_focus = True
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        # Esc and shift+tab are both claimed by app-level priority bindings
+        # that dispatch to `action_cancel` / `action_move_up` directly, so
+        # these two entries never fire in the running app. Kept so the screen
+        # is self-contained under a bare `App` test host and stays correct if
+        # the app-level routing is ever narrowed.
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("up", "move_up", "Up", show=False, priority=True),
         Binding("k", "move_up", "Up", show=False, priority=True),
@@ -164,16 +194,24 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         policy: PromptCachePolicy,
         estimate: RewarmEstimate,
         context_tokens: int,
-        age_seconds: float,
-        identity_changed: bool = False,
+        age_seconds: float | None,
+        reason: ColdCacheReason = "idle",
     ) -> None:
-        """Initialize the warning from validated policy and pricing data."""
+        """Initialize the warning from validated policy and pricing data.
+
+        Args:
+            policy: Resolved provider retention and pricing treatment.
+            estimate: Cold and incremental cost figures to present.
+            context_tokens: Prefix size the copy quotes.
+            age_seconds: Idle time, or `None` when `reason` is `age_unknown`.
+            reason: Why the cache is treated as cold; selects the copy.
+        """
         super().__init__()
         self._policy = policy
         self._estimate = estimate
         self._context_tokens = context_tokens
         self._age_seconds = age_seconds
-        self._identity_changed = identity_changed
+        self._reason = reason
         self._options: list[_ChoiceOption] = []
         self._selected = 0
 
@@ -183,34 +221,50 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         Returns:
             Plain-text warning body.
         """
-        age = format_cache_age(self._age_seconds)
         window = format_cache_window(self._policy.window_seconds)
-        if self._identity_changed:
-            status = (
-                "The active model or prompt-cache settings differ from the last "
-                "successful turn, so the previous cached prefix cannot be reused."
-            )
-        elif self._policy.confidence == "expired":
-            status = (
-                f"This thread has been idle for {age}, longer than "
-                f"{self._policy.provider_name}'s {window} prompt-cache lifetime. "
-                "The cached conversation prefix has likely expired."
-            )
-        else:
-            status = (
-                f"This thread has been idle for {age}, longer than "
-                f"{self._policy.provider_name}'s {window} minimum cache-retention "
-                "window. The provider may still have retained the cache."
-            )
+        match self._reason:
+            case "identity_changed":
+                status = (
+                    "The active model or prompt-cache settings differ from the "
+                    "last successful turn, so the previous cached prefix "
+                    "cannot be reused."
+                )
+            case "age_unknown":
+                status = (
+                    "There is no record of when this thread last reached the "
+                    "model, so the cached prefix cannot be assumed to still "
+                    f"exist ({self._policy.provider_name} keeps entries for "
+                    f"{window})."
+                )
+            case "idle":
+                age = format_cache_age(self._age_seconds or 0.0)
+                if self._policy.confidence == "expired":
+                    status = (
+                        f"This thread has been idle for {age}, longer than "
+                        f"{self._policy.provider_name}'s {window} prompt-cache "
+                        "lifetime. The cached conversation prefix has likely "
+                        "expired."
+                    )
+                else:
+                    status = (
+                        f"This thread has been idle for {age}, longer than "
+                        f"{self._policy.provider_name}'s {window} minimum "
+                        "cache-retention window. The provider may still have "
+                        "retained the cache."
+                    )
+            case _:  # pragma: no cover - exhaustiveness guard
+                assert_never(self._reason)
         # Both figures are worst-case estimates from synthetic usage payloads:
         # the cache may be partially warm and the actual spend lower, so the
-        # modal rounds them and frames them as "up to" bounds. Under the
-        # `may_be_cold` branch the cache may also be fully intact, so the cost
-        # sentence stays conditional on the cache having expired.
+        # modal rounds them and frames the total as an "up to" bound and the
+        # delta as a "roughly" figure. Only `identity_changed` is a certainty;
+        # `may_be_cold` and `age_unknown` both leave open that the cache is
+        # intact, so the cost sentence stays conditional on it having expired.
         conditional = (
-            "If the cache has expired, re-processing"
-            if self._policy.confidence == "may_be_cold" and not self._identity_changed
-            else "Re-processing"
+            "Re-processing"
+            if self._reason == "identity_changed"
+            or (self._reason == "idle" and self._policy.confidence == "expired")
+            else "If the cache has expired, re-processing"
         )
         cost = (
             f"{conditional} approximately "

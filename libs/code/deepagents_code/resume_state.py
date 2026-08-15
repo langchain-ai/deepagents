@@ -205,10 +205,22 @@ class ResumeState(GoalRubricChannels):
     """Invocation params effectively in use for the latest turn."""
 
     _last_model_request_at: Annotated[NotRequired[str], PrivateStateAttr]
-    """UTC request-start timestamp for the latest successful main-model call."""
+    """UTC request-start timestamp for the latest successful main-model call.
+
+    Must be written together with `_last_cache_model_spec` -- see that key. The
+    TypedDict cannot express the pairing, so `_checkpoint_command` is the only
+    writer and guards both behind one condition.
+    """
 
     _last_cache_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
-    """Requested model spec associated with `_last_model_request_at`."""
+    """Requested model spec associated with `_last_model_request_at`.
+
+    Paired with the timestamp above: a timestamp with no identity reads back as
+    a permanent "model changed", and an identity with no timestamp reads back
+    as an unknown age. Duplicates `_model_spec` on every current write; it
+    exists separately so the cold-cache comparison is not coupled to whatever
+    else `_model_spec` comes to mean.
+    """
 
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""

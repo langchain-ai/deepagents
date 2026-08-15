@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, assert_never
 from urllib.parse import urlparse
 
 CacheConfidence = Literal["expired", "may_be_cold"]
@@ -23,11 +23,32 @@ CacheWriteBucket = Literal["generic", "generic_write", "5m"]
 """Which pricing treatment a cold (cache-writing) request receives.
 
 `5m` prices Anthropic's five-minute ephemeral write premium. `generic_write`
-tags the miss as a cache write for models whose catalog entry publishes a
-write rate -- GPT-5.6+ bills writes at 1.25x the uncached input rate, and
-omitting the detail would price the miss at plain input. `generic` covers
-misses with no write surcharge, which is how OpenAI priced prompt caching
-before GPT-5.6.
+tags the miss as a cache write: GPT-5.6+ bills writes at 1.25x the uncached
+input rate, and omitting the detail would price the miss at plain input.
+`generic` covers misses with no write surcharge, which is how OpenAI priced
+prompt caching before GPT-5.6.
+
+`generic_write` is assigned by *model-name version* (see
+`_openai_uses_thirty_minute_cache`), not by inspecting the catalog. Every
+current `gpt-5.6-*` entry does publish a write rate, but that coupling is not
+enforced: a future 5.6-family model with no cache rates would be tagged
+`generic_write` and priced at plain input by `estimate_cost`, which drops
+detail keys the catalog cannot price. The `-pro` variants are the precedent --
+`gpt-5.4-pro` and `gpt-5.5-pro` publish no cache rates at all.
+"""
+
+ColdCacheReason = Literal["idle", "identity_changed", "age_unknown"]
+"""Why a turn is treated as facing a cold prompt cache.
+
+`idle` means the last request is older than the policy's retention window.
+`identity_changed` means the model or its cache-affecting params differ from
+the last successful turn, so the cached prefix cannot be reused regardless of
+age. `age_unknown` means there is no usable record of when this thread last
+reached the model -- a checkpoint written before cold-cache tracking existed,
+or one whose timestamp could not be parsed -- so the cache cannot be assumed
+warm. Each maps to distinct modal copy; they are not interchangeable, and in
+particular `age_unknown` must not be reported as `identity_changed`, which
+would claim a model change that never happened.
 """
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")
@@ -38,16 +59,21 @@ _ANTHROPIC_MINIMUM_TOKENS: tuple[tuple[str, int], ...] = (
     ("claude-mythos-5", 512),
     ("claude-opus-4-7", 2048),
     ("claude-mythos-preview", 2048),
-    ("claude-haiku-3-5", 2048),
+    ("claude-3-5-haiku", 2048),
     ("claude-opus-4-6", 4096),
     ("claude-opus-4-5", 4096),
     ("claude-haiku-4-5", 4096),
 )
 """Prefixes for Claude models whose cache minimum differs from 1,024 tokens.
 
-From the per-model minimums in Anthropic's prompt-caching docs. Order matters:
-the first matching prefix wins, so `claude-mythos-preview` must precede a bare
-`claude-mythos` entry if one is ever added.
+From the per-model minimums in Anthropic's prompt-caching docs:
+https://docs.claude.com/en/docs/build-with-claude/prompt-caching
+
+Prefixes must match real model ids. Haiku 3.5 predates the family-then-version
+naming and ships as `claude-3-5-haiku-*`, so a `claude-haiku-3-5` prefix would
+never match and would silently fall through to the 1,024 default. Order
+matters: the first matching prefix wins, so a more specific prefix must
+precede any shorter prefix of it.
 """
 
 _ANTHROPIC_DEFAULT_MINIMUM_TOKENS = 1024
@@ -95,13 +121,18 @@ class PromptCachePolicy:
     """Pricing treatment for the cold request; see `estimate_rewarm_cost`."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RewarmEstimate:
     """Estimated input cost for a cold prefix and its warm-cache delta.
 
     Both figures are USD, non-negative, and finite; `incremental_cost_usd` is
     the part of `cold_cost_usd` that a cache hit would have avoided, so it
     never exceeds it.
+
+    Keyword-only for the same reason as `PromptCachePolicy`: these are adjacent
+    bare floats, and transposing them positionally yields copy that reads fine
+    ("may cost up to ~$0.02 ... roughly ~$3.40 more than a warm cache hit")
+    while being arithmetically impossible.
     """
 
     cold_cost_usd: float
@@ -109,6 +140,52 @@ class RewarmEstimate:
 
     incremental_cost_usd: float
     """How much of `cold_cost_usd` a warm cache would have saved."""
+
+    def __post_init__(self) -> None:
+        """Enforce the documented ordering and non-negativity invariants.
+
+        Raises:
+            ValueError: When either figure is negative or the delta exceeds the
+                total it is a part of.
+        """
+        if self.cold_cost_usd < 0 or self.incremental_cost_usd < 0:
+            msg = (
+                f"RewarmEstimate costs must be non-negative, got "
+                f"cold={self.cold_cost_usd!r}, "
+                f"incremental={self.incremental_cost_usd!r}"
+            )
+            raise ValueError(msg)
+        if self.incremental_cost_usd > self.cold_cost_usd:
+            msg = (
+                f"RewarmEstimate incremental cost {self.incremental_cost_usd!r} "
+                f"cannot exceed the cold cost {self.cold_cost_usd!r}"
+            )
+            raise ValueError(msg)
+
+
+def debug_stand_in_policy() -> PromptCachePolicy:
+    """Build the placeholder policy used by `DEEPAGENTS_CODE_DEBUG_COLD_CACHE`.
+
+    Keeps the modal reachable on providers with no documented cache policy.
+    Lives here rather than in the caller so the Anthropic window and minimum
+    stay tied to `_ANTHROPIC_MIDDLEWARE_TTL_SECONDS` and
+    `_ANTHROPIC_DEFAULT_MINIMUM_TOKENS` instead of being re-hardcoded, which
+    would silently drift the moment either constant is revised.
+
+    The provider name is deliberately Anthropic's: under the debug flag the
+    modal may therefore cite Anthropic retention while a different provider is
+    active. The figures are illustrative in that mode, not real estimates.
+
+    Returns:
+        Stand-in policy shaped like Anthropic's.
+    """
+    return PromptCachePolicy(
+        provider_name="Anthropic",
+        window_seconds=_ANTHROPIC_MIDDLEWARE_TTL_SECONDS,
+        confidence="expired",
+        minimum_tokens=_ANTHROPIC_DEFAULT_MINIMUM_TOKENS,
+        write_bucket="5m",
+    )
 
 
 def _official_endpoint(base_url: str | None, hostname: str) -> bool:
@@ -185,6 +262,7 @@ def resolve_prompt_cache_policy(
         # 30 minutes is the documented guaranteed *minimum* for GPT-5.6+, but
         # OpenAI may retain the prefix longer, so past the window it can only
         # be treated as possibly cold.
+        # https://platform.openai.com/docs/guides/prompt-caching
         return PromptCachePolicy(
             provider_name="OpenAI",
             window_seconds=1800,
@@ -197,6 +275,7 @@ def resolve_prompt_cache_policy(
     # maximum, not a guarantee"): entries may be evicted earlier, so a warning
     # is only defensible once the maximum has passed -- at which point the
     # entry is gone rather than merely doubtful.
+    # https://platform.openai.com/docs/guides/prompt-caching
     retention = params.get("prompt_cache_retention")
     retention_windows = {"in_memory": 3600, "24h": 86400}
     window = retention_windows.get(retention) if isinstance(retention, str) else None
@@ -244,22 +323,29 @@ def estimate_rewarm_cost(
         "output_tokens": 0,
         "total_tokens": context_tokens,
     }
-    if policy.write_bucket == "5m":
-        # Anthropic bills a write premium over the ordinary input rate; the
-        # detail key must stay in sync with `cost_tracking._cache_write_counts`.
-        cold_usage["input_token_details"] = {
-            "ephemeral_5m_input_tokens": context_tokens
-        }
-    elif policy.write_bucket == "generic_write":
-        # GPT-5.6+ bills a miss as a cache write at 1.25x the input rate, and
-        # the catalog carries that rate, so the write detail must reach
-        # `estimate_cost`; omitting it would price the miss at plain input.
-        # `cache_write` is the generic alias `_cache_write_counts` reads.
-        cold_usage["input_token_details"] = {"cache_write": context_tokens}
-    # The plain `generic` bucket carries no cache-write detail at all: pre-5.6
-    # OpenAI bills a miss at the ordinary input rate, so tagging those tokens
-    # as a cache write would apply a premium the provider never charges and
-    # overstate both the displayed cost and the threshold comparison.
+    match policy.write_bucket:
+        case "5m":
+            # Anthropic bills a write premium over the ordinary input rate; the
+            # detail key must stay in sync with
+            # `cost_tracking._cache_write_counts`.
+            cold_usage["input_token_details"] = {
+                "ephemeral_5m_input_tokens": context_tokens
+            }
+        case "generic_write":
+            # GPT-5.6+ bills a miss as a cache write at 1.25x the input rate,
+            # so the write detail must reach `estimate_cost`; omitting it would
+            # price the miss at plain input. `cache_write` is the generic alias
+            # `_cache_write_counts` reads -- it is load-bearing here, not a
+            # defensive spelling.
+            cold_usage["input_token_details"] = {"cache_write": context_tokens}
+        case "generic":
+            # No cache-write detail at all: pre-5.6 OpenAI bills a miss at the
+            # ordinary input rate, so tagging those tokens as a cache write
+            # would apply a premium the provider never charges and overstate
+            # both the displayed cost and the threshold comparison.
+            pass
+        case _:  # pragma: no cover - exhaustiveness guard
+            assert_never(policy.write_bucket)
 
     from deepagents_code.cost_tracking import estimate_cost
 
@@ -269,9 +355,14 @@ def estimate_rewarm_cost(
         return None
     if not math.isfinite(warm_cost) or not math.isfinite(cold_cost):
         return None
+    # Clamp both sides before subtracting. Clamping only the total would let a
+    # negative `cold_cost` produce an incremental figure larger than the cold
+    # figure it is supposed to be a part of.
+    cold = max(cold_cost, 0.0)
+    warm = max(warm_cost, 0.0)
     return RewarmEstimate(
-        cold_cost_usd=max(cold_cost, 0.0),
-        incremental_cost_usd=max(cold_cost - warm_cost, 0.0),
+        cold_cost_usd=cold,
+        incremental_cost_usd=max(cold - warm, 0.0),
     )
 
 

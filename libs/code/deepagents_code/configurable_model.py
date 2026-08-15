@@ -601,6 +601,13 @@ def _checkpoint_command(
         update["_last_model_request_at"] = request_started_at
         update["_last_cache_model_spec"] = resolved.model_spec
         update["_model_spec"] = resolved.model_spec
+    else:
+        # The previous turn's timestamp stays in place, so the next cold-cache
+        # age is computed against an older request than the one just made.
+        logger.debug(
+            "Not recording prompt-cache state: no model spec could be derived from %s",
+            type(resolved.request.model).__name__,
+        )
     if resolved.model_params_known:
         update["_model_params"] = resolved.model_params
     return Command(update=update)

@@ -9422,7 +9422,13 @@ class DeepAgentsApp(App):
                 self._strip_mode_value(value, "!", "!!", mode),
             )
         elif mode == "command":
-            await self._handle_command(value)
+            if value.lower().strip() == "/reload":
+                self._schedule_off_message_pump(
+                    self._run_reload_continuation(value),
+                    context="reload",
+                )
+            else:
+                await self._handle_command(value)
         elif mode == "normal":
             await self._handle_user_message(value)
         else:
@@ -9438,6 +9444,16 @@ class DeepAgentsApp(App):
                     f"Internal error: unknown input mode {mode!r}. "
                     "Message was not sent.",
                 ),
+            )
+
+    async def _run_reload_continuation(self, command: str) -> None:
+        """Run `/reload` without blocking the Textual message pump."""
+        try:
+            await self._handle_command(command)
+        except Exception:
+            logger.exception("Detached /reload command failed unexpectedly")
+            await self._mount_message(
+                ErrorMessage("Reload failed unexpectedly. Check the debug log."),
             )
 
     @staticmethod
@@ -24061,18 +24077,17 @@ class DeepAgentsApp(App):
     def _schedule_off_message_pump(
         self, coro: Coroutine[Any, Any, None], *, context: str
     ) -> asyncio.Task[None] | None:
-        """Run a slash-command continuation that opens a modal off the pump.
+        """Run a slash-command continuation outside the App message pump.
 
         Slash commands are dispatched from `on_chat_input_submitted`, which is
-        awaited inline on the App message pump. Awaiting a confirmation modal
-        there blocks the pump, so the modal never receives the Enter/Esc key
-        events it needs to resolve and appears frozen until its watchdog fires.
-        Detaching the continuation lets the command handler return so the pump
-        can route keys to the modal — the same reason the post-install restart
+        awaited inline on the App message pump. Awaiting a confirmation modal or
+        a long-running command there blocks the pump, so the chat input and modal
+        key handling freeze until the command returns. Detaching the continuation
+        lets the pump keep routing keys — the same reason the post-install restart
         offer is scheduled rather than awaited (see `_schedule_restart_offer`).
 
-        Because the command handler now returns while the modal is still open,
-        the continuation participates in the app's busy state until it ends.
+        Because the command handler returns while the continuation is still
+        active, it participates in the app's busy state until it ends.
         Only one continuation is allowed globally, so differently keyed install,
         update, and goal commands cannot show overlapping modals or mutate
         shared state concurrently.

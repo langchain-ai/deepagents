@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -910,6 +911,49 @@ class TestReloadInAutocomplete:
     def test_reload_in_slash_commands(self) -> None:
         """`/reload` should be registered in slash command completions."""
         assert any(entry.name == "/reload" for entry in get_slash_commands())
+
+
+class TestReloadInputResponsiveness:
+    """`/reload` should not block the Textual message pump."""
+
+    @pytest.mark.timeout(15)
+    async def test_keeps_chat_input_responsive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typing should render while the reload continuation is still running."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input.focus_input()
+            await pilot.pause()
+
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def _blocked_reload(_command: str) -> None:
+                started.set()
+                await release.wait()
+
+            monkeypatch.setattr(app, "_handle_command", _blocked_reload)
+
+            chat_input.mode = "command"
+            chat_input._submit_value("reload")
+            await started.wait()
+
+            await pilot.press("h", "i")
+            await pilot.pause()
+            typed = chat_input.value
+
+            release.set()
+            task = app._modal_command_tasks.get("reload")
+            if task is not None:
+                await task
+
+            assert typed == "hi"
 
 
 class TestReloadModelProfileHints:

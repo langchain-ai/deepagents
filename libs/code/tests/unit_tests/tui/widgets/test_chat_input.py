@@ -451,11 +451,11 @@ class TestChatInputResize:
             await pilot.hover(offset=(x, 23))
             await pilot.mouse_up(offset=(x, 23))
 
-            assert box._manual_height == 8
+            assert box._manual_height == 1
             assert text_area.size.height == 8
 
-    async def test_manual_height_grows_with_visible_draft(self) -> None:
-        """New content raises a short manual viewport up to the auto cap."""
+    async def test_manual_height_tracks_growing_and_shrinking_draft(self) -> None:
+        """The viewport follows content while preserving its requested height."""
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
             box = app.query_one(ChatInputBox)
@@ -465,8 +465,17 @@ class TestChatInputResize:
             await pilot.pause()
 
             assert text_area.virtual_size.height == 8
-            assert box._manual_height == 8
+            assert box._manual_height == 1
             assert text_area.size.height == 8
+
+            text_area.move_cursor_to_end()
+            await pilot.press(*("backspace" for _ in range(len(text_area.text) - 1)))
+            await pilot.pause()
+
+            assert text_area.text == "0"
+            assert text_area.virtual_size.height == 1
+            assert box._manual_height == 1
+            assert text_area.size.height == 1
 
     async def test_double_click_toggles_expanded_and_auto_height(self) -> None:
         """Double-click expands auto sizing and collapses any manual height."""

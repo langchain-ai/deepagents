@@ -1373,26 +1373,28 @@ class ChatInputBox(Vertical):
         return max(1, min(text_area.virtual_size.height, _CHAT_INPUT_AUTO_MAX_HEIGHT))
 
     def _set_manual_height(self, height: int) -> None:
-        """Store and apply a content-aware clamped composer height."""
-        maximum = self._maximum_height()
-        minimum = min(self._content_height_floor(), maximum)
-        self._manual_height = max(minimum, min(height, maximum))
+        """Store and apply a physically clamped requested height."""
+        self._manual_height = max(1, min(height, self._maximum_height()))
         self._apply_manual_height()
 
     def _ensure_content_height(self) -> None:
-        """Raise a manual height when visual content outgrows it."""
+        """Reapply a manual height as the visual content floor changes."""
         if self._manual_height is not None:
-            self._set_manual_height(self._manual_height)
+            self._apply_manual_height()
 
     def _apply_manual_height(self) -> None:
-        """Fit the manual composer height around visible completions."""
+        """Fit the requested height around content and visible completions."""
         if self._manual_height is None:
             return
-        available = max(
-            1,
-            _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - self._completion_rows,
+        available = min(
+            self._maximum_height(),
+            max(
+                1,
+                _CHAT_INPUT_BOX_MAX_HEIGHT - self.gutter.height - self._completion_rows,
+            ),
         )
-        height = min(self._manual_height, available)
+        minimum = min(self._content_height_floor(), available)
+        height = max(minimum, min(self._manual_height, available))
         text_area = self.query_one(ChatTextArea)
         text_area.styles.height = height
         text_area.styles.max_height = height

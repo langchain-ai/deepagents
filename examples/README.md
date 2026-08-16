@@ -93,6 +93,7 @@ Production agents powered by the LangChain stack:
 | [**Ralph Loop**](ralph_mode/) | Autonomous looping with fresh context each iteration, using the filesystem for persistence |
 | [**Agents as Folders**](downloading_agents/) | Download a zip, unzip, and run |
 | [**Better Harness**](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness |
+| [**Dual-Signal Triage**](dual-signal-triage/) | SnortML + signature + Splunk-notable triage with HITL containment gate (ML ≠ signature TP) |
 
 Each example has its own `README` with setup instructions.
 

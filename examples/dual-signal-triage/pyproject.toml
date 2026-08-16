@@ -1,0 +1,36 @@
+[project]
+name = "dual-signal-triage"
+version = "0.1.0"
+description = "Deep Agents example: dual-signal SnortML+signature+Splunk triage with HITL containment gate"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.7.0,<0.8.0",
+    "langchain-core>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+dual-signal-triage = "dual_signal_triage.agent:main"
+
+[build-system]
+requires = ["setuptools>=75.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["dual_signal_triage*"]
+
+[tool.setuptools.package-data]
+dual_signal_triage = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

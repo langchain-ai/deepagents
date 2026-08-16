@@ -251,6 +251,101 @@ Content
 
         assert _parse_subagent_file(subagent_file) is None
 
+    def test_parse_subagent_with_tools_and_skills(self, tmp_path: Path) -> None:
+        """tools:/skills: frontmatter parse into lists of names."""
+        subagent_file = tmp_path / "scoped.md"
+        subagent_file.write_text(
+            """---
+name: scoped
+description: Test
+tools:
+  - web_search
+  - github_create_issue
+skills:
+  - source-citation
+---
+
+Content
+"""
+        )
+
+        result = _parse_subagent_file(subagent_file)
+
+        assert result is not None
+        assert result["tools"] == ["web_search", "github_create_issue"]
+        assert result["skills"] == ["source-citation"]
+
+    def test_parse_subagent_without_tools_and_skills(self, tmp_path: Path) -> None:
+        """Omitted tools:/skills: parse to None (inherit / no skills)."""
+        subagent_file = tmp_path / "default.md"
+        subagent_file.write_text(
+            """---
+name: default
+description: Test
+---
+
+Content
+"""
+        )
+
+        result = _parse_subagent_file(subagent_file)
+
+        assert result is not None
+        assert result["tools"] is None
+        assert result["skills"] is None
+
+    def test_parse_subagent_empty_tools_list(self, tmp_path: Path) -> None:
+        """tools: [] is valid and meaningful (zero session tools)."""
+        subagent_file = tmp_path / "empty.md"
+        subagent_file.write_text(
+            """---
+name: empty
+description: Test
+tools: []
+---
+
+Content
+"""
+        )
+
+        result = _parse_subagent_file(subagent_file)
+
+        assert result is not None
+        assert result["tools"] == []
+
+    def test_parse_subagent_non_list_tools(self, tmp_path: Path) -> None:
+        """A non-list tools: value is rejected (skip the subagent)."""
+        subagent_file = tmp_path / "bad.md"
+        subagent_file.write_text(
+            """---
+name: bad
+description: Test
+tools: web_search
+---
+
+Content
+"""
+        )
+
+        assert _parse_subagent_file(subagent_file) is None
+
+    def test_parse_subagent_non_string_skill_entry(self, tmp_path: Path) -> None:
+        """A skills: list with a non-string entry is rejected."""
+        subagent_file = tmp_path / "badskills.md"
+        subagent_file.write_text(
+            """---
+name: badskills
+description: Test
+skills:
+  - 42
+---
+
+Content
+"""
+        )
+
+        assert _parse_subagent_file(subagent_file) is None
+
     def test_parse_subagent_frontmatter_not_dict(self, tmp_path: Path) -> None:
         """Test that non-dict frontmatter is rejected."""
         subagent_file = tmp_path / "invalid.md"

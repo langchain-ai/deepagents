@@ -11,6 +11,10 @@ Example file (researcher/AGENTS.md):
     name: researcher  # optional; defaults to the folder name
     description: Research topics on the web before writing content
     model: anthropic:claude-haiku-4-5-20251001
+    tools:
+      - web_search  # restrict this subagent to named session tools
+    skills:
+      - source-citation  # and named skills, instead of inheriting everything
     ---
 
     You are a research assistant with access to web search.
@@ -18,6 +22,22 @@ Example file (researcher/AGENTS.md):
     ## Your Process
     1. Search for relevant information
     2. Summarize findings clearly
+
+## Tool and skill scoping
+
+By default a subagent inherits the main agent's full toolset (MCP tools
+included). `tools:` opts a specific subagent out of that inheritance: it is
+an allowlist of session tool names (use each tool's fully-qualified name —
+MCP tools are prefixed with their server, e.g. `github_create_issue`). An
+empty list (`tools: []`) means the subagent receives no session tools at
+all. Filesystem scaffolding tools (`ls`, `read_file`, ...) are added by the
+runtime independently of this list. Omit the field to keep the default
+inherit-everything behavior. Unknown names fail loudly at agent assembly.
+
+`skills:` loads a per-subagent subset of skills by name, resolved against
+the same user/project skill directories the main agent reads. Subagents
+load no skills unless this field names them; unknown names fail loudly at
+agent assembly. Plugin-provided skills are not yet addressable here.
 
 The `name` field is optional; when omitted it defaults to the folder name
 (e.g. `researcher`). This diverges from the Agent Skills specification
@@ -57,11 +77,47 @@ class SubagentMetadata(TypedDict):
     model: str | None
     """Optional model override in 'provider:model-name' format."""
 
+    tools: list[str] | None
+    """Optional allowlist of session tool names for this subagent.
+
+    When set, the subagent receives exactly these tools from the session
+    toolset (MCP tools included, addressed by their fully-qualified names)
+    instead of inheriting the main agent's tools. An empty list means no
+    session tools. None (the default, when the frontmatter omits `tools:`)
+    keeps the inherit-everything behavior. Filesystem scaffolding tools are
+    unaffected — they are added by the runtime regardless.
+    """
+
+    skills: list[str] | None
+    """Optional list of skill names this subagent may load.
+
+    None (frontmatter omits `skills:`) means the subagent loads no skills,
+    which is also the default behavior. Names are resolved against the
+    user/project skill directories at agent assembly; unknown names raise.
+    """
+
     source: str
     """Where this subagent was loaded from ('user' or 'project')."""
 
     path: str
     """Absolute path to the subagent definition file."""
+
+
+def _is_name_list(value: object) -> bool:
+    """True when `value` is a valid optional list-of-names frontmatter field.
+
+    Accepts None (field omitted), any list whose entries are all non-empty
+    strings (an empty list is a valid, meaningful choice — e.g. `tools: []`
+    scopes a subagent to zero session tools), and rejects everything else.
+
+    Returns:
+        True when the value is a valid optional list-of-names field.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, list):
+        return False
+    return all(isinstance(item, str) and item.strip() for item in value)
 
 
 def _parse_subagent_file(
@@ -124,6 +180,8 @@ def _parse_subagent_file(
     name_value = frontmatter.get("name", fallback_name)
     description_value = frontmatter.get("description")
     model = frontmatter.get("model")
+    tools = frontmatter.get("tools")
+    skills = frontmatter.get("skills")
 
     # Validate types: name and description must be non-empty strings (leading and
     # trailing whitespace is stripped, so a whitespace-only value is rejected).
@@ -139,8 +197,16 @@ def _parse_subagent_file(
         else None
     )
     model_valid = model is None or isinstance(model, str)
+    tools_valid = _is_name_list(tools)
+    skills_valid = _is_name_list(skills)
 
-    if name is None or description is None or not model_valid:
+    if (
+        name is None
+        or description is None
+        or not model_valid
+        or not tools_valid
+        or not skills_valid
+    ):
         invalid_fields: list[str] = []
         if name is None:
             invalid_fields.append("name (non-empty string required)")
@@ -148,6 +214,14 @@ def _parse_subagent_file(
             invalid_fields.append("description (non-empty string required)")
         if not model_valid:
             invalid_fields.append("model (string required when present)")
+        if not tools_valid:
+            invalid_fields.append(
+                "tools (list of non-empty strings required when present)"
+            )
+        if not skills_valid:
+            invalid_fields.append(
+                "skills (list of non-empty strings required when present)"
+            )
         logger.warning(
             "Skipping subagent %s: invalid or missing frontmatter field(s): %s",
             file_path,
@@ -169,6 +243,8 @@ def _parse_subagent_file(
         "description": description,
         "system_prompt": match.group(2).strip(),
         "model": model,
+        "tools": tools,
+        "skills": skills,
         "source": "",  # Set by caller
         "path": str(file_path),
     }

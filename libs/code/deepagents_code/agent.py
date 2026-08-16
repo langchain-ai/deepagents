@@ -2177,6 +2177,75 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
         env["PYTHONPATH"] = inherited
 
 
+def _resolve_subagent_tool_allowlist(
+    subagent_name: str, tool_names: Sequence[str], session_tools: Sequence[Any]
+) -> list[Any]:
+    """Resolve a subagent's ``tools:`` frontmatter against the session toolset.
+
+    MCP tools are addressed by their fully-qualified names (server-prefixed).
+
+    Returns:
+        The tool objects for exactly the named tools, in allowlist order.
+
+    Raises:
+        ValueError: If any listed name is not among the session tools — a
+            typo would otherwise silently strip a capability from the
+            subagent, so it aborts agent assembly instead.
+    """
+    available: dict[str, Any] = {}
+    for session_tool in session_tools:
+        name = getattr(session_tool, "name", None)
+        if isinstance(name, str) and name:
+            available.setdefault(name, session_tool)
+    missing = [n for n in tool_names if n not in available]
+    if missing:
+        msg = (
+            f"Subagent {subagent_name!r} lists unknown tool(s) in its "
+            f"'tools:' frontmatter: {', '.join(missing)}. Available session "
+            f"tools: {', '.join(sorted(available)) or '(none)'}."
+        )
+        raise ValueError(msg)
+    return [available[n] for n in tool_names]
+
+
+def _resolve_subagent_skill_sources(
+    subagent_name: str, skill_names: Sequence[str], skill_roots: Sequence[Path | None]
+) -> list[str]:
+    """Resolve a subagent's ``skills:`` frontmatter to per-skill source paths.
+
+    ``skill_roots`` is ordered lowest-precedence-first, mirroring the main
+    agent's skill source order; a name present in several roots resolves to
+    the later (overriding) one.
+
+    Returns:
+        One directory path per named skill, so only the named skills load.
+
+    Raises:
+        ValueError: If any listed name resolves in no skill root — a typo
+            would otherwise silently drop a skill the author intended.
+    """
+    by_name: dict[str, Path] = {}
+    for root in skill_roots:
+        if root is None:
+            continue
+        root_path = Path(root)
+        if not root_path.is_dir():
+            continue
+        for child in sorted(root_path.iterdir()):
+            if child.is_dir():
+                by_name[child.name] = child
+    missing = [n for n in skill_names if n not in by_name]
+    if missing:
+        available = ", ".join(sorted(by_name)) or "(none)"
+        msg = (
+            f"Subagent {subagent_name!r} lists unknown skill(s) in its "
+            f"'skills:' frontmatter: {', '.join(missing)}. Available skills: "
+            f"{available}."
+        )
+        raise ValueError(msg)
+    return [str(by_name[n]) for n in skill_names]
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -2515,6 +2584,39 @@ def create_cli_agent(
         }
         if model_spec:
             subagent["model"] = model_spec
+        # Per-subagent tool scoping (`tools:` frontmatter): None keeps the
+        # core default of inheriting the main agent's toolset; a list —
+        # including the empty list — is an allowlist resolved against the
+        # session tools (MCP included, by fully-qualified name), unknown
+        # names abort assembly rather than silently dropping a capability.
+        tool_allowlist = subagent_meta.get("tools")
+        if tool_allowlist is not None:
+            subagent["tools"] = _resolve_subagent_tool_allowlist(
+                subagent_meta["name"], tool_allowlist, tools
+            )
+        # Per-subagent skills (`skills:` frontmatter): subagents load no
+        # skills unless named here. Resolved against the same roots the main
+        # agent reads (built-in -> user -> project, later roots override).
+        subagent_skills = subagent_meta.get("skills")
+        if subagent_skills:
+            if not enable_skills:
+                msg = (
+                    f"Subagent {subagent_meta['name']!r} lists 'skills:' "
+                    "frontmatter but skills are disabled "
+                    "(enable_skills=False)."
+                )
+                raise ValueError(msg)
+            subagent["skills"] = _resolve_subagent_skill_sources(
+                subagent_meta["name"],
+                subagent_skills,
+                (
+                    settings.get_built_in_skills_dir(),
+                    skills_dir,
+                    user_agent_skills_dir,
+                    project_skills_dir,
+                    project_agent_skills_dir,
+                ),
+            )
         subagent_middleware = _subagent_cli_middleware(
             has_explicit_model=has_explicit_model,
         )

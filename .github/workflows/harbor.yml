@@ -38,7 +38,7 @@ on:
           - "terminal-bench/terminal-bench-2-1"
           - "sierra-research/tau3-bench"
           - "tau3-subset"
-          - "harbor-index/harbor-index-1.0"
+          - "harbor-index/harbor-index"
       dataset_override:
         description: "Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty."
         required: false

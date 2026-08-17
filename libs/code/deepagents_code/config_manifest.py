@@ -114,6 +114,9 @@ COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 Zero or negative disables the suggestion.
 """
 
+SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
+"""Default warning threshold in USD; zero or negative disables the warning."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -1166,6 +1169,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.KITTY_KEYBOARD,
     ),
     ConfigOption(
+        key="display.show_diff_line_numbers",
+        group="Display",
+        summary="Show file line numbers in diff hunks.",
+        kind=OptionKind.BOOL,
+        default=True,
+        toml_keys=("ui", "show_diff_line_numbers"),
+    ),
+    ConfigOption(
         key="display.show_scrollbar",
         group="Display",
         summary="Show the vertical scrollbar in the chat area (off by default).",
@@ -1541,6 +1552,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.session_cost_threshold_usd",
+        group="Warnings",
+        summary=(
+            "Warn once when estimated thread cost exceeds this USD amount (0 disables)."
+        ),
+        kind=OptionKind.FLOAT,
+        default=SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+        toml_keys=("warnings", "session_cost_threshold_usd"),
+    ),
+    ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary=(
@@ -1609,6 +1630,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="MCP server names disabled by the user from the server viewer.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
+    ),
+    # --- Plugins --------------------------------------------------------
+    ConfigOption(
+        key="plugins.auto_update",
+        group="Plugins",
+        summary="Update opted-in plugins after the first prompt; disable globally.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PLUGIN_AUTO_UPDATE,
+        toml_keys=("plugins", "auto_update"),
+        empty_env_is_false=True,
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(
@@ -1730,6 +1762,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.LOG_LEVEL_DELEGATE,
         env_var=_env_vars.LOG_LEVEL,
+    ),
+    ConfigOption(
+        key="debug.dep_floor",
+        group="Debug",
+        summary="Synthesize the stale editable-dependency prompt/warning at launch.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_DEP_FLOOR,
     ),
     ConfigOption(
         key="debug.notifications",

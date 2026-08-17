@@ -7,6 +7,7 @@ from textual.content import Content
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS
 from deepagents_code.tui.widgets.startup_tip import (
+    _TIP_EXTERNAL_EDITOR,
     _TIP_SHIFT_TAB_WITH_YOLO,
     _TIP_SHIFT_TAB_WITHOUT_YOLO,
     _TIPS,
@@ -19,6 +20,12 @@ from deepagents_code.tui.widgets.startup_tip import (
 _PICK_TIP = "deepagents_code.tui.widgets.startup_tip._pick_tip"
 _CHOICES = "deepagents_code.tui.widgets.startup_tip.random.choices"
 _IS_YOLO_SWITCHER = "deepagents_code.config.is_yolo_switcher_enabled"
+
+
+@pytest.fixture(autouse=True)
+def _clear_editor_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
 
 
 class TestStartupTip:
@@ -72,6 +79,21 @@ class TestStartupTip:
         assert _TIP_SHIFT_TAB_WITHOUT_YOLO not in tips
         assert tips[_TIP_SHIFT_TAB_WITH_YOLO] == _TIPS[_TIP_SHIFT_TAB_WITH_YOLO]
 
+    def test_active_tips_personalizes_editor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", "code --wait")
+
+        tips = _active_tips(yolo_switcher_enabled=True)
+
+        assert "Press ctrl+x to compose prompts in code" in tips
+        assert _TIP_EXTERNAL_EDITOR not in tips
+
+    def test_active_tips_keeps_generic_editor_fallback(self) -> None:
+        tips = _active_tips(yolo_switcher_enabled=True)
+
+        assert _TIP_EXTERNAL_EDITOR in tips
+
     def test_active_tips_hides_yolo_when_switcher_disabled(self) -> None:
         """Disabled YOLO switcher advertises Manual/Auto only."""
         tips = _active_tips(yolo_switcher_enabled=False)
@@ -119,6 +141,10 @@ class TestStartupTip:
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command keeps a discoverability tip."""
         assert any("/copy" in tip for tip in _TIPS)
+
+    def test_chat_input_resize_tip_registered(self) -> None:
+        """The draggable chat input keeps a discoverability tip."""
+        assert any("top border" in tip and "resize" in tip for tip in _TIPS)
 
     def test_workflow_subagent_tip_registered(self) -> None:
         """The workflow trigger phrase keeps an above-baseline weight."""

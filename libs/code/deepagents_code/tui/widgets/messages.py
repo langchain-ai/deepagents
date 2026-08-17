@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeAlias
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -75,7 +75,7 @@ from deepagents_code.tui.widgets.diff import (
 from deepagents_code.unicode_security import render_with_unicode_markers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping, Sequence
 
     from rich.console import (
         Console as RichConsole,
@@ -91,6 +91,15 @@ if TYPE_CHECKING:
 
     from deepagents_code.input import MediaTracker
     from deepagents_code.theme import ThemeColors
+
+    _SummaryCall: TypeAlias = tuple[str, Mapping[str, Any]]
+    """One tool call as the summary code sees it: `(raw tool name, parsed args)`."""
+
+    _SummaryCacheKey: TypeAlias = tuple[tuple[str, str | None], ...]
+    """Opaque identity of a summary line's inputs — compare only for equality."""
+
+    _LiveSummaryKey: TypeAlias = tuple[_SummaryCacheKey, _SummaryCacheKey]
+    """The `(completed, pending)` key pair behind a cached live summary line."""
 
 logger = logging.getLogger(__name__)
 
@@ -3595,6 +3604,19 @@ class ToolCallMessage(Vertical):
         return dict(self._args)
 
     @property
+    def summary_call(self) -> _SummaryCall:
+        """This row as `(tool name, args)` for the group summary line.
+
+        Unlike `args` this does not copy: the group rebuilds its cache key from
+        every member on each spinner tick, so a copy per member per tick buys
+        nothing the caller uses. Safe because the `Mapping` return type is
+        read-only and this widget never mutates `_args` after construction — the
+        dict is the caller's, though, so do not widen this to a caller that
+        mutates.
+        """
+        return (self._tool_name, self._args)
+
+    @property
     def is_success(self) -> bool:
         """Whether the tool completed successfully."""
         return self._status == "success"
@@ -3617,9 +3639,10 @@ class ToolCallMessage(Vertical):
         A caveat is the user's only account of a change the transcript cannot
         render, and it is carried inside this row's output. A groupable tool
         (`write_file`, `delete`) is folded at mount, and the collapsed summary
-        line is built from tool names alone — so without this the caveat is
-        folded away and destroying a 5,000-line file whose contents could not be
-        read renders as `▸ Deleted 1 file`, exactly like destroying an empty one.
+        line is built from tool names and arguments, never from tool output — so
+        without this the caveat is folded away and destroying a 5,000-line file
+        whose contents could not be read renders as `▸ Deleted 1 file`, exactly
+        like destroying an empty one.
 
         Read by the group code alongside `is_failed`: a caveated row is not a
         failure, but it has the same claim on staying on screen.
@@ -3915,6 +3938,173 @@ _TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
     "task": ("Running", "Ran", "agent", "agents"),
 }
 
+# category -> tool-arg names naming the thing the call acts on, in fallback
+# order. Only categories whose summary noun is a durable object belong here:
+# their counts claim "N distinct things", so repeat calls on one target must
+# collapse (see `_tally_categories`).
+#
+# Every other category is absent on purpose. "shell", "js", "task", and "search"
+# count attempts, not objects — running one command or grepping one pattern twice
+# is genuinely two pieces of work. "web_search" phrases its own repeats
+# ("Searched the web 2 times") and "todos" carries no count at all. "ls" is
+# excluded because a listing is a snapshot, not a durable object: a group spans a
+# whole step, so an intervening write can make the second listing of one
+# directory show different contents.
+_TOOL_SUMMARY_TARGET_ARGS: dict[str, tuple[str, ...]] = {
+    "read": ("file_path", "path"),
+    "write": ("file_path", "path"),
+    "edit": ("file_path", "path"),
+    "delete": ("file_path", "path"),
+    "fetch": ("url",),
+}
+
+_PATH_TARGET_CATEGORIES = frozenset({"read", "write", "edit", "delete"})
+"""Categories from `_TOOL_SUMMARY_TARGET_ARGS` whose target is a filesystem path.
+
+Only these are normalized before comparison. Path rules are wrong for a URL:
+`http://x/a//b`, `http://x/a/` and `http://x/a` would each be judged the same
+target as a URL the server can answer differently. That undercounts, which this
+code must never do. Any category added here needs a genuine path, and any other
+target is compared exactly.
+"""
+
+
+def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
+    """Identify the object a call acts on, for repeat-call collapsing.
+
+    Args:
+        tool_name: Raw tool name for the call.
+        args: The call's parsed arguments.
+
+    Returns:
+        An identity for the target, or None when the category counts attempts
+        rather than objects, or the naming argument is missing or not a non-empty
+        string. None means "cannot be judged a repeat", so the call is always
+        counted — an argument list this code cannot read undercounts nothing.
+    """
+    category = _TOOL_SUMMARY_CATEGORY.get(tool_name, tool_name)
+    arg_names = _TOOL_SUMMARY_TARGET_ARGS.get(category)
+    if arg_names is None:
+        return None
+    for arg_name in arg_names:
+        value = args.get(arg_name)
+        if isinstance(value, str) and value:
+            if category not in _PATH_TARGET_CATEGORIES:
+                # Not a path, so compare it exactly — see
+                # `_PATH_TARGET_CATEGORIES` for why path rules undercount a URL.
+                return f"{category}:{value}"
+            # The category prefix is load-bearing: `_tally_categories` shares one
+            # `seen` set across categories, so identities must be namespaced or
+            # reading and then editing one file would read as a repeat.
+            return f"{category}:{_normalize_path_target(value)}"
+    return None
+
+
+def _normalize_path_target(value: str) -> str:
+    r"""Normalize a path using the filesystem middleware's canonical form.
+
+    Defers to `validate_path` rather than reimplementing it, so the identity is
+    exactly the string the file tools act on and cannot drift from it. Every
+    path the middleware rejects — `..` traversal, a leading `~`, a drive prefix
+    like `C:/` — is returned verbatim: a call that could not have run has no
+    canonical form, and canonicalizing one would fold it into a valid target's
+    tally. `~` and `/~` are different reads and must count as two.
+
+    Args:
+        value: The raw path string as the tool was called with it.
+
+    Returns:
+        The normalized virtual path, or `value` when the middleware rejects it.
+    """
+    from deepagents.backends.utils import validate_path
+
+    try:
+        return validate_path(value)
+    except ValueError:
+        return value
+
+
+# category -> plural noun for the operation, used to report repeat work on one
+# target alongside the target count, e.g. "Edited 1 file (3 edits)".
+#
+# Every mutating category qualifies: each call is an event that changed the tree
+# and owns a diff, so collapsing three edits of one file to a bare "Edited 1
+# file" hides work the reader wants. A group spans a whole step, so one path can
+# genuinely be mutated twice — `delete a.py`, `write_file a.py`, `delete a.py`
+# is two real deletions. "fetch" qualifies too: a repeated fetch of one URL is a
+# deliberate re-request, not pagination, and "Fetched 1 URL" for two requests
+# reads like the second one vanished. Of the categories that name a target, only
+# "read" is absent — a repeat read is usually pagination, where the count is
+# noise, so reads collapse silently.
+#
+# A category here has no effect unless it is also in `_TOOL_SUMMARY_TARGET_ARGS`:
+# without a target, `calls` can never exceed `targets`.
+_REPEAT_COUNT_NOUNS: dict[str, str] = {
+    "edit": "edits",
+    "write": "writes",
+    "delete": "deletions",
+    "fetch": "calls",
+}
+
+
+class _CategoryTally(NamedTuple):
+    """One category's contribution to a summary line."""
+
+    category: str
+    """The summary category being counted."""
+
+    rep_name: str
+    """First raw tool name seen for the category, for fallback phrasing."""
+
+    targets: int
+    """Distinct targets touched. Calls with no identifiable target each count
+    for themselves, so this never drops below the honest minimum."""
+
+    calls: int
+    """Total calls, including repeats on one target. Equals `targets` unless
+    something was touched more than once."""
+
+
+def _tally_categories(
+    calls: Sequence[_SummaryCall],
+) -> list[_CategoryTally]:
+    """Aggregate calls by category, counting distinct targets and total calls.
+
+    Both numbers are needed because the phrasing claims nouns ("Read 2 files")
+    while the work is calls: a file read twice is one file, and an edit made
+    twice is one file but two edits.
+
+    Args:
+        calls: `(raw tool name, parsed args)` for each call, in call order.
+
+    Returns:
+        One tally per category, in first-appearance order.
+    """
+    tallies: dict[str, _CategoryTally] = {}
+    # One set across all categories is safe because `_summary_target` namespaces
+    # every identity by category. That is also why the first-call branch below
+    # may ignore `repeat`: a repeat implies an earlier call in the same category,
+    # which must already have created that category's tally.
+    seen: set[str] = set()
+    for tool_name, args in calls:
+        category = _TOOL_SUMMARY_CATEGORY.get(tool_name, tool_name)
+        target = _summary_target(tool_name, args)
+        repeat = target is not None and target in seen
+        if target is not None:
+            seen.add(target)
+        current = tallies.get(category)
+        if current is None:
+            tallies[category] = _CategoryTally(
+                category=category, rep_name=tool_name, targets=1, calls=1
+            )
+            continue
+        tallies[category] = current._replace(
+            targets=current.targets + (0 if repeat else 1),
+            calls=current.calls + 1,
+        )
+    return list(tallies.values())
+
+
 _DIFF_HEADER_CATEGORIES = frozenset({"write", "edit", "delete"})
 """Summary categories whose past verb heads a `DiffMessage`.
 
@@ -3951,19 +4141,21 @@ def _diff_header_verb(tool_name: str | None) -> str:
 _Tense = Literal["present", "past"]
 
 
-def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -> str:
-    """Phrase a single count segment, e.g. "Read 2 files" / "Reading 2 files".
+def _summary_segment(tally: _CategoryTally, tense: _Tense) -> str:
+    """Phrase one category's segment, e.g. "Read 2 files" / "Reading 2 files".
+
+    The lead noun counts distinct targets. When a category in
+    `_REPEAT_COUNT_NOUNS` repeated work on one of them, the operation count
+    trails in parentheses ("Edited 1 file (3 edits)") so neither number is lost.
 
     Args:
-        category: The summary category the tools were bucketed into.
-        count: How many tools fell into this category.
-        tool_name: A representative raw tool name, used to phrase categories
-            that have no dedicated entry in `_TOOL_SUMMARY_PHRASES`.
+        tally: The category's distinct-target and total-call counts.
         tense: Whether to phrase the segment in the present or past tense.
 
     Returns:
-        The phrased segment for this category, count, and tense.
+        The phrased segment for this category and tense.
     """
+    category, tool_name, count = tally.category, tally.rep_name, tally.targets
     if category == "web_search":
         base = "Searching the web" if tense == "present" else "Searched the web"
         return base if count == 1 else f"{base} {count} times"
@@ -3977,40 +4169,39 @@ def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -
         present, past, singular, plural = phrase
     verb = present if tense == "present" else past
     noun = singular if count == 1 else plural
-    return f"{verb} {count} {noun}"
+    segment = f"{verb} {count} {noun}"
+    repeat_noun = _REPEAT_COUNT_NOUNS.get(category)
+    if repeat_noun is not None and tally.calls > count:
+        # `calls > count` implies at least two calls, so the noun is always
+        # plural.
+        segment += f" ({tally.calls} {repeat_noun})"
+    return segment
 
 
-def summarize_tool_group(tool_names: list[str], *, tense: _Tense = "past") -> str:
+def summarize_tool_group(
+    calls: Sequence[_SummaryCall], *, tense: _Tense = "past"
+) -> str:
     """Build a one-line summary of a run of tool calls.
 
     Aggregates by category in first-appearance order and lowercases the lead
-    word of every segment after the first, e.g.
-    `["read_file", "read_file", "execute"]` -> "Read 2 files, ran 1 shell command".
+    word of every segment after the first, e.g. two `read_file` calls on
+    different paths plus an `execute` -> "Read 2 files, ran 1 shell command".
+
+    Takes args, not just names, because the counts claim distinct nouns: without
+    the argument naming each call's target, one file read twice is
+    indistinguishable from two files read once.
 
     Args:
-        tool_names: Raw tool names for the run, in call order.
+        calls: `(raw tool name, parsed args)` for each call, in call order.
         tense: Whether to phrase the summary in the present or past tense.
 
     Returns:
         The aggregated one-line summary string in the requested tense.
     """
-    counts: dict[str, int] = {}
-    order: list[str] = []
-    rep_name: dict[str, str] = {}
-    for name in tool_names:
-        category = _TOOL_SUMMARY_CATEGORY.get(name, name)
-        if category not in counts:
-            counts[category] = 0
-            order.append(category)
-            rep_name[category] = name
-        counts[category] += 1
-
-    segments = [
-        _summary_segment(cat, counts[cat], rep_name[cat], tense) for cat in order
-    ]
-    if not segments:
+    tallies = _tally_categories(calls)
+    if not tallies:
         return "Running tools" if tense == "present" else "Ran tools"
-    return _join_segments(segments)
+    return _join_segments([_summary_segment(tally, tense) for tally in tallies])
 
 
 def _join_segments(segments: list[str]) -> str:
@@ -4020,8 +4211,8 @@ def _join_segments(segments: list[str]) -> str:
         segments: Pre-phrased segments in display order.
 
     Returns:
-        The segments joined with ", ", e.g. `["Ran 2 files", "Running 1 agent"]`
-        -> "Ran 2 files, running 1 agent".
+        The segments joined with ", ", e.g. `["Read 2 files", "Running 1 agent"]`
+        -> "Read 2 files, running 1 agent".
     """
     first, *rest = segments
     lowered = [f"{seg[0].lower()}{seg[1:]}" if seg else seg for seg in rest]
@@ -4029,31 +4220,61 @@ def _join_segments(segments: list[str]) -> str:
 
 
 def summarize_live_tool_group(
-    completed_names: list[str], pending_names: list[str]
+    completed_calls: Sequence[_SummaryCall],
+    pending_calls: Sequence[_SummaryCall],
 ) -> str:
     """Summarize an in-flight run, mixing past and present tense.
 
     Completed calls are phrased in the past tense so the work already done in
     the step stays visible, and the still-running calls are phrased in the
-    present tense, e.g. `["execute", "execute"]` completed plus `["task"]`
-    pending -> "Ran 2 shell commands, running 1 agent".
+    present tense, e.g. two completed `execute` calls plus a pending `task` ->
+    "Ran 2 shell commands, running 1 agent".
+
+    Each half is tallied independently, so a file whose second read is still
+    running is counted in both — collapsing across the split would drop it from
+    the present-tense half and the line would stop reporting the step as
+    reading.
 
     Args:
-        completed_names: Raw tool names that have finished successfully, in
-            call order. Failed/rejected calls are evicted before this runs.
-        pending_names: Raw tool names still pending or running, in call order.
+        completed_calls: `(raw tool name, parsed args)` for calls that finished
+            successfully, in call order. Failed/rejected calls are evicted
+            before this runs.
+        pending_calls: `(raw tool name, parsed args)` for calls still pending or
+            running, in call order.
 
     Returns:
-        The combined one-line summary. Empty when neither list has members.
+        The combined one-line summary. Empty when neither half has members.
     """
     segments: list[str] = []
-    if completed_names:
-        segments.append(summarize_tool_group(completed_names, tense="past"))
-    if pending_names:
-        segments.append(summarize_tool_group(pending_names, tense="present"))
+    if completed_calls:
+        segments.append(summarize_tool_group(completed_calls, tense="past"))
+    if pending_calls:
+        segments.append(summarize_tool_group(pending_calls, tense="present"))
     if not segments:
         return ""
     return _join_segments(segments)
+
+
+def _summary_cache_key(
+    calls: Sequence[_SummaryCall],
+) -> _SummaryCacheKey:
+    """Build a cache key capturing everything a summary line depends on.
+
+    The line is a function of each call's `(name, target)`, so the key is too.
+    A names-only key would in fact be sufficient today — every membership
+    mutation, append and eviction alike, clears the cache outright, so two
+    cached states cannot share a name list while differing in targets. Deriving
+    the key from the summarizer's real inputs instead of relying on that
+    argument keeps it correct if grouping ever changes. Over-invalidation is the
+    only cost: reordering calls within a category rebuilds identical text.
+
+    Args:
+        calls: `(raw tool name, parsed args)` for each call, in call order.
+
+    Returns:
+        A hashable key, order-sensitive to match segment ordering.
+    """
+    return tuple((name, _summary_target(name, args)) for name, args in calls)
 
 
 _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS = "-tool-group-collapsed-accessory"
@@ -4159,11 +4380,11 @@ class ToolGroupSummary(Static):
         # every spinner tick). None means "recompute on next render".
         self._present_text: str | None = None
         self._past_text: str | None = None
-        # The (completed, pending) tool-name tuples the cached live line was
-        # built from. The line mixes finished (past tense) and running (present
-        # tense) members, so it must be rebuilt whenever a member finishes, not
-        # just when membership grows.
-        self._present_key: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        # The (completed, pending) `_summary_cache_key` pair the cached live line
+        # was built from. The line mixes finished (past tense) and running
+        # (present tense) members, so it must be rebuilt whenever a member
+        # finishes, not just when membership grows.
+        self._present_key: _LiveSummaryKey | None = None
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
@@ -4346,8 +4567,9 @@ class ToolGroupSummary(Static):
         Two reasons qualify. A non-success (errored, rejected, skipped) must stay
         visible so a failure is not summarized away. So must a success whose
         output opens with a display caveat: the summary is built from tool names
-        alone, so folding one hides the only statement that the change could not
-        be shown — see `ToolCallMessage.has_display_caveat`.
+        and arguments, never from tool output, so folding one hides the only
+        statement that the change could not be shown — see
+        `ToolCallMessage.has_display_caveat`.
         """
         failed = [t for t in self._tools if t.is_failed or t.has_display_caveat]
         if not failed:
@@ -4456,9 +4678,11 @@ class ToolGroupSummary(Static):
         if in_progress is None:
             in_progress = self._in_progress()
         if not self._finalized and in_progress:
-            pending = [tool.tool_name for tool in self._tools if tool.is_pending]
-            completed = [tool.tool_name for tool in self._tools if not tool.is_pending]
-            key = (tuple(completed), tuple(pending))
+            # Tallied per bucket, not across both: a file whose second read is
+            # still in flight must stay visible as being read.
+            pending = [t.summary_call for t in self._tools if t.is_pending]
+            completed = [t.summary_call for t in self._tools if not t.is_pending]
+            key = (_summary_cache_key(completed), _summary_cache_key(pending))
             summary_changed = self._present_text is None or key != self._present_key
             if summary_changed:
                 self._present_text = summarize_live_tool_group(completed, pending)
@@ -4477,7 +4701,7 @@ class ToolGroupSummary(Static):
             )
             if self._past_text is None:
                 self._past_text = summarize_tool_group(
-                    [tool.tool_name for tool in self._tools], tense="past"
+                    [tool.summary_call for tool in self._tools], tense="past"
                 )
             self.update(Content(f"{mark} {self._past_text}"), layout=layout)
 
@@ -4530,6 +4754,7 @@ class DiffMessage(Static):
         stats: DiffStats | None = None,
         outcome: DiffOutcome = "shown",
         show_caveat: bool = True,
+        show_numbers: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4559,6 +4784,13 @@ class DiffMessage(Static):
                 guaranteed: it can never be folded into a group, so both would
                 render adjacent. The caller owns that judgement because this
                 widget cannot see what else is mounted.
+            show_numbers: Whether file-relative line numbers may be rendered.
+                Diffs whose numbers are not file-relative remain unnumbered.
+                The caller owns this judgement: a live `edit_file` diff is
+                computed from the full before/after file contents and has
+                file-relative numbers, while a resumed-thread `edit_file`
+                diff is rebuilt from `old_string`/`new_string` fragments and
+                does not.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4576,6 +4808,7 @@ class DiffMessage(Static):
         self._stats = stats
         self._outcome = outcome
         self._show_caveat = show_caveat
+        self._show_numbers = show_numbers
 
     @property
     def renders_caveat(self) -> bool:
@@ -4661,6 +4894,7 @@ class DiffMessage(Static):
                     path=self._file_path,
                     before=self._before,
                     after=self._after,
+                    show_numbers=self._show_numbers,
                 )
 
     def _recount(self) -> DiffStats | None:

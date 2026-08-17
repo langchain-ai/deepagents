@@ -146,8 +146,9 @@ Screen {
 
 /* Status bar */
 #status-bar {
-    height: 1;
+    height: 2;
     dock: bottom;
+    padding: 0;
 }
 
 /* Tool approval widgets */
@@ -370,13 +371,20 @@ ToolCallMessage.-ascii:hover {
     margin-bottom: 1;
 }
 
-.ask-user-menu .ask-user-question-active {
+.ask-user-menu .ask-user-question-inactive {
+    opacity: 0.5;
+}
+
+/* Multi-question prompts mark the active question with a left border;
+inactive questions keep the same total left inset so text does not shift
+horizontally when focus moves between questions. Single-question prompts
+stay borderless and flush-left. */
+.ask-user-menu-multi .ask-user-question-active {
     border-left: thick $success;
     padding-left: 1;
 }
 
-.ask-user-menu .ask-user-question-inactive {
-    opacity: 0.5;
+.ask-user-menu-multi .ask-user-question-inactive {
     padding-left: 2;
 }
 

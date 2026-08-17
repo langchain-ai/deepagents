@@ -803,8 +803,9 @@ class ExecuteOffloadResult:
     """Whether the output was left at the capture path.
 
     When `True`, `response.output` holds only a preview of the output and the
-    full output lives at the capture path on the sandbox filesystem. When
-    `False`, `response.output` is the complete output.
+    full output lives at the capture path on the sandbox filesystem.
+
+    When `False`, `response.output` is the complete output.
     """
 
     response: ExecuteResponse

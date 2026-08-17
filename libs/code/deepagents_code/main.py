@@ -271,10 +271,19 @@ def _resume_term_program() -> str | None:
         The environment value when it is set and fully printable, else `None`.
         A value carrying control characters is dropped rather than stripped:
         stripping would both write raw escape sequences into teardown output
-        and name a terminal the environment never actually contained.
+        and name a terminal the environment never actually contained. Native
+        Windows shells also return `None`: VS Code and WezTerm set
+        `TERM_PROGRAM` on every platform, so its presence under `win32` does
+        not imply a POSIX shell, and the `VAR=value` prefix would be executed
+        as a command by `cmd.exe`/PowerShell. POSIX markers (`SHELL` from
+        git-bash/MSYS, `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
     """
     raw = os.environ.get("TERM_PROGRAM", "").strip()
     if not raw or not raw.isprintable():
+        return None
+    if sys.platform == "win32" and not any(
+        os.environ.get(marker) for marker in ("SHELL", "MSYSTEM", "WSL_DISTRO_NAME")
+    ):
         return None
     return raw
 
@@ -339,9 +348,10 @@ def _render_teardown_thread_hints(
     # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
     # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
     # the bare command would resume without it. Carry it as an env prefix to
-    # keep the line pasteable as-is. POSIX syntax is safe here: on Windows the
-    # variable is only set under POSIX shells (git-bash, WSL), while native
-    # `cmd.exe`/PowerShell leave it unset, so no prefix is emitted there.
+    # keep the line pasteable as-is. The prefix uses POSIX syntax, so
+    # `_resume_term_program` withholds it on native Windows, where terminals
+    # (VS Code, WezTerm) set the variable even under `cmd.exe`/PowerShell and
+    # those shells cannot parse a `VAR=value` command prefix.
     term_program = _resume_term_program()
     if term_program is not None:
         resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"

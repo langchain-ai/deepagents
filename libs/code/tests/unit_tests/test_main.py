@@ -1891,6 +1891,9 @@ class TestRenderTeardownThreadHints:
                 os.environ,
                 {INVOKED_AS: launch_name, "TERM_PROGRAM": term_program},
             ),
+            # These cases describe POSIX behavior; pin the platform so they do
+            # not take the native-Windows path when run on a Windows machine.
+            patch.object(sys, "platform", "darwin"),
         ):
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
@@ -1995,6 +1998,65 @@ class TestRenderTeardownThreadHints:
         assert "TERM_PROGRAM" not in output
         assert "\x1b" not in output
         assert "dcode -r test123" in output
+
+    def _render_on_platform(
+        self,
+        platform: str,
+        *,
+        extra_env: dict[str, str] | None = None,
+    ) -> str:
+        """Render the resume hint as if running on `platform`.
+
+        `patch.dict` only merges, so POSIX markers the developer's own shell
+        exports (`SHELL`, at minimum) are deleted first to make the simulated
+        native Windows environment hermetic.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+        buffer = StringIO()
+        console = Console(file=buffer, width=200)
+        invoked_name.cache_clear()
+        env = {INVOKED_AS: "dcode", "TERM_PROGRAM": "vscode", **(extra_env or {})}
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
+            patch(
+                "deepagents_code.config.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch.object(sys, "platform", platform),
+            patch.dict(os.environ, env),
+        ):
+            for marker in ("SHELL", "MSYSTEM", "WSL_DISTRO_NAME"):
+                if marker not in env:
+                    os.environ.pop(marker, None)
+            _render_teardown_thread_hints(console, "test123", return_code=0)
+        return buffer.getvalue()
+
+    def test_resume_hint_omits_prefix_on_native_windows(self) -> None:
+        """Native `cmd.exe`/PowerShell cannot parse a POSIX `VAR=value` prefix.
+
+        VS Code and WezTerm set `TERM_PROGRAM` on every platform, so its
+        presence under `win32` says nothing about the user's shell.
+        """
+        output = self._render_on_platform("win32")
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            {"SHELL": "C:\\Program Files\\Git\\bin\\bash.exe"},
+            {"MSYSTEM": "MINGW64"},
+            {"WSL_DISTRO_NAME": "Ubuntu"},
+        ],
+    )
+    def test_resume_hint_keeps_prefix_on_windows_posix_shells(
+        self, marker: dict[str, str]
+    ) -> None:
+        """git-bash/MSYS/WSL expose POSIX markers, so the prefix is valid there."""
+        output = self._render_on_platform("win32", extra_env=marker)
+
+        assert "TERM_PROGRAM=vscode dcode -r test123" in output
 
     def test_prints_langsmith_link_when_available(self) -> None:
         """A configured LangSmith URL is shown alongside the resume hint."""

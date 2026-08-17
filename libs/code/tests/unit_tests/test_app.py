@@ -34408,6 +34408,68 @@ class TestChatScrollAnchoring:
             assert not chat.is_anchored
 
 
+class TestResumeScrollPosition:
+    """Regression coverage for resumed transcript positioning."""
+
+    async def test_history_load_scrolls_to_bottom_after_layout(self) -> None:
+        """A resumed transcript should open on its newest message.
+
+        Two independent properties are pinned, because polling alone cannot
+        distinguish the implementations:
+
+        1. The view ends up at the bottom. `scroll_end()` defers the
+           `max_scroll_y` read via `call_after_refresh`, so the scroll lands a
+           few refreshes after `_load_thread_history` returns -- hence the
+           bounded poll. A fixed number of `pause()` calls is racy under CPU
+           contention (two is not enough on a loaded box). Passing
+           `immediate=True` fails here: it reads pre-layout bounds and strands
+           the view short of the bottom, which no amount of polling corrects.
+        2. No timer is used to get there. The poll spans enough wall clock for a
+           fixed-delay `set_timer` to fire, so property 1 would also pass
+           against the timer implementation that caused the top-flash bug. The
+           `set_timer` spy is what actually rules that out.
+
+        The message count and viewport must keep the transcript overflowing for
+        these assertions to mean anything -- `max_scroll_y > 0` guards that.
+        """
+        app = DeepAgentsApp()
+        payload = _ThreadHistoryPayload(
+            messages=[
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"message {index}",
+                    id=f"resume-message-{index}",
+                )
+                for index in range(20)
+            ],
+            context_tokens=0,
+            model_spec="",
+        )
+
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.pause()
+            with patch.object(app, "set_timer", wraps=app.set_timer) as set_timer:
+                await app._load_thread_history(
+                    thread_id="resume-scroll", preloaded_payload=payload
+                )
+            assert set_timer.call_count == 0, (
+                "resume must reach the bottom via a refresh-deferred scroll, "
+                "not a fixed-delay timer"
+            )
+
+            chat = app.query_one("#chat", _ChatScroll)
+            for _ in range(20):
+                await pilot.pause()
+                if chat.max_scroll_y > 0 and chat.scroll_y == chat.max_scroll_y:
+                    break
+
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == chat.max_scroll_y
+            # Resume reaches the bottom via a one-shot scroll, not bottom-follow
+            # (see `DeepAgentsApp.on_mount`).
+            assert not chat.is_anchored
+
+
 class TestWelcomeBannerLiveUpdates:
     """The banner starts top-aligned and mirrors live model/cwd changes.
 

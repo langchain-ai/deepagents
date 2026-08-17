@@ -1190,6 +1190,51 @@ class TestAskUserMenu:
                 "**2.** Color? *(required)*",
             ]
 
+    async def test_multi_question_menu_marks_active_question_with_border(self) -> None:
+        """Multi-question menus restore the side line on the active question.
+
+        The `ask-user-menu-multi` class on the menu gates the border in CSS
+        (`.ask-user-menu-multi .ask-user-question-active`), so the highlight
+        appears only when there are 2+ questions.
+        """
+        app = _AskUserTestApp(
+            [
+                {"question": "Name?", "type": "text"},
+                {"question": "Color?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert menu.has_class("ask-user-menu-multi")
+
+            active, inactive = menu._question_widgets
+            assert active.has_class("ask-user-question-active")
+            assert not active.has_class("ask-user-question-inactive")
+            assert inactive.has_class("ask-user-question-inactive")
+            assert not inactive.has_class("ask-user-question-active")
+
+            # The border applies only to the active question; the inactive one
+            # carries matching padding instead so the two stay left-aligned.
+            border, _ = active.styles.border_left
+            assert border == "thick"
+            assert active.styles.padding.left != inactive.styles.padding.left
+
+    async def test_single_question_menu_has_no_active_border(self) -> None:
+        """Single-question prompts stay flat: no multi class, no side border."""
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert not menu.has_class("ask-user-menu-multi")
+
+            question = menu._question_widgets[0]
+            assert question.has_class("ask-user-question-active")
+            border, _ = question.styles.border_left
+            assert not border
+
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text", "required": True}])

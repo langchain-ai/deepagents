@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from deepagents_code.app import DeepAgentsApp, TextualSessionState
+from textual.widget import MountError
+
+from deepagents_code.app import (
+    DeepAgentsApp,
+    TextualSessionState,
+    _ThreadsResumeTarget,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestSessionStatePreviousThread:
@@ -49,24 +59,46 @@ class TestHandleThreadsCommand:
 
     async def test_resume_flag_resolves_and_resumes(self) -> None:
         app = _make_app()
-        app._resolve_threads_resume_target = AsyncMock(return_value="thread-x")  # ty: ignore
-        await app._handle_threads_command("/threads -r")
+        target = _ThreadsResumeTarget("thread-x", "agent")
+        app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads -r")
+        await schedule.call_args.args[0]
         app._resolve_threads_resume_target.assert_awaited_once_with(None)  # ty: ignore
         app._resume_thread.assert_awaited_once_with("thread-x")  # ty: ignore
         app._show_thread_selector.assert_not_awaited()  # ty: ignore
 
     async def test_resume_specific_id(self) -> None:
         app = _make_app()
-        app._resolve_threads_resume_target = AsyncMock(return_value="abc")  # ty: ignore
-        await app._handle_threads_command("/threads -r abc")
+        target = _ThreadsResumeTarget("abc", "agent")
+        app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads -r abc")
+        await schedule.call_args.args[0]
         app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
         app._resume_thread.assert_awaited_once_with("abc")  # ty: ignore
 
     async def test_resume_long_form_flag(self) -> None:
         app = _make_app()
-        app._resolve_threads_resume_target = AsyncMock(return_value="abc")  # ty: ignore
+        target = _ThreadsResumeTarget("abc", "agent")
+        app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
         await app._handle_threads_command("/threads --resume abc")
         app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
+
+    async def test_cross_agent_resume_schedules_confirmation(self) -> None:
+        """A cross-agent target is confirmed off Textual's message pump."""
+        app = _make_app()
+        target = _ThreadsResumeTarget("abc", "researcher")
+        app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
+
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads -r")
+
+        app._resume_thread.assert_not_awaited()  # ty: ignore
+        schedule.assert_called_once()
+        assert schedule.call_args.kwargs == {"context": "threads-resume:abc"}
+        continuation = schedule.call_args.args[0]
+        continuation.close()
 
     async def test_no_resume_when_target_none(self) -> None:
         app = _make_app()
@@ -108,9 +140,9 @@ class TestResolveResumeTarget:
             ),
         ):
             target = await app._resolve_threads_resume_target("abc")
-        assert target == "abc"
+        assert target == _ThreadsResumeTarget("abc", "agent")
 
-    async def test_specific_id_for_another_agent_is_rejected(self) -> None:
+    async def test_specific_id_for_another_agent_resolves_with_owner(self) -> None:
         app = _make_app()
         app._assistant_id = "coder"
         with (
@@ -124,9 +156,8 @@ class TestResolveResumeTarget:
             ),
         ):
             target = await app._resolve_threads_resume_target("abc")
-        assert target is None
-        message = app._mount_message.await_args.args[0]  # ty: ignore
-        assert "belongs to agent 'researcher'" in str(message._content)
+        assert target == _ThreadsResumeTarget("abc", "researcher")
+        app._mount_message.assert_not_awaited()  # ty: ignore
 
     async def test_specific_id_missing_notifies(self) -> None:
         app = _make_app()
@@ -217,9 +248,9 @@ class TestResolveResumeTarget:
             ),
         ):
             target = await app._resolve_threads_resume_target(None)
-        assert target == "prev"
+        assert target == _ThreadsResumeTarget("prev", "agent")
 
-    async def test_bare_skips_previous_thread_from_another_agent(self) -> None:
+    async def test_bare_preserves_previous_thread_from_another_agent(self) -> None:
         app = _make_app()
         app._assistant_id = "coder"
         state = TextualSessionState(thread_id="cur")
@@ -240,11 +271,8 @@ class TestResolveResumeTarget:
             ) as most_recent,
         ):
             target = await app._resolve_threads_resume_target(None)
-        assert target == "coder-thread"
-        most_recent.assert_awaited_once_with(
-            "coder",
-            exclude_thread_id="cur",
-        )
+        assert target == _ThreadsResumeTarget("research-thread", "researcher")
+        most_recent.assert_not_awaited()
 
     async def test_bare_falls_back_to_most_recent(self) -> None:
         app = _make_app()
@@ -261,7 +289,7 @@ class TestResolveResumeTarget:
             ) as most_recent,
         ):
             target = await app._resolve_threads_resume_target(None)
-        assert target == "recent"
+        assert target == _ThreadsResumeTarget("recent", "coder")
         most_recent.assert_awaited_once_with(
             "coder",
             exclude_thread_id="cur",
@@ -290,7 +318,7 @@ class TestResolveResumeTarget:
             ) as most_recent,
         ):
             target = await app._resolve_threads_resume_target(None)
-        assert target == "recent"
+        assert target == _ThreadsResumeTarget("recent", "coder")
         # The deleted previous never reaches the ownership check.
         thread_agent.assert_not_awaited()
         most_recent.assert_awaited_once_with("coder", exclude_thread_id="cur")
@@ -348,3 +376,158 @@ class TestResolveResumeTarget:
             target = await app._resolve_threads_resume_target(None)
         assert target is None
         app._mount_message.assert_awaited_once()  # ty: ignore
+
+
+class TestCrossAgentResume:
+    """Confirmation and orchestration for a cross-agent resume target."""
+
+    async def test_confirmation_switches_agent_and_exact_thread(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Accepting performs one combined, session-only transition."""
+        app = _make_app()
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._server_proc = MagicMock()
+        (tmp_path / "researcher").mkdir()
+        payload = MagicMock()
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore
+        app._fetch_thread_history_data = AsyncMock(return_value=payload)  # ty: ignore
+        app._offer_thread_cwd_switch = AsyncMock(return_value="continue")  # ty: ignore
+        app._restart_server_for_agent_swap = AsyncMock(return_value=True)  # ty: ignore
+
+        with patch("deepagents_code.config.settings") as settings:
+            settings.user_deepagents_dir = tmp_path
+            await app._confirm_then_resume_cross_agent_thread(
+                _ThreadsResumeTarget("research-thread", "researcher")
+            )
+
+        app._fetch_thread_history_data.assert_awaited_once_with("research-thread")  # ty: ignore
+        app._offer_thread_cwd_switch.assert_awaited_once_with(  # ty: ignore
+            "research-thread",
+            restart_server=False,
+            abort="thread_switch",
+        )
+        app._restart_server_for_agent_swap.assert_awaited_once_with(  # ty: ignore
+            "researcher",
+            resume_thread_id="research-thread",
+            preloaded_payload=payload,
+            persist_default_agent=False,
+        )
+
+    async def test_cancel_keeps_current_session_untouched(self, tmp_path: Path) -> None:
+        """Esc exits before history, cwd, or server state is mutated."""
+        app = _make_app()
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._server_proc = MagicMock()
+        (tmp_path / "researcher").mkdir()
+        app._push_screen_wait = AsyncMock(return_value="cancel")  # ty: ignore
+        fetch = AsyncMock()
+        app._fetch_thread_history_data = fetch  # ty: ignore
+
+        with patch("deepagents_code.config.settings") as settings:
+            settings.user_deepagents_dir = tmp_path
+            await app._confirm_then_resume_cross_agent_thread(
+                _ThreadsResumeTarget("research-thread", "researcher")
+            )
+
+        fetch.assert_not_awaited()
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "canceled" in str(message._content)
+
+    async def test_remote_session_gets_relaunch_instruction(self) -> None:
+        """Remote sessions receive an actionable fallback instead of a modal."""
+        app = _make_app()
+        app._server_kwargs = None
+        app._server_proc = None
+
+        await app._confirm_then_resume_cross_agent_thread(
+            _ThreadsResumeTarget("research-thread", "researcher")
+        )
+
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        content = str(message._content)
+        assert "cannot switch its remote server" in content
+        assert "dcode -r research-thread" in content
+
+
+class TestPreviousThreadHintOwnership:
+    """The advertised resume action must be executable in this session."""
+
+    async def test_local_cross_agent_hint_is_shown(self) -> None:
+        """Owned local servers can honor the hint through confirmation."""
+        app = _make_app()
+        app._assistant_id = "coder"
+        app._server_kwargs = {"assistant_id": "coder"}
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="researcher"),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            hinted = await app._mount_previous_thread_hint("research-thread")
+
+        app._mount_message.assert_awaited_once()  # ty: ignore
+        schedule.assert_called_once()
+        # The agent swap keys its relaunch fallback off this, so a hint that
+        # mounts must report `True` or the user gets both hints at once.
+        assert hinted is True
+
+    async def test_remote_cross_agent_hint_is_suppressed(self) -> None:
+        """Remote sessions do not promise an agent restart they cannot do."""
+        app = _make_app()
+        app._assistant_id = "coder"
+        app._server_kwargs = None
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="researcher"),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            hinted = await app._mount_previous_thread_hint("research-thread")
+
+        app._mount_message.assert_not_awaited()  # ty: ignore
+        schedule.assert_not_called()
+        # Reporting `False` is what lets the agent swap fall back to the
+        # relaunch command, so a remote session is not left with no way back.
+        assert hinted is False
+
+    async def test_unmountable_hint_reports_failure(self) -> None:
+        """A hint that raised while mounting has not been shown.
+
+        Reporting success here would suppress the agent swap's relaunch
+        fallback, leaving the user with no way back at all.
+        """
+        app = _make_app()
+        app._assistant_id = "coder"
+        app._server_kwargs = {"assistant_id": "coder"}
+        app._mount_message = AsyncMock(  # ty: ignore
+            side_effect=MountError("container is detached")
+        )
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="coder"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            hinted = await app._mount_previous_thread_hint("research-thread")
+
+        assert hinted is False

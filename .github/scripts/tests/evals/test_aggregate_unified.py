@@ -1339,3 +1339,221 @@ def test_main_with_usage_json_writes_usage_table(tmp_path: Path, monkeypatch):
     assert combined["usage_available"] is True
     assert combined["rows"][0]["usage"]["completed_totals"]["cost_usd"] == 0.3
     assert "## Token usage and cost" in step.read_text()
+
+
+# --- graded ("continuous") categories -------------------------------------------------
+
+
+def test_read_leaf_exposes_graded_scoring_and_macro(tmp_path):
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    summary = _summary("m", 1, 0.0, 0.378, 2, 0, category="research")
+    summary["scoring"] = "continuous"
+    summary["macro_avg@1"] = 0.42
+    (leaf / "summary.json").write_text(json.dumps(summary))
+
+    out = au.read_leaf(leaf, expected_rollouts=1)
+    assert out["scoring"] == "continuous"
+    assert out["macro_avg_at_k"] == 0.42
+    # pass@K is carried through unchanged; it is 0.0 because nothing scored a perfect 1.
+    assert out["pass_at_k"] == 0.0
+    assert out["avg_at_k"] == 0.378
+
+
+def test_read_leaf_defaults_scoring_to_binary_without_the_keys(tmp_path):
+    # Summaries written before `scoring`/`macro_avg@K` existed must still read cleanly.
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "summary.json").write_text(json.dumps(_summary("m", 1, 1.0, 1.0, 1, 1)))
+
+    out = au.read_leaf(leaf, expected_rollouts=1)
+    assert out["scoring"] == "binary"
+    assert out["macro_avg_at_k"] is None
+
+
+def test_render_markdown_labels_a_graded_category_by_its_means():
+    combined = {
+        "categories": ["context", "research"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "incomplete": False,
+                "categories": {
+                    "context": {"pass_at_k": 0.5, "avg_at_k": 0.4, "tasks": 2},
+                    "research": {
+                        "pass_at_k": 0.0,
+                        "avg_at_k": 0.378,
+                        "macro_avg_at_k": 0.42,
+                        "tasks": 2,
+                    },
+                },
+                "macro": {"pass_at_k": 0.25, "avg_at_k": 0.389},
+                "micro": {"pass_at_k": 0.25, "avg_at_k": 0.389},
+            }
+        ],
+        "issues": [],
+    }
+    md = au.render_markdown(combined, 1)
+    # The graded column is labelled and rendered as micro/macro mean reward, so its
+    # structural pass@1 of 0.000 is never shown as a result.
+    assert "research avg@1/macro@1" in md
+    assert "research pass@1/avg@1" not in md
+    assert "0.378/0.420" in md
+    # The pass/fail category keeps its original labelling.
+    assert "context pass@1/avg@1" in md
+    assert "0.500/0.400" in md
+    # And the Overall pass@K caveat is stated rather than left for the reader to hit.
+    assert "Overall pass@1" in md
+
+
+def test_read_leaf_rejects_an_unusable_component(tmp_path):
+    # summary.json comes from a CI artifact whose producer ran inside a sandbox, so this
+    # reader is the last gate before a number reaches a scorecard.
+    for bad in (
+        {"pipe|name": 0.5},
+        {"factuality": 1.5},
+        {"factuality": -0.1},
+        {"factuality": "abc"},
+        {"factuality": True},
+        [("factuality", 0.5)],
+    ):
+        leaf = tmp_path / f"leaf{abs(hash(str(bad)))}"
+        leaf.mkdir()
+        summary = _summary("m", 1, 0.0, 0.4, 1, 0, category="research")
+        summary["components"] = bad
+        (leaf / "summary.json").write_text(json.dumps(summary))
+        with pytest.raises(au._LeafSummaryError):
+            au.read_leaf(leaf, expected_rollouts=1)
+
+
+def test_render_markdown_shows_score_components():
+    combined = {
+        "categories": ["research"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "incomplete": False,
+                "categories": {
+                    "research": {
+                        "pass_at_k": 0.0,
+                        "avg_at_k": 0.376,
+                        "macro_avg_at_k": 0.376,
+                        "components": {"factuality": 0.617, "insights_recall": 0.381},
+                        "tasks": 30,
+                    }
+                },
+                "macro": {"pass_at_k": 0.0, "avg_at_k": 0.376},
+                "micro": {"pass_at_k": 0.0, "avg_at_k": 0.376},
+            }
+        ],
+        "issues": [],
+    }
+    md = au.render_markdown(combined, 1)
+
+    assert "### Score components" in md
+    assert "| factuality | 0.617 |" in md
+    assert "| insights_recall | 0.381 |" in md
+    # Without this caveat a reader recombining 0.617/0.381 gets a number that is not the
+    # headline and reads it as an arithmetic bug.
+    assert "do **not** recombine" in md
+
+
+def test_render_markdown_omits_the_section_without_components():
+    combined = {
+        "categories": ["context"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "incomplete": False,
+                "categories": {
+                    "context": {"pass_at_k": 0.5, "avg_at_k": 0.4, "components": {}, "tasks": 2}
+                },
+                "macro": {"pass_at_k": 0.5, "avg_at_k": 0.4},
+                "micro": {"pass_at_k": 0.5, "avg_at_k": 0.4},
+            }
+        ],
+        "issues": [],
+    }
+    assert "### Score components" not in au.render_markdown(combined, 1)
+
+
+def test_radar_plots_a_graded_category_on_avg_at_k():
+    # `research` is scored on a continuous reward, so its pass@K is 0.000 by construction.
+    # Plotting that would pin the axis at the origin for every model and read as a total
+    # failure -- on the default scorecard, since research is in the default category set.
+    combined = {
+        "categories": ["autonomous", "research"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "categories": {
+                    "autonomous": {"pass_at_k": 0.5, "avg_at_k": 0.4},
+                    "research": {"pass_at_k": 0.0, "avg_at_k": 0.52},
+                },
+                "macro": {"pass_at_k": 0.25, "avg_at_k": 0.46},
+                "micro": {"pass_at_k": 0.25, "avg_at_k": 0.46},
+                "incomplete": False,
+            }
+        ],
+    }
+    assert au.radar_results(combined)[0]["scores"] == {"autonomous": 0.5, "research": 0.52}
+
+
+def test_a_failed_graded_leaf_does_not_outrank_one_that_succeeded():
+    # The macro is a mean over the leaves that produced results, so ranking on pass@K meant
+    # a row whose research leaf SUCCEEDED was averaged over that leaf's structural 0 --
+    # research contributes 0 to a pass@K macro no matter how well it scored -- while a row
+    # whose leaf FAILED was averaged over the remaining categories only. Failing research
+    # therefore paid better than completing it.
+    #
+    # Ranking on avg@K removes the construction artifact: research's avg@K is a real score.
+    # It does not remove the general property that an absent leaf leaves the mean, which
+    # applies to every category equally and is surfaced by the `incomplete` warning.
+    def row(model, cats, macro):
+        return {
+            "model": model,
+            "branch": "current",
+            "config": "bare",
+            "categories": cats,
+            "macro": macro,
+            "micro": macro,
+            "missing_categories": [],
+            "incomplete": False,
+            "usage": {"status": "complete"},
+        }
+
+    combined = {
+        "categories": ["autonomous", "research"],
+        "k": 1,
+        "rows": [
+            # research completed, and scored well: pass@K macro = mean(0.8, 0.0) = 0.4,
+            # avg@K macro = mean(0.8, 0.9) = 0.85
+            row(
+                "completed",
+                {
+                    "autonomous": {"pass_at_k": 0.8, "avg_at_k": 0.8, "tasks": 1},
+                    "research": {"pass_at_k": 0.0, "avg_at_k": 0.9, "tasks": 1},
+                },
+                {"pass_at_k": 0.4, "avg_at_k": 0.85},
+            ),
+            # research leaf produced nothing, so it is absent from both macros:
+            # pass@K macro = mean(0.8) = 0.8, avg@K macro = mean(0.8) = 0.8
+            row(
+                "research-failed",
+                {"autonomous": {"pass_at_k": 0.8, "avg_at_k": 0.8, "tasks": 1}},
+                {"pass_at_k": 0.8, "avg_at_k": 0.8},
+            ),
+        ],
+    }
+    # pass@K would rank research-failed (0.8) above completed (0.4). avg@K reads research's
+    # real reward instead of its construction artifact, so completing it can win.
+    md = au.render_markdown(combined, 1)
+    assert md.index("completed /") < md.index("research-failed /")

@@ -369,6 +369,7 @@ ToolCallMessage.-ascii:hover {
 .ask-user-menu .ask-user-question {
     height: auto;
     margin-bottom: 1;
+    padding-left: 2;
 }
 
 .ask-user-menu .ask-user-question-inactive {

@@ -24,11 +24,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from deepagents_code._env_vars import EXTENSIONS, EXTENSIONS_PATHS, EXTENSIONS_TRUST
 
-ENABLED_ENV = "DEEPAGENTS_CODE_EXTENSIONS"
-PATHS_ENV = "DEEPAGENTS_CODE_EXTENSIONS_PATHS"
-TRUST_ENV = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+logger = logging.getLogger(__name__)
 
 _FALSEY = {"0", "false", "no", "off"}
 
@@ -98,11 +96,11 @@ def load_extension_settings() -> ExtensionSettings:
     section = _read_config_section()
 
     enabled = section.get("enabled", True)
-    env_enabled = os.environ.get(ENABLED_ENV)
+    env_enabled = os.environ.get(EXTENSIONS)
     if env_enabled is not None:
         enabled = env_enabled.strip().lower() not in _FALSEY
 
-    env_paths = os.environ.get(PATHS_ENV)
+    env_paths = os.environ.get(EXTENSIONS_PATHS)
     if env_paths:
         raw_paths: list[str] = [part for part in env_paths.split(":") if part.strip()]
     else:
@@ -113,7 +111,7 @@ def load_extension_settings() -> ExtensionSettings:
             else []
         )
 
-    raw_trust = os.environ.get(TRUST_ENV) or section.get("trust")
+    raw_trust = os.environ.get(EXTENSIONS_TRUST) or section.get("trust")
     try:
         trust = TrustPolicy(str(raw_trust).strip().lower())
     except ValueError:

@@ -209,6 +209,26 @@ values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
 """
 
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading Python extensions.
+
+Parsed as a falsey-string check; on by default. Setting it to a falsey value
+disables every extension source, including the user's own directory.
+"""
+
+EXTENSIONS_PATHS = "DEEPAGENTS_CODE_EXTENSIONS_PATHS"
+"""Colon-separated extension files or directories added to discovery.
+
+Takes precedence over `[extensions].paths` in `config.toml`.
+"""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default trust policy for project extensions: `ask`, `always`, or `never`.
+
+Overrides `[extensions].trust`. Applies only when the working directory has no
+persisted trust decision.
+"""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 

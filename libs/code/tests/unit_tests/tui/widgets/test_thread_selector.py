@@ -3473,6 +3473,46 @@ class TestResumeThread:
         assert app._session_state is not None
         assert app._session_state.thread_id == "new-thread"
 
+    async def test_switch_omits_previous_thread_with_only_shell_output(self) -> None:
+        """`!` shell output is not agent work, despite rendering as ASSISTANT.
+
+        Non-incognito `!` borrows `AssistantMessage` for markdown rendering, so
+        a thread where the user only ran a shell command would otherwise look
+        like it held a real turn.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = self._switch_app()
+        app._message_store.clear()
+        app._message_store.append(MessageData(type=MessageType.USER, content="!ls"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="```text\nREADME.md\n```",
+                assistant_local_only=True,
+            )
+        )
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert not any(text.startswith("Previous thread:") for text in contents)
+        schedule.assert_not_called()
+        thread_exists.assert_not_awaited()
+
     @pytest.mark.parametrize(
         "output_type",
         ["ASSISTANT", "TOOL", "SKILL"],

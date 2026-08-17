@@ -279,6 +279,10 @@ offering a way back to. `USER` alone is not enough: local-only flows
 (`/update`, `!shell`, most slash commands) mount a `UserMessage` widget
 without ever invoking the server.
 
+Membership in this set is necessary but not sufficient — non-incognito `!`
+shell output renders through `AssistantMessage`, so `_store_has_server_output`
+also excludes rows flagged `assistant_local_only`.
+
 This is deliberately *stricter* than "has a resumable checkpoint row".
 Non-conversational commands (`/goal`, `/rubric set`) persist thread state
 through `aupdate_state`, and merely registering a thread in server mode
@@ -11127,7 +11131,7 @@ class DeepAgentsApp(App):
                         AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
-                    msg = AssistantMessage(f"```text\n{output}\n```")
+                    msg = AssistantMessage(f"```text\n{output}\n```", local_only=True)
                     await self._mount_message(msg)
                     await msg.write_initial_content()
             else:
@@ -17557,6 +17561,9 @@ class DeepAgentsApp(App):
 
         Feeds `_mount_previous_thread_hint`'s `had_agent_output` gate; see
         `_SERVER_OUTPUT_MESSAGE_TYPES` for why `USER` rows do not count.
+        `assistant_local_only` rows are excluded too: non-incognito `!` shell
+        output borrows `AssistantMessage` to render, so the row type alone
+        would let a thread that only ran a shell command look like agent work.
 
         Callers must read this *before* `_clear_messages` empties the store —
         it describes the thread being left, not the one being loaded. Every
@@ -17569,7 +17576,7 @@ class DeepAgentsApp(App):
             user did conversational work in this thread.
         """
         return any(
-            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES
+            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES and not msg.assistant_local_only
             for msg in self._message_store.get_all_messages()
         )
 

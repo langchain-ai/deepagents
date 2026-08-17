@@ -269,6 +269,24 @@ class TestSubagentMiddlewareInit:
         # Custom system prompt plus available subagent types
         assert middleware.system_prompt.startswith("Use the task tool to call a subagent.")
 
+    def test_subagent_middleware_renders_available_agents_in_system_prompt(self) -> None:
+        """Test that the system prompt renders subagents at the explicit placeholder."""
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "weather",
+                    "description": "Weather subagent",
+                    "system_prompt": "Get weather.",
+                    "model": "gpt-5.4-mini",
+                    "tools": [],
+                }
+            ],
+            system_prompt="{available_agents}",
+        )
+
+        assert middleware.system_prompt == "Available subagent types:\n\n- weather: Weather subagent"
+
     def test_requires_subagents(self) -> None:
         """Test that at least one subagent is required."""
         with pytest.raises(ValueError, match="At least one subagent"):

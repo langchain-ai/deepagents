@@ -1132,6 +1132,112 @@ class ChatTextArea(PasteBurstTextArea):
 
         await super()._on_key(event)
 
+    def action_cursor_left(self, select: bool = False) -> None:
+        """Move left, jumping over a bound placeholder token as one unit."""
+        if select or self.selection.is_empty:
+            cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]
+            span = self._placeholder_span_at_cursor(cursor_offset, backwards=True)
+            if span is not None:
+                self.move_cursor(
+                    self.document.get_location_from_index(span[0]),  # ty: ignore[unresolved-attribute]
+                    select=select,
+                )
+                return
+        super().action_cursor_left(select)
+
+    def action_cursor_right(self, select: bool = False) -> None:
+        """Move right, jumping over a bound placeholder token as one unit."""
+        if select or self.selection.is_empty:
+            cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]
+            span = self._placeholder_span_at_cursor(cursor_offset, backwards=False)
+            if span is not None:
+                self.move_cursor(
+                    self.document.get_location_from_index(span[1]),  # ty: ignore[unresolved-attribute]
+                    select=select,
+                )
+                return
+        super().action_cursor_right(select)
+
+    def action_cursor_word_left(self, select: bool = False) -> None:
+        """Move left by a word, never landing inside a placeholder token.
+
+        Covers `[Pasted text #N]` too, which a plain word jump would stop
+        inside of because the token contains spaces.
+        """
+        super().action_cursor_word_left(select)
+        self._snap_cursor_out_of_placeholder(select=select, backwards=True)
+
+    def action_cursor_word_right(self, select: bool = False) -> None:
+        """Move right by a word, never landing inside a placeholder token."""
+        super().action_cursor_word_right(select)
+        self._snap_cursor_out_of_placeholder(select=select, backwards=False)
+
+    def _snap_cursor_out_of_placeholder(self, *, select: bool, backwards: bool) -> None:
+        """Push the cursor past a token if a word jump landed inside one.
+
+        A leftward jump exits at the token's start and a rightward jump exits
+        at its end, so repeated presses keep moving instead of oscillating.
+        """
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]
+        for start, end in self._bound_placeholder_spans():
+            if start < cursor_offset < end:
+                target = start if backwards else end
+                self.move_cursor(
+                    self.document.get_location_from_index(target),  # ty: ignore[unresolved-attribute]
+                    select=select,
+                )
+                return
+
+    def _placeholder_span_at_cursor(
+        self, cursor_offset: int, *, backwards: bool
+    ) -> tuple[int, int] | None:
+        """Return the placeholder span the next arrow press would step into.
+
+        Args:
+            cursor_offset: Character offset of the cursor from the start of text.
+            backwards: Whether the cursor is moving left (`True`) or right.
+
+        Returns:
+            The `(start, end)` character span of the placeholder the cursor is
+                directly beside (or inside, when moving left), or `None` when
+                plain character movement applies.
+        """
+        for start, end in self._bound_placeholder_spans():
+            if backwards:
+                if start < cursor_offset <= end:
+                    return start, end
+            elif start <= cursor_offset < end:
+                return start, end
+        return None
+
+    def _bound_placeholder_spans(self) -> list[tuple[int, int]]:
+        """Return spans of placeholder tokens bound to real attachments.
+
+        Mirrors the binding rule in `_find_placeholder_span`: only tokens
+        backed by tracked media or paste content are atomic, so text the user
+        typed by hand that merely looks like a placeholder (e.g. literally
+        typing `[image 2]`) keeps character-wise navigation.
+        """
+        text = self.text
+        if not text:
+            return []
+        media_placeholders = self._bound_media_placeholders()
+        pasted_ids = self._bound_paste_ids()
+        spans: list[tuple[int, int]] = []
+        for pattern in (
+            IMAGE_PLACEHOLDER_PATTERN,
+            VIDEO_PLACEHOLDER_PATTERN,
+            PASTE_PLACEHOLDER_PATTERN,
+        ):
+            for match in pattern.finditer(text):
+                if pattern is PASTE_PLACEHOLDER_PATTERN:
+                    if int(match.group(1)) not in pasted_ids:
+                        continue
+                elif match.group(0) not in media_placeholders:
+                    continue
+                spans.append(match.span())
+        return spans
+
     def action_delete_right(self) -> None:
         """Delete a bound placeholder atomically or the next character."""
         if not self._delete_placeholder_token(backwards=False):
@@ -1222,39 +1328,26 @@ class ChatTextArea(PasteBurstTextArea):
                 token.
         """
         text = self.text
-        media_placeholders = self._bound_media_placeholders()
-        pasted_ids = self._bound_paste_ids()
-        for pattern in (
-            IMAGE_PLACEHOLDER_PATTERN,
-            VIDEO_PLACEHOLDER_PATTERN,
-            PASTE_PLACEHOLDER_PATTERN,
-        ):
-            for match in pattern.finditer(text):
-                if pattern is PASTE_PLACEHOLDER_PATTERN:
-                    if int(match.group(1)) not in pasted_ids:
-                        continue
-                elif match.group(0) not in media_placeholders:
-                    continue
-                start, end = match.span()
-                if backwards:
-                    # Cursor is inside token or right after a trailing space inserted
-                    # with the token.
-                    if start < cursor_offset <= end:
-                        return start, end
-                    if cursor_offset > 0:
-                        previous_index = cursor_offset - 1
-                        # Swallow trailing whitespace with the token, except for
-                        # a newline: backspacing a line break should rejoin the
-                        # lines without deleting the placeholder.
-                        if (
-                            previous_index < len(text)
-                            and previous_index == end
-                            and text[previous_index].isspace()
-                            and text[previous_index] != "\n"
-                        ):
-                            return start, cursor_offset
-                elif start <= cursor_offset < end:
+        for start, end in self._bound_placeholder_spans():
+            if backwards:
+                # Cursor is inside token or right after a trailing space inserted
+                # with the token.
+                if start < cursor_offset <= end:
                     return start, end
+                if cursor_offset > 0:
+                    previous_index = cursor_offset - 1
+                    # Swallow trailing whitespace with the token, except for
+                    # a newline: backspacing a line break should rejoin the
+                    # lines without deleting the placeholder.
+                    if (
+                        previous_index < len(text)
+                        and previous_index == end
+                        and text[previous_index].isspace()
+                        and text[previous_index] != "\n"
+                    ):
+                        return start, cursor_offset
+            elif start <= cursor_offset < end:
+                return start, end
         return None
 
     def replace_placeholder_with_text(self, paste_id: int, content: str) -> bool:

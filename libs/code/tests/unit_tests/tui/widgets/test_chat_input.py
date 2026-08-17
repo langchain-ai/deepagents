@@ -17,6 +17,7 @@ from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import ImageData, create_multimodal_content
+from deepagents_code.paste_collapse import PastedContent
 from deepagents_code.tui.widgets import (
     _paste_textarea as paste_textarea_module,
     chat_input as chat_input_module,
@@ -3452,6 +3453,135 @@ class TestDroppedImagePaste:
             # The whole real placeholder is removed atomically, leaving the
             # typed look-alike intact.
             assert chat._text_area.text == "[image 2] "
+
+    async def test_right_arrow_skips_over_image_placeholder(self, tmp_path) -> None:
+        """`→` at a token's left border jumps to just after the token."""
+        from PIL import Image
+
+        img_path = tmp_path / "arrow.png"
+        Image.new("RGB", (4, 4), color="red").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            chat._text_area.text = "x[image 1] y"
+            await pilot.pause()
+
+            # Cursor between "x" and the token; → should land after "]".
+            chat._text_area.move_cursor((0, 1))
+            await pilot.pause()
+            await pilot.press("right")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, len("x[image 1]"))
+
+            # Next → steps over the ordinary space one char at a time.
+            await pilot.press("right")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, len("x[image 1] "))
+
+    async def test_left_arrow_skips_over_image_placeholder(self, tmp_path) -> None:
+        """`←` at a token's right border jumps to just before the token."""
+        from PIL import Image
+
+        img_path = tmp_path / "arrowl.png"
+        Image.new("RGB", (4, 4), color="blue").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            chat._text_area.text = "x[image 1]y"
+            await pilot.pause()
+
+            # Cursor right after the token; ← should land before "[".
+            chat._text_area.move_cursor((0, len("x[image 1]")))
+            await pilot.pause()
+            await pilot.press("left")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 1)
+
+    async def test_left_arrow_after_trailing_space_stops_before_space(
+        self, tmp_path
+    ) -> None:
+        """A space after a token is ordinary text, not part of the atomic unit."""
+        from PIL import Image
+
+        img_path = tmp_path / "space.png"
+        Image.new("RGB", (4, 4), color="gray").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            chat._text_area.text = "x[image 1] "
+            await pilot.pause()
+
+            # Cursor after the trailing space; ← stops between token and space.
+            chat._text_area.move_cursor((0, len("x[image 1] ")))
+            await pilot.pause()
+            await pilot.press("left")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, len("x[image 1]"))
+
+            # From the token's right border, ← now jumps the whole token.
+            await pilot.press("left")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 1)
+
+    async def test_typed_placeholder_does_not_skip_on_arrows(self) -> None:
+        """A manually typed `[image N]` navigates char-by-char (not atomic)."""
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.text = "[image 2]"
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+            await pilot.press("right")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 1)
+
+    async def test_word_left_does_not_stop_inside_paste_placeholder(self) -> None:
+        """Word-jump left over `[Pasted text #N]` never lands inside the token."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            content = "line one\nline two\nline three"
+            chat._pasted_contents[1] = PastedContent(content=content)
+            chat._text_area.text = "see [Pasted text #1 +3 lines] end"
+            await pilot.pause()
+
+            end_offset = len("see [Pasted text #1 +3 lines] end")
+            token_end = len("see [Pasted text #1 +3 lines]")
+            chat._text_area.move_cursor((0, end_offset))
+            await pilot.pause()
+
+            # First word-left lands at the start of "end".
+            chat._text_area.action_cursor_word_left()
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, token_end + 1)
+
+            # The next word-left would rest inside the token (at "lines"); it
+            # is pushed out to the token's start instead of stopping mid-token.
+            chat._text_area.action_cursor_word_left()
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, len("see "))
+
+            # And the following press reaches the start of the line normally.
+            chat._text_area.action_cursor_word_left()
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
 
     async def test_submit_remaps_span_onto_stripped_value(self, tmp_path) -> None:
         """`_submit_value` re-maps placeholder spans onto the final submitted text.

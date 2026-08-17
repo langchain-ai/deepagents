@@ -12,6 +12,7 @@ import signal
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -232,12 +233,7 @@ class TestInstalledVersionAtLeast:
 
 
 class TestReadInstalledDistributionVersion:
-    """Readback of the on-disk tool environment after an upgrade.
-
-    The fake layouts mirror uv's: `<prefix>/lib/pythonX.Y/site-packages/
-    deepagents_code-<version>.dist-info`. `sys.prefix` and the version-info
-    segment are patched so the reader looks at the fake environment.
-    """
+    """Readback of the on-disk tool environment after an upgrade."""
 
     @staticmethod
     def _fake_tool_env(
@@ -245,17 +241,11 @@ class TestReadInstalledDistributionVersion:
         monkeypatch: pytest.MonkeyPatch,
         *dist_info_names: str,
     ) -> Path:
-        site_packages = tmp_path / "lib" / "python9.9" / "site-packages"
+        site_packages = tmp_path / "site-packages"
         site_packages.mkdir(parents=True)
         for name in dist_info_names:
             (site_packages / name).mkdir()
-        monkeypatch.setattr(sys, "prefix", str(tmp_path))
-
-        class _FakeVersionInfo(tuple):  # noqa: SLOT001  # mimics sys.version_info's attribute access
-            major = 9
-            minor = 9
-
-        monkeypatch.setattr(sys, "version_info", _FakeVersionInfo((9, 9, 0)))
+        monkeypatch.setattr(sysconfig, "get_path", lambda _key: str(site_packages))
         return site_packages
 
     def test_reads_dist_info_from_disk(self, tmp_path, monkeypatch) -> None:
@@ -290,6 +280,19 @@ class TestReadInstalledDistributionVersion:
         site_packages.rmdir()
         site_packages.write_text("not a directory", encoding="utf-8")
         assert read_installed_distribution_version() is None
+
+    def test_windows_layout_resolves(self, tmp_path, monkeypatch) -> None:
+        """Windows tool envs live at `<prefix>/Lib/site-packages`, not POSIX's.
+
+        Regression guard for the hard-coded `lib/pythonX.Y/site-packages`
+        layout that made every Windows readback return `None`: the reader must
+        go through `sysconfig`'s purelib instead of building the path by hand.
+        """
+        site_packages = tmp_path / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "deepagents_code-2.0.1.dist-info").mkdir()
+        monkeypatch.setattr(sysconfig, "get_path", lambda _key: str(site_packages))
+        assert read_installed_distribution_version() == "2.0.1"
 
 
 class TestLatestFromReleases:

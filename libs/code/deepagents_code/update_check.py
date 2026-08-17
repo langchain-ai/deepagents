@@ -22,6 +22,7 @@ import shlex
 import shutil
 import signal
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -294,8 +295,7 @@ def read_installed_distribution_version() -> str | None:
     """Read the currently installed `deepagents-code` distribution version.
 
     Unlike `__version__`, this does not come from the module this process
-    imported at launch: it locates the running tool environment's interpreter
-    through `sys.prefix` and parses that environment's
+    imported at launch: it reads the running tool environment's
     `deepagents_code-*.dist-info` directory name from disk, so it reflects the
     install even after an in-session upgrade rewrote the environment. Used to
     report what an upgrade actually installed.
@@ -305,13 +305,10 @@ def read_installed_distribution_version() -> str | None:
             (missing/ambiguous dist-info, unreadable directory, or a version
             this process's `packaging` rejects).
     """
-    version_info = sys.version_info
-    site_packages = (
-        Path(sys.prefix)
-        / "lib"
-        / f"python{version_info.major}.{version_info.minor}"
-        / "site-packages"
-    )
+    # `sysconfig`'s purelib resolves the per-platform layout (`lib/pythonX.Y/
+    # site-packages` on POSIX, `Lib\site-packages` on Windows), so the
+    # readback works for uv tool environments on every supported OS.
+    site_packages = Path(sysconfig.get_path("purelib"))
     try:
         candidates = [
             entry

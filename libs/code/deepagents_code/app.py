@@ -1062,6 +1062,9 @@ or the user queues input while waiting, the status bar reveals the connection
 state as the single app-wide progress indicator.
 """
 
+_HOOK_STATUS_REVEAL_DELAY_SECONDS = 2.0
+"""Seconds to hide hook progress so fast hooks do not flash in the footer."""
+
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
 
@@ -4127,6 +4130,15 @@ class DeepAgentsApp(App):
         self._connection_status_reveal_timer: Timer | None = None
         """One-shot timer that reveals deferred status-bar connection progress."""
 
+        self._pending_hook_status_message = ""
+        """Latest hook progress text waiting for its footer reveal delay."""
+
+        self._hook_status_visible = False
+        """Whether hook progress currently owns the visible status-message slot."""
+
+        self._hook_status_reveal_timer: Timer | None = None
+        """One-shot timer that reveals continuously active hook progress."""
+
         self._connection_ready_event = asyncio.Event()
         """Set once the initial server connection has either succeeded or failed."""
         if not self._connecting:
@@ -4666,6 +4678,8 @@ class DeepAgentsApp(App):
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
+        if self._pending_hook_status_message:
+            self._schedule_hook_status_reveal_timer()
         self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
         model_spec = self._effective_model_spec()
@@ -5131,9 +5145,44 @@ class DeepAgentsApp(App):
         self.notify(message, severity=severity, markup=False)
 
     def _update_hook_status(self, message: str) -> None:
-        """Update the status bar with hook-owned progress text."""
-        if self._status_bar:
-            self._status_bar.set_status_message(message, source="hooks")
+        """Delay hook-owned progress text so fast hooks do not flash."""
+        self._pending_hook_status_message = message
+        if not message:
+            self._hook_status_visible = False
+            self._cancel_hook_status_reveal_timer()
+            if self._status_bar:
+                self._status_bar.set_status_message("", source="hooks")
+            return
+        if self._hook_status_visible:
+            if self._status_bar:
+                self._status_bar.set_status_message(message, source="hooks")
+            return
+        self._schedule_hook_status_reveal_timer()
+
+    def _schedule_hook_status_reveal_timer(self) -> None:
+        """Schedule the one-shot timer that reveals active hook progress."""
+        if self._hook_status_reveal_timer is not None or not self._running:
+            return
+        self._hook_status_reveal_timer = self.set_timer(
+            _HOOK_STATUS_REVEAL_DELAY_SECONDS,
+            self._on_hook_status_reveal_timer,
+        )
+
+    def _cancel_hook_status_reveal_timer(self) -> None:
+        """Cancel and clear the deferred hook-status reveal timer."""
+        if self._hook_status_reveal_timer is None:
+            return
+        self._hook_status_reveal_timer.stop()
+        self._hook_status_reveal_timer = None
+
+    def _on_hook_status_reveal_timer(self) -> None:
+        """Reveal the latest hook progress after continuous activity."""
+        self._hook_status_reveal_timer = None
+        message = self._pending_hook_status_message
+        if not message or self._status_bar is None:
+            return
+        self._hook_status_visible = True
+        self._status_bar.set_status_message(message, source="hooks")
 
     async def _init_session_state(self) -> None:
         """Create session state and load its Hooks v2 manager.
@@ -19352,6 +19401,7 @@ class DeepAgentsApp(App):
         # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
         self._cancel_connection_status_reveal_timer()
+        self._cancel_hook_status_reveal_timer()
         self._discard_queue()
 
         if self._shell_running and self._shell_worker:

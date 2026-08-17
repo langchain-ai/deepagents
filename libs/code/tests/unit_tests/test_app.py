@@ -34626,6 +34626,72 @@ class TestWelcomeBannerLiveUpdates:
         assert "Welcome banner not found during cwd sync" in caplog.text
 
 
+class TestHookStatusReveal:
+    """Hook progress appears only after continuous activity."""
+
+    async def test_fast_hook_status_never_reaches_footer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            assert app._status_bar is not None
+            status = app.query_one("#status-message", Static)
+            app._status_bar.set_status_message("Thinking")
+            app._update_hook_status("Running hook")
+            app._update_hook_status("")
+            await pilot.pause(0.05)
+
+            assert str(status.render()) == "Thinking"
+            assert app._hook_status_reveal_timer is None
+            assert app._hook_status_visible is False
+
+    async def test_slow_hook_status_appears_after_delay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            status = app.query_one("#status-message", Static)
+            app._update_hook_status("Checking output")
+            assert status.display is False
+
+            await pilot.pause(0.05)
+
+            assert status.display is True
+            assert str(status.render()) == "Checking output"
+            assert app._hook_status_reveal_timer is None
+            assert app._hook_status_visible is True
+
+    async def test_clearing_revealed_hook_status_restores_agent_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.app._HOOK_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            assert app._status_bar is not None
+            status = app.query_one("#status-message", Static)
+            app._status_bar.set_status_message("Thinking")
+            app._update_hook_status("Checking output")
+            await pilot.pause(0.05)
+            assert str(status.render()) == "Checking output"
+
+            app._update_hook_status("")
+            await pilot.pause()
+
+            assert str(status.render()) == "Thinking"
+            assert app._hook_status_visible is False
+
+
 class TestStatusBarConnectionMirroring:
     """The bottom status bar must mirror the connection + queue state.
 

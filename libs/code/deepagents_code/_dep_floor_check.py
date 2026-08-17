@@ -298,10 +298,14 @@ def _is_editable_dist(dist_name: str, path: Path) -> bool:
     url = data.get("url", "")
     if not isinstance(url, str) or not url.startswith("file://"):
         return False
-    from urllib.parse import urlparse
-    from urllib.request import url2pathname
+    from deepagents_code.extras_info import _file_url_to_path
 
-    return Path(url2pathname(urlparse(url).path)).resolve() == path
+    recorded = _file_url_to_path(url)
+    # `_file_url_to_path` preserves the `netloc` host, so UNC installs such as
+    # `file://server/share/repo` compare equal to the same UNC checkout here;
+    # parsing only `urlparse(url).path` would drop the server and omit the
+    # editable from the refresh, replacing it with a PyPI wheel.
+    return recorded is not None and recorded.resolve() == path
 
 
 def _workspace_editable_paths() -> list[Path]:

@@ -342,6 +342,34 @@ class TestRefreshCommand:
             f"uv pip install --python /venv/bin/python -e {code} --upgrade"
         )
 
+    def test_unc_editable_record_is_preserved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `file://server/share/...` record keeps its host in the comparison.
+
+        `urlparse(...).path` alone drops the server component, which would
+        omit a UNC-installed editable from the refresh and let `--upgrade`
+        replace it with a PyPI wheel.
+        """
+        unc_path = Path("//server/share/repo/libs/deepagents").resolve()
+
+        class _Dist:
+            def read_text(self, filename: str) -> str:
+                assert filename == "direct_url.json"
+                return json.dumps(
+                    {
+                        "url": "file://server/share/repo/libs/deepagents",
+                        "dir_info": {"editable": True},
+                    }
+                )
+
+        monkeypatch.setattr(
+            dep_floor_check.importlib.metadata, "distribution", lambda _name: _Dist()
+        )
+        monkeypatch.setattr(Path, "is_dir", lambda _self: True)
+
+        assert dep_floor_check._is_editable_dist("deepagents", unc_path)
+
     def test_unreadable_pyproject_uses_standalone_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

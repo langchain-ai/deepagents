@@ -677,9 +677,10 @@ async def test_update_slash_command_pypi_unreachable_short_circuits() -> None:
 
 
 async def test_update_slash_command_omitted_prerelease_preserves_channel() -> None:
-    """`/update` lets update helpers infer the channel from the installed version."""
+    """`/update` infers the channel from the installed version and bumps the splash."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -696,11 +697,16 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update")
             await pilot.pause()
+            # Captured inside `run_test`: the app is torn down on exit, so the
+            # banner is unreachable by the time the assertions below run.
+            splash = (
+                app.query_one("#welcome-banner", WelcomeBanner)._build_banner().plain
+            )
 
         is_update_mock.assert_called_once_with(
             bypass_cache=True,
@@ -713,6 +719,8 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
         )
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
+        assert "v99.0.0" in splash
+        assert f"v{__version__}" not in splash
 
 
 async def test_update_slash_command_links_log_instead_of_listing_dependencies() -> None:
@@ -794,7 +802,7 @@ async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() ->
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update")
@@ -834,7 +842,7 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0rc1"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --prerelease")
@@ -855,6 +863,49 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
         assert "Updated to v99.0.0rc1" in str(app_msgs[-1]._content)
 
 
+async def test_update_slash_command_reports_success_without_a_banner() -> None:
+    """A missing splash banner cannot turn a successful `/update` into a failure.
+
+    `_perform_app_upgrade` runs inside the caller's broad
+    `except Exception -> _mount_update_failure`, so an unguarded banner lookup
+    would report a completed upgrade as "Update failed" and name an internal
+    CSS selector at the user. The repaint is cosmetic; the success line is not.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.query_one("#welcome-banner", WelcomeBanner).remove()
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, "", "99.0.0"),
+            ),
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        plain_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        assert any("Updated to v99.0.0" in m for m in plain_msgs)
+        error_msgs = [str(m._content) for m in app.query(ErrorMessage)]
+        assert not any("Update failed" in m for m in error_msgs)
+
+
 async def test_update_slash_command_replaces_success_with_shadow_warning() -> None:
     """A shadowed `dcode` after a successful upgrade swaps success line for warning.
 
@@ -865,10 +916,12 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
     `ErrorMessage` with the warning and skip the success `AppMessage`
     entirely; a regression that flipped the `if/else` (or kept the
     success line unconditionally) would ship a reassuring success line
-    over a broken upgrade.
+    over a broken upgrade. The splash version carries the same guarantee
+    for the same reason, and is asserted here too.
     """
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
     from deepagents_code.update_check import ShadowedDcode
 
     shadow = ShadowedDcode(
@@ -890,7 +943,7 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ),
             # Override the module-level autouse `None` patch with the
             # positive case. Innermost patch wins.
@@ -901,6 +954,9 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
         ):
             await app._handle_command("/update")
             await pilot.pause()
+            splash = (
+                app.query_one("#welcome-banner", WelcomeBanner)._build_banner().plain
+            )
 
         plain_msgs = [
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
@@ -909,6 +965,12 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
         # would not actually use the new version. A regression that kept the
         # success line would show both messages, contradicting itself.
         assert not any("Updated to v99.0.0" in m for m in plain_msgs)
+        # Same reasoning for the splash: bumping the banner here would promise
+        # an upgrade that a relaunch will not actually deliver. This is the
+        # only guard on `_update_splash_version` staying inside the
+        # `shadow is None` branch, so do not drop it as redundant.
+        assert f"v{__version__}" in splash
+        assert "v99.0.0" not in splash
         # The warning is mounted as an `ErrorMessage` (red), not a generic
         # `AppMessage`, so it visually stands apart from neutral status text.
         error_msgs = [str(m._content) for m in app.query(ErrorMessage)]
@@ -1077,6 +1139,7 @@ async def test_update_deps_routes_outdated_dcode_through_regular_update(
                 return_value=(
                     True,
                     " - deepagents-code==1.0.0\n + deepagents-code==1.1.0\n",
+                    "1.1.0",
                 ),
             ),
         ):
@@ -1130,6 +1193,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
                 return_value=(
                     True,
                     " - deepagents-code==1.0.0\n + deepagents-code==1.1.0\n",
+                    "1.1.0",
                 ),
             ) as perform_upgrade_mock,
         ):
@@ -1832,7 +1896,7 @@ async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(False, "resolver: conflict"),
+                return_value=(False, "resolver: conflict", None),
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
@@ -1906,10 +1970,12 @@ async def test_perform_app_upgrade_holds_the_lock_during_install() -> None:
 
     held_during_install: list[bool] = []
 
-    async def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:  # noqa: RUF029
+    async def _record_lock_state(  # noqa: RUF029
+        **_kwargs: object,
+    ) -> tuple[bool, str, str | None]:
         with update_install_lock() as holding:
             held_during_install.append(holding)
-        return True, ""
+        return True, "", "1.1.0"
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:

@@ -136,9 +136,14 @@ class AskUserMenu(Container):
         id: str | None = None,  # noqa: A002
         **kwargs: Any,
     ) -> None:
+        classes = "inline-prompt ask-user-menu"
+        if len(questions) > 1:
+            # Gates the active question's left border in CSS; single-question
+            # prompts stay borderless.
+            classes += " ask-user-menu-multi"
         super().__init__(
             id=id or "ask-user-menu",
-            classes="inline-prompt ask-user-menu",
+            classes=classes,
             **kwargs,
         )
         self._questions = questions

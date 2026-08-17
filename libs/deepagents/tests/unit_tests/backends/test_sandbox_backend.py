@@ -13,7 +13,7 @@ import re
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -1724,7 +1724,7 @@ def test_glob_script_keeps_absolute_pattern_under_search_root(tmp_path: Path) ->
     output = _run_glob_script(workspace, "/src/*.py")
     records = [json.loads(line) for line in output.strip().split("\n") if line]
 
-    assert [record["path"] for record in records] == [str(Path("src") / "ok.py")]
+    assert [record["path"] for record in records] == [str(PurePosixPath("src") / "ok.py")]
     assert str(outside / "secret.py") not in output
 
 

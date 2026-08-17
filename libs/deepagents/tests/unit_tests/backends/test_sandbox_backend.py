@@ -27,9 +27,13 @@ from deepagents.backends.sandbox import (
     _EDIT_COMMAND_TEMPLATE,
     _EDIT_INLINE_MAX_BYTES,
     _EDIT_TMPFILE_TEMPLATE,
+    _EXECUTE_CAPTURE_CLIP_NOTICE,
     _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED,
+    _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE,
+    _EXECUTE_CAPTURE_HEAD_BYTES,
     _EXECUTE_CAPTURE_HEAD_LINES,
     _EXECUTE_CAPTURE_SENTINEL,
+    _EXECUTE_CAPTURE_TAIL_BYTES,
     _EXECUTE_CAPTURE_TAIL_LINES,
     _GLOB_COMMAND_TEMPLATE,
     _GREP_PATH_GLOB_TEMPLATE,
@@ -2402,6 +2406,20 @@ class TestParseCaptureExecuteOutput:
 
         assert any("meta line absent or malformed" in r.getMessage() for r in caplog.records)
 
+    def test_unparseable_exit_code_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Same reason as its two sibling fallbacks: the caller cannot tell it happened."""
+        with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
+            _parse_capture_execute_output(f"{_EXECUTE_CAPTURE_SENTINEL} junk 1 0 0\nBODY")
+
+        assert any("non-integer exit code" in r.getMessage() for r in caplog.records)
+
+    def test_marker_flag_requires_offloaded(self) -> None:
+        """A response carrying no preview can never claim a marker, whatever the surplus."""
+        result = _parse_capture_execute_output(self._meta(0, 0, 0, 5) + "\nBODY")
+
+        assert result.offloaded is False
+        assert result.preview_has_truncation_marker is False
+
     def test_unparseable_surplus_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
             _parse_capture_execute_output(self._meta(0, 1, 0, "junk"))
@@ -2431,18 +2449,32 @@ class TestCaptureWrapperNotices:
         cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
 
         # Guarded by a byte comparison, so a preview that loses nothing stays quiet.
-        assert "output clipped here" in cmd
-        assert '[ "$__da_bytes" -gt $((2000 + 2000)) ]' in cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in cmd
+        assert f'[ "$__da_bytes" -gt $(({_EXECUTE_CAPTURE_HEAD_BYTES} + {_EXECUTE_CAPTURE_TAIL_BYTES})) ]' in cmd
 
     def test_clip_notice_has_a_capped_variant_selected_by_the_cap_flag(self) -> None:
         """A capped capture must not advertise the cap as the total, nor promise the full output."""
         cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
 
         assert '[ "$__da_capped" -eq 1 ]' in cmd
-        assert "capture stopped at its %s-byte limit" in cmd
-        assert "%s bytes total, full output at the path above" in cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.format(captured_bytes="%s") in cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in cmd
         # Only the uncapped wording may claim the path holds everything.
         assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.count("full output at the path above") == 0
+
+    def test_head_tail_branch_discloses_its_byte_caps(self) -> None:
+        """The marker counts whole middle lines only, so byte-cap losses need their own notice.
+
+        Guarded by comparing the line-capped excerpt sizes against the byte caps, so a
+        preview whose excerpts fit stays quiet.
+        """
+        cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
+
+        assert _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE in cmd
+        assert f'[ "$__da_head_bytes" -gt {_EXECUTE_CAPTURE_HEAD_BYTES} ]' in cmd
+        assert f'[ "$__da_tail_bytes" -gt {_EXECUTE_CAPTURE_TAIL_BYTES} ]' in cmd
+        # Takes no operand, so it must not smuggle in a printf conversion.
+        assert "%" not in _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE
 
     def test_head_tail_line_budget_matches_surplus_arithmetic(self) -> None:
         """The surplus the wrapper reports is relative to these two constants."""

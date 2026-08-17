@@ -802,10 +802,12 @@ class ExecuteOffloadResult:
     offloaded: bool
     """Whether the output was left at the capture path.
 
-    When `True`, `response.output` holds only a preview -- a head/tail excerpt
-    when the output had more lines than the wrapper's head+tail budget, else a
-    leading byte excerpt -- and the full output lives at the capture path on the
+    When `True`, `response.output` holds only a preview whose extent is
+    implementation-defined, and the full output lives at the capture path on the
     sandbox filesystem. When `False`, `response.output` is the complete output.
+    `BaseSandbox`'s wrapper builds that preview as either a head/tail excerpt
+    around a truncation marker or a leading byte excerpt; see
+    `backends.sandbox._build_capture_execute_cmd` for how it chooses.
     """
 
     response: ExecuteResponse
@@ -815,21 +817,23 @@ class ExecuteOffloadResult:
     """Whether the preview has a `... [N lines truncated] ...` marker standing in
     for lines dropped from its middle.
 
-    Reported by the capture wrapper itself, so callers never infer it from the
+    Reported by whoever built the preview, so callers never infer it from the
     previewed bytes -- command output containing a literal marker line cannot
     make a caller claim lines were omitted.
 
     This reports *marker presence*, not preview completeness: `False` does not
-    mean the preview is the whole output. When the output has no more lines than
-    the head+tail budget the wrapper emits a leading byte excerpt instead, which
-    drops the end of the output and says so in-band rather than with this marker.
+    mean the preview is the whole output, and `True` does not mean the marker
+    accounts for everything missing. A preview can drop content the marker does
+    not describe; producers disclose those losses in-band, in the preview text
+    itself, rather than through this flag.
 
-    Deliberately a bool and not the omitted-line count: the wrapper's count is
-    computed before its byte caps are applied, so it understates whenever lines
-    are long. Only the binary marker-present answer is trustworthy.
+    Deliberately a bool and not the omitted-line count: a producer that applies a
+    byte budget after choosing which lines to show understates the count whenever
+    lines are long. Only the binary marker-present answer is trustworthy.
 
-    Always `False` when `offloaded` is `False` -- a non-offloaded response
-    carries the complete output, so there is no preview.
+    Always `False` when `offloaded` is `False` -- a non-offloaded response carries
+    the complete output, so there is no preview. `_parse_capture_execute_output`
+    enforces this at construction; other producers must uphold it.
     """
 
 

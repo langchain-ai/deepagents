@@ -3215,6 +3215,52 @@ class TestPreviewNote:
         assert f"clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters" in note
         assert note.endswith("):")
 
+    def test_caveats_join_in_a_single_parenthetical(self):
+        """Exact wording, so a separator or ordering change is a deliberate edit."""
+        assert _preview_note(lines_omitted=True, lines_clipped=True) == (
+            "Here is a preview showing the head and tail of the result "
+            "(lines of the form `... [N lines truncated] ...` indicate omitted lines "
+            f"in the middle of the content; lines longer than {PREVIEW_LINE_CHAR_LIMIT} "
+            f"characters are clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters):"
+        )
+
+    def test_clipping_in_the_tail_is_reported(self):
+        """Clipping in the tail must be reported too.
+
+        A long *last* line is the common `.jsonl`/log shape, so the tail half of the
+        clipping check has to be live or its loss goes undisclosed.
+        """
+        content = "\n".join([f"line {i}" for i in range(20)] + ["Z" * (PREVIEW_LINE_CHAR_LIMIT + 1)])
+        preview = _create_content_preview(content)
+
+        assert preview.lines_omitted is True
+        assert preview.lines_clipped is True
+
+    def test_line_at_exactly_the_limit_is_not_reported_as_clipped(self):
+        """A line exactly at the limit is not clipped.
+
+        `PREVIEW_LINE_CHAR_LIMIT` characters survive whole, so claiming loss here
+        would be the same untruth as omitting a caveat, in the other direction.
+        """
+        assert _create_content_preview("C" * PREVIEW_LINE_CHAR_LIMIT).lines_clipped is False
+        assert _create_content_preview("C" * (PREVIEW_LINE_CHAR_LIMIT + 1)).lines_clipped is True
+
+    def test_offloaded_tool_message_explains_both_losses_together(self):
+        """Both caveats must be reachable from a real preview.
+
+        Otherwise the combined wording is only ever verified against hand-set flags.
+        """
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=10)
+        content = "\n".join([f"line {i}" for i in range(20)] + ["Z" * (PREVIEW_LINE_CHAR_LIMIT + 1)])
+        tool_message = ToolMessage(content=content, tool_call_id="test_both")
+
+        result = middleware._intercept_large_tool_result(tool_message)
+
+        assert isinstance(result, ToolMessage)
+        assert "lines of the form" in result.content
+        assert f"clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
+
     def test_marker_explanation_quotes_the_shared_template(self):
         """The shape the note describes comes from the marker's single source of truth."""
         assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="N") in _preview_note(lines_omitted=True)
@@ -3344,7 +3390,7 @@ class TestLargeResultTemplateDeprecation:
         assert len(deprecations) == 1
         assert deprecations[0].category is LangChainDeprecationWarning
         assert name in str(deprecations[0].message)
-        assert "deepagents==0.7.2" in str(deprecations[0].message)
+        assert "deepagents==0.7.7" in str(deprecations[0].message)
         assert "deepagents==0.9.0" in str(deprecations[0].message)
         assert deprecations[0].filename == __file__
 

@@ -32,12 +32,19 @@ render it and one consumer describes it to the model, so they must agree:
 
 - `_message_eviction._create_content_preview` (Python, line-numbered previews)
 - the capture-at-source wrapper in `backends.sandbox` (POSIX `sh` `printf`)
-- the preview note built by `_message_eviction._preview_note`, which quotes the
-    shape back to the model as `... [N lines truncated] ...`
+- `_message_eviction._CAVEAT_OMITTED_LINES`, which quotes the shape back to the
+    model as `... [N lines truncated] ...`
 
-An inserted marker occupies a whole line with no line-number gutter, which is
-what distinguishes it from a literal `... [N lines truncated] ...` line that
-happens to appear in the previewed content (that one gets a gutter prefix).
+The frozen copy in `middleware.filesystem._LEGACY_TOO_LARGE_TOOL_MSG` is
+deliberately not derived from this template -- it preserves released wording for
+a deprecated import and must not follow changes made here.
+
+In the line-numbered Python previews an inserted marker occupies a whole line
+with no line-number gutter, which is what distinguishes it from a literal
+`... [N lines truncated] ...` line that happens to appear in the previewed
+content (that one gets a gutter prefix). The sandbox wrapper's previews are not
+line-numbered, so no consumer may parse for the marker on either path: presence
+is always reported out-of-band by whoever built the preview.
 """
 
 FileType = Literal["text", "image", "audio", "video", "file"]

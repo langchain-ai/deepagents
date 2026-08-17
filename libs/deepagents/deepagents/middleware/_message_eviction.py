@@ -44,6 +44,10 @@ PREVIEW_LINE_CHAR_LIMIT: Final = 1000
 Bounds a preview built from few but very long lines (a `.jsonl` dump, a minified
 bundle). Clipping here drops content *within* a shown line rather than dropping
 whole lines, so it is reported separately from `lines_omitted`.
+
+Keep this below `backends.utils.MAX_LINE_LENGTH`, or clipped lines also acquire
+that renderer's `N.1`-style continuation gutters and `_CAVEAT_CLIPPED_LINES` stops
+describing what the model sees.
 """
 
 _PREVIEW_NOTE_PLAIN = "Here is a preview of the {subject}"
@@ -62,8 +66,7 @@ class ContentPreview:
     Both flags are reported by whoever built `text`, never inferred from the
     rendered bytes. That is what stops previewed content from describing itself:
     a literal `... [N lines truncated] ...` line in the content cannot make the
-    note claim lines were omitted (it renders with a line-number gutter, unlike
-    an inserted marker, but nothing has to parse for that distinction).
+    note claim lines were omitted.
 
     Neither flag means "the preview is complete" on its own -- check both. They
     describe two independent kinds of loss, and a preview can suffer both at

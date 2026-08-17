@@ -102,7 +102,7 @@ Here is a preview showing the head and tail of the result (lines of the form `..
 
 {content_sample}
 """
-"""Legacy `TOO_LARGE_TOOL_MSG` value retained until `deepagents==0.9.0`."""
+"""Legacy `TOO_LARGE_TOOL_MSG` value, served via `__getattr__` until `deepagents==0.9.0`."""
 
 _LEGACY_TOO_LARGE_HUMAN_MSG: Final = """Message content too large and was saved to the filesystem at: {file_path}
 
@@ -112,7 +112,7 @@ Here is a preview showing the head and tail of the content:
 
 {content_sample}
 """
-"""Legacy `TOO_LARGE_HUMAN_MSG` value retained until `deepagents==0.9.0`."""
+"""Legacy `TOO_LARGE_HUMAN_MSG` value, served via `__getattr__` until `deepagents==0.9.0`."""
 
 _LEGACY_LARGE_RESULT_TEMPLATES: Final = {
     "TOO_LARGE_TOOL_MSG": _LEGACY_TOO_LARGE_TOOL_MSG,
@@ -122,14 +122,16 @@ _LEGACY_LARGE_RESULT_TEMPLATES: Final = {
 
 def __getattr__(name: str) -> str:
     """Provide deprecated compatibility access to legacy prompt templates."""
-    if template := _LEGACY_LARGE_RESULT_TEMPLATES.get(name):
+    if (template := _LEGACY_LARGE_RESULT_TEMPLATES.get(name)) is not None:
         warn_deprecated(
-            since="0.7.2",
+            since="0.7.7",
             removal="0.9.0",
             message=(
-                f"`{name}` was deprecated in `deepagents==0.7.2` and will be removed in "
+                f"`{name}` was deprecated in `deepagents==0.7.7` and will be removed in "
                 "`deepagents==0.9.0`. Large-result prompt templates are internal "
-                "implementation details and should not be imported."
+                "implementation details and should not be imported. This frozen copy "
+                "keeps the released wording; the live template now derives its preview "
+                "note from what the preview actually elided."
             ),
             package="deepagents",
         )
@@ -2846,8 +2848,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return _TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,
-            # The wrapper clips whole bytes, never individual lines, and says so
-            # in-band when it does -- so only the marker caveat can apply here.
+            # `lines_clipped` is a `PREVIEW_LINE_CHAR_LIMIT` caveat and the wrapper
+            # has no per-line character budget, so it never applies here. The
+            # wrapper's byte caps can still cut a shown line mid-line; it discloses
+            # that in-band rather than through this note.
             preview_note=_preview_note(lines_omitted=offload.preview_has_truncation_marker),
             content_sample=content_sample,
         )

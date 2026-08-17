@@ -203,6 +203,38 @@ def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_user_hooks_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Prevent the developer's real hook config from reaching hook loading.
+
+    `_isolate_price_overrides` already redirects
+    `model_config.DEFAULT_CONFIG_DIR`, but `hooks.loading` and `hooks.runtime`
+    bind that name with a `from` import at module import. Whether they see the
+    redirect is therefore an ordering accident: imported lazily inside a test
+    they pick up `tmp_path`, but imported at collection -- which is what a
+    whole-suite run does -- they keep the developer's real `~/.deepagents`.
+
+    A `SessionEnd` entry there is the damaging case. Any `DeepAgentsApp` that
+    finishes startup during a test loads it, and `App.exit()` consults
+    `self._hooks.has_handlers(SESSION_END)` and takes the deferred-teardown
+    branch when handlers exist, so `TestExitGracefulWorkerHandoff`'s
+    synchronous-exit assertions fail. It reads as load-dependent flakiness
+    because those tests race app startup, and it never reproduces in CI, where
+    no such file exists.
+
+    Rebind both to the same `tmp_path` the price-override fixture uses, so all
+    three names agree on the user config directory, and drop the legacy
+    loader's parse cache in case it already holds real entries. Tests needing
+    hook config patch these explicitly, which still wins inside the test body.
+    """
+    for module in ("deepagents_code.hooks.loading", "deepagents_code.hooks.runtime"):
+        monkeypatch.setattr(f"{module}.DEFAULT_CONFIG_DIR", tmp_path)
+
+    import deepagents_code.hooks.legacy as hooks_legacy
+
+    monkeypatch.setattr(hooks_legacy, "_hooks_config", None)
+
+
+@pytest.fixture(autouse=True)
 def _clear_debug_notifications_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent the debug-notifications override from changing suppression tests.
 

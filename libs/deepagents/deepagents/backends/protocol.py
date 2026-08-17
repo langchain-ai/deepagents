@@ -802,9 +802,7 @@ class ExecuteOffloadResult:
     offloaded: bool
     """Whether the output was left at the capture path.
 
-    When `True`, `response.output` holds only a preview (shape is
-    implementation-defined; `BaseSandbox` uses a head/tail excerpt or a leading
-    byte excerpt — see `backends.sandbox._build_capture_execute_cmd`) and the
+    When `True`, `response.output` holds only a preview of the output and the
     full output lives at the capture path on the sandbox filesystem. When
     `False`, `response.output` is the complete output.
     """

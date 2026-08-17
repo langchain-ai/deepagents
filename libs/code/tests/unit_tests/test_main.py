@@ -185,9 +185,9 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
-            ),
+            ) as create_log_file,
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
             patch(
                 "deepagents_code.update_check.clear_startup_auto_update_failure"
@@ -206,6 +206,7 @@ class TestStartupAutoUpdate:
         # `pytest.raises(SystemExit)` would swallow that and pass.
         assert exit_info.value.code == 0
         upgrade.assert_awaited_once()
+        create_log_file.assert_called_once_with()
         clear_failure.assert_called_once_with("9.9.9")
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "tail -f /tmp/dcode-update.log" in printed
@@ -252,7 +253,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -384,7 +385,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", _record_lock_state),
@@ -437,7 +438,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -558,7 +559,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch(
@@ -599,7 +600,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch(
@@ -642,7 +643,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -884,7 +885,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -944,7 +945,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -998,7 +999,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1063,7 +1064,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1124,7 +1125,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1394,7 +1395,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1700,7 +1701,7 @@ class TestAutoUpdateDefaultMigration:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1741,7 +1742,7 @@ class TestAutoUpdateDefaultMigration:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),

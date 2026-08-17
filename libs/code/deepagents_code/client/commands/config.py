@@ -230,7 +230,10 @@ def _resolve(
         `(is_set, source, value)`, where `is_set` is `False` when the value
         came from the typed default.
     """
-    from deepagents_code.config_manifest import resolve_scalar
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_timeout_with_source,
+        resolve_scalar,
+    )
     from deepagents_code.model_config import ProviderAuthSource
 
     if (
@@ -243,6 +246,15 @@ def _resolve(
         key = stored.keys.get(option.provider)
         if key is not None:
             return True, ProviderAuthSource.STORED.value, key
+
+    if option.key == "models.auto_classifier_timeout":
+        # `resolve_scalar` alone would credit an out-of-range env value that the
+        # runtime rejects; use the bounded resolver so the display matches what
+        # the middleware actually enforces.
+        timeout, source = resolve_auto_classifier_timeout_with_source(
+            toml_data=toml_data
+        )
+        return source != "default", source, timeout
 
     value, source = resolve_scalar(option, toml_data=toml_data)
     return source != "default", source, value

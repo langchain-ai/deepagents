@@ -206,7 +206,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/session_abc123.md"),
             patch.object(mw._summarization, "_create_summary", return_value="Summary of the conversation."),
         ):
             result = mw._run_compact(runtime)
@@ -220,7 +220,7 @@ class TestCompactSuccess:
         summary_msg = event["summary_message"]
         assert isinstance(summary_msg, HumanMessage)
         assert "Summary of the conversation." in summary_msg.content
-        assert event["file_path"] == "/conversation_history/test-thread.md"
+        assert event["file_path"] == "/conversation_history/session_abc123.md"
 
         update_messages = result.update["messages"]
         assert len(update_messages) == 1
@@ -270,7 +270,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/session_abc123.md"),
             patch.object(mw._summarization, "_acreate_summary", return_value="Summary of the conversation."),
         ):
             result = await mw._arun_compact(runtime)

@@ -30,6 +30,42 @@ import os
 # Keep alphabetically sorted by constant name.
 # ---------------------------------------------------------------------------
 
+AUTO_CLASSIFIER_MODEL = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL"
+"""Model spec (`provider:model`) used by the Auto approval-mode classifier.
+
+Unset (the default) reuses the main agent model, preserving the historical
+behavior. A `provider:model` value points the authorization classifier at a
+separate — typically faster and cheaper — model without changing the model that
+writes code. The classifier is a security control: a model that cannot be
+resolved (bad spec, missing credentials, uninstalled provider package) never
+falls back to the main model — reviewed actions are denied, and repeated
+failures escalate to your approval. Also settable via `[models].auto_classifier`
+in config.toml and `--auto-classifier-model`.
+
+This is user-controlled process env, not a repo file: a committed *project*
+`.env` cannot set it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`), so a cloned
+repository cannot point the review that authorizes its own tool calls at a weaker
+model. Only the shell, the launch environment, or the global `~/.deepagents/.env`
+can.
+"""
+
+AUTO_CLASSIFIER_TIMEOUT = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_TIMEOUT"
+"""Seconds the Auto approval-mode classifier may take to review one batch.
+
+Raise this when reviews time out on a slow or heavily loaded classifier model:
+a batch that misses the deadline is denied as `classifier_unavailable`, so the
+tool call does not run and repeated misses escalate to your approval. This
+covers the wait for a verdict only — the separate budget for *building* the
+classifier model (cold provider import, credential bootstrap), which denies with
+"could not be built within 30s", is fixed. Values outside 1-300 seconds are
+ignored in favor of the next config source, so the deadline can never be
+removed. Also settable via `[models].auto_classifier_timeout` in config.toml.
+Resolved once per `dcode` start, so a change takes effect on the next launch.
+
+Like `AUTO_CLASSIFIER_MODEL`, a committed *project* `.env` cannot set it (see
+`config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
@@ -96,6 +132,22 @@ checkbox will not appear to "stick" across restarts while the env var remains
 set.
 """
 
+DEBUG_DEP_FLOOR = "DEEPAGENTS_CODE_DEBUG_DEP_FLOOR"
+"""Synthesize a stale editable-dependency floor mismatch at launch.
+
+Set to a truthy value to short-circuit `_collect_violations` to a hard-coded
+fake below-floor dependency, bypassing the editable-install gate and the real
+version comparison. Both channels are then reachable without a genuinely stale
+environment: the blocking pre-TUI continue/mute/abort prompt on an interactive
+terminal launch, and the one-off stderr warning everywhere else.
+
+Note that muting the synthetic mismatch writes a real dismissal for this
+checkout; it re-arms on its own once the fake mismatch changes or the var is
+unset.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
 """Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
 
@@ -122,12 +174,6 @@ center UI can be exercised without waiting for real conditions.
 Does not auto-open the update modal (use `DEEPAGENTS_CODE_DEBUG_UPDATE` for that).
 
 Any non-empty value enables the flag (including `"0"` or `"false"`).
-"""
-
-DEBUG_ONBOARDING = "DEEPAGENTS_CODE_DEBUG_ONBOARDING"
-"""Force the onboarding flow to open on every interactive startup.
-
-Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
 DEBUG_UPDATE = "DEEPAGENTS_CODE_DEBUG_UPDATE"
@@ -284,6 +330,22 @@ and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
 """
 
+ONBOARDING = "DEEPAGENTS_CODE_ONBOARDING"
+"""Override whether the first-run onboarding flow opens at interactive startup.
+
+Three-state, parsed by `classify_env_bool`:
+
+- Unset (or an unrecognized token): keep the default first-run behavior, i.e.
+  run onboarding until the completion marker exists.
+- Falsy (`0`, `false`, `no`, `off`, or empty): never open onboarding, even on a
+  fresh install with no completion marker.
+- Truthy (`1`, `true`, `yes`, `on`): force onboarding to open on every
+  interactive startup, ignoring the completion marker.
+
+Read by `should_run_onboarding`; skipping the flow this way does not write the
+completion marker, so unsetting the variable restores first-run behavior.
+"""
+
 ONBOARDING_INTEGRATIONS_SCREEN = "DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN"
 """Show the "Installed Integrations" summary screen during first-run onboarding.
 
@@ -309,10 +371,33 @@ option declares `empty_env_is_false`. Other tokens are parsed by
 user-supplied key is always preserved.
 """
 
+PLUGIN_AUTO_UPDATE = "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE"
+"""Toggle background updates for installed marketplace plugins.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to disable every plugin update regardless of its manifest setting.
+"""
+
 PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
+"""
+
+PRICES_AUTO_UPDATE = "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE"
+"""Toggle hourly background refresh of the `genai-prices` pricing catalog.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to keep using only the pricing data bundled with the installed `genai-prices`
+package. `DEEPAGENTS_CODE_OFFLINE` suppresses the refresh too, along with
+every other network fetch.
+
+Parsed by `is_env_truthy` on each pricing call until the updater starts, and
+never read again after that -- so disabling it mid-process has no effect on a
+running updater, while enabling it mid-process starts one on the next priced
+request. Also the escape hatch for hosts embedding this package that manage
+`genai_prices.UpdatePrices` themselves: genai-prices permits one updater per
+process, so an embedder that starts its own would otherwise race this one.
 """
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"

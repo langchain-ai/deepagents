@@ -122,4 +122,12 @@ ignore-var-parameters = true
 ]
 
 [tool.pytest.ini_options]
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+    # `google.genai.types` builds a union alias out of `typing._UnionGenericAlias`
+    # at import time, which Python 3.14 deprecates. Nothing here can act on it --
+    # it fires before any of our code runs and is fixed by upgrading the SDK.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+]
 asyncio_mode = "auto"

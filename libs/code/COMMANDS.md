@@ -8,16 +8,17 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (38)
+## Public (40)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
 | `/agents` |  | Browse and switch between available agents |
 | `/auth` | `/connect` | Connect and manage provider and service credentials |
-| `/auto` |  | Switch to Auto approval mode |
+| `/auto` |  | Switch to Auto approval mode or manage its classifier model |
 | `/auto-update` |  | Turn automatic updates on or off |
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Clear the chat and start a new thread |
+| `/context` |  | Show current context window usage |
 | `/copy` |  | Copy the latest assistant message to clipboard |
 | `/cost` |  | Show estimated thread cost |
 | `/docs` |  | Open the docs |
@@ -28,6 +29,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
+| `/line-numbers` |  | Show or hide line numbers in file diffs |
 | `/manual` |  | Switch to Manual approval mode |
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |

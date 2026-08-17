@@ -17,9 +17,11 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
-from langchain_core.outputs import ChatResult
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -146,6 +148,46 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     ) -> ChatResult:
         self.captured_messages.append(messages)
         return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class SummaryFilteringModel(FixedGenericFakeChatModel):
+    """Serves summarization's summary-generation call separately from the action script.
+
+    A summarization event makes an extra model call to write the summary, in
+    addition to the normal turn's call. Detecting that call by the summary
+    prompt's `<messages>` marker and returning a canned summary lets the scripted
+    `messages` iterator hold only the agent's turn-by-turn actions, without
+    predicting when summarization fires.
+    """
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(m.content, str) and "<messages>" in m.content for m in messages):
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="summary"))])
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class MaskedChatOpenAI(ChatOpenAI):
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
+
+
+class MaskedAzureChatOpenAI(AzureChatOpenAI):
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
+
+
+class MaskedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
 
 
 class TestDeepAgentEndToEnd:
@@ -3142,6 +3184,152 @@ class TestArtifactsRoot:
         default_ls = backend.ls("/conversation_history/")
         assert not default_ls.entries, "No files should be written to /conversation_history/ when artifacts_root is set"
 
+    @staticmethod
+    def _offloaded_history_names(backend: CompositeBackend) -> list[str]:
+        """Return the basenames of offloaded history files under the artifacts root."""
+        entries = backend.ls("/workspace/conversation_history/").entries or []
+        return [e["path"].rsplit("/", 1)[-1] for e in entries if e["path"].endswith(".md")]
+
+    def _summarizing_agent(self, backend: CompositeBackend) -> CompiledStateGraph:
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="summary goes here"),
+                    AIMessage(content="response"),
+                ]
+            )
+        )
+        fake_model.profile = {"max_input_tokens": 200_000}
+        return create_deep_agent(model=fake_model, backend=backend, checkpointer=InMemorySaver())
+
+    @staticmethod
+    def _messages_over_threshold() -> list[BaseMessage]:
+        small = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        large = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        return [
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content="query"),
+        ]
+
+    def test_offload_path_uses_session_id_not_thread_id(self) -> None:
+        """The offload history file is named by an internal session id, not the thread_id."""
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+        agent = self._summarizing_agent(backend)
+
+        thread_id = "conversation-alpha"
+        agent.invoke({"messages": self._messages_over_threshold()}, {"configurable": {"thread_id": thread_id}})
+
+        names = self._offloaded_history_names(backend)
+        assert names, "expected conversation history offloaded"
+        assert all(name.startswith("session_") for name in names)
+        assert all(thread_id not in name for name in names)
+
+    def test_offload_ignores_caller_supplied_session_id(self) -> None:
+        """A `_summarization_session_id` supplied on invoke input does not name the file.
+
+        The session id is a `PrivateStateAttr`, so LangGraph does not load it
+        from caller input; the internally generated id is used instead.
+        """
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+        agent = self._summarizing_agent(backend)
+
+        supplied = "caller-supplied-id"
+        agent.invoke(
+            {"messages": self._messages_over_threshold(), "_summarization_session_id": supplied},
+            {"configurable": {"thread_id": "conversation-beta"}},
+        )
+
+        names = self._offloaded_history_names(backend)
+        assert names, "expected conversation history offloaded"
+        assert all(name.startswith("session_") for name in names)
+        assert f"{supplied}.md" not in names
+
+    def test_parent_and_subagent_offload_to_separate_files(self) -> None:
+        """A parent and a sub-agent that both summarize write to separate history files.
+
+        Both share one backend under a single thread. The parent summarizes its
+        oversized opening context, then delegates to a sub-agent that loops tool
+        calls until its own context crosses the threshold and summarizes too.
+        The two offloads land in distinct files rather than overwriting one.
+        """
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        @tool(description="Return a block of filler text.")
+        def filler() -> str:
+            # ~10k tokens: accumulates toward the summarization threshold but
+            # stays under the 20k-token per-result eviction limit.
+            return "x" * 40_000
+
+        subagent_model = SummaryFilteringModel(
+            messages=iter(
+                [
+                    *(
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "filler", "args": {}, "id": f"filler_{i}", "type": "tool_call"}],
+                        )
+                        for i in range(5)
+                    ),
+                    AIMessage(content="subagent done"),
+                ]
+            )
+        )
+        subagent_model.profile = {"max_input_tokens": 50_000}
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "Does a chunk of work.",
+            "system_prompt": "Do the work.",
+            "model": subagent_model,
+            "tools": [filler],
+        }
+
+        parent_model = SummaryFilteringModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "do it", "subagent_type": "worker"},
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        parent_model.profile = {"max_input_tokens": 200_000}
+
+        agent = create_deep_agent(model=parent_model, backend=backend, subagents=[worker], checkpointer=InMemorySaver())
+
+        agent.invoke({"messages": self._messages_over_threshold()}, {"configurable": {"thread_id": "shared-thread"}})
+
+        names = self._offloaded_history_names(backend)
+        assert len(names) >= 2, f"expected separate parent and sub-agent history files, got {names}"
+        assert len(set(names)) == len(names), f"history files collided: {names}"
+        assert all(name.startswith("session_") for name in names)
+
     def test_create_deep_agent_no_composite_backend(self) -> None:
         """A non-composite backend defaults artifacts_root to '/' (root prefix)."""
 
@@ -4657,11 +4845,7 @@ class TestMultimodalProfileScrubProfileGatedBlocks:
 
 
 class TestMultimodalProfileScrubNonPdfFileProviderGate:
-    """Non-PDF `file` blocks (`.docx`, ...) have no `ModelProfile` field yet.
-
-    Support is hard-coded per exact `_llm_type` regardless of whether
-    `profile` itself is present.
-    """
+    """Non-PDF `file` blocks (`.docx`, ...) have no `ModelProfile` field yet."""
 
     def test_docx_stripped_for_anthropic(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]), llm_type="anthropic-chat")
@@ -4670,31 +4854,34 @@ class TestMultimodalProfileScrubNonPdfFileProviderGate:
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
 
-    def test_docx_passes_for_openai(self) -> None:
-        model = FixedGenericFakeChatModel(messages=iter([]), llm_type="openai-chat")
-        _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
+    @pytest.mark.parametrize(
+        "model",
+        [
+            MaskedChatOpenAI.model_construct(),
+            MaskedAzureChatOpenAI.model_construct(),
+            MaskedChatGoogleGenerativeAI.model_construct(),
+        ],
+    )
+    def test_provider_class_tolerates_docx_when_llm_type_is_masked(self, model: ChatOpenAI | ChatGoogleGenerativeAI) -> None:
+        message = ToolMessage(
+            content_blocks=[
+                {
+                    "type": "file",
+                    "base64": _docx_base64(),
+                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }
+            ],
+            tool_call_id="docx-read-1",
+            additional_kwargs={"read_file_path": "/report.docx"},
+        )
 
-        tool_message = _second_call_tool_message(model)
-        blocks = tool_message.content_blocks
-        assert blocks[0]["type"] == "file"
-        assert blocks[0]["base64"] == _docx_base64()
+        assert model._llm_type == "langchain-chat"
+        scrubbed = filesystem_middleware._scrub_unsupported_multimodal_content([message], model)
+        assert scrubbed[0].content_blocks[0]["base64"] == _docx_base64()
 
-    def test_docx_passes_for_gemini(self) -> None:
-        model = FixedGenericFakeChatModel(messages=iter([]), llm_type="chat-google-generative-ai")
-        _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
-
-        tool_message = _second_call_tool_message(model)
-        assert tool_message.content_blocks[0]["type"] == "file"
-        assert tool_message.content_blocks[0]["base64"] == _docx_base64()
-
-    def test_openai_mantle_style_llm_type_is_not_treated_as_openai(self) -> None:
-        """Regression: a substring match on `_llm_type` would misclassify this.
-
-        A third-party `_llm_type` that merely *contains* `"openai"` (e.g. a
-        Bedrock-hosted model inheriting from `ChatOpenAI`) isn't genuine OpenAI
-        and shouldn't get the non-PDF-file pass.
-        """
-        model = FixedGenericFakeChatModel(messages=iter([]), llm_type="openai-mantle-chat")
+    @pytest.mark.parametrize("llm_type", ["openai-chat", "azure-openai-chat", "chat-google-generative-ai", "openai-mantle-chat"])
+    def test_llm_type_does_not_grant_docx_support(self, llm_type: str) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), llm_type=llm_type)
         _read_file_agent(model=model, file_path="/report.docx", file_base64=_docx_base64())
 
         tool_message = _second_call_tool_message(model)

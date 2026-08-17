@@ -14877,7 +14877,7 @@ class DeepAgentsApp(App):
                         "during load."
                     )
 
-                if self._server_proc is not None and self._server_kwargs is not None:
+                if self._server_kwargs is not None and self._server_proc is not None:
                     if self._agent_running and self._agent_worker:
                         self._cancel_worker(self._agent_worker)
                         # Via `_set_agent_running` so the quiescence event is
@@ -14911,7 +14911,7 @@ class DeepAgentsApp(App):
                         report += (
                             "\nAgent server was not restarted; plugin MCP may be stale."
                         )
-                else:
+                elif self._server_kwargs is None:
                     # Attached to an externally managed server: this session
                     # cannot respawn it, so MCP config was never re-read. The
                     # plugin line above still counts plugin MCP servers, which
@@ -14919,6 +14919,26 @@ class DeepAgentsApp(App):
                     report += (
                         "\nMCP servers unchanged; this session uses a remote "
                         "server and cannot reload MCP config."
+                    )
+                # Deferred local startup (app-owned kwargs, no process yet):
+                # not a remote session, so don't claim it is one — the
+                # deferred start below may boot the server from the config
+                # this reload just read, which would contradict the report.
+                # Keyed on the session's `no_mcp` kwarg rather than absent
+                # preload kwargs so the reason matches how `_respawn_server`
+                # derives the same status.
+                elif self._server_kwargs.get("no_mcp"):
+                    # Mirrors the `--no-mcp` line in the restart branch.
+                    report += (
+                        "\nMCP is disabled for this session (--no-mcp); "
+                        "no servers were loaded."
+                    )
+                else:
+                    report += (
+                        "\nMCP server changes couldn't be determined; the "
+                        "local server hasn't started yet. If startup "
+                        "succeeds, it loads the reloaded config — use /mcp "
+                        "to check."
                     )
 
             await self._mount_message(AppMessage(report))

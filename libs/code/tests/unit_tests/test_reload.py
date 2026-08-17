@@ -2339,3 +2339,63 @@ class TestReloadPluginsViaReload:
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "cannot reload MCP config" in text
+
+    @pytest.mark.parametrize("no_mcp", [False, True])
+    async def test_reload_deferred_local_startup_is_not_labeled_remote(
+        self, monkeypatch: pytest.MonkeyPatch, no_mcp: bool
+    ) -> None:
+        """A pending local server start is not a remote session.
+
+        Deferred startup leaves `_server_kwargs` populated with `_server_proc`
+        still `None`; calling that "remote" would mislabel the session mode and
+        contradict the deferred start that `/reload` itself may trigger.
+        """
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plugin = MagicMock(plugin_id="new@tools")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_plugin_ids = frozenset({"old@tools"})
+            # Deferred local startup: owned kwargs cached, no process yet.
+            app._server_proc = None
+            app._server_kwargs = {"no_mcp": no_mcp}
+            app._server_startup_deferred = True
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_discard_queue", lambda: None)
+            # `_server_kwargs` is a stub, so the deferred start the reload
+            # triggers must not actually boot a server.
+            real_run_worker = app.run_worker
+
+            def _run_worker_skip_server_start(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                if kwargs.get("group") == "server-startup":
+                    return None
+                return real_run_worker(*args, **kwargs)
+
+            monkeypatch.setattr(app, "run_worker", _run_worker_skip_server_start)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=(plugin,)),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "remote" not in text
+            assert "cannot reload MCP config" not in text
+            if no_mcp:
+                assert "MCP is disabled for this session (--no-mcp)" in text
+            else:
+                assert "hasn't started yet" in text

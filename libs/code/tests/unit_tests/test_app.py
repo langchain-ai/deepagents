@@ -32958,6 +32958,25 @@ class TestFormatMcpServerChanges:
             "MCP server changes:\n  - Failed to load: notion (use /mcp for details)"
         )
 
+    def test_flags_newly_added_server_that_failed_to_load(self) -> None:
+        """A new server failing its first discovery is a failure, not a load."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            MCPServerInfo(name="notion", transport="stdio"),
+            MCPServerInfo(
+                name="github",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Failed to load: github (use /mcp for details)"
+        )
+
     def test_reports_server_that_recovered_with_the_same_name(self) -> None:
         """A same-name `error` -> `ok` transition is not "no changes"."""
         from deepagents_code.mcp_tools import MCPServerInfo

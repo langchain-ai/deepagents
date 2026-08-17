@@ -784,12 +784,20 @@ def _format_mcp_server_changes(
     before = {s.name: s for s in previous if s.transport != "config"}
     before_config_errors = {s.name for s in previous if s.transport == "config"}
 
-    loaded = sorted(servers.keys() - before.keys())
+    # "Loaded" means newly added and actually usable — a new server already
+    # failing its first tool discovery is a failure, not a successful load.
+    loaded = sorted(
+        name for name in servers.keys() - before.keys() if servers[name].status == "ok"
+    )
     removed = sorted(before.keys() - servers.keys())
     failing = sorted(
         name
         for name, server in servers.items()
-        if server.status == "error" and before.get(name, server).status != "error"
+        if server.status == "error"
+        # `before.get(name)` (no default): a name absent from the baseline is a
+        # new server, and a new server already erroring on its first tool
+        # discovery is a failed load, not a self-comparison.
+        and (name not in before or before[name].status != "error")
     )
     recovered = sorted(
         name

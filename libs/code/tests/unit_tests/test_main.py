@@ -164,7 +164,7 @@ class TestStartupAutoUpdate:
     def test_successful_update_restarts_before_launch(self) -> None:
         """A successful startup auto-update should exec a fresh process."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -224,7 +224,7 @@ class TestStartupAutoUpdate:
         from deepagents_code.update_check import ShadowedDcode
 
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         # Embed `[` in the shadowing path — legal on POSIX filesystems —
         # so a regression that dropped `escape()` would raise a Rich
         # `MarkupError` here instead of silently emitting broken styling.
@@ -309,7 +309,7 @@ class TestStartupAutoUpdate:
         winning session's upgrade would suppress this one's next few attempts.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -358,10 +358,12 @@ class TestStartupAutoUpdate:
         held_during_install: list[bool] = []
 
         # Async to match the `perform_upgrade` it replaces, which is awaited.
-        async def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:  # noqa: RUF029
+        async def _record_lock_state(  # noqa: RUF029
+            **_kwargs: object,
+        ) -> tuple[bool, str, str | None]:
             with update_install_lock() as holding:
                 held_during_install.append(holding)
-            return True, "updated"
+            return True, "updated", "9.9.9"
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -408,7 +410,7 @@ class TestStartupAutoUpdate:
         where the restart raises and this process keeps running.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         held_during_restart: list[bool] = []
 
         def _record_lock_state() -> None:
@@ -539,7 +541,7 @@ class TestStartupAutoUpdate:
     def test_failed_update_does_not_restart_and_continues(self) -> None:
         """A failed upgrade must not restart; it surfaces the error and returns."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(False, "pip exploded"))
+        upgrade = AsyncMock(return_value=(False, "pip exploded", None))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -580,7 +582,7 @@ class TestStartupAutoUpdate:
     def test_unpersisted_failure_marker_warns_user(self) -> None:
         """An unwritable cooldown marker must be surfaced, not silently dropped."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(False, "pip exploded"))
+        upgrade = AsyncMock(return_value=(False, "pip exploded", None))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -865,7 +867,7 @@ class TestStartupAutoUpdate:
         outcome, and must not be worded as an update failure.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -920,7 +922,7 @@ class TestStartupAutoUpdate:
         from deepagents_code.update_check import ShadowedDcode
 
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         shadow = ShadowedDcode(
             shadowing_bin=Path("C:/old/bin/dcode.cmd"),
             upgraded_bin_dir=Path("C:/uv/bin"),
@@ -979,7 +981,7 @@ class TestStartupAutoUpdate:
         log and the exit status simultaneously.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1040,7 +1042,7 @@ class TestStartupAutoUpdate:
         from deepagents_code.update_check import ShadowedDcode
 
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         shadow = ShadowedDcode(
             shadowing_bin=Path("/opt/old/bin/dcode"),
             upgraded_bin_dir=Path("/home/user/.local/bin"),
@@ -1105,7 +1107,7 @@ class TestStartupAutoUpdate:
         uncaught and crash startup after an otherwise-successful upgrade.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1365,7 +1367,7 @@ class TestStartupAutoUpdate:
         stream = StringIO()
         console = Console(file=stream, force_terminal=True, no_color=True, width=80)
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.8")
-        upgrade = AsyncMock(return_value=(True, ""))
+        upgrade = AsyncMock(return_value=(True, "", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1547,7 +1549,7 @@ class TestAutoUpdateDefaultMigration:
     def test_first_run_announces_and_skips_install(self) -> None:
         """An implicit (default) opt-in announces once and skips the install."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1587,7 +1589,7 @@ class TestAutoUpdateDefaultMigration:
     def test_first_run_persist_failure_warns_repeat(self) -> None:
         """A failed acknowledgement persist surfaces that the notice may repeat."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1634,7 +1636,7 @@ class TestAutoUpdateDefaultMigration:
         """
         monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_UPDATE", "1")
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1673,7 +1675,7 @@ class TestAutoUpdateDefaultMigration:
     def test_acknowledged_default_proceeds_with_install(self) -> None:
         """Once acknowledged, the install proceeds normally on later launches."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1724,7 +1726,7 @@ class TestAutoUpdateDefaultMigration:
         config_path = tmp_path / "config.toml"
         state_file = tmp_path / "update_state.json"
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),

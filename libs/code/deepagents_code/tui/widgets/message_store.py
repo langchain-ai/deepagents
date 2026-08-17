@@ -186,7 +186,7 @@ class MessageData:
     line. See `ToolCallMessage.has_display_caveat`.
     """
 
-    tool_group_messages: list[MessageData] | None = None
+    tool_group_messages: list[MessageData] = field(default_factory=list)
     """Completed tool/diff rows retained by a lazy `TOOL_GROUP` summary."""
 
     tool_group_expanded: bool = False
@@ -350,9 +350,6 @@ class MessageData:
 
         Returns:
             The appropriate message widget for this data.
-
-        Raises:
-            ValueError: If mutable message data no longer satisfies its type invariant.
         """
         # Import here to avoid circular imports
         from deepagents_code.tui.widgets.messages import (
@@ -404,12 +401,8 @@ class MessageData:
                 return widget
 
             case MessageType.TOOL_GROUP:
-                detail_rows = self.tool_group_messages
-                if not detail_rows:
-                    msg = "TOOL_GROUP messages must have detail rows"
-                    raise ValueError(msg)
                 widget = LazyToolGroupSummary(
-                    detail_rows,
+                    self.tool_group_messages,
                     detail_builder=tool_group_detail_builder,
                     id=self.id,
                 )

@@ -14931,7 +14931,7 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
-            await app._hydrate_messages_above()
+            await app._hydrate_messages("above")
             await pilot.pause()
 
             footer = app.query_one("#hist-0-timestamp-footer", Static)
@@ -14996,7 +14996,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._prune_messages("below", messages)
             await pilot.pause()
 
             assert app._message_store.has_messages_below
@@ -15036,7 +15036,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._prune_messages("below", messages)
             await pilot.pause()
             assert app._message_store.has_messages_below
 
@@ -15053,7 +15053,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(failing, "to_widget", _boom)
 
-            await app._hydrate_messages_below()
+            await app._hydrate_messages("below")
             await pilot.pause()
 
             # The store's visible range must match exactly the mounted rows:
@@ -15116,7 +15116,7 @@ class TestMessageTimestampFooters:
             await app.query_one("#missing-0", UserMessage).remove()
             await pilot.pause()
 
-            assert await app._prune_old_messages() == 2
+            assert await app._prune_messages("above") == 2
             assert [data.id for data in app._message_store.get_visible_messages()] == [
                 "missing-2"
             ]
@@ -15162,10 +15162,10 @@ class TestMessageTimestampFooters:
             assert inner._expanded is True
 
             app._message_store.WINDOW_SIZE = 1
-            assert await app._prune_old_messages() == 1
+            assert await app._prune_messages("above") == 1
             assert tool.tool_expanded is True
 
-            assert await app._hydrate_messages_above(count=1) == 1
+            assert await app._hydrate_messages("above", count=1) == 1
             await pilot.pause()
             restored = app.query_one("#lazy-group", LazyToolGroupSummary)
             await restored._set_expanded(True)

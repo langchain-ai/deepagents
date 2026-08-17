@@ -18,6 +18,7 @@ import webbrowser
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
+from itertools import groupby
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -237,46 +238,6 @@ group summary would still count and phrase a row the user cannot see, and one
 `display` flag with two independent owners is a standing hazard even when both
 currently agree.
 """
-
-
-def _collapse_restored_tool_groups(messages: list[MessageData]) -> list[MessageData]:
-    """Replace completed groupable tool runs with lazy data-backed summaries.
-
-    Args:
-        messages: Converted checkpoint rows in transcript order.
-
-    Returns:
-        Display rows with each collapsible tool run represented once.
-    """
-    collapsed: list[MessageData] = []
-    group: list[MessageData] = []
-
-    def flush() -> None:
-        if not group:
-            return
-        collapsed.append(
-            MessageData(
-                type=MessageType.TOOL_GROUP,
-                content="",
-                timestamp=group[0].timestamp,
-                tool_group_messages=list(group),
-            )
-        )
-        group.clear()
-
-    for message in messages:
-        if (
-            message.type == MessageType.TOOL
-            and message.tool_status == ToolStatus.SUCCESS
-            and message.tool_name not in _TOOL_GROUP_EXCLUSIONS
-            and not message.tool_display_caveat
-        ):
-            group.append(message)
-            continue
-        flush()
-        collapsed.append(message)
-    flush()
-    return collapsed
 
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
@@ -3227,12 +3188,6 @@ class DeepAgentsApp(App):
 
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
-
-    _TRANSCRIPT_PRUNE_IDLE_SECONDS = 0.2
-    """Seconds without transcript activity before the mounted window is trimmed."""
-
-    _TRANSCRIPT_PRUNE_SLICE_SECONDS = 0.001
-    """Smallest non-zero delay Textual timers accept between prune slices."""
 
     _hydration_failure_notified: bool = False
     """Set once a hydration failure has been surfaced, to avoid toast spam.
@@ -8534,10 +8489,7 @@ class DeepAgentsApp(App):
                         - self._message_store.visible_count,
                     ),
                 )
-            if direction == "above":
-                hydrated_count = await self._hydrate_messages_above(count=count)
-            else:
-                hydrated_count = await self._hydrate_messages_below(count=count)
+            hydrated_count = await self._hydrate_messages(direction, count=count)
         finally:
             self._hydration_scheduled = False
 
@@ -8706,19 +8658,29 @@ class DeepAgentsApp(App):
             return False
         return True
 
-    async def _hydrate_messages_above(self, *, count: int | None = None) -> int:
-        """Hydrate one contiguous batch of older messages.
+    async def _hydrate_messages(
+        self,
+        direction: Literal["above", "below"],
+        *,
+        count: int | None = None,
+    ) -> int:
+        """Hydrate one contiguous batch at a mounted-window edge.
 
         Args:
+            direction: Edge receiving stored messages.
             count: Maximum messages to mount; defaults to `HYDRATE_BUFFER`.
 
         Returns:
             Number of messages mounted.
         """
-        generation = self._transcript_generation
-        if not self._message_store.has_messages_above:
+        above = direction == "above"
+        if not (
+            self._message_store.has_messages_above
+            if above
+            else self._message_store.has_messages_below
+        ):
             return 0
-
+        generation = self._transcript_generation
         try:
             chat = self.query_one("#chat", VerticalScroll)
             messages_container = self.query_one("#messages", Container)
@@ -8727,86 +8689,40 @@ class DeepAgentsApp(App):
             return 0
         await self._ensure_transcript_spacers(messages_container)
 
-        to_hydrate = self._message_store.get_messages_to_hydrate(count)
+        to_hydrate = (
+            self._message_store.get_messages_to_hydrate(count)
+            if above
+            else self._message_store.get_messages_to_hydrate_below(count)
+        )
         if not to_hydrate:
             return 0
 
         old_scroll_y = chat.scroll_y
-        # Build from the window edge outward, then reverse the batch back to
-        # chronological DOM order for one mount call.
-        entries = [
-            self._build_hydration_entry(msg_data, "above")
-            for msg_data in reversed(to_hydrate)
-        ]
-        entries.reverse()
-        if not entries or not await self._mount_hydration_batch(
+        rows = reversed(to_hydrate) if above else iter(to_hydrate)
+        entries = [self._build_hydration_entry(data) for data in rows]
+        if above:
+            entries.reverse()
+        if not await self._mount_hydration_batch(
             messages_container,
             entries,
-            before=self._first_transcript_child(messages_container),
+            before=(
+                self._first_transcript_child(messages_container) if above else None
+            ),
             generation=generation,
         ):
             return 0
 
         hydrated_ids = [data.id for _widget, data, _footer in entries]
-        hydrated_count = len(hydrated_ids)
-        self._message_store.mark_hydrated(hydrated_count)
+        if above:
+            self._message_store.mark_hydrated(len(entries))
+        else:
+            self._message_store.mark_hydrated_below(len(entries))
         self._schedule_message_height_measurements(hydrated_ids)
         self._sync_transcript_spacers(messages_container)
-        self._schedule_transcript_prune("below")
-
-        # The top spacer already shrank by the hydrated rows' estimated height
-        # while real widgets filled the freed space, so the viewport anchor holds
-        # without compensating for every mounted row individually.
-        chat.scroll_y = old_scroll_y
-
-        await self._regroup_completed_tools()
-        return hydrated_count
-
-    async def _hydrate_messages_below(self, *, count: int | None = None) -> int:
-        """Hydrate one contiguous batch of newer messages.
-
-        Args:
-            count: Maximum messages to mount; defaults to `HYDRATE_BUFFER`.
-
-        Returns:
-            Number of messages mounted.
-        """
-        generation = self._transcript_generation
-        if not self._message_store.has_messages_below:
-            return 0
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            messages_container = self.query_one("#messages", Container)
-        except NoMatches:
-            logger.debug("Skipping hydrate below: chat/messages container not found")
-            return 0
-        await self._ensure_transcript_spacers(messages_container)
-
-        to_hydrate = self._message_store.get_messages_to_hydrate_below(count)
-        if not to_hydrate:
-            return 0
-
-        old_scroll_y = chat.scroll_y
-        entries = [
-            self._build_hydration_entry(msg_data, "below") for msg_data in to_hydrate
-        ]
-
-        if not entries or not await self._mount_hydration_batch(
-            messages_container,
-            entries,
-            generation=generation,
-        ):
-            return 0
-
-        hydrated_ids = [data.id for _widget, data, _footer in entries]
-        hydrated_count = len(hydrated_ids)
-        self._message_store.mark_hydrated_below(hydrated_count)
-        self._schedule_message_height_measurements(hydrated_ids)
-        self._sync_transcript_spacers(messages_container)
-        self._schedule_transcript_prune("above")
+        self._schedule_transcript_prune("below" if above else "above")
         chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
-        return hydrated_count
+        return len(entries)
 
     def _schedule_transcript_prune(
         self,
@@ -8827,9 +8743,7 @@ class DeepAgentsApp(App):
         if self._transcript_prune_timer is not None:
             self._transcript_prune_timer.stop()
         delay = (
-            self._TRANSCRIPT_PRUNE_SLICE_SECONDS
-            if immediate or self._message_store.hard_window_exceeded()
-            else self._TRANSCRIPT_PRUNE_IDLE_SECONDS
+            0.001 if immediate or self._message_store.hard_window_exceeded() else 0.2
         )
         self._transcript_prune_timer = self.set_timer(
             delay, self._run_transcript_prune_slice
@@ -8847,10 +8761,9 @@ class DeepAgentsApp(App):
         self._transcript_prune_running = True
         try:
             count = min(excess, self._message_store.HYDRATE_BUFFER)
-            if self._transcript_prune_direction == "below":
-                pruned = await self._prune_messages_below_window(count=count)
-            else:
-                pruned = await self._prune_old_messages(count=count)
+            pruned = await self._prune_messages(
+                self._transcript_prune_direction, count=count
+            )
         finally:
             self._transcript_prune_running = False
 
@@ -9010,10 +8923,6 @@ class DeepAgentsApp(App):
             bottom,
             self._message_store.range_height(end, self._message_store.total_count),
         )
-
-    def _schedule_message_height_measurement(self, message_id: str) -> None:
-        """Measure one message after Textual lays it out."""
-        self._schedule_message_height_measurements([message_id])
 
     def _schedule_message_height_measurements(self, message_ids: list[str]) -> None:
         """Measure a mounted batch in one post-layout spacer update."""
@@ -17590,7 +17499,29 @@ class DeepAgentsApp(App):
         for idx in pending_tool_indices.values():
             result[idx].tool_status = ToolStatus.REJECTED
 
-        return _collapse_restored_tool_groups(result)
+        collapsed: list[MessageData] = []
+        for groupable, rows in groupby(
+            result,
+            key=lambda message: (
+                message.type == MessageType.TOOL
+                and message.tool_status == ToolStatus.SUCCESS
+                and message.tool_name not in _TOOL_GROUP_EXCLUSIONS
+                and not message.tool_display_caveat
+            ),
+        ):
+            group = list(rows)
+            if groupable:
+                collapsed.append(
+                    MessageData(
+                        type=MessageType.TOOL_GROUP,
+                        content="",
+                        timestamp=group[0].timestamp,
+                        tool_group_messages=group,
+                    )
+                )
+            else:
+                collapsed.extend(group)
+        return collapsed
 
     async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
         """Fetch thread state values for a thread.
@@ -18094,15 +18025,12 @@ class DeepAgentsApp(App):
         return widget, footer
 
     def _build_hydration_entry(
-        self,
-        data: MessageData,
-        direction: Literal["above", "below"],
+        self, data: MessageData
     ) -> tuple[Widget, MessageData, Static | None]:
         """Build one stored row, substituting a visible placeholder on failure.
 
         Args:
             data: Stored row to rebuild.
-            direction: Mounted-window edge receiving the row.
 
         Returns:
             Widget, source data, and optional timestamp footer for batch mounting.
@@ -18111,9 +18039,8 @@ class DeepAgentsApp(App):
             widget, footer = self._build_message_with_timestamp_footer(data)
         except Exception:
             logger.warning(
-                "Failed to hydrate message %s %s window; showing placeholder",
+                "Failed to hydrate message %s; showing placeholder",
                 data.id,
-                direction,
                 exc_info=True,
             )
             self._notify_hydration_failure()
@@ -18405,7 +18332,7 @@ class DeepAgentsApp(App):
                 elif is_groupable_diff:
                     self._active_tool_group.add_collapsible(widget, *accessories)
 
-        self._schedule_message_height_measurement(message_data.id)
+        self._schedule_message_height_measurements([message_data.id])
         self._sync_transcript_spacers(messages)
 
         # Keep appends cheap; trim the old edge only after transcript activity settles.
@@ -18424,103 +18351,35 @@ class DeepAgentsApp(App):
         """Mount any hidden tail before appending fresh transcript output."""
         while self._message_store.has_messages_below:
             before = self._message_store.get_visible_range()[1]
-            await self._hydrate_messages_below()
+            await self._hydrate_messages("below")
             after = self._message_store.get_visible_range()[1]
             if after == before:
                 break
 
-    async def _prune_old_messages(self, *, count: int | None = None) -> int:
-        """Prune a bounded batch from the oldest mounted edge.
-
-        Args:
-            count: Maximum messages to remove; defaults to the full soft-limit
-                excess.
-
-        Returns:
-            Number of messages removed.
-        """
-        generation = self._transcript_generation
-        if not self._message_store.window_exceeded():
-            return 0
-
-        try:
-            messages_container = self.query_one("#messages", Container)
-        except NoMatches:
-            logger.debug("Skipping pruning: #messages container not found")
-            return 0
-
-        to_prune = self._message_store.get_messages_to_prune(count)
-        if not to_prune:
-            return 0
-
-        pruned_ids: list[str] = []
-        for msg_data in to_prune:
-            if generation != self._transcript_generation:
-                return 0
-            footer_id = _message_timestamp_footer_id(msg_data.id)
-            try:
-                widget = messages_container.query_one(f"#{msg_data.id}")
-            except NoMatches:
-                logger.warning(
-                    "Widget %s missing during pruning; reconciling store window",
-                    msg_data.id,
-                )
-                with suppress(NoMatches):
-                    footer = messages_container.query_one(f"#{footer_id}")
-                    await footer.remove()
-                if generation != self._transcript_generation:
-                    return 0
-                pruned_ids.append(msg_data.id)
-                continue
-            if isinstance(widget, LazyToolGroupSummary):
-                widget._snapshot_detail_state()
-            with suppress(NoMatches):
-                footer = messages_container.query_one(f"#{footer_id}")
-                await footer.remove()
-            if generation != self._transcript_generation:
-                return 0
-            await widget.remove()
-            if generation != self._transcript_generation:
-                return 0
-            pruned_ids.append(msg_data.id)
-
-        if generation != self._transcript_generation:
-            return 0
-        if pruned_ids:
-            self._message_store.mark_pruned(pruned_ids)
-            self._sync_transcript_spacers(messages_container)
-            # Drop any group summaries whose members were all pruned away so a
-            # stray collapsed line never lingers above the window. Only reachable
-            # when something was actually pruned this pass.
-            for summary in list(self.query(ToolGroupSummary)):
-                if not summary.has_attached_members:
-                    try:
-                        await summary.remove()
-                    except Exception:
-                        logger.debug(
-                            "Failed to remove orphaned tool group summary",
-                            exc_info=True,
-                        )
-        return len(pruned_ids)
-
-    async def _prune_messages_below_window(
+    async def _prune_messages(
         self,
+        direction: Literal["above", "below"],
         messages_container: Container | None = None,
         *,
         count: int | None = None,
     ) -> int:
-        """Prune a bounded batch from the newest mounted edge.
+        """Prune a bounded batch from one mounted-window edge.
 
         Args:
+            direction: Edge to remove messages from.
             messages_container: Cached transcript container, when available.
-            count: Maximum messages to remove; defaults to the full soft-limit
-                excess.
+            count: Maximum messages to remove; defaults to the soft-limit excess.
 
         Returns:
             Number of messages removed.
         """
         generation = self._transcript_generation
-        to_prune = self._message_store.get_messages_to_prune_below(count)
+        below = direction == "below"
+        to_prune = (
+            self._message_store.get_messages_to_prune_below(count)
+            if below
+            else self._message_store.get_messages_to_prune(count)
+        )
         if not to_prune:
             return 0
         if messages_container is None:
@@ -18530,24 +18389,19 @@ class DeepAgentsApp(App):
                 return 0
 
         pruned_ids: list[str] = []
-        for msg_data in to_prune:
+        for data in to_prune:
             if generation != self._transcript_generation:
                 return 0
-            footer_id = _message_timestamp_footer_id(msg_data.id)
+            footer_id = _message_timestamp_footer_id(data.id)
             try:
-                widget = messages_container.query_one(f"#{msg_data.id}")
+                widget = messages_container.query_one(f"#{data.id}")
             except NoMatches:
                 logger.warning(
-                    "Widget %s missing during bottom pruning; reconciling store window",
-                    msg_data.id,
+                    "Widget %s missing during %s pruning; reconciling store window",
+                    data.id,
+                    direction,
                 )
-                with suppress(NoMatches):
-                    footer = messages_container.query_one(f"#{footer_id}")
-                    await footer.remove()
-                if generation != self._transcript_generation:
-                    return 0
-                pruned_ids.append(msg_data.id)
-                continue
+                widget = None
             if isinstance(widget, LazyToolGroupSummary):
                 widget._snapshot_detail_state()
             with suppress(NoMatches):
@@ -18555,16 +18409,27 @@ class DeepAgentsApp(App):
                 await footer.remove()
             if generation != self._transcript_generation:
                 return 0
-            await widget.remove()
-            if generation != self._transcript_generation:
-                return 0
-            pruned_ids.append(msg_data.id)
+            if widget is not None:
+                await widget.remove()
+                if generation != self._transcript_generation:
+                    return 0
+            pruned_ids.append(data.id)
 
-        if generation != self._transcript_generation:
-            return 0
-        if pruned_ids:
+        if below:
             self._message_store.mark_pruned_below(pruned_ids)
-            self._sync_transcript_spacers(messages_container)
+        else:
+            self._message_store.mark_pruned(pruned_ids)
+        self._sync_transcript_spacers(messages_container)
+        if not below:
+            for summary in list(self.query(ToolGroupSummary)):
+                if not summary.has_attached_members:
+                    try:
+                        await summary.remove()
+                    except Exception:
+                        logger.debug(
+                            "Failed to remove orphaned tool group summary",
+                            exc_info=True,
+                        )
         return len(pruned_ids)
 
     def _reveal_pending_tool_calls(self) -> None:
@@ -18813,7 +18678,7 @@ class DeepAgentsApp(App):
                 event.widget.id,
                 tool_group_expanded=event.expanded,
             )
-            self._schedule_message_height_measurement(event.widget.id)
+            self._schedule_message_height_measurements([event.widget.id])
 
     def on_rubric_result_message_expansion_changed(
         self,
@@ -18825,7 +18690,7 @@ class DeepAgentsApp(App):
                 event.widget.id,
                 rubric_expanded=event.expanded,
             )
-            self._schedule_message_height_measurement(event.widget.id)
+            self._schedule_message_height_measurements([event.widget.id])
 
     def on_user_message_expansion_changed(
         self,
@@ -18842,7 +18707,7 @@ class DeepAgentsApp(App):
                 event.widget.id,
                 user_expanded=event.expanded,
             )
-            self._schedule_message_height_measurement(event.widget.id)
+            self._schedule_message_height_measurements([event.widget.id])
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""

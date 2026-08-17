@@ -4738,7 +4738,6 @@ class TestConvertMessagesToData:
 
         assert len(result) == 1
         assert result[0].type == MessageType.TOOL_GROUP
-        assert result[0].tool_group_messages is not None
         tool = result[0].tool_group_messages[0]
         assert tool.tool_name == "read_file"
         assert tool.tool_status == ToolStatus.SUCCESS

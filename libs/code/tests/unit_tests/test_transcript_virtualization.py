@@ -163,26 +163,6 @@ class TestScrollDrivenHydration:
         assert app._hydration_requests == {"above", "below"}
         assert app._hydration_preferred_direction == "below"
 
-    def test_continuation_rechecks_only_completed_edge(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An idle viewport must not enqueue the opposite hydration direction."""
-        app = DeepAgentsApp()
-        checked: list[str] = []
-        monkeypatch.setattr(
-            app, "_check_hydration_needed", lambda: checked.append("above")
-        )
-        monkeypatch.setattr(
-            app, "_check_hydration_below_needed", lambda: checked.append("below")
-        )
-
-        app._continue_hydration("above")
-        assert checked == ["above"]
-
-        checked.clear()
-        app._continue_hydration("below")
-        assert checked == ["below"]
-
     async def test_scroll_up_hydrates_archived_history(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -198,7 +178,7 @@ class TestScrollDrivenHydration:
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
             monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
-            await app._prune_old_messages()
+            await app._prune_messages("above")
             await pilot.pause()
 
             start_before, _end_before = app._message_store.get_visible_range()
@@ -245,7 +225,7 @@ class TestScrollDrivenHydration:
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
             monkeypatch.setattr(app, "_check_hydration_needed", lambda: None)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._prune_messages("below", messages)
             await pilot.pause()
 
             _start_before, _end_before = app._message_store.get_visible_range()

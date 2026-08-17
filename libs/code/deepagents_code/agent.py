@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
+    from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
     from deepagents_code.mcp_tools import MCPServerInfo
@@ -2203,6 +2204,7 @@ def create_cli_agent(
     auto_classifier_model: str | BaseChatModel | None = None,
     recursion_limit: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    store: BaseStore | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
@@ -2254,8 +2256,8 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
-        auto_mode_enabled: Install classifier-backed Auto for the local Textual
-            runtime. Callers must leave this disabled for headless, remote, and
+        auto_mode_enabled: Install classifier-backed Auto for local TUI or ACP
+            runtimes. Callers must leave this disabled for headless and
             sandbox-backed graphs.
         interrupt_shell_only: If `True`, all HITL interrupts are disabled;
             shell commands are validated inline by `ShellAllowListMiddleware`
@@ -2342,6 +2344,7 @@ def create_cli_agent(
             in `config.toml`, then the default via `resolve_recursion_limit`.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
+        store: Optional LangGraph Store for runtime approval state.
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
@@ -2372,10 +2375,9 @@ def create_cli_agent(
     """
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
-    if auto_mode_enabled and (not interactive or sandbox is not None):
+    if auto_mode_enabled and sandbox is not None:
         logger.warning(
-            "Classifier-backed Auto is unavailable outside the local interactive "
-            "runtime; using Manual HITL"
+            "Classifier-backed Auto is unavailable with a sandbox; using Manual HITL"
         )
         auto_mode_enabled = False
     effective_cwd = (
@@ -3071,6 +3073,7 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         context_schema=CLIContextSchema,
         checkpointer=checkpointer,
+        store=store,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
     ).with_config({**config, "recursion_limit": effective_recursion_limit})

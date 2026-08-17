@@ -12,8 +12,9 @@ can never drift from what the app actually reads. Resolution precedence mirrors
 the loaders: a `DEEPAGENTS_CODE_`-prefixed env var beats the canonical name,
 env beats `config.toml`, and the typed default is the final fallback. A
 malformed numeric/list/PTC value, an unrecognized boolean token, or a
-wrong-typed TOML value is logged and falls back to the next layer rather than
-raising, so a bad config never blocks startup.
+wrong-typed TOML value is logged and falls back to the next layer. Options with
+an explicit string allowlist instead raise so invalid safety- or cost-sensitive
+settings cannot silently change behavior.
 
 Structured, user-defined config is *not* a flat scalar option and is parsed by
 dedicated typed loaders elsewhere. The manifest references `[threads].columns`
@@ -50,6 +51,10 @@ logger = logging.getLogger(__name__)
 # --- Canonical typed defaults ----------------------------------------------
 # These are single sources of truth for defaults shared across the manifest and
 # their runtime consumers.
+
+AnthropicCacheTtl = Literal["5m", "1h"]
+ANTHROPIC_CACHE_TTL_DEFAULT: AnthropicCacheTtl = "5m"
+ANTHROPIC_CACHE_TTL_VALUES: tuple[AnthropicCacheTtl, ...] = ("5m", "1h")
 
 INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
@@ -243,6 +248,9 @@ class ConfigOption:
     default: Any = None
     """Typed default value, or `None` when there is no static default."""
 
+    allowed_values: tuple[str, ...] = ()
+    """Accepted values for a strict string option; invalid values hard-error."""
+
     env_var: str | None = None
     """Primary environment variable name the loader reads, or `None`.
 
@@ -315,10 +323,10 @@ class ConfigOption:
         `resolve_scalar`. Catching it here fails the import (and the test suite).
 
         Raises:
-            TypeError: When `fallback_env_vars` is not a tuple of non-empty
-                strings, `empty_env_is_false` is set on a non-bool option,
-                `default` is mutable, a `STRUCTURED` option declares a default,
-                or a scalar option's default has the wrong type.
+            TypeError: When `fallback_env_vars` or `allowed_values` is invalid,
+                `empty_env_is_false` is set on a non-bool option, `default` is
+                mutable, a `STRUCTURED` option declares a default, or a scalar
+                option's default has the wrong type.
         """
         # Guard `fallback_env_vars` independently of `default` (which has its own
         # early-return path below): like `default`, it is shared by reference
@@ -336,6 +344,30 @@ class ConfigOption:
         if self.empty_env_is_false and self.kind is not OptionKind.BOOL:
             msg = f"{self.key}: empty_env_is_false requires a bool option kind"
             raise TypeError(msg)
+        if not isinstance(self.allowed_values, tuple):
+            msg = (
+                f"{self.key}: allowed_values must be a tuple of unique, "
+                f"non-empty strings, got {self.allowed_values!r}"
+            )
+            raise TypeError(msg)
+        if self.allowed_values:
+            if self.kind is not OptionKind.STR:
+                msg = f"{self.key}: allowed_values requires a str option kind"
+                raise TypeError(msg)
+            if any(
+                not isinstance(value, str) or not value for value in self.allowed_values
+            ) or len(set(self.allowed_values)) != len(self.allowed_values):
+                msg = (
+                    f"{self.key}: allowed_values must be a tuple of unique, "
+                    f"non-empty strings, got {self.allowed_values!r}"
+                )
+                raise TypeError(msg)
+            if self.default is not None and self.default not in self.allowed_values:
+                msg = (
+                    f"{self.key}: default {self.default!r} is not in "
+                    f"allowed_values {self.allowed_values!r}"
+                )
+                raise TypeError(msg)
 
         default = self.default
         if default is None:
@@ -449,6 +481,9 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
 
     Returns:
         The typed value, or `_INVALID` when the raw value cannot be coerced.
+
+    Raises:
+        ValueError: If a strict string option is outside its allowlist.
     """
     kind = option.kind
     if kind is OptionKind.BOOL:
@@ -464,6 +499,10 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
     if kind is OptionKind.BOOL_PRESENCE:
         return bool(raw)
     if kind is OptionKind.STR:
+        if option.allowed_values and raw not in option.allowed_values:
+            expected = ", ".join(repr(value) for value in option.allowed_values)
+            msg = f"Invalid {name}={raw!r}; expected one of {expected}"
+            raise ValueError(msg)
         return raw
     if kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._debug import LOG_LEVELS
@@ -545,6 +584,9 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
 
     Returns:
         The typed value, or `_INVALID` when the raw value has the wrong shape.
+
+    Raises:
+        ValueError: If a strict string option is outside its allowlist.
     """
     kind = option.kind
     label = option.toml_path or option.key
@@ -559,6 +601,12 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             return float(raw)
     elif kind is OptionKind.STR:
+        if option.allowed_values:
+            if not isinstance(raw, str) or raw not in option.allowed_values:
+                expected = ", ".join(repr(value) for value in option.allowed_values)
+                msg = f"Invalid {label}={raw!r}; expected one of {expected}"
+                raise ValueError(msg)
+            return raw
         if isinstance(raw, str):
             return raw
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
@@ -686,8 +734,9 @@ def resolve_scalar(
         normally treated as unset (mirroring `resolve_env_var`), so it falls
         through to the next env var, then `config.toml`/`default`, rather than
         counting as set. Options declaring `empty_env_is_false` instead resolve
-        an explicitly present empty value to `False`. Theme resolution
-        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
+        an explicitly present empty value to `False`. Strict string options treat
+        an empty env value as invalid. Theme resolution (`THEME_DELEGATE`) reports
+        its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
@@ -700,15 +749,15 @@ def resolve_scalar(
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
         # An empty string normally counts as unset, matching `resolve_env_var`,
-        # so it is skipped and the loop continues to the next name. Options
-        # with an explicitly documented empty-value opt-out declare
-        # `empty_env_is_false`. Names are tried in order, so the primary
-        # `env_var` wins over any fallback.
+        # so it is skipped and the loop continues to the next name. Strict string
+        # options validate it instead, while documented boolean opt-outs declare
+        # `empty_env_is_false`. Names are tried in order, so the primary `env_var`
+        # wins over any fallback.
         for name in names:
             raw = os.environ.get(name)
             if raw is None:
                 continue
-            if not raw:
+            if not raw and not option.allowed_values:
                 if option.empty_env_is_false:
                     return False, f"env ({name})"
                 continue
@@ -1387,6 +1436,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.OLLAMA_DISCOVERY,
+    ),
+    ConfigOption(
+        key="models.anthropic_cache_ttl",
+        group="Tools",
+        summary="Set the Anthropic prompt-cache lifetime for all agents.",
+        kind=OptionKind.STR,
+        default=ANTHROPIC_CACHE_TTL_DEFAULT,
+        allowed_values=ANTHROPIC_CACHE_TTL_VALUES,
+        env_var=_env_vars.ANTHROPIC_CACHE_TTL,
+        toml_keys=("models", "anthropic_cache_ttl"),
     ),
     ConfigOption(
         key="models.openai_prompt_cache_key",

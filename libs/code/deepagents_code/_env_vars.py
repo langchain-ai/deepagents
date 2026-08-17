@@ -30,6 +30,9 @@ import os
 # Keep alphabetically sorted by constant name.
 # ---------------------------------------------------------------------------
 
+ANTHROPIC_CACHE_TTL = "DEEPAGENTS_CODE_ANTHROPIC_CACHE_TTL"
+"""Anthropic prompt-cache lifetime (`5m` or `1h`), defaulting to `5m`."""
+
 AUTO_CLASSIFIER_MODEL = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL"
 """Model spec (`provider:model`) used by the Auto approval-mode classifier.
 

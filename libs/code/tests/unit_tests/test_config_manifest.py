@@ -177,6 +177,75 @@ def test_is_memory_auto_save_enabled_reads_toml(monkeypatch) -> None:
     assert is_memory_auto_save_enabled() is False
 
 
+def test_get_anthropic_cache_ttl_defaults_to_five_minutes(monkeypatch) -> None:
+    """Anthropic prompt caching keeps the upstream five-minute default."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import get_anthropic_cache_ttl
+
+    monkeypatch.delenv(_env_vars.ANTHROPIC_CACHE_TTL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+
+    assert get_anthropic_cache_ttl() == "5m"
+
+
+def test_get_anthropic_cache_ttl_reads_env(monkeypatch) -> None:
+    """The env override selects the one-hour Anthropic cache lifetime."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import get_anthropic_cache_ttl
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.setenv(_env_vars.ANTHROPIC_CACHE_TTL, "1h")
+
+    assert get_anthropic_cache_ttl() == "1h"
+
+
+def test_get_anthropic_cache_ttl_reads_toml(monkeypatch) -> None:
+    """The `[models]` config value is used when the env var is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import get_anthropic_cache_ttl
+
+    monkeypatch.delenv(_env_vars.ANTHROPIC_CACHE_TTL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"anthropic_cache_ttl": "1h"}},
+    )
+
+    assert get_anthropic_cache_ttl() == "1h"
+
+
+@pytest.mark.parametrize("raw", ["2h", "60m", "junk", ""])
+def test_get_anthropic_cache_ttl_rejects_invalid_env(monkeypatch, raw) -> None:
+    """Invalid env values fail instead of silently falling through."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import get_anthropic_cache_ttl
+    from deepagents_code.model_config import ModelConfigError
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.setenv(_env_vars.ANTHROPIC_CACHE_TTL, raw)
+
+    with pytest.raises(ModelConfigError, match="ANTHROPIC_CACHE_TTL"):
+        get_anthropic_cache_ttl()
+
+
+@pytest.mark.parametrize("raw", ["2h", "60m", "junk", 60])
+def test_get_anthropic_cache_ttl_rejects_invalid_toml(monkeypatch, raw) -> None:
+    """Invalid TOML values fail instead of reverting to five minutes."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import get_anthropic_cache_ttl
+    from deepagents_code.model_config import ModelConfigError
+
+    monkeypatch.delenv(_env_vars.ANTHROPIC_CACHE_TTL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"anthropic_cache_ttl": raw}},
+    )
+
+    with pytest.raises(ModelConfigError, match=r"models\]\.anthropic_cache_ttl"):
+        get_anthropic_cache_ttl()
+
+
 def test_is_openai_prompt_cache_key_enabled_reads_env(monkeypatch) -> None:
     """`is_openai_prompt_cache_key_enabled` honors the env override."""
     from deepagents_code import config_manifest

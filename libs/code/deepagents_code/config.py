@@ -18,7 +18,7 @@ from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -34,6 +34,8 @@ from deepagents_code._env_vars import (
 from deepagents_code._git import resolve_git_branch
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import (
+    ANTHROPIC_CACHE_TTL_DEFAULT,
+    ANTHROPIC_CACHE_TTL_VALUES,
     INTERPRETER_ENABLE_DEFAULT,
     INTERPRETER_MAX_PTC_CALLS_DEFAULT,
     INTERPRETER_MAX_RESULT_CHARS_DEFAULT,
@@ -42,6 +44,7 @@ from deepagents_code.config_manifest import (
     INTERPRETER_PTC_DEFAULT,
     INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
     RECURSION_LIMIT_DEFAULT,
+    AnthropicCacheTtl,
 )
 
 logger = logging.getLogger(__name__)
@@ -3495,6 +3498,36 @@ def is_yolo_switcher_enabled() -> bool:
         return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
+
+
+def get_anthropic_cache_ttl() -> AnthropicCacheTtl:
+    """Return the validated Anthropic prompt-cache lifetime.
+
+    Raises:
+        ModelConfigError: If the configured lifetime is invalid.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+    from deepagents_code.model_config import ModelConfigError
+
+    option = get_option("models.anthropic_cache_ttl")
+    if option is None:
+        return ANTHROPIC_CACHE_TTL_DEFAULT
+    try:
+        value, source = resolve_scalar(option, toml_data=load_config_toml())
+    except ValueError as exc:
+        raise ModelConfigError(str(exc)) from exc
+    if not isinstance(value, str) or value not in ANTHROPIC_CACHE_TTL_VALUES:
+        expected = ", ".join(repr(item) for item in ANTHROPIC_CACHE_TTL_VALUES)
+        msg = (
+            f"Invalid {source} value for models.anthropic_cache_ttl: {value!r}; "
+            f"expected one of {expected}"
+        )
+        raise ModelConfigError(msg)
+    return cast("AnthropicCacheTtl", value)
 
 
 def is_openai_prompt_cache_key_enabled() -> bool:

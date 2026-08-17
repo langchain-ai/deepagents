@@ -80,6 +80,7 @@ from deepagents_code.config import (
     _ShellAllowAll,
     config,
     console,
+    get_anthropic_cache_ttl,
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
@@ -3073,5 +3074,6 @@ def create_cli_agent(
         checkpointer=checkpointer,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
+        anthropic_cache_ttl=get_anthropic_cache_ttl(),
     ).with_config({**config, "recursion_limit": effective_recursion_limit})
     return agent, composite_backend

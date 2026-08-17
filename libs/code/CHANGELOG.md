@@ -2,6 +2,12 @@
 
 # Deep Agents Code Changelog
 
+## Unreleased
+
+### Features
+
+- Added `models.anthropic_cache_ttl` for choosing a five-minute or one-hour Anthropic prompt-cache lifetime.
+
 ## [0.1.56](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.55...deepagents-code==0.1.56) (2026-08-14)
 
 ### Features

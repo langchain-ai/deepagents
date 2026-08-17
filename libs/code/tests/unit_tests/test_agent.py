@@ -1756,6 +1756,9 @@ class TestCreateCliAgentInteractiveForwarding:
                 "deepagents_code.agent.create_deep_agent", side_effect=create_agent
             ) as mock_create_deep_agent,
             patch(
+                "deepagents_code.agent.get_anthropic_cache_ttl", return_value="1h"
+            ) as mock_cache_ttl,
+            patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
@@ -1781,6 +1784,8 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_create_deep_agent.call_args.kwargs["context_schema"]
             is CLIContextSchema
         )
+        mock_cache_ttl.assert_called_once_with()
+        assert mock_create_deep_agent.call_args.kwargs["anthropic_cache_ttl"] == "1h"
         assert call_order == ["register_profile", "create_agent"]
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:

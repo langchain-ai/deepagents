@@ -2133,6 +2133,7 @@ class TestReloadPluginsViaReload:
         """A failed restart leaves the prior server's plugin status intact."""
         from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
         from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
 
         plugin = MagicMock(plugin_id="new@tools")
         app = DeepAgentsApp()
@@ -2170,29 +2171,64 @@ class TestReloadPluginsViaReload:
             assert app._session_plugin_ids == expected_ids
             assert order == ["hooks", "restart"]
 
-    async def test_reload_reports_no_mcp_changes_when_mcp_disabled(
-        self, monkeypatch: pytest.MonkeyPatch
+            # A report that says the server never restarted must not also
+            # claim anything about MCP — the two lines would contradict.
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert ("MCP server changes" in text) is restarted
+
+    @pytest.mark.parametrize(
+        ("mcp_status", "expected", "forbidden"),
+        [
+            # `--no-mcp`: nothing to refresh, so an empty diff is the truth.
+            (
+                "disabled",
+                "MCP server changes: no changes detected.",
+                "couldn't be determined",
+            ),
+            # MCP is on but the refresh failed: saying "no changes" here would
+            # affirmatively misreport tool availability at the moment the app
+            # knows least. These two cases must never collapse into one.
+            (
+                "unavailable",
+                "couldn't be determined",
+                "no changes detected",
+            ),
+        ],
+    )
+    async def test_reload_distinguishes_disabled_mcp_from_failed_refresh(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mcp_status: str,
+        expected: str,
+        forbidden: str,
     ) -> None:
-        """A `--no-mcp` session reports no MCP changes, not unavailable metadata."""
+        """`mcp_server_info=None` means opposite things in these two sessions."""
         from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
+        from deepagents_code.mcp_tools import MCPServerInfo
         from deepagents_code.plugins.models import PluginDiscoveryResult
         from deepagents_code.tui.widgets.messages import AppMessage
 
         plugin = MagicMock(plugin_id="new@tools")
-        # `mcp_preload_kwargs` defaults to None, matching a `--no-mcp` session.
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_plugin_ids = frozenset({"old@tools"})
             app._server_proc = MagicMock()
             app._server_kwargs = {}
+            if mcp_status == "unavailable":
+                # An MCP-enabled session with a usable pre-reload baseline.
+                app._mcp_preload_kwargs = {}
+                app._mcp_server_info = [MCPServerInfo(name="notion", transport="stdio")]
 
             async def _fake_discover() -> bool:  # noqa: RUF029
                 return True
 
             async def _fake_restart() -> _ServerRespawnResult:  # noqa: RUF029
-                # Both snapshots are None when MCP is disabled.
-                return _ServerRespawnResult(restarted=True, mcp_server_info=None)
+                return _ServerRespawnResult(
+                    restarted=True,
+                    mcp_server_info=None,
+                    mcp_status=mcp_status,  # ty: ignore[invalid-argument-type]
+                )
 
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
             monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
@@ -2211,5 +2247,5 @@ class TestReloadPluginsViaReload:
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "MCP server changes: no changes detected." in text
-            assert "couldn't be determined" not in text
+            assert expected in text
+            assert forbidden not in text

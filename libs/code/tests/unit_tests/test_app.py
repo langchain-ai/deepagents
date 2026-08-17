@@ -32921,14 +32921,79 @@ class TestFormatMcpServerChanges:
             == "MCP server changes: no changes detected."
         )
 
-    @pytest.mark.parametrize(("previous", "current"), [(None, []), ([], None)])
-    def test_reports_unavailable_metadata(
-        self,
-        previous: list[Any] | None,
-        current: list[Any] | None,
-    ) -> None:
-        assert _format_mcp_server_changes(previous, current) == (
+    def test_reports_unavailable_metadata_when_refresh_failed(self) -> None:
+        assert _format_mcp_server_changes([], None) == (
             "MCP server changes couldn't be determined; use /mcp to check."
+        )
+
+    def test_reports_current_servers_when_baseline_is_missing(self) -> None:
+        """A lost baseline still permits saying what is loaded now."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        current = [
+            MCPServerInfo(name="notion", transport="stdio"),
+            MCPServerInfo(name="github", transport="stdio"),
+        ]
+
+        assert _format_mcp_server_changes(None, current) == (
+            "MCP server changes couldn't be determined (no baseline metadata); "
+            "currently loaded: github, notion."
+        )
+
+    def test_flags_server_that_kept_its_name_but_started_failing(self) -> None:
+        """A same-name `ok` -> `error` transition is not "no changes"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Failed to load: notion (use /mcp for details)"
+        )
+
+    def test_reports_config_errors_separately_from_loaded_servers(self) -> None:
+        """A bad config file is a parse error, not a newly loaded server."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Removed: notion\n"
+            "  - Config errors: <config:mcp.json>"
+        )
+
+    def test_qualifies_no_changes_when_a_server_still_needs_attention(self) -> None:
+        """An unchanged-but-broken server must not read as "all good"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no changes detected "
+            "(1 server(s) still need attention; use /mcp)."
         )
 
 
@@ -33035,6 +33100,7 @@ class TestRespawnServer:
                 return _ServerRespawnResult(
                     restarted=True,
                     mcp_server_info=[loaded],
+                    mcp_status="fresh",
                 )
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
@@ -33128,6 +33194,77 @@ class TestRespawnServer:
             assert len(ready) == 1
             assert ready[0].mcp_server_info == ["info"]
             assert app._connecting is False or app._agent is not None
+
+    async def test_disabled_mcp_skips_preload_without_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--no-mcp` must not splat `None` into the preload.
+
+        Doing so raises `TypeError` into the broad `except Exception`, which
+        logs a traceback and toasts "MCP tool metadata could not be
+        refreshed" at a user who explicitly disabled MCP.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            proc = await self._prepare(app)
+            # `--no-mcp`: `main` leaves the preload kwargs unset entirely.
+            app._mcp_preload_kwargs = None
+
+            called = False
+
+            async def _preload(**_: Any) -> list[str]:  # noqa: RUF029
+                nonlocal called
+                called = True
+                return ["info"]
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            notes: list[Any] = []
+            monkeypatch.setattr(app, "notify", lambda *a, **k: notes.append((a, k)))
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "disabled"
+            assert result.mcp_server_info is None
+            assert called is False
+            assert notes == []
+            proc.restart.assert_awaited_once()
+
+    async def test_preload_failure_marks_metadata_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising preload is distinguishable from a disabled session."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+
+            async def _preload(**_: Any) -> list[str]:  # noqa: RUF029
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            notes: list[Any] = []
+            monkeypatch.setattr(app, "notify", lambda *a, **k: notes.append((a, k)))
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "unavailable"
+            assert result.mcp_server_info is None
+            # The genuine failure still warns.
+            assert len(notes) == 1
 
     async def test_subprocess_failure_posts_server_start_failed(
         self, monkeypatch: pytest.MonkeyPatch

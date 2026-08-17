@@ -712,31 +712,100 @@ class _ConfigWriteResult:
     """Toast severity to use when `message` is shown."""
 
 
+_McpRefreshStatus = Literal["fresh", "disabled", "unavailable"]
+"""Why a `_ServerRespawnResult` carries the MCP metadata it does.
+
+- `fresh`: the post-restart preload succeeded; `mcp_server_info` is current.
+- `disabled`: MCP is off for this session (`--no-mcp`), so there is nothing
+    to refresh and `mcp_server_info` is `None`.
+- `unavailable`: the preload raised, or no restart was attempted;
+    `mcp_server_info` is `None` and the previous metadata is now stale.
+"""
+
+
 @dataclass(frozen=True)
 class _ServerRespawnResult:
     """Result of restarting the app-owned server."""
 
     restarted: bool
+    """Whether the server subprocess was respawned and the agent rebuilt."""
+
     mcp_server_info: list[MCPServerInfo] | None = None
+    """Post-restart MCP metadata, or `None` unless `mcp_status` is `fresh`.
+
+    Only meaningful when `restarted`. Read `mcp_status` rather than testing
+    this for `None`: a `None` here means "disabled" and "refresh failed"
+    alike, and those warrant opposite messages.
+    """
+
+    mcp_status: _McpRefreshStatus = "unavailable"
+    """Which of the `None` cases applies. Defaults to the pessimistic one so
+    a failed restart never reads as "MCP is fine"."""
 
 
 def _format_mcp_server_changes(
     previous: list[MCPServerInfo] | None,
     current: list[MCPServerInfo] | None,
 ) -> str:
-    """Format MCP server additions and removals for `/reload`.
+    """Format MCP server changes for the `/reload` report.
+
+    Diffs by server *name*, and separately flags servers that newly failed to
+    load and config files that newly failed to parse — a server can keep its
+    name while going from `ok` to `error`, and reporting that as "no changes"
+    would be actively misleading in the case `/reload` most exists to serve.
+
+    Argument order is load-bearing: swapping the two silently inverts
+    "Loaded" and "Removed".
+
+    Args:
+        previous: Metadata captured before the reload, or `None` when no
+            baseline was available.
+        current: Metadata captured after the reload, or `None` when the
+            refresh failed.
 
     Returns:
         A user-facing MCP server change summary.
     """
-    if previous is None or current is None:
+    if current is None:
         return "MCP server changes couldn't be determined; use /mcp to check."
 
-    previous_names = {server.name for server in previous}
-    current_names = {server.name for server in current}
-    loaded = sorted(current_names - previous_names)
-    removed = sorted(previous_names - current_names)
-    if not loaded and not removed:
+    # Config-load failures arrive as synthetic entries rather than servers;
+    # bucketing them under "Loaded" would announce a parse error as a success.
+    servers = {s.name: s for s in current if s.transport != "config"}
+    config_errors = sorted(s.name for s in current if s.transport == "config")
+
+    if previous is None:
+        loaded_now = ", ".join(sorted(servers)) or "none"
+        return (
+            "MCP server changes couldn't be determined (no baseline metadata); "
+            f"currently loaded: {loaded_now}."
+        )
+
+    before = {s.name: s for s in previous if s.transport != "config"}
+    before_config_errors = {s.name for s in previous if s.transport == "config"}
+
+    loaded = sorted(servers.keys() - before.keys())
+    removed = sorted(before.keys() - servers.keys())
+    failing = sorted(
+        name
+        for name, server in servers.items()
+        if server.status == "error" and before.get(name, server).status != "error"
+    )
+    new_config_errors = [
+        name for name in config_errors if name not in before_config_errors
+    ]
+
+    if not (loaded or removed or failing or new_config_errors):
+        # Still-broken servers are not a *change*, but a bare "no changes"
+        # reads as "all good" — qualify it rather than overclaim.
+        stuck = sum(
+            1 for s in servers.values() if s.status == "error" or s.needs_attention()
+        )
+        if stuck:
+            return (
+                f"MCP server changes: no changes detected "
+                f"({stuck} server(s) still need attention; use /mcp)."
+            )
         return "MCP server changes: no changes detected."
 
     lines = ["MCP server changes:"]
@@ -744,6 +813,10 @@ def _format_mcp_server_changes(
         lines.append(f"  - Loaded: {', '.join(loaded)}")
     if removed:
         lines.append(f"  - Removed: {', '.join(removed)}")
+    if failing:
+        lines.append(f"  - Failed to load: {', '.join(failing)} (use /mcp for details)")
+    if new_config_errors:
+        lines.append(f"  - Config errors: {', '.join(new_config_errors)}")
     return "\n".join(lines)
 
 
@@ -14680,9 +14753,9 @@ class DeepAgentsApp(App):
                     if restart_result.restarted:
                         self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
-                        if self._mcp_preload_kwargs is None:
-                            # MCP is disabled (`--no-mcp`), so both snapshots are
-                            # `None` by construction — "no changes", not unknown.
+                        if restart_result.mcp_status == "disabled":
+                            # `--no-mcp`: there is nothing to refresh, so an
+                            # empty diff is the truth rather than an unknown.
                             report += "\nMCP server changes: no changes detected."
                         else:
                             report += "\n" + _format_mcp_server_changes(
@@ -24698,14 +24771,17 @@ class DeepAgentsApp(App):
         return (await self._restart_server_manual_result()).restarted
 
     async def _restart_server_manual_result(self) -> _ServerRespawnResult:
-        """Respawn the server and retain refreshed MCP metadata for `/reload`.
+        """Respawn the app-owned server for `/restart` and `/reload`.
+
+        `_restart_server_manual` wraps this for callers that need only the
+        boolean; `/reload` uses the full result to diff MCP metadata.
 
         Returns:
             Restart status and refreshed MCP server metadata.
         """
         return await self._respawn_server(
-            log_message="Manual /restart of server failed",
-            mcp_failure_log="MCP metadata preload after /restart failed",
+            log_message="Manual /restart or /reload of server failed",
+            mcp_failure_log="MCP metadata preload after /restart or /reload failed",
             mcp_failure_toast=(
                 "MCP tool metadata could not be refreshed. Use /mcp to check."
             ),
@@ -24773,8 +24849,9 @@ class DeepAgentsApp(App):
     ) -> _ServerRespawnResult:
         """Stop the app-owned server subprocess and rebuild the agent.
 
-        Used by `_restart_server_manual` (the `/restart` command) and
-        `_restart_server_for_mcp_refresh` (post-OAuth-login refresh).
+        Every path that respawns the app-owned server routes through here:
+        `/restart`, `/reload`, the post-OAuth-login MCP refresh, and rubric
+        model/max-iteration changes.
 
         Args:
             log_message: Error log written when `server_proc.restart()`
@@ -24825,17 +24902,27 @@ class DeepAgentsApp(App):
             from deepagents_code.main import _preload_session_mcp_server_info
 
             mcp_info = None
-            try:
-                mcp_info = await _preload_session_mcp_server_info(
-                    **self._mcp_preload_kwargs,  # ty: ignore[invalid-argument-type]
-                )
-            except Exception as exc:
-                logger.exception(mcp_failure_log)
-                self.notify(
-                    f"{mcp_failure_toast} ({type(exc).__name__})",
-                    severity="warning",
-                    markup=False,
-                )
+            mcp_status: _McpRefreshStatus = "unavailable"
+            if self._mcp_preload_kwargs is None:
+                # MCP is off for this session (`--no-mcp`). Splatting `None`
+                # would raise `TypeError` into the handler below, logging a
+                # traceback and toasting an MCP failure for a session that
+                # never asked for MCP.
+                mcp_status = "disabled"
+            else:
+                try:
+                    mcp_info = await _preload_session_mcp_server_info(
+                        **self._mcp_preload_kwargs,
+                    )
+                except Exception as exc:
+                    logger.exception(mcp_failure_log)
+                    self.notify(
+                        f"{mcp_failure_toast} ({type(exc).__name__})",
+                        severity="warning",
+                        markup=False,
+                    )
+                else:
+                    mcp_status = "fresh"
 
             def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
                 return _RemoteAgent(url=url, graph_name="agent")
@@ -24857,6 +24944,7 @@ class DeepAgentsApp(App):
             return _ServerRespawnResult(
                 restarted=True,
                 mcp_server_info=mcp_info,
+                mcp_status=mcp_status,
             )
         finally:
             if self._chat_input:

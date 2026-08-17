@@ -165,6 +165,7 @@ def generate_langgraph_json(
     graph_ref: str = _DCODE_GRAPH_REF,
     env_file: str | None = None,
     checkpointer_path: str | None = None,
+    auth_path: str | None = None,
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
 
@@ -182,6 +183,11 @@ def generate_langgraph_json(
         checkpointer_path: Import path to an async context manager that yields a
             `BaseCheckpointSaver`. When set, the server persists checkpoint data
             to disk instead of in-memory.
+        auth_path: Import path to a LangGraph `Auth` instance, emitted as the
+            config's `auth.path`. Production servers run with
+            `LANGGRAPH_AUTH_TYPE=noop` and no auth backend; this exists so
+            tests can prove `enable_custom_route_auth` gates the operation
+            routes when a deployment *does* configure one.
 
     Returns:
         Path to the generated config file.
@@ -195,6 +201,8 @@ def generate_langgraph_json(
             "app": "deepagents_code.offload_api:app",
             "enable_custom_route_auth": True,
         }
+    if auth_path:
+        config["auth"] = {"path": auth_path}
     if env_file:
         config["env"] = env_file
     if checkpointer_path:

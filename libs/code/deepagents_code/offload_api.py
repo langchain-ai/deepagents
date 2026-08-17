@@ -50,6 +50,69 @@ class _OffloadConflictError(RuntimeError):
     """The thread changed or became active during an offload attempt."""
 
 
+# Context fields the offload operation reads (everything else in
+# `CLIContextSchema` — approval mode, turn ids, the seeded-path tool-call id —
+# drives interactive-run machinery this operation never touches). Validated at
+# the HTTP boundary so a malformed client request fails with a 422 naming the
+# field instead of a 500 deep in model resolution or hook dispatch.
+_CONTEXT_STR_OR_NONE_FIELDS = (
+    "model",
+    "classifier_model",
+    "approval_mode",
+    "thread_id",
+    "hooks_snapshot_id",
+    "prompt_id",
+)
+_CONTEXT_DICT_FIELDS = ("model_params", "profile_overrides")
+
+
+def _validate_context(context: dict[str, Any]) -> None:
+    """Check the context fields the offload operation consumes.
+
+    Only the listed keys are type-checked; unknown keys pass through so a
+    newer client can keep talking to this server version.
+
+    Args:
+        context: The request's `context` object.
+
+    Raises:
+        TypeError: If a consumed field has the wrong type, naming the field.
+    """
+    for key in _CONTEXT_STR_OR_NONE_FIELDS:
+        value = context.get(key)
+        if value is not None and not isinstance(value, str):
+            msg = f"context.{key} must be a string or null, got {type(value).__name__}."
+            raise TypeError(msg)
+    for key in _CONTEXT_DICT_FIELDS:
+        value = context.get(key)
+        if value is not None and not isinstance(value, dict):
+            msg = f"context.{key} must be an object, got {type(value).__name__}."
+            raise TypeError(msg)
+    limit = context.get("model_context_limit")
+    # bool is an int subclass, so exclude it explicitly: JSON `true` is not a
+    # token limit.
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)):
+        msg = (
+            "context.model_context_limit must be an integer or null, "
+            f"got {type(limit).__name__}."
+        )
+        raise TypeError(msg)
+    auto_approve = context.get("auto_approve")
+    if auto_approve is not None and not isinstance(auto_approve, bool):
+        msg = (
+            f"context.auto_approve must be a boolean or null, "
+            f"got {type(auto_approve).__name__}."
+        )
+        raise TypeError(msg)
+    events = context.get("hooks_server_events")
+    if events is not None and (
+        not isinstance(events, list)
+        or any(not isinstance(event, str) for event in events)
+    ):
+        msg = "context.hooks_server_events must be a list of strings or null."
+        raise TypeError(msg)
+
+
 def _checkpoint_id(state: Mapping[str, object]) -> str:
     checkpoint = state.get("checkpoint")
     value = checkpoint.get("checkpoint_id") if isinstance(checkpoint, Mapping) else None
@@ -88,9 +151,11 @@ def _operation_payload(
     if not isinstance(responses, dict):
         msg = "hook_responses must be a JSON object."
         raise TypeError(msg)
+    validated_context = {str(key): value for key, value in context.items()}
+    _validate_context(validated_context)
     return (
         operation_id,
-        {str(key): value for key, value in context.items()},
+        validated_context,
         {str(key): value for key, value in responses.items()},
     )
 
@@ -116,6 +181,17 @@ def _hydrate_state(values: object) -> _OffloadState:
         msg = "LangGraph returned a non-list messages channel."
         raise TypeError(msg)
     state["messages"] = convert_to_messages(messages)
+
+    # LangGraph serializes the summary stored inside the private event channel
+    # independently of the top-level `messages` channel. The summarization SDK
+    # prepends it to the effective conversation, so it must be a message object
+    # too rather than the serialized dict returned by the thread API.
+    event = state.get("_summarization_event")
+    if isinstance(event, Mapping) and "summary_message" in event:
+        hydrated_event = dict(event)
+        summary_message = hydrated_event["summary_message"]
+        hydrated_event["summary_message"] = convert_to_messages([summary_message])[0]
+        state["_summarization_event"] = hydrated_event
     return cast("_OffloadState", state)
 
 
@@ -154,9 +230,13 @@ async def _execute_offload(
         A complete result or a hook request that must be answered.
 
     Raises:
+        TypeError: If `thread_id` is empty.
         _OffloadConflictError: If the thread is active or changes before commit.
         RuntimeError: If the operation attempts to write conversation messages.
     """
+    if not thread_id:
+        msg = "thread_id path parameter must be non-empty."
+        raise TypeError(msg)
     client = get_client(url=None, api_key=None)
     async with _thread_lock(thread_id):
         await _require_idle_thread(client, thread_id)

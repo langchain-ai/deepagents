@@ -10,6 +10,80 @@ import pytest
 from deepagents_code.offload_middleware import OffloadExecution
 
 
+class TestOperationPayload:
+    """Malformed client requests fail with a field-naming 422 at the boundary."""
+
+    def test_valid_payload_passes_with_unknown_keys(self) -> None:
+        from deepagents_code.offload_api import _operation_payload
+
+        operation_id, context, responses = _operation_payload(
+            {
+                "operation_id": "op-1",
+                "context": {
+                    "model": "openai:gpt-5",
+                    "model_params": {"temperature": 0.2},
+                    "profile_overrides": {"max_input_tokens": 1000},
+                    "model_context_limit": 32000,
+                    "auto_approve": True,
+                    "hooks_server_events": ["PreCompact"],
+                    "thread_id": "thread-1",
+                    "some_future_field": {"ignored": True},
+                },
+            }
+        )
+
+        assert operation_id == "op-1"
+        assert context["model"] == "openai:gpt-5"
+        assert context["some_future_field"] == {"ignored": True}
+        assert responses == {}
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("model", 123),
+            ("classifier_model", ["openai:gpt-5"]),
+            ("approval_mode", 1),
+            ("thread_id", {"id": "t"}),
+            ("hooks_snapshot_id", 0.5),
+            ("prompt_id", True),
+            ("model_params", "temperature=0.2"),
+            ("profile_overrides", [("max_input_tokens", 1000)]),
+            ("model_context_limit", "32000"),
+            ("model_context_limit", True),
+            ("auto_approve", "yes"),
+            ("hooks_server_events", "PreCompact"),
+            ("hooks_server_events", ["PreCompact", 42]),
+        ],
+    )
+    def test_bad_context_field_names_the_field(self, field: str, value: object) -> None:
+        from deepagents_code.offload_api import _operation_payload
+
+        with pytest.raises(TypeError, match=f"context.{field}"):
+            _operation_payload(
+                {
+                    "operation_id": "op-1",
+                    "context": {field: value},
+                }
+            )
+
+    def test_null_context_fields_pass(self) -> None:
+        from deepagents_code.offload_api import _operation_payload
+
+        _, context, _ = _operation_payload(
+            {
+                "operation_id": "op-1",
+                "context": {
+                    "model": None,
+                    "model_params": None,
+                    "model_context_limit": None,
+                    "auto_approve": None,
+                    "hooks_server_events": None,
+                },
+            }
+        )
+        assert context["model"] is None
+
+
 def _thread_state(checkpoint_id: str = "checkpoint-1") -> dict[str, object]:
     """Build an idle LangGraph thread-state response."""
     return {
@@ -51,6 +125,33 @@ def _result() -> dict[str, object]:
 
 class TestExecuteOffload:
     """The route owns state hydration, validation, and atomic persistence."""
+
+    def test_hydrates_persisted_summary_message(self) -> None:
+        """A subsequent offload receives a message object in its prior event."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code.offload_api import _hydrate_state
+
+        state = _hydrate_state(
+            {
+                "messages": [
+                    {"role": "user", "content": "new message", "id": "message-1"}
+                ],
+                "_summarization_event": {
+                    "cutoff_index": 1,
+                    "summary_message": {
+                        "type": "human",
+                        "content": "Prior summary.",
+                        "id": "summary-1",
+                    },
+                },
+            }
+        )
+
+        event = state["_summarization_event"]
+        assert isinstance(event, dict)
+        assert isinstance(event["summary_message"], HumanMessage)
+        assert event["summary_message"].content == "Prior summary."
 
     async def test_commits_event_and_cost_without_messages(self) -> None:
         from deepagents_code import offload_api

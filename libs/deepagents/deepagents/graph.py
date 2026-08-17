@@ -898,7 +898,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Apply the keys after caller middleware has replaced the task middleware.
     for middleware_instance in deepagent_middleware:
         if isinstance(middleware_instance, _SubAgentMiddleware):
-            middleware_instance.private_state_keys = private_state_keys
+            middleware_instance.private_state_keys = middleware_instance.private_state_keys | private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

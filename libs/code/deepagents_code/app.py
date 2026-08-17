@@ -272,7 +272,27 @@ reason.
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
     {MessageType.ASSISTANT, MessageType.TOOL, MessageType.SKILL}
 )
-"""Message types proving a thread contains server-backed output."""
+"""Message types marking a thread the user did conversational work in.
+
+Read via `_store_has_server_output` to decide whether a thread is worth
+offering a way back to. `USER` alone is not enough: local-only flows
+(`/update`, `!shell`, most slash commands) mount a `UserMessage` widget
+without ever invoking the server.
+
+This is deliberately *stricter* than "has a resumable checkpoint row".
+Non-conversational commands (`/goal`, `/rubric set`) persist thread state
+through `aupdate_state`, and merely registering a thread in server mode
+(`aensure_thread`) writes a row too, so `thread_exists` alone reports a
+brand-new thread as resumable. Threads holding only that state are
+intentionally treated as "nothing happened here" — `/rubric set` with no
+conversation is a config tweak, not work left behind.
+
+`SKILL` is the loosest member: `SkillMessage` mounts just *before*
+`_send_to_agent`, which can bail out without reaching the server, so a
+`SKILL` row means a turn was attempted rather than completed. That
+direction is safe — it only over-offers a hint that
+`_mount_previous_thread_hint` still validates against the checkpoint store.
+"""
 
 
 def _message_timestamp_footer_id(message_id: str) -> str:
@@ -14193,6 +14213,10 @@ class DeepAgentsApp(App):
 
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
+            # Sample before `_clear_messages` below empties the store: this
+            # describes the thread being left, not the fresh one. See
+            # `_store_has_server_output`.
+            outgoing_had_agent_output = self._store_has_server_output()
             await _wait_for_session_end(
                 self._hooks.on_session_end(SessionEndCause.CLEAR)
             )
@@ -14235,7 +14259,8 @@ class DeepAgentsApp(App):
                     thread_id=new_thread_id,
                 )
                 await self._mount_previous_thread_hint(
-                    self._session_state.previous_thread_id
+                    self._session_state.previous_thread_id,
+                    had_agent_output=outgoing_had_agent_output,
                 )
                 await self._reload_hooks()
                 if not await self._run_session_start_hook(SessionStartCause.CLEAR):
@@ -17243,16 +17268,46 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _mount_previous_thread_hint(self, previous_thread_id: str | None) -> bool:
+    def _store_has_server_output(self) -> bool:
+        """Return whether the live message store holds server-backed output.
+
+        Feeds `_mount_previous_thread_hint`'s `had_agent_output` gate; see
+        `_SERVER_OUTPUT_MESSAGE_TYPES` for why `USER` rows do not count.
+
+        Callers must read this *before* `_clear_messages` empties the store —
+        it describes the thread being left, not the one being loaded. Every
+        current caller snapshots it into a local at the top of its handler for
+        that reason; moving the read down next to its use would make the gate
+        permanently `False`.
+
+        Returns:
+            `True` when the store holds at least one message type implying the
+            user did conversational work in this thread.
+        """
+        return any(
+            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES
+            for msg in self._message_store.get_all_messages()
+        )
+
+    async def _mount_previous_thread_hint(
+        self,
+        previous_thread_id: str | None,
+        *,
+        had_agent_output: bool,
+    ) -> bool:
         """Point the user back at the thread the session just left.
 
         Shared by every path that moves the session off a thread: `/clear`,
         `/force-clear`, a mid-session thread switch, and both agent swaps.
 
-        The hint is suppressed wherever `/threads -r` would dead-end: threads
-        with no checkpoint row (`-r` can't resume them), threads whose owning
-        agent can't be determined, and cross-agent threads on remote-server
-        sessions, which cannot perform the agent restart `-r` would need. The
+        The hint is suppressed in two situations. First, where `/threads -r`
+        would dead-end: threads with no checkpoint row (`-r` can't resume
+        them), threads whose owning agent can't be determined, and cross-agent
+        threads on remote-server sessions, which cannot perform the agent
+        restart `-r` would need. Second, where the thread holds no
+        conversational work to return to (`had_agent_output`) — a checkpoint
+        row alone is too weak a signal, since `/clear` plus a server-mode
+        thread registration produces one for a thread the user never used. The
         return value lets callers fall back to a heavier remedy — the agent
         swap offers a relaunch command — when `-r` can't reach the thread.
 
@@ -17260,12 +17315,30 @@ class DeepAgentsApp(App):
             previous_thread_id: The thread the session left. Tolerates `None`
                 by mounting nothing, since the underlying field is nullable
                 before the first reset; all current callers pass a real id.
+            had_agent_output: Whether that thread saw server-backed output,
+                from `_store_has_server_output` read before the store was
+                cleared. Keyword-only and required so a new caller has to
+                decide when to sample it rather than inherit a wrong default.
 
         Returns:
             `True` when a hint was mounted, `False` when it was suppressed or
             could not be rendered.
         """
         if not previous_thread_id:
+            return False
+
+        if not had_agent_output:
+            # `info`, not `debug`, for the same reason as the store-failure
+            # branch below: the always-on ring buffer behind the Debug Console
+            # captures INFO and above, and at `debug` a vanished hint leaves no
+            # trace. Deliberately does not report a store count — by the time
+            # `_resume_thread` reaches here the store holds the *incoming*
+            # thread's history, so any count would describe the wrong thread.
+            logger.info(
+                "Suppressing previous-thread hint for %s: no server-backed "
+                "output was recorded in it",
+                previous_thread_id,
+            )
             return False
 
         import sqlite3
@@ -21358,15 +21431,9 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode_key if self._session_state else None
         )
         # Only offer a resume hint if the previous thread produced agent-side
-        # output. `USER` alone is not enough: local-only flows (`/update`,
-        # `!shell`, most slash commands) mount a `UserMessage` widget without
-        # ever invoking the server, so no checkpoint exists and `-r <thread>`
-        # would fail. `ASSISTANT` / `TOOL` / `SKILL` entries only land in the
-        # store after a server round-trip, which implies a checkpoint row.
-        previous_thread_has_agent_output = any(
-            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES
-            for msg in self._message_store.get_all_messages()
-        )
+        # output; see `_SERVER_OUTPUT_MESSAGE_TYPES`. Sampled here, before the
+        # Phase 1 teardown below clears the store.
+        previous_thread_has_agent_output = self._store_has_server_output()
         server_proc = self._server_proc
         if server_proc is None:
             # Guarded in _switch_agent, but the worker runs in the next tick
@@ -21674,7 +21741,10 @@ class DeepAgentsApp(App):
             # `from_markup` so a thread ID with stray brackets can't corrupt
             # rendering. See checkpoint-gating rationale on
             # `previous_thread_has_agent_output` above.
-            hinted = await self._mount_previous_thread_hint(previous_thread_id)
+            hinted = await self._mount_previous_thread_hint(
+                previous_thread_id,
+                had_agent_output=previous_thread_has_agent_output,
+            )
             if not hinted and previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
                     "[dim]Relaunch with[/dim] $command -r $thread "
@@ -26043,11 +26113,12 @@ class DeepAgentsApp(App):
         prev_thread_id = self._lc_thread_id
         prev_session_thread = self._session_state.thread_id
         prev_previous_thread = self._session_state.previous_thread_id
-        previous_thread_has_agent_output = any(
-            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES
-            for msg in self._message_store.get_all_messages()
-        )
         prev_cwd = Path(self._cwd)
+
+        # Not rollback state, unlike the block above: sampled here because
+        # `_clear_messages` further down empties the store, and this has to
+        # describe the outgoing thread. See `_store_has_server_output`.
+        previous_thread_has_agent_output = self._store_has_server_output()
 
         cwd_choice = await self._offer_thread_cwd_switch(
             thread_id,
@@ -26134,9 +26205,14 @@ class DeepAgentsApp(App):
             # just left — the same affordance `/clear` offers. Deliberately not
             # described as sitting under the "Resumed thread" note: that note is
             # only mounted on `_load_thread_history`'s happy path, so an empty
-            # or failed load leaves the hint under something else.
-            if previous_thread_has_agent_output:
-                await self._mount_previous_thread_hint(prev_session_thread)
+            # or failed load leaves the hint under something else. Suppressed
+            # entirely for a thread the user did no work in — chiefly the
+            # `/clear` then bare `/threads -r` round trip, where the thread
+            # being left was created moments ago and never used.
+            await self._mount_previous_thread_hint(
+                prev_session_thread,
+                had_agent_output=previous_thread_has_agent_output,
+            )
 
             # Landing on a new thread re-arms the same-thread toast, so stepping
             # back to a thread and re-selecting it announces itself again.

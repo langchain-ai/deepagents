@@ -7339,11 +7339,18 @@ class TestClearCommand:
 
     async def test_clear_points_back_to_previous_thread(self) -> None:
         """/clear should surface the abandoned thread and a resume hint."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app = DeepAgentsApp(thread_id="old-thread")
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState(thread_id="old-thread")
             app._lc_thread_id = "old-thread"
+            # The hint is only offered for a thread the user did work in;
+            # `/clear` samples the store before emptying it.
+            app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="existing response")
+            )
 
             with (
                 patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
@@ -7401,6 +7408,39 @@ class TestClearCommand:
             assert "Previous thread: old-thread" not in contents
             assert not any("Resume it with /threads -r" in text for text in contents)
             schedule.assert_called_once()
+
+    async def test_clear_omits_previous_thread_without_agent_output(self) -> None:
+        """Back-to-back `/clear` must not point at the untouched thread.
+
+        `thread_exists` is stubbed `True` because a brand-new thread can pick
+        up a checkpoint row from server-mode registration alone, so the
+        resumability check does not cover this on its own.
+        """
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+            thread_exists = AsyncMock(return_value=True)
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch("deepagents_code.sessions.thread_exists", thread_exists),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="agent"),
+                ),
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any(text.startswith("Previous thread:") for text in contents), (
+                contents
+            )
+            # The switch itself still happened.
+            assert app._session_state.previous_thread_id == "old-thread"
+            thread_exists.assert_not_awaited()
 
 
 class TestCopyCommand:
@@ -24404,7 +24444,7 @@ class TestRestartServerForAgentSwap:
             preloaded_payload=payload,
             resolve_pending_goal=False,
         )
-        mount_previous.assert_awaited_once_with("old-thread")
+        mount_previous.assert_awaited_once_with("old-thread", had_agent_output=False)
         save_mock.assert_not_called()
         plain = [str(getattr(message, "_content", message)) for message in mounted]
         assert any(
@@ -24476,7 +24516,13 @@ class TestRestartServerForAgentSwap:
         Telling the user to relaunch when a single command suffices sends them
         the long way around.
         """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app, _server_proc = self._make_app()
+        # Only a thread the user did work in is worth pointing back at.
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="existing response")
+        )
 
         mounted: list[object] = []
         async with app.run_test() as pilot:

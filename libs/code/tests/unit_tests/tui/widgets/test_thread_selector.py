@@ -3319,12 +3319,22 @@ class TestResumeThread:
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
         app._session_state = _mock_session_state("old-thread")
+        # Seed server-backed output so `_mount_previous_thread_hint`'s
+        # `had_agent_output` gate passes; cases that need the no-work path
+        # reset the store themselves. Load-bearing for every hint assertion
+        # in this class, so do not drop it as unused setup.
         app._message_store.append(
             MessageData(type=MessageType.ASSISTANT, content="existing response")
         )
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        _app_test_double(app)._clear_messages = AsyncMock()
+        # A faithful double: the real `_clear_messages` empties the store, and
+        # the hint gate is only correct because `_resume_thread` samples the
+        # store *before* calling it. A bare `AsyncMock` here would let the
+        # sample move below the clear with every test still green.
+        _app_test_double(app)._clear_messages = AsyncMock(
+            side_effect=lambda *_, **__: app._message_store.clear()
+        )
         _app_test_double(app)._update_status = MagicMock()
         mock_payload = MagicMock()
         mock_payload.messages = []
@@ -3413,14 +3423,28 @@ class TestResumeThread:
         assert _get_widget_text(linked) == hint
         assert any(widget is linked for widget in mounted)
 
-    async def test_switch_omits_untouched_previous_thread(self) -> None:
-        """A thread with only the resume command does not get a return hint."""
+    @pytest.mark.parametrize(
+        "local_only_type",
+        ["USER", "APP"],
+        ids=["user-only", "app-only"],
+    )
+    async def test_switch_omits_untouched_previous_thread(
+        self, local_only_type: str
+    ) -> None:
+        """A thread the user did no work in does not get a return hint.
+
+        Covers `/clear` then a bare `/threads -r`: the thread being left was
+        created moments ago and holds only local widgets. `thread_exists` is
+        stubbed `True` on purpose — server-mode thread registration writes a
+        checkpoint row for a brand-new thread, so the checkpoint check alone
+        would let the hint through.
+        """
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = self._switch_app()
         app._message_store.clear()
         app._message_store.append(
-            MessageData(type=MessageType.USER, content="/threads -r")
+            MessageData(type=MessageType[local_only_type], content="/threads -r")
         )
         mount_message = AsyncMock()
         _app_test_double(app)._mount_message = mount_message
@@ -3441,7 +3465,59 @@ class TestResumeThread:
         ]
         assert not any(text.startswith("Previous thread:") for text in contents)
         schedule.assert_not_called()
+        # Distinguishes "suppressed by the work gate" from "suppressed by the
+        # resumability check" — the primary assertion above cannot tell them
+        # apart, and the stub would have said the thread *is* resumable.
         thread_exists.assert_not_awaited()
+        # A suppressed hint must not derail the switch itself.
+        assert app._session_state is not None
+        assert app._session_state.thread_id == "new-thread"
+
+    @pytest.mark.parametrize(
+        "output_type",
+        ["ASSISTANT", "TOOL", "SKILL"],
+    )
+    async def test_switch_hints_for_any_server_output_type(
+        self, output_type: str
+    ) -> None:
+        """Every `_SERVER_OUTPUT_MESSAGE_TYPES` member counts as work done.
+
+        A turn can leave behind tool calls or a skill invocation without any
+        assistant text, so narrowing the constant to `ASSISTANT` would strand
+        those threads.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = self._switch_app()
+        app._message_store.clear()
+        # `MessageData.__post_init__` requires a name for TOOL and SKILL.
+        app._message_store.append(
+            MessageData(
+                type=MessageType[output_type],
+                content="output",
+                tool_name="Read" if output_type == "TOOL" else None,
+                skill_name="review" if output_type == "SKILL" else None,
+            )
+        )
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert any(text.startswith("Previous thread: old-thread") for text in contents)
+        thread_exists.assert_awaited_once_with("old-thread")
 
     async def test_switch_mounts_previous_thread_hint_after_history(self) -> None:
         """The hint lands below the restored transcript, not above it.
@@ -3600,11 +3676,9 @@ class TestResumeThread:
         app = self._switch_app()
         mount_message = AsyncMock()
         _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(side_effect=error)
 
-        with patch(
-            "deepagents_code.sessions.thread_exists",
-            AsyncMock(side_effect=error),
-        ):
+        with patch("deepagents_code.sessions.thread_exists", thread_exists):
             await app._resume_thread("new-thread")
 
         contents = [
@@ -3614,6 +3688,9 @@ class TestResumeThread:
         assert app._session_state.thread_id == "new-thread"
         assert not any(text.startswith("Previous thread:") for text in contents)
         assert not any("Failed to switch" in text for text in contents)
+        # Anchor: without this the test passes when the work gate suppresses
+        # the hint before the lookup, never reaching the failure it covers.
+        thread_exists.assert_awaited_once_with("old-thread")
 
     async def test_switch_survives_previous_thread_hint_mount_failure(self) -> None:
         """A hint that cannot be mounted must not fail the switch.
@@ -3623,10 +3700,13 @@ class TestResumeThread:
         """
         app = self._switch_app()
         mounted: list[str] = []
+        mount_raised = False
 
         def mount(widget: Static) -> None:
+            nonlocal mount_raised
             text = _get_widget_text(widget)
             if text.startswith("Previous thread:"):
+                mount_raised = True
                 msg = "container is detached"
                 raise MountError(msg)
             mounted.append(text)
@@ -3649,6 +3729,9 @@ class TestResumeThread:
         assert app._session_state is not None
         assert app._session_state.thread_id == "new-thread"
         assert not any("Failed to switch" in text for text in mounted)
+        # Anchor: without this the test passes when the hint is suppressed
+        # before mounting, so the MountError branch is never exercised.
+        assert mount_raised
 
     async def test_successful_switch_rearms_already_on_thread_toast(self) -> None:
         """A real switch clears suppression so the next no-op toasts again.

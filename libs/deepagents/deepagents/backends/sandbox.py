@@ -1139,10 +1139,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
         Returns:
             An `ExecuteOffloadResult`. `offloaded=True` when the result was left
-            at `capture_path` and `response.output` holds only the preview;
-            `offloaded=False` when `response.output` is the complete output.
-            `preview_has_truncation_marker` reports whether that preview dropped
-            middle lines behind a marker, for callers describing it to a model.
+                at `capture_path` and `response.output` holds only the preview;
+                `offloaded=False` when `response.output` is the complete output.
+
+                `preview_has_truncation_marker` reports whether that preview
+                dropped middle lines behind a marker, for callers describing
+                it to a model.
         """
         use_timeout = timeout is not None and execute_accepts_timeout(type(self))
         if not self.enable_capture_offload:

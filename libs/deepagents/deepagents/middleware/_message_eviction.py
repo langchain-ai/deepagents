@@ -98,9 +98,10 @@ def _preview_note(*, lines_omitted: bool, lines_clipped: bool = False, subject: 
         subject: Noun describing what is being previewed, e.g. `result`.
 
     Returns:
-        A single-sentence note ending in a colon. Applicable caveats are
-        appended in a parenthetical; with no caveats the sentence is a bare
-        `Here is a preview of the {subject}:`.
+        A single-sentence note ending in a colon.
+
+            Applicable caveats are appended in a parenthetical; with no caveats
+            the sentence is a bare `Here is a preview of the {subject}:`.
     """
     base = _PREVIEW_NOTE_HEAD_TAIL if lines_omitted else _PREVIEW_NOTE_PLAIN
     caveats = [caveat for applies, caveat in ((lines_omitted, _CAVEAT_OMITTED_LINES), (lines_clipped, _CAVEAT_CLIPPED_LINES)) if applies]

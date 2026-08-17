@@ -1871,6 +1871,7 @@ class TestRenderTeardownThreadHints:
         thread_url: str | None,
         return_code: int = 0,
         launch_name: str = "dcode",
+        term_program: str = "",
     ) -> str:
         """Render the hints with patched dependencies, returning the output."""
         buffer = StringIO()
@@ -1883,7 +1884,13 @@ class TestRenderTeardownThreadHints:
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
-            patch.dict(os.environ, {INVOKED_AS: launch_name}),
+            # Always set explicitly: an ambient `TERM_PROGRAM` from the
+            # developer's or CI runner's shell would otherwise leak into the
+            # rendered command and flake the assertions here.
+            patch.dict(
+                os.environ,
+                {INVOKED_AS: launch_name, "TERM_PROGRAM": term_program},
+            ),
         ):
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
@@ -1917,6 +1924,77 @@ class TestRenderTeardownThreadHints:
 
         assert "abc -r test123" in output
         assert "dcode" not in output
+
+    @pytest.mark.parametrize("return_code", [0, 1])
+    def test_resume_hint_carries_term_program(self, return_code: int) -> None:
+        """A set `TERM_PROGRAM` rides along as an env prefix on the command.
+
+        A shell alias that exports the variable cannot be recovered from
+        `argv[0]`, so pasting a bare `dcode -r ...` would drop it (and with it
+        anything keyed off it, such as theme selection).
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            return_code=return_code,
+            term_program="WezTerm",
+        )
+
+        assert "TERM_PROGRAM=WezTerm dcode -r test123" in output
+
+    def test_resume_hint_omits_prefix_when_term_program_unset(self) -> None:
+        """An unset `TERM_PROGRAM` leaves the command bare, with no empty prefix."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+
+        assert "dcode -r test123" in output
+        assert "TERM_PROGRAM" not in output
+
+    @pytest.mark.parametrize("term_program", ["   ", "\t"])
+    def test_resume_hint_omits_blank_term_program(self, term_program: str) -> None:
+        """A whitespace-only value is treated as unset, matching other readers."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program=term_program,
+        )
+
+        assert "TERM_PROGRAM" not in output
+
+    def test_resume_hint_quotes_term_program_needing_quotes(self) -> None:
+        """A value the shell would split is quoted, keeping the line pasteable."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="Wez Term&whoami",
+        )
+
+        assert "TERM_PROGRAM='Wez Term&whoami' dcode -r test123" in output
+
+    def test_resume_hint_drops_term_program_with_control_characters(self) -> None:
+        """Terminal metadata cannot inject control sequences into teardown output.
+
+        The value is dropped rather than stripped: a stripped value would name a
+        terminal the environment never contained.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="Wez\x1b\nTerm",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "\x1b" not in output
+        assert "dcode -r test123" in output
 
     def test_prints_langsmith_link_when_available(self) -> None:
         """A configured LangSmith URL is shown alongside the resume hint."""

@@ -264,6 +264,21 @@ def _should_check_teardown_thread(
     return bool(thread_id)
 
 
+def _resume_term_program() -> str | None:
+    """Return a `TERM_PROGRAM` value safe to echo inside the resume hint.
+
+    Returns:
+        The environment value when it is set and fully printable, else `None`.
+        A value carrying control characters is dropped rather than stripped:
+        stripping would both write raw escape sequences into teardown output
+        and name a terminal the environment never actually contained.
+    """
+    raw = os.environ.get("TERM_PROGRAM", "").strip()
+    if not raw or not raw.isprintable():
+        return None
+    return raw
+
+
 def _render_teardown_thread_hints(
     console: "Console",
     thread_id: str,
@@ -282,6 +297,8 @@ def _render_teardown_thread_hints(
         thread_id: Thread whose checkpoints back the hints.
         return_code: Process exit code; failed sessions add a resume safety caveat.
     """
+    import shlex
+
     from rich.style import Style
     from rich.text import Text
 
@@ -318,10 +335,18 @@ def _render_teardown_thread_hints(
     console.print("[dim]Resume this thread with:[/dim]")
     # Echo the command the user actually launched (a shim or the
     # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
-    hint = Text(invoked_name(), style="cyan")
-    hint.append(" -r ", style="cyan")
-    hint.append(str(thread_id), style="cyan")
-    console.print(hint)
+    resume_command = shlex.join([invoked_name(), "-r", str(thread_id)])
+    # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
+    # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
+    # the bare command would resume without it. Carry it as an env prefix to
+    # keep the line pasteable as-is. POSIX syntax is safe here: on Windows the
+    # variable is only set under POSIX shells (git-bash, WSL), while native
+    # `cmd.exe`/PowerShell leave it unset, so no prefix is emitted there.
+    term_program = _resume_term_program()
+    if term_program is not None:
+        resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"
+    console.print(Text(resume_command, style="cyan"))
+
     if return_code != 0:
         console.print(
             "[dim]Note: the session exited with a non-zero status. Attempting "

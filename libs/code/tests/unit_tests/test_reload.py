@@ -1073,7 +1073,7 @@ class TestReloadInputResponsiveness:
         self, monkeypatch: pytest.MonkeyPatch, *, restart_raises: bool
     ) -> None:
         """A `/restart` requested during reload's respawn does not run twice."""
-        from deepagents_code.app import DeepAgentsApp, UserMessage
+        from deepagents_code.app import DeepAgentsApp, UserMessage, _ServerRespawnResult
         from deepagents_code.config import settings
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
@@ -1090,13 +1090,13 @@ class TestReloadInputResponsiveness:
             async def _fake_discover() -> bool:  # noqa: RUF029
                 return True
 
-            async def _blocked_restart() -> bool:
+            async def _blocked_restart() -> _ServerRespawnResult:
                 started.set()
                 await release.wait()
                 if restart_raises:
                     msg = "respawn exploded"
                     raise RuntimeError(msg)
-                return True
+                return _ServerRespawnResult(restarted=True)
 
             mount_message = app._mount_message
 
@@ -1110,7 +1110,7 @@ class TestReloadInputResponsiveness:
             monkeypatch.setattr(app, "_mount_message", _blocked_command_echo)
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
             monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
-            monkeypatch.setattr(app, "_restart_server_manual", restart)
+            monkeypatch.setattr(app, "_restart_server_manual_result", restart)
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
                 "deepagents_code.model_config.clear_caches", lambda: None
@@ -2370,8 +2370,9 @@ class TestReloadPluginsViaReload:
         expected_ids: frozenset[str],
     ) -> None:
         """A failed restart leaves the prior server's plugin status intact."""
-        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
         from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
 
         plugin = MagicMock(plugin_id="new@tools")
         app = DeepAgentsApp()
@@ -2386,13 +2387,13 @@ class TestReloadPluginsViaReload:
             async def _fake_discover() -> bool:  # noqa: RUF029
                 return True
 
-            async def _fake_restart() -> bool:  # noqa: RUF029
+            async def _fake_restart() -> _ServerRespawnResult:  # noqa: RUF029
                 order.append("restart")
-                return restarted
+                return _ServerRespawnResult(restarted=restarted)
 
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
             monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
-            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+            monkeypatch.setattr(app, "_restart_server_manual_result", _fake_restart)
             monkeypatch.setattr(app, "_discard_queue", lambda: None)
             monkeypatch.setattr(
                 "deepagents_code.plugins.discover_plugins",
@@ -2410,6 +2411,243 @@ class TestReloadPluginsViaReload:
 
             assert app._session_plugin_ids == expected_ids
             assert order == ["hooks", "restart"]
+
+            # A report that says the server never restarted must not also
+            # claim anything about MCP — the two lines would contradict.
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert ("MCP server changes" in text) is restarted
+
+    @pytest.mark.parametrize(
+        ("mcp_status", "expected", "forbidden"),
+        [
+            # `--no-mcp`: nothing to refresh, so an empty diff is the truth —
+            # stated as the reason rather than as a bare "no changes", which
+            # would read as a load next to the plugin MCP count printed above.
+            (
+                "disabled",
+                "MCP is disabled for this session (--no-mcp); no servers were loaded.",
+                "couldn't be determined",
+            ),
+            # MCP is on but the refresh failed: saying "no changes" here would
+            # affirmatively misreport tool availability at the moment the app
+            # knows least. These two cases must never collapse into one.
+            (
+                "unavailable",
+                "couldn't be determined",
+                "no changes detected",
+            ),
+        ],
+    )
+    async def test_reload_distinguishes_disabled_mcp_from_failed_refresh(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mcp_status: str,
+        expected: str,
+        forbidden: str,
+    ) -> None:
+        """`mcp_server_info=None` means opposite things in these two sessions."""
+        from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plugin = MagicMock(plugin_id="new@tools")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_plugin_ids = frozenset({"old@tools"})
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            if mcp_status == "unavailable":
+                # An MCP-enabled session with a usable pre-reload baseline.
+                app._mcp_preload_kwargs = {}
+                app._mcp_server_info = [MCPServerInfo(name="notion", transport="stdio")]
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            async def _fake_restart() -> _ServerRespawnResult:  # noqa: RUF029
+                return _ServerRespawnResult(
+                    restarted=True,
+                    mcp_server_info=None,
+                    mcp_status=mcp_status,  # ty: ignore[invalid-argument-type]
+                )
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_restart_server_manual_result", _fake_restart)
+            monkeypatch.setattr(app, "_discard_queue", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=(plugin,)),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert expected in text
+            assert forbidden not in text
+
+    async def test_reload_names_the_mcp_refresh_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refresh error identifies what broke; the log is not enough."""
+        from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plugin = MagicMock(plugin_id="new@tools")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_plugin_ids = frozenset({"old@tools"})
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            app._mcp_preload_kwargs = {}
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            async def _fake_restart() -> _ServerRespawnResult:  # noqa: RUF029
+                return _ServerRespawnResult(
+                    restarted=True,
+                    mcp_status="unavailable",
+                    mcp_error="RuntimeError: Invalid MCP server config: notion",
+                )
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_restart_server_manual_result", _fake_restart)
+            monkeypatch.setattr(app, "_discard_queue", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=(plugin,)),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Invalid MCP server config: notion" in text
+
+    async def test_reload_says_remote_sessions_cannot_reload_mcp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without an owned server the MCP config was never re-read.
+
+        The plugin line still counts plugin MCP servers, so saying nothing
+        implies the reload picked them up.
+        """
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plugin = MagicMock(plugin_id="new@tools")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_plugin_ids = frozenset({"old@tools"})
+            # Attached to an externally managed server.
+            app._server_proc = None
+            app._server_kwargs = None
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_discard_queue", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=(plugin,)),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "cannot reload MCP config" in text
+
+    @pytest.mark.parametrize("no_mcp", [False, True])
+    async def test_reload_deferred_local_startup_is_not_labeled_remote(
+        self, monkeypatch: pytest.MonkeyPatch, no_mcp: bool
+    ) -> None:
+        """A pending local server start is not a remote session.
+
+        Deferred startup leaves `_server_kwargs` populated with `_server_proc`
+        still `None`; calling that "remote" would mislabel the session mode and
+        contradict the deferred start that `/reload` itself may trigger.
+        """
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plugin = MagicMock(plugin_id="new@tools")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_plugin_ids = frozenset({"old@tools"})
+            # Deferred local startup: owned kwargs cached, no process yet.
+            app._server_proc = None
+            app._server_kwargs = {"no_mcp": no_mcp}
+            app._server_startup_deferred = True
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_discard_queue", lambda: None)
+            # `_server_kwargs` is a stub, so the deferred start the reload
+            # triggers must not actually boot a server.
+            real_run_worker = app.run_worker
+
+            def _run_worker_skip_server_start(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                if kwargs.get("group") == "server-startup":
+                    return None
+                return real_run_worker(*args, **kwargs)
+
+            monkeypatch.setattr(app, "run_worker", _run_worker_skip_server_start)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=(plugin,)),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "remote" not in text
+            assert "cannot reload MCP config" not in text
+            if no_mcp:
+                assert "MCP is disabled for this session (--no-mcp)" in text
+            else:
+                assert "hasn't started yet" in text
 
     async def test_preserves_messages_queued_before_cancelling_for_restart(
         self, monkeypatch: pytest.MonkeyPatch

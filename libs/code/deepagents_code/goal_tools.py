@@ -40,7 +40,7 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
     project_goal_state,
-    summarization_cutoff,
+    validated_summarization_cutoff,
 )
 
 # Runtime (not TYPE_CHECKING) import. `GoalRubricChannels` looks type-only but is
@@ -315,12 +315,22 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         # cutoff, matching the client-side predicate in `app.py`, so the durable
         # write happens instead of leaving the transient re-pin in `wrap_model_call`
         # to carry the objective on every subsequent turn.
+        event = values.get("_summarization_event")
+        cutoff = validated_summarization_cutoff(
+            event,
+            message_count=len(messages),
+        )
+        malformed_event = event is not None and cutoff is None
         notice = _goal_state_notice_for(
             values,
             messages,
-            cutoff=summarization_cutoff(values.get("_summarization_event")),
+            # Force a fresh notice when discarding an event so a summarization
+            # regenerated on this boundary retains the canonical goal state.
+            cutoff=len(messages) if malformed_event else (cutoff or 0),
         )
         update: dict[str, Any] = {}
+        if malformed_event:
+            update["_summarization_event"] = None
         if notice is not None:
             update["messages"] = [notice]
         projected = project_goal_state(values)
@@ -397,6 +407,20 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             with a current goal-state notice appended to its messages.
         """
         values = cast("dict[str, Any]", request.state)
+        event = values.get("_summarization_event")
+        if (
+            event is not None
+            and validated_summarization_cutoff(
+                event,
+                message_count=len(request.messages),
+            )
+            is None
+        ):
+            # This middleware wraps the summarizer. Disable an invalid restored
+            # event in the request passed inward so its Python slice cannot
+            # remove the only model-visible copy of the goal state.
+            values = {**values, "_summarization_event": None}
+            request = request.override(state=cast("AgentState[Any]", values))
         notice = _goal_state_notice_for(values, request.messages)
         messages = list(request.messages)
         if notice is not None:

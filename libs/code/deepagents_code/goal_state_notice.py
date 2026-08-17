@@ -254,7 +254,35 @@ def build_goal_continuation(
     )
 
 
-def summarization_cutoff(event: object) -> int:
+def validated_summarization_cutoff(
+    event: object,
+    *,
+    message_count: int | None = None,
+) -> int | None:
+    """Return a valid absolute cutoff index from a summarization event.
+
+    Args:
+        event: A `_summarization_event` mapping as persisted in state, or `None`.
+        message_count: Full persisted message count when bounds can be checked.
+
+    Returns:
+        The non-negative `cutoff_index` when valid, otherwise `None`.
+    """
+    if not isinstance(event, Mapping):
+        return None
+    cutoff = event.get("cutoff_index")
+    if not isinstance(cutoff, int) or isinstance(cutoff, bool) or cutoff < 0:
+        return None
+    if message_count is not None and cutoff > message_count:
+        return None
+    return cutoff
+
+
+def summarization_cutoff(
+    event: object,
+    *,
+    message_count: int | None = None,
+) -> int:
     """Return the absolute cutoff index of a `_summarization_event`.
 
     Summarization is non-destructive: it leaves `state["messages"]` intact and
@@ -264,15 +292,13 @@ def summarization_cutoff(event: object) -> int:
 
     Args:
         event: A `_summarization_event` mapping as persisted in state, or `None`.
+        message_count: Full persisted message count when bounds can be checked.
 
     Returns:
         The `cutoff_index`, or `0` when the event is missing or malformed.
     """
-    if isinstance(event, Mapping):
-        cutoff = event.get("cutoff_index")
-        if isinstance(cutoff, int):
-            return cutoff
-    return 0
+    cutoff = validated_summarization_cutoff(event, message_count=message_count)
+    return cutoff if cutoff is not None else 0
 
 
 def _clean_text(state: Mapping[str, object], key: str) -> str | None:

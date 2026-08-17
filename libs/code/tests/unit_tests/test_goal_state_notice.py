@@ -242,6 +242,10 @@ def test_prior_schema_notice_is_not_authoritative() -> None:
 def test_summarization_cutoff_degrades_to_zero_on_malformed_events() -> None:
     """A malformed event must read as "nothing trimmed", never raise."""
     assert summarization_cutoff({"cutoff_index": 7}) == 7
+    assert summarization_cutoff({"cutoff_index": -1}) == 0
+    assert summarization_cutoff({"cutoff_index": True}) == 0
+    assert summarization_cutoff({"cutoff_index": 3}, message_count=2) == 0
+    assert summarization_cutoff({"cutoff_index": 2}, message_count=2) == 2
     assert summarization_cutoff(None) == 0
     assert summarization_cutoff({}) == 0
     assert summarization_cutoff({"cutoff_index": "7"}) == 0

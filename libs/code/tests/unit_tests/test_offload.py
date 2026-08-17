@@ -2560,12 +2560,19 @@ class TestOffloadHelpers:
         assert _effective_conversation(messages, "x") == messages
         assert _effective_conversation(messages, {"cutoff_index": 1}) == messages
         assert _effective_conversation(messages, {"summary_message": "S"}) == messages
+        assert (
+            _effective_conversation(
+                messages,
+                {"summary_message": "S", "cutoff_index": -1},
+            )
+            == messages
+        )
 
     def test_effective_conversation_cutoff_past_end(self) -> None:
         from deepagents_code.app import _effective_conversation
 
         event = {"summary_message": "S", "cutoff_index": 9}
-        assert _effective_conversation(["m0"], event) == ["S"]
+        assert _effective_conversation(["m0"], event) == ["m0"]
 
     def test_message_text_handles_str_and_block_list(self) -> None:
         from deepagents_code.app import _message_text

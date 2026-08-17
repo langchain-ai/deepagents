@@ -369,6 +369,37 @@ def test_wrap_model_call_restores_notice_after_compaction() -> None:
     assert goal_state_notice_info(notice) is not None
 
 
+@pytest.mark.parametrize("cutoff", [-1, 99])
+def test_wrap_model_call_disables_malformed_summarization_cutoff(
+    cutoff: int,
+) -> None:
+    """An invalid restored cutoff cannot strip the only visible goal notice."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": cutoff,
+        },
+    }
+    notice = build_goal_state_notice(state, event_id="persisted")
+    request = _fake_request(
+        None,
+        state=state,
+        messages=[notice, HumanMessage(content="continue")],
+    )
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    assert captured["request"].state["_summarization_event"] is None
+    assert goal_state_notice_info(captured["request"].messages[0]) is not None
+    assert state["_summarization_event"] is not None
+
+
 def test_wrap_model_call_removes_superseded_oversized_notice() -> None:
     """A bounded replacement also evicts the legacy poison from the request."""
     rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
@@ -726,6 +757,33 @@ def test_notice_below_summarization_cutoff_is_rewritten() -> None:
     assert "<goal_objective>ship it</goal_objective>" in (
         trimmed_away["messages"][0].content
     )
+
+
+@pytest.mark.parametrize("cutoff", [-1, 99])
+def test_notice_update_repairs_malformed_summarization_cutoff(cutoff: int) -> None:
+    """A restored invalid event is cleared alongside a fresh durable notice."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+    }
+    notice = build_goal_state_notice(state, event_id="persisted")
+    update = GoalToolsMiddleware._notice_update(
+        cast(
+            "AgentState[Any]",
+            {
+                **state,
+                "messages": [notice, HumanMessage(content="continue")],
+                "_summarization_event": {
+                    "summary_message": HumanMessage(content="summary"),
+                    "cutoff_index": cutoff,
+                },
+            },
+        )
+    )
+
+    assert update is not None
+    assert update["_summarization_event"] is None
+    assert goal_state_notice_info(update["messages"][0]) is not None
 
 
 def test_goal_tool_state_marks_goal_fields_private() -> None:

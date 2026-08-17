@@ -105,6 +105,7 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_notice,
     project_goal_state,
     summarization_cutoff as _summarization_cutoff,
+    validated_summarization_cutoff as _validated_summarization_cutoff,
 )
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
@@ -493,11 +494,12 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     if not isinstance(event, dict):
         return list(messages)
     summary = event.get("summary_message")
-    cutoff = event.get("cutoff_index")
-    if summary is None or not isinstance(cutoff, int):
+    cutoff = _validated_summarization_cutoff(
+        event,
+        message_count=len(messages),
+    )
+    if summary is None or cutoff is None:
         return list(messages)
-    if cutoff > len(messages):
-        return [summary]
     return [summary, *messages[cutoff:]]
 
 
@@ -11611,7 +11613,10 @@ class DeepAgentsApp(App):
             latest = latest_goal_state_notice(messages)
             latest_candidate = latest_goal_state_message_index(messages)
             fingerprint = goal_state_fingerprint(desired_state)
-            cutoff = _summarization_cutoff(state_values.get("_summarization_event"))
+            cutoff = _summarization_cutoff(
+                state_values.get("_summarization_event"),
+                message_count=len(messages),
+            )
             if (
                 latest is not None
                 and latest[0] == latest_candidate

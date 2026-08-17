@@ -79,11 +79,12 @@ from deepagents.backends.utils import (
 )
 from deepagents.middleware._message_eviction import (
     _TOO_LARGE_TOOL_MSG,
+    ContentPreview,
     _aoffload_tool_message_content,
     _create_content_preview,
     _extract_text_from_message,
     _offload_tool_message_content,
-    _preview_note,
+    _render_preview_stub,
 )
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
@@ -1572,15 +1573,11 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
         A new HumanMessage with truncated content and the same `id`.
     """
     content_str = _extract_text_from_message(message)
-    preview = _create_content_preview(content_str)
-    replacement_text = _TOO_LARGE_HUMAN_MSG.format(
+    replacement_text = _render_preview_stub(
+        _TOO_LARGE_HUMAN_MSG,
+        _create_content_preview(content_str),
+        subject="content",
         file_path=file_path,
-        preview_note=_preview_note(
-            lines_omitted=preview.lines_omitted,
-            lines_clipped=preview.lines_clipped,
-            subject="content",
-        ),
-        content_sample=preview.text,
     )
     evicted = _build_evicted_human_content(message, replacement_text)
     return message.model_copy(update={"content": evicted})
@@ -2844,16 +2841,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         status_line = f"[Command {cmd_status} with exit code {response.exit_code}]"
         if response.truncated:
             status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
-        content_sample = f"{status_line}\n{response.output}"
-        return _TOO_LARGE_TOOL_MSG.format(
+        return _render_preview_stub(
+            _TOO_LARGE_TOOL_MSG,
+            ContentPreview(
+                f"{status_line}\n{response.output}",
+                lines_omitted=offload.preview_has_truncation_marker,
+                # A `PREVIEW_LINE_CHAR_LIMIT` caveat, and the wrapper has no
+                # per-line character budget, so it never applies here. The
+                # wrapper's byte caps can still cut a shown line mid-line; it
+                # discloses that in-band rather than through this note.
+                lines_clipped=False,
+            ),
             tool_call_id=tool_call_id,
             file_path=capture_path,
-            # `lines_clipped` is a `PREVIEW_LINE_CHAR_LIMIT` caveat and the wrapper
-            # has no per-line character budget, so it never applies here. The
-            # wrapper's byte caps can still cut a shown line mid-line; it discloses
-            # that in-band rather than through this note.
-            preview_note=_preview_note(lines_omitted=offload.preview_has_truncation_marker),
-            content_sample=content_sample,
         )
 
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901

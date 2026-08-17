@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -2328,7 +2329,10 @@ class TestParseCaptureExecuteOutput:
         [
             (-10, False),  # single huge line: wc -l counted fewer lines than the budget
             (-1, False),
-            (0, False),  # exactly head+tail lines -- the boundary, no middle to drop
+            # The wrapper only inserts a marker when the surplus is strictly
+            # positive, so `0` -- exactly head+tail lines, no middle to drop --
+            # must not select the marker-explaining note.
+            (0, False),
             (1, True),
             (4990, True),
         ],
@@ -2338,13 +2342,6 @@ class TestParseCaptureExecuteOutput:
 
         assert result.offloaded is True
         assert result.preview_has_truncation_marker is expected_marker
-
-    def test_zero_surplus_boundary_matches_wrapper_behavior(self) -> None:
-        """A surplus of 0 means the wrapper emitted no marker, so none is claimed."""
-        # The wrapper only inserts a marker when the surplus is strictly positive,
-        # so `0` must not select the marker-explaining note.
-        assert _parse_capture_execute_output(self._meta(0, 1, 0, 0)).preview_has_truncation_marker is False
-        assert _parse_capture_execute_output(self._meta(0, 1, 0, 1)).preview_has_truncation_marker is True
 
     def test_parses_exit_code_and_cap_flag(self) -> None:
         result = _parse_capture_execute_output(self._meta(3, 1, 1, 7))
@@ -2415,7 +2412,7 @@ class TestParseCaptureExecuteOutput:
 
     def test_marker_flag_requires_offloaded(self) -> None:
         """A response carrying no preview can never claim a marker, whatever the surplus."""
-        result = _parse_capture_execute_output(self._meta(0, 0, 0, 5) + "\nBODY")
+        result = _parse_capture_execute_output(self._meta(0, 0, 0, 5))
 
         assert result.offloaded is False
         assert result.preview_has_truncation_marker is False
@@ -2434,31 +2431,31 @@ class TestParseCaptureExecuteOutput:
 
 
 class TestCaptureWrapperNotices:
-    """The wrapper's in-band notices must match what the note promises the model."""
+    """The wrapper's in-band notices must match what the note promises the model.
+
+    Every assertion here is on the static parts of the generated wrapper, so one
+    build shared across the class is enough.
+    """
+
+    cmd: Final = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
 
     def test_marker_format_derives_from_shared_template(self) -> None:
         """Wrapper marker and preview note render the same shape, from one template."""
-        cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
-
         # The wrapper emits the marker via printf with the count as the operand.
-        assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s") in cmd
+        assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s") in self.cmd
         # And nothing hardcodes a second, drifting copy of the shape.
         assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s") == "... [%s lines truncated] ..."
 
     def test_wrapper_emits_clip_notice_only_in_byte_excerpt_branch(self) -> None:
-        cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
-
         # Guarded by a byte comparison, so a preview that loses nothing stays quiet.
-        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in cmd
-        assert f'[ "$__da_bytes" -gt $(({_EXECUTE_CAPTURE_HEAD_BYTES} + {_EXECUTE_CAPTURE_TAIL_BYTES})) ]' in cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in self.cmd
+        assert f'[ "$__da_bytes" -gt $(({_EXECUTE_CAPTURE_HEAD_BYTES} + {_EXECUTE_CAPTURE_TAIL_BYTES})) ]' in self.cmd
 
     def test_clip_notice_has_a_capped_variant_selected_by_the_cap_flag(self) -> None:
         """A capped capture must not advertise the cap as the total, nor promise the full output."""
-        cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
-
-        assert '[ "$__da_capped" -eq 1 ]' in cmd
-        assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.format(captured_bytes="%s") in cmd
-        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in cmd
+        assert '[ "$__da_capped" -eq 1 ]' in self.cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.format(captured_bytes="%s") in self.cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in self.cmd
         # Only the uncapped wording may claim the path holds everything.
         assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.count("full output at the path above") == 0
 
@@ -2468,16 +2465,12 @@ class TestCaptureWrapperNotices:
         Guarded by comparing the line-capped excerpt sizes against the byte caps, so a
         preview whose excerpts fit stays quiet.
         """
-        cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
-
-        assert _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE in cmd
-        assert f'[ "$__da_head_bytes" -gt {_EXECUTE_CAPTURE_HEAD_BYTES} ]' in cmd
-        assert f'[ "$__da_tail_bytes" -gt {_EXECUTE_CAPTURE_TAIL_BYTES} ]' in cmd
+        assert _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE in self.cmd
+        assert f'[ "$__da_head_bytes" -gt {_EXECUTE_CAPTURE_HEAD_BYTES} ]' in self.cmd
+        assert f'[ "$__da_tail_bytes" -gt {_EXECUTE_CAPTURE_TAIL_BYTES} ]' in self.cmd
         # Takes no operand, so it must not smuggle in a printf conversion.
         assert "%" not in _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE
 
     def test_head_tail_line_budget_matches_surplus_arithmetic(self) -> None:
         """The surplus the wrapper reports is relative to these two constants."""
-        cmd = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
-
-        assert f"$((__da_lines - {_EXECUTE_CAPTURE_HEAD_LINES} - {_EXECUTE_CAPTURE_TAIL_LINES}))" in cmd
+        assert f"$((__da_lines - {_EXECUTE_CAPTURE_HEAD_LINES} - {_EXECUTE_CAPTURE_TAIL_LINES}))" in self.cmd

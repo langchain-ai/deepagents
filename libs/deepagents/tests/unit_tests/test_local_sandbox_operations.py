@@ -1624,6 +1624,11 @@ _FEW_LONG_LINES_CMD = "for i in 1 2 3; do printf 'line %s: ' \"$i\"; head -c 400
 # disclosed in-band.
 _MANY_LONG_LINES_CMD = "for i in $(seq 1 20); do printf 'line %s: ' \"$i\"; head -c 3000 /dev/zero | tr '\\0' x; echo; done"
 
+# 200 KB on a single line (no newlines at all). Paired with a 5 KB capture cap it
+# is both capped and too few lines for the head/tail branch, so the byte excerpt
+# has to report the cap rather than the output's real size.
+_ONE_HUGE_LINE_CMD = 'head -c 200000 /dev/zero | tr "\\0" x'
+
 
 class TestExecuteCaptureOffload:
     """End-to-end capture-at-source offload via the execute tool on a real shell.
@@ -1755,11 +1760,8 @@ class TestExecuteCaptureOffload:
         incomplete. The notice must not contradict the `truncated` status line the
         caller renders next to it.
         """
-        # 200 KB on a single line (no newlines at all), captured with a 5 KB cap:
-        # capped, and too few lines for the head/tail branch.
-        one_big_line = 'head -c 200000 /dev/zero | tr "\\0" x'
         offload = sandbox.execute_with_offload(
-            one_big_line,
+            _ONE_HUGE_LINE_CMD,
             self._capture_path("c_capped"),
             max_inline_bytes=100,
             max_capture_bytes=5000,
@@ -1840,8 +1842,7 @@ class TestExecuteCaptureOffload:
         composed message rather than only on the raw backend value.
         """
         capture_path = self._capture_path("c_capped_msg")
-        one_big_line = 'head -c 200000 /dev/zero | tr "\\0" x'
-        offload = sandbox.execute_with_offload(one_big_line, capture_path, max_inline_bytes=100, max_capture_bytes=5000)
+        offload = sandbox.execute_with_offload(_ONE_HUGE_LINE_CMD, capture_path, max_inline_bytes=100, max_capture_bytes=5000)
 
         middleware = FilesystemMiddleware(backend=sandbox)
         content = middleware._interpret_capture_output(offload, capture_path, "c_capped_msg")

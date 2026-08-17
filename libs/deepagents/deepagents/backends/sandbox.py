@@ -1020,11 +1020,18 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     `backend_truncated` is passed through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
-    parts = first.split(" ")
 
     def _unoffloaded() -> ExecuteOffloadResult:
         return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
 
+    # Reject non-wrapper output before splitting: with the wrapper disabled the
+    # first line can be the whole output on one line (minified JS, single-line
+    # JSON), and splitting allocates a string per space only to discard them.
+    if not first.startswith(_EXECUTE_CAPTURE_SENTINEL):
+        logger.warning("Capture wrapper meta line absent or malformed (no sentinel); returning output unoffloaded: %r", first[:200])
+        return _unoffloaded()
+
+    parts = first.split(" ")
     # Expect exactly the meta fields described above; anything else is not our
     # wrapper's output, so fall back to returning it verbatim.
     if len(parts) != _EXECUTE_CAPTURE_META_FIELDS or parts[0] != _EXECUTE_CAPTURE_SENTINEL:

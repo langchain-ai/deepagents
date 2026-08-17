@@ -34,6 +34,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
+    TRUNCATION_MARKER_TEMPLATE,
     create_file_data,
     format_content_with_line_numbers,
     sanitize_tool_call_id,
@@ -43,7 +44,6 @@ from deepagents.backends.utils import (
 )
 from deepagents.middleware._message_eviction import (
     PREVIEW_LINE_CHAR_LIMIT,
-    TRUNCATION_MARKER_TEMPLATE,
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
@@ -3208,14 +3208,6 @@ class TestPreviewNote:
         )
 
     def test_explains_both_kinds_of_loss(self):
-        note = _preview_note(lines_omitted=True, lines_clipped=True)
-
-        assert note.startswith("Here is a preview showing the head and tail of the result (")
-        assert "lines of the form" in note
-        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in note
-        assert note.endswith("):")
-
-    def test_caveats_join_in_a_single_parenthetical(self):
         """Exact wording, so a separator or ordering change is a deliberate edit."""
         assert _preview_note(lines_omitted=True, lines_clipped=True) == (
             "Here is a preview showing the head and tail of the result "

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Final, cast
 from langchain_core.messages import BaseMessage, ToolMessage
 
 from deepagents.backends.utils import (
-    TRUNCATION_MARKER_TEMPLATE as TRUNCATION_MARKER_TEMPLATE,
+    TRUNCATION_MARKER_TEMPLATE,
     format_content_with_line_numbers,
     sanitize_tool_call_id,
 )
@@ -75,7 +75,7 @@ class ContentPreview:
     lines_omitted: bool
     """Whole lines were dropped from the middle, behind a truncation marker."""
 
-    lines_clipped: bool = False
+    lines_clipped: bool
     """At least one shown line was clipped at `PREVIEW_LINE_CHAR_LIMIT` characters."""
 
 
@@ -208,11 +208,31 @@ def _build_evicted_tool_message(message: ToolMessage, evicted_content: str | lis
     )
 
 
+def _render_preview_stub(template: str, preview: ContentPreview, *, subject: str = "result", **fields: str) -> str:
+    """Render `template` around `preview`, deriving the note from that same preview.
+
+    The only way to fill a `{preview_note}`/`{content_sample}` template, so the
+    note cannot end up describing losses some other preview had.
+
+    Args:
+        template: Stub text with `{preview_note}` and `{content_sample}`
+            placeholders, plus whatever `fields` supplies.
+        preview: The preview to render and to derive the note from.
+        subject: Noun for what is being previewed, e.g. `result`.
+        fields: Remaining template placeholders, e.g. `file_path`.
+
+    Returns:
+        The rendered stub, ready to use as message content.
+    """
+    return template.format(
+        preview_note=_preview_note(lines_omitted=preview.lines_omitted, lines_clipped=preview.lines_clipped, subject=subject),
+        content_sample=preview.text,
+        **fields,
+    )
+
+
 def _render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str: str) -> str:
     """Render the large-tool-result stub for `content_str`.
-
-    Preview and note are built together so the note always describes the
-    preview actually shown.
 
     Args:
         tool_call_id: Tool call whose result was offloaded.
@@ -222,12 +242,11 @@ def _render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str
     Returns:
         The rendered stub, ready to use as message content.
     """
-    preview = _create_content_preview(content_str)
-    return _TOO_LARGE_TOOL_MSG.format(
+    return _render_preview_stub(
+        _TOO_LARGE_TOOL_MSG,
+        _create_content_preview(content_str),
         tool_call_id=tool_call_id,
         file_path=file_path,
-        preview_note=_preview_note(lines_omitted=preview.lines_omitted, lines_clipped=preview.lines_clipped),
-        content_sample=preview.text,
     )
 
 

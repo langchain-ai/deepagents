@@ -819,18 +819,10 @@ class ExecuteOffloadResult:
     command output itself can contain a line that looks the same
     (scanning the text is unsafe).
 
-    This flag covers only the `... [N lines truncated] ...` marker. The preview
-    can carry other notices instead:
-
-    - `... [output clipped here; {N} bytes total, full output at the path above] ...`
-        when the preview is a byte excerpt (fewer lines than head+tail budget) and
-        the excerpt is shorter than the captured output.
-    - `... [output clipped here; capture stopped at its {N}-byte limit, so the
-        file at the path above is also incomplete] ...` when the excerpt is shorter
-        and capture hit its byte cap.
-    - `... [the excerpts above and below are byte-capped, so the lines bordering
-        this marker may be cut mid-line] ...` inserted before the truncation marker
-        when head/tail excerpts hit their byte caps and cut lines mid-line.
+    This flag covers only the `... [N lines truncated] ...` marker. A preview may
+    disclose other losses through its own in-band clip notices, which need no
+    flag because they carry their own explanation; see
+    `_build_capture_execute_cmd` in `backends.sandbox` for the wording.
 
     When `offloaded` is `False`, this flag is always `False`.
     """

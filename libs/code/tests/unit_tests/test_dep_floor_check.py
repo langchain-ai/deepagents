@@ -221,35 +221,89 @@ class TestQuoteArg:
 class TestRefreshCommand:
     """The remediation preserves workspace editables when they are available."""
 
+    def _stub_checkout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        siblings: dict[str, str],
+    ) -> Path:
+        """Build a fake repo layout with a `code` checkout and its pyproject.
+
+        Args:
+            tmp_path: Per-test scratch root from pytest.
+            monkeypatch: Pytest patch registry.
+            siblings: Workspace source name to relative path entries for the
+                checkout's `[tool.uv.sources]`; directories are created.
+        """
+        code = tmp_path / "repo" / "libs" / "code"
+        code.mkdir(parents=True)
+        lines = ["[tool.uv.sources]"]
+        for name, rel in siblings.items():
+            (code / rel).resolve().mkdir(parents=True, exist_ok=True)
+            lines.append(f'{name} = {{ path = "{rel}", editable = true }}')
+        (code / "pyproject.toml").write_text("\n".join(lines), encoding="utf-8")
+        monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
+        monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
+        monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
+        return code
+
     def test_workspace_siblings_are_included(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Explicit sibling editables prevent `uv` from replacing them with wheels."""
-        libs = tmp_path / "repo" / "libs"
-        code = libs / "code"
-        deepagents = libs / "deepagents"
-        acp = libs / "acp"
-        for checkout in (code, deepagents, acp):
-            checkout.mkdir(parents=True)
-        monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
-        monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
-        monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
+        code = self._stub_checkout(
+            tmp_path,
+            monkeypatch,
+            {
+                "deepagents": "../deepagents",
+                "deepagents-acp": "../acp",
+                "langchain-quickjs": "../partners/quickjs",
+            },
+        )
+        deepagents = (code / "../deepagents").resolve()
+        acp = (code / "../acp").resolve()
+        quickjs = (code / "../partners/quickjs").resolve()
 
         command = dep_floor_check.refresh_command()
 
         assert command == (
             "uv pip install --python /venv/bin/python "
-            f"-e {code} -e {deepagents} -e {acp} --upgrade"
+            f"-e {code} -e {deepagents} -e {acp} -e {quickjs} --upgrade"
         )
 
-    def test_missing_sibling_uses_standalone_command(
+    def test_each_source_is_included_independently(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A partial or standalone checkout retains the original safe fallback."""
-        libs = tmp_path / "repo" / "libs"
-        code = libs / "code"
-        (libs / "deepagents").mkdir(parents=True)
-        code.mkdir()
+        """A partial checkout keeps the editables it has; no all-or-nothing."""
+        code = self._stub_checkout(
+            tmp_path, monkeypatch, {"deepagents": "../deepagents"}
+        )
+        deepagents = (code / "../deepagents").resolve()
+
+        assert dep_floor_check.refresh_command() == (
+            "uv pip install --python /venv/bin/python "
+            f"-e {code} -e {deepagents} --upgrade"
+        )
+
+    def test_missing_sibling_dir_falls_back_to_its_release(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A declared source whose directory is absent is not passed to `uv`."""
+        code = self._stub_checkout(
+            tmp_path, monkeypatch, {"deepagents": "../deepagents"}
+        )
+        (code / "../deepagents").resolve().rmdir()
+
+        assert dep_floor_check.refresh_command() == (
+            f"uv pip install --python /venv/bin/python -e {code} --upgrade"
+        )
+
+    def test_unreadable_pyproject_uses_standalone_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A checkout without readable sources retains the original fallback."""
+        code = tmp_path / "repo" / "libs" / "code"
+        code.mkdir(parents=True)
         monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
         monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
         monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
@@ -584,10 +638,15 @@ class TestInteractivePrompt:
         assert prompt_if_editable_deps_stale() is None
         assert "could not be saved" in capsys.readouterr().err
 
-    def test_refresh_success_rechecks_and_continues(
+    def test_refresh_success_rechecks_and_reexecs(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A successful refresh continues only after a clean dependency scan."""
+        """A successful refresh re-execs after a clean dependency scan.
+
+        Re-exec, not in-process continuation: dependencies imported before the
+        prompt (`rich`, `python-dotenv`, ...) keep stale module objects in
+        memory, so only a fresh interpreter runs the refreshed code.
+        """
         scans = iter([list(_VIOLATIONS), []])
         seen: dict[str, object] = {}
         monkeypatch.setattr(dep_floor_check, "_collect_violations", lambda: next(scans))
@@ -598,15 +657,41 @@ class TestInteractivePrompt:
             seen.update(kwargs)
             return subprocess.CompletedProcess(args, 0)
 
+        def _restart(*_args: object, **_kwargs: object) -> None:
+            seen["restarted"] = True
+
         monkeypatch.setattr(dep_floor_check.subprocess, "run", _run)
+        monkeypatch.setattr(main_module, "_restart_current_process", _restart)
 
         assert prompt_if_editable_deps_stale() is None
         assert seen["args"] == dep_floor_check._refresh_args()
         assert seen["check"] is False
         assert seen["shell"] is False
+        assert seen["restarted"] is True
         text = capsys.readouterr().err
         assert "Refreshing environment..." in text
-        assert "Environment refreshed; continuing." in text
+        assert "Environment refreshed; relaunching." in text
+
+    def test_refresh_success_survives_exec_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed re-exec continues the launch rather than crashing startup."""
+        scans = iter([list(_VIOLATIONS), []])
+        monkeypatch.setattr(dep_floor_check, "_collect_violations", lambda: next(scans))
+        self._stub_prompt(monkeypatch, _TrustAction.REFRESH)
+        monkeypatch.setattr(
+            dep_floor_check.subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(["uv"], 0),
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "simulated exec failure"
+            raise OSError(msg)
+
+        monkeypatch.setattr(main_module, "_restart_current_process", _boom)
+
+        assert prompt_if_editable_deps_stale() is None
 
     @pytest.mark.parametrize(
         "result",

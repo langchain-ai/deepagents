@@ -261,6 +261,48 @@ def _checkout_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _workspace_editable_paths() -> list[Path]:
+    """List the sibling checkouts this checkout installs as editable path deps.
+
+    Reads the checkout's own `[tool.uv.sources]` so the refresh preserves
+    every workspace editable the environment was built with — not just the
+    ones a hardcoded list happens to name. Each source is independent: a
+    partial checkout (say, `libs/deepagents` present without `libs/acp`)
+    still passes the editables it does have, and only missing directories
+    fall back to their PyPI releases.
+
+    Returns:
+        Absolute paths of `editable = true` path sources that exist on disk,
+        in `pyproject.toml` declaration order. Empty when the checkout's
+        `pyproject.toml` cannot be read or declares no editable sources.
+    """
+    pyproject = _checkout_root() / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        sources = data["tool"]["uv"]["sources"]
+    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+        logger.debug(
+            "Could not read workspace sources from the source checkout",
+            exc_info=True,
+        )
+        return []
+    if not isinstance(sources, dict):
+        return []
+    checkout = _checkout_root()
+    paths: list[Path] = []
+    for source in sources.values():
+        if not isinstance(source, dict):
+            continue
+        if source.get("editable") is not True or not isinstance(
+            source.get("path"), str
+        ):
+            continue
+        path = (checkout / source["path"]).resolve()
+        if path.is_dir():
+            paths.append(path)
+    return paths
+
+
 def _refresh_args() -> list[str]:
     """Build the fixed argv used to refresh this editable environment.
 
@@ -277,10 +319,8 @@ def _refresh_args() -> list[str]:
         "-e",
         str(checkout),
     ]
-    deepagents = checkout.parent / "deepagents"
-    acp = checkout.parent / "acp"
-    if deepagents.is_dir() and acp.is_dir():
-        args.extend(["-e", str(deepagents), "-e", str(acp)])
+    for path in _workspace_editable_paths():
+        args.extend(["-e", str(path)])
     args.append("--upgrade")
     return args
 
@@ -289,8 +329,8 @@ def refresh_command() -> str:
     """Return the shell command that refreshes this editable environment.
 
     Workspace sibling editables are included explicitly because resolving only
-    `libs/code` would replace `deepagents` and `deepagents-acp` with PyPI wheels.
-    The warning and interactive refresh share this argv so they cannot drift.
+    `libs/code` would let `--upgrade` replace them with PyPI wheels. The
+    warning and interactive refresh share this argv so they cannot drift.
     """
     return " ".join(_quote_arg(arg) for arg in _refresh_args())
 
@@ -601,6 +641,7 @@ def _prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
     from rich.console import Console
 
     from deepagents_code.main import (
+        _restart_current_process,
         _TrustAction,
         _TrustPromptOutcome,
         prompt_for_dep_floor_mismatch,
@@ -628,10 +669,21 @@ def _prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
             if violations:
                 continue
             console.print(
-                "[dim]Environment refreshed; continuing.[/dim]",
+                "[dim]Environment refreshed; relaunching.[/dim]",
                 highlight=False,
             )
-            return None
+            # Re-exec rather than continuing in-process: dependencies imported
+            # before this prompt (`rich`, `python-dotenv`, ...) keep their
+            # stale module objects in memory even after `uv` swaps the dists
+            # on disk, so only a fresh interpreter runs the refreshed code.
+            # The relaunched process re-runs this check, finds no violations
+            # (the precondition for reaching here), and never re-prompts — a
+            # refresh that silently no-ops fails the re-check above instead,
+            # so this cannot loop. `OSError` from a failed exec propagates to
+            # the best-effort boundary in `prompt_if_editable_deps_stale`,
+            # which continues this (stale but user-approved) launch.
+            _restart_current_process()
+            return None  # unreachable; exec failure raises, per its contract
         if action is _TrustAction.REMEMBER:
             if mute_dep_floor_mismatch(fingerprint):
                 console.print(

@@ -6636,8 +6636,13 @@ class DeepAgentsApp(App):
             )
             return
         log_path = create_update_log_path()
+        if sys.platform == "win32":
+            quoted_log_path = str(log_path).replace("'", "''")
+            log_command = f"Get-Content -Wait -LiteralPath '{quoted_log_path}'"
+        else:
+            log_command = f"tail -f {shlex.quote(str(log_path))}"
         await self._mount_message(
-            AppMessage(f"Update log: tail -f {shlex.quote(str(log_path))}"),
+            AppMessage(f"Update log: {log_command}"),
         )
         success, output, installed = await perform_upgrade(
             log_path=log_path,

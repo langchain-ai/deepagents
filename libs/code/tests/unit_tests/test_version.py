@@ -756,6 +756,7 @@ async def test_update_slash_command_links_log_instead_of_listing_dependencies() 
                         " - anthropic==0.120.2\n"
                         " + anthropic==0.122.0\n"
                     ),
+                    "99.0.0",
                 ),
             ) as perform_upgrade_mock,
         ):
@@ -771,8 +772,50 @@ async def test_update_slash_command_links_log_instead_of_listing_dependencies() 
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         )
         assert "Update log: tail -f '/tmp/dcode update.log'" in content
+        assert "Updated to v99.0.0" in content
+        assert "/update failed" not in content
         assert "Dependencies updated:" not in content
         assert "anthropic  0.120.2 -> 0.122.0" not in content
+
+
+async def test_update_slash_command_uses_powershell_to_follow_logs() -> None:
+    """Windows updates show a PowerShell-compatible log-follow command."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    log_path = Path(r"C:\Users\dcode update.log")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=log_path,
+            ),
+            patch("deepagents_code.app.sys.platform", "win32"),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, "", "99.0.0"),
+            ),
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        content = "\n".join(
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        )
+        assert (
+            "Update log: Get-Content -Wait -LiteralPath 'C:\\Users\\dcode update.log'"
+        ) in content
 
 
 async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() -> None:

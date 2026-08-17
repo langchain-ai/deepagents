@@ -69,7 +69,6 @@ would claim a model change that never happened.
 
 CACHE_IDENTITY_PARAM_KEYS = frozenset(
     {
-        "cache_control",
         "prompt_cache_key",
         "prompt_cache_options",
         "prompt_cache_retention",
@@ -83,6 +82,12 @@ rewrites `reasoning_effort` wholesale, and `temperature` or `max_tokens` are
 just as inert for caching -- and the modal would then assert that "the previous
 cached prefix cannot be reused" when nothing about the prefix moved. A modal
 that fires on a false premise trains users into the permanent suppression.
+
+`cache_control` is deliberately absent: `AnthropicPromptCachingMiddleware`
+overwrites `model_settings["cache_control"]` with its own TTL on every
+Anthropic request (see `_ANTHROPIC_MIDDLEWARE_TTL_SECONDS`), so a
+user-supplied value never reaches the wire. Comparing it would report an
+identity change for a setting the effective requests never differed on.
 """
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")

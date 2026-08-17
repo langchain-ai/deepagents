@@ -404,6 +404,20 @@ def test_cache_identity_params_ignores_non_cache_knobs() -> None:
     assert cache_identity_params(before) == cache_identity_params(after) == {}
 
 
+def test_cache_identity_params_ignores_overwritten_cache_control() -> None:
+    """`cache_control` is not part of the effective cache identity.
+
+    `AnthropicPromptCachingMiddleware` overwrites `model_settings["cache_control"]`
+    with its own 5-minute TTL on every Anthropic request, so a user-supplied
+    value never reaches the wire. Treating it as identity would report a model
+    change for requests whose cache settings are identical on the wire.
+    """
+    before = {"cache_control": {"type": "ephemeral", "ttl": "5m"}}
+    after = {"cache_control": {"type": "ephemeral", "ttl": "1h"}}
+
+    assert cache_identity_params(before) == cache_identity_params(after) == {}
+
+
 def test_cache_identity_params_keeps_cache_affecting_knobs() -> None:
     params = {
         "reasoning_effort": "high",

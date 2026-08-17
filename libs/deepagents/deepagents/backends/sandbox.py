@@ -814,35 +814,39 @@ _EXECUTE_CAPTURE_META_FIELDS: Final = 5
 """Number of space-separated fields on the capture wrapper's meta line."""
 
 _EXECUTE_CAPTURE_CLIP_NOTICE: Final = "... [output clipped here; {captured_bytes} bytes total, full output at the path above] ..."
-"""In-band notice closing a leading-byte-excerpt preview.
-
-Emitted only when the excerpt is shorter than the captured output, so a preview
-that drops the end of the output always says so where the model can see it.
-"""
+"""Appended to a byte-excerpt preview when the excerpt is shorter than the captured output."""
 
 _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED: Final = (
     "... [output clipped here; capture stopped at its {captured_bytes}-byte limit, so the file at the path above is also incomplete] ..."
 )
-"""Capped variant of `_EXECUTE_CAPTURE_CLIP_NOTICE`.
+"""Variant of `_EXECUTE_CAPTURE_CLIP_NOTICE` for when capture hit its byte cap.
 
-Once capture hits `max_capture_bytes` the overflow is drained to `/dev/null` and
-discarded uncounted, so the byte count is the cap rather than the output's real
-size, and the saved file is not the full output either. Saying otherwise would
-contradict the `response.truncated` status line the caller renders alongside this
-preview.
+Output past `max_capture_bytes` is discarded uncounted, so the byte count is
+the cap, not the output's real size, and the saved file is also incomplete.
+
+For example, with a 10 MB cap and 25 MB of output, the notice reads `capture
+stopped at its 10485760-byte limit` — not `26214400 bytes total`.
 """
 
 _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE: Final = (
     "... [the excerpts above and below are byte-capped, so the lines bordering this marker may be cut mid-line] ..."
 )
-"""In-band notice for a head/tail preview whose excerpts hit their byte caps.
+"""Inserted before the marker in a head/tail preview whose excerpts hit their
+byte caps.
 
-`head -c`/`tail -c` run before the line caps, so a preview built from long lines
-shows fewer lines than the budget and cuts the outermost ones mid-line. Neither
-loss is covered by the truncation marker (which counts whole lines dropped from
-the middle) nor by `PREVIEW_LINE_CHAR_LIMIT` (a Python-side budget the wrapper
-does not have), so the head/tail branch discloses it in-band -- the same way the
-byte-excerpt branch discloses its own dropped tail.
+The wrapper keeps the first/last 2000 bytes of output, then takes up to 5 lines
+from each. So this fires when those 5 lines total more than 2000 bytes — i.e.
+output with very long lines (JSONL logs, minified JS, base64 blobs). The 2000
+bytes can then end mid-line and show fewer than 5 lines:
+
+    {"event":"pageview","properties":{"url":"https://exa   <- head excerpt: cut at byte 2000, mid-line
+    ... [the excerpts above and below are byte-capped, so the lines bordering this marker may be cut mid-line] ...
+    ... [42 lines truncated] ...
+    pv},{"event":"click","properties":{"button":"signup"}}  <- tail excerpt: starts mid-line
+    {"event":"purchase","properties":{"total":49.99}}
+
+The truncation marker counts whole lines dropped from the middle, so without
+this notice nothing would mention the cut.
 """
 
 _EXECUTE_CAPTURE_HEAD_LINES: Final = 5
@@ -949,16 +953,12 @@ def _new_heredoc_delim() -> str:
 def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int, max_capture_bytes: int | None = None) -> str:
     """Build the capture-at-source wrapper command for `execute`.
 
-    `inline_budget` is the byte threshold at or below which output is returned
-    inline; above it the output is left at `capture_path` and only a preview is
-    returned -- a head/tail excerpt around a truncation marker when the output
-    has more newline-terminated lines than the head+tail budget, otherwise a
-    leading byte excerpt closed by an in-band clip notice. Either shape discloses
-    byte-cap losses in-band, since the truncation marker covers only whole lines
-    dropped from the middle. Captured output is hard-capped at
-    `max_capture_bytes` (defaulting to `_EXECUTE_CAPTURE_MAX_BYTES`, resolved
-    here so it stays overridable/patchable); beyond that it is truncated and
-    flagged.
+    Output at or below `inline_budget` bytes is returned inline. Above it, the
+    full output is left at `capture_path` and only a preview is returned: a
+    head/tail excerpt around a truncation marker when there are more lines than
+    the head+tail budget, otherwise a leading byte excerpt ending in a clip
+    notice. Captured output is hard-capped at `max_capture_bytes` (default
+    `_EXECUTE_CAPTURE_MAX_BYTES`); beyond that it is truncated and flagged.
     """
     cap = max_capture_bytes if max_capture_bytes is not None else _EXECUTE_CAPTURE_MAX_BYTES
     # The command is embedded in a quoted heredoc; guarantee the delimiter cannot
@@ -998,28 +998,26 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
 
         <sentinel> <exit_code> <offloaded> <capped> <omitted_lines>\n<inline output or preview>
 
-    i.e. five space-separated fields on the first line — the sentinel, the
-    command's exit code, `1`/`0` for whether output was offloaded to the capture
-    file, `1`/`0` for whether it hit the size cap, and the preview's *signed*
-    surplus line count — then everything after the first newline is the body
-    (full output when inline, preview when offloaded).
+    i.e. five space-separated fields on the first line, then everything after
+    the first newline is the body (full output when inline, preview when
+    offloaded). For example:
 
-    The surplus is `captured_lines - head_lines - tail_lines`, so only a value
-    `> 0` means lines were dropped from the middle behind a truncation marker.
-    Zero or negative means the output had no more lines than the head+tail
-    budget and the preview is a leading byte excerpt instead — which is why the
-    parsed flag is named for marker presence, not for preview completeness (see
+        __DEEPAGENTS_EXEC_META__ 0 1 0 14\n<head lines>... [14 lines truncated] ...<tail lines>
+
+    The surplus is `captured_lines - head_lines - tail_lines`. A value `> 0`
+    means lines were dropped from the middle behind a truncation marker; zero or
+    negative means the output fit within the head+tail budget and the preview is
+    a leading byte excerpt instead (see
     `ExecuteOffloadResult.preview_has_truncation_marker`). `captured_lines` comes
     from `wc -l`, which counts newlines, so a final unterminated line does not
     count toward the budget.
 
-    Falls back to `offloaded=False` with the raw output when the meta line is
-    absent or malformed — e.g. if the backend truncated transport; the caller
-    must not re-run the command in that case. Each fallback is logged, since it
-    silently reframes a preview as complete output and the caller cannot tell.
-    `response.truncated` is set when the captured output hit the size cap (the
-    saved file is incomplete) or `backend_truncated` is passed through from the
-    underlying `execute`.
+    When the meta line is absent or malformed (e.g. the backend truncated
+    transport), the result falls back to `offloaded=False` with the raw output —
+    logged, since this silently reframes a preview as complete output. The
+    caller must not re-run the command in that case. `response.truncated` is set
+    when the captured output hit the size cap (the saved file is incomplete) or
+    `backend_truncated` is passed through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
     parts = first.split(" ")
@@ -1138,13 +1136,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         callers can fall back to their own handling (e.g. generic eviction).
 
         Returns:
-            An `ExecuteOffloadResult`. `offloaded=True` when the result was left
-                at `capture_path` and `response.output` holds only the preview;
-                `offloaded=False` when `response.output` is the complete output.
-
-                `preview_has_truncation_marker` reports whether that preview
-                dropped middle lines behind a marker, for callers describing
-                it to a model.
+            An `ExecuteOffloadResult`: `offloaded=True` when the result was left
+                at `capture_path` and `response.output` holds only the preview,
+                with `preview_has_truncation_marker` recording whether the
+                preview dropped middle lines behind a marker; `offloaded=False`
+                when `response.output` is the complete output.
         """
         use_timeout = timeout is not None and execute_accepts_timeout(type(self))
         if not self.enable_capture_offload:

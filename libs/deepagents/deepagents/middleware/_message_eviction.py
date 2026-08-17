@@ -41,13 +41,13 @@ You can do this by specifying an offset and limit in the read_file tool call. Fo
 PREVIEW_LINE_CHAR_LIMIT: Final = 1000
 """Per-line character budget for preview lines.
 
-Bounds a preview built from few but very long lines (a `.jsonl` dump, a minified
-bundle). Clipping here drops content *within* a shown line rather than dropping
-whole lines, so it is reported separately from `lines_omitted`.
+Bounds previews of few-but-huge lines (a `.jsonl` dump, a minified bundle).
+Clipping cuts within a shown line rather than dropping whole lines, so it is
+reported separately from `lines_omitted`.
 
-Keep this below `backends.utils.MAX_LINE_LENGTH`, or clipped lines also acquire
-that renderer's `N.1`-style continuation gutters and `_CAVEAT_CLIPPED_LINES` stops
-describing what the model sees.
+Keep below `backends.utils.MAX_LINE_LENGTH`, or clipped lines also pick up that
+renderer's `N.1` continuation gutters and `_CAVEAT_CLIPPED_LINES` no longer
+describes what the model sees.
 """
 
 _PREVIEW_NOTE_PLAIN = "Here is a preview of the {subject}"
@@ -61,16 +61,12 @@ _CAVEAT_CLIPPED_LINES = f"the output contains lines longer than {PREVIEW_LINE_CH
 
 @dataclass(frozen=True, slots=True)
 class ContentPreview:
-    """A rendered preview plus what its producer elided to build it.
+    """A rendered preview plus a record of what was left out to build it.
 
-    Both flags are reported by whoever built `text`, never inferred from the
-    rendered bytes. That is what stops previewed content from describing itself:
-    a literal `... [N lines truncated] ...` line in the content cannot make the
-    note claim lines were omitted.
-
-    Neither flag means "the preview is complete" on its own -- check both. They
-    describe two independent kinds of loss, and a preview can suffer both at
-    once.
+    The flags are reported by the code that built `text`, never inferred from
+    the rendered bytes — a literal `... [N lines truncated] ...` line in the
+    content would otherwise pass for a real marker. The two flags track
+    independent kinds of loss; a preview can have both, so check both.
     """
 
     text: str
@@ -86,22 +82,25 @@ class ContentPreview:
 def _preview_note(*, lines_omitted: bool, lines_clipped: bool = False, subject: str = "result") -> str:
     """Build the sentence introducing a preview.
 
-    The note describes only what the preview actually did, so the model is never
-    told to look for a truncation marker that was not inserted, nor led to
-    believe the lines it can see are intact when they were clipped.
+    Mentions only losses the preview actually has, so the model is never told
+    to look for a marker that was not inserted.
 
     Args:
-        lines_omitted: Whether whole lines were dropped from the middle behind a
+        lines_omitted: Whole lines were dropped from the middle behind a
             truncation marker.
-        lines_clipped: Whether any shown line was clipped at
+        lines_clipped: At least one shown line was clipped at
             `PREVIEW_LINE_CHAR_LIMIT` characters.
-        subject: Noun describing what is being previewed, e.g. `result`.
+        subject: Noun for what is being previewed, e.g. `result`.
 
     Returns:
-        A single-sentence note ending in a colon.
+        The note, ending in a colon.
 
-            Applicable caveats are appended in a parenthetical; with no caveats
-            the sentence is a bare `Here is a preview of the {subject}:`.
+            For example:
+
+            - No losses: `Here is a preview of the result:`
+            - `lines_omitted`: `Here is a preview showing the head and tail of the
+                result (lines of the form ... indicate omitted lines ...):`
+            - Both losses: the head/tail sentence with both caveats in parentheses.
     """
     base = _PREVIEW_NOTE_HEAD_TAIL if lines_omitted else _PREVIEW_NOTE_PLAIN
     caveats = [caveat for applies, caveat in ((lines_omitted, _CAVEAT_OMITTED_LINES), (lines_clipped, _CAVEAT_CLIPPED_LINES)) if applies]
@@ -112,7 +111,10 @@ def _preview_note(*, lines_omitted: bool, lines_clipped: bool = False, subject: 
 
 
 def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> ContentPreview:
-    """Create a preview of content showing head and tail with truncation marker.
+    """Create a line-numbered preview of `content_str`.
+
+    Shows all lines when they fit within `head_lines + tail_lines`, otherwise
+    the head and tail around a `... [N lines truncated] ...` marker.
 
     Args:
         content_str: The full content string to preview.
@@ -120,9 +122,7 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
         tail_lines: Number of lines to show from the end.
 
     Returns:
-        The formatted preview plus what was elided to build it: whether whole
-        lines were dropped from the middle, and whether any shown line was
-        clipped at `PREVIEW_LINE_CHAR_LIMIT` characters.
+        The formatted preview plus a record of what was left out to build it.
     """
     lines = content_str.splitlines()
 
@@ -211,8 +211,8 @@ def _build_evicted_tool_message(message: ToolMessage, evicted_content: str | lis
 def _render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str: str) -> str:
     """Render the large-tool-result stub for `content_str`.
 
-    Derive the preview and its matching note together so the note cannot
-    describe a different preview than the one shown.
+    Preview and note are built together so the note always describes the
+    preview actually shown.
 
     Args:
         tool_call_id: Tool call whose result was offloaded.

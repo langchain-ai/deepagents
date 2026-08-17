@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
+from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
 from deepagents_code._version import __version__
 
 logger = logging.getLogger(__name__)
@@ -264,6 +265,36 @@ def _should_check_teardown_thread(
     return bool(thread_id)
 
 
+def _resume_term_program() -> str | None:
+    """Return a `TERM_PROGRAM` value safe to echo inside the resume hint.
+
+    The value is read from `LAUNCH_TERM_PROGRAM` — the snapshot `cli_main`
+    takes at process entry — rather than live `TERM_PROGRAM`, so only a value
+    the launch environment supplied (inline prefix, terminal export, or shell
+    alias) is echoed back. A `TERM_PROGRAM` that appears later, from a project
+    or global `.env` file, never reaches the hint.
+
+    Returns:
+        The launch-time value when it is set and fully printable, else `None`.
+        A value carrying control characters is dropped rather than stripped:
+        stripping would both write raw escape sequences into teardown output
+        and name a terminal the environment never actually contained. Native
+        Windows shells also return `None`: VS Code and WezTerm set
+        `TERM_PROGRAM` on every platform, so its presence under `win32` does
+        not imply a POSIX shell, and the `VAR=value` prefix would be executed
+        as a command by `cmd.exe`/PowerShell. POSIX markers (`SHELL` from
+        git-bash/MSYS, `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
+    """
+    raw = os.environ.get(LAUNCH_TERM_PROGRAM, "").strip()
+    if not raw or not raw.isprintable():
+        return None
+    if sys.platform == "win32" and not any(
+        os.environ.get(marker) for marker in ("SHELL", "MSYSTEM", "WSL_DISTRO_NAME")
+    ):
+        return None
+    return raw
+
+
 def _render_teardown_thread_hints(
     console: "Console",
     thread_id: str,
@@ -282,6 +313,8 @@ def _render_teardown_thread_hints(
         thread_id: Thread whose checkpoints back the hints.
         return_code: Process exit code; failed sessions add a resume safety caveat.
     """
+    import shlex
+
     from rich.style import Style
     from rich.text import Text
 
@@ -318,10 +351,21 @@ def _render_teardown_thread_hints(
     console.print("[dim]Resume this thread with:[/dim]")
     # Echo the command the user actually launched (a shim or the
     # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
-    hint = Text(invoked_name(), style="cyan")
-    hint.append(" -r ", style="cyan")
-    hint.append(str(thread_id), style="cyan")
-    console.print(hint)
+    resume_command = shlex.join([invoked_name(), "-r", str(thread_id)])
+    # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
+    # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
+    # the bare command would resume without it. Carry the launch-time value as
+    # an env prefix to keep the line pasteable as-is; the launch snapshot (not
+    # the live variable) is what keeps a `.env`-supplied `TERM_PROGRAM` out of
+    # the hint. The prefix uses POSIX syntax, so `_resume_term_program`
+    # withholds it on native Windows, where terminals (VS Code, WezTerm) set
+    # the variable even under `cmd.exe`/PowerShell and those shells cannot
+    # parse a `VAR=value` command prefix.
+    term_program = _resume_term_program()
+    if term_program is not None:
+        resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"
+    console.print(Text(resume_command, style="cyan"))
+
     if return_code != 0:
         console.print(
             "[dim]Note: the session exited with a non-zero status. Attempting "
@@ -4195,6 +4239,14 @@ def cli_main() -> None:
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
+    # Snapshot `TERM_PROGRAM` before settings bootstrap loads any `.env` file,
+    # so the resume hint echoes the variable only when the launch environment
+    # (inline prefix, terminal export, or shell alias) supplied it. The app
+    # itself never sets `TERM_PROGRAM`, and the update re-exec inherits this
+    # sentinel, so a set value here always marks an explicit launch value.
+    if "TERM_PROGRAM" in os.environ and LAUNCH_TERM_PROGRAM not in os.environ:
+        os.environ[LAUNCH_TERM_PROGRAM] = os.environ["TERM_PROGRAM"]
 
     # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
     # _ensure_bootstrap() (triggered on first access of `settings`).

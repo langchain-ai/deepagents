@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -166,6 +167,115 @@ class TestSkillInvocationHistory:
         assert mgr.get_previous("") == "same text"
         assert mgr.current_mode == "shell"
         assert mgr.get_previous("") == "same text"
+        assert mgr.current_mode == "normal"
+
+
+class TestStorageFormatCompatibility:
+    """The on-disk shapes an older client sharing `history.jsonl` must survive."""
+
+    def test_inferable_modes_stay_bare_strings(self, tmp_path: Path) -> None:
+        """Only entries whose mode cannot be re-derived pay the object form."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+
+        mgr.add("plain message", mode="normal")
+        mgr.add("/skill:web-research cats", mode="command")
+        mgr.add("!ls", mode="shell")
+        # Only this one is ambiguous: the text looks exactly like a command.
+        mgr.add("/tmp/assets", mode="normal")
+
+        lines = history_file.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == '"plain message"'
+        assert lines[1] == '"/skill:web-research cats"'
+        assert lines[2] == '"!ls"'
+        assert json.loads(lines[3]) == {"text": "/tmp/assets", "mode": "normal"}
+
+    def test_compaction_preserves_both_shapes(self, tmp_path: Path) -> None:
+        """A rewrite keeps modes attached to the right entries."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file, max_entries=2)
+
+        mgr.add("first", mode="normal")
+        mgr.add("/tmp/assets", mode="normal")
+        for index in range(6):
+            mgr.add(f"filler {index}", mode="normal")
+
+        reloaded = HistoryManager(history_file, max_entries=2)
+        assert len(reloaded._entries) == len(reloaded._entry_modes)
+        for entry, mode in zip(reloaded._entries, reloaded._entry_modes, strict=True):
+            # Only the ambiguous path keeps stored metadata; everything else
+            # is inferable and so round-trips as a bare string.
+            assert mode == ("normal" if entry.startswith("/") else None)
+
+    def test_legacy_and_new_lines_stay_index_aligned(self, tmp_path: Path) -> None:
+        """A file written by two client versions loads without drift."""
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            '"legacy one"\n{"text": "/tmp/assets", "mode": "normal"}\n"legacy two"\n',
+            encoding="utf-8",
+        )
+
+        mgr = HistoryManager(history_file)
+
+        assert mgr._entries == ["legacy one", "/tmp/assets", "legacy two"]
+        assert mgr._entry_modes == [None, "normal", None]
+
+    def test_unrecognized_mode_is_ignored(self, tmp_path: Path) -> None:
+        """A bogus mode falls back to prefix detection instead of being trusted."""
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            '{"text": "/tmp/assets", "mode": "wat"}\n', encoding="utf-8"
+        )
+
+        mgr = HistoryManager(history_file)
+
+        assert mgr._entries == ["/tmp/assets"]
+        assert mgr._entry_modes == [None]
+
+    def test_malformed_entries_are_skipped_not_stringified(
+        self, tmp_path: Path
+    ) -> None:
+        """A corrupt line is dropped rather than recalled as a Python repr."""
+        history_file = tmp_path / "history.jsonl"
+        history_file.write_text(
+            '{"text": 123, "mode": "normal"}\n["a", "b"]\n"good entry"\n',
+            encoding="utf-8",
+        )
+
+        mgr = HistoryManager(history_file)
+
+        assert mgr._entries == ["good entry"]
+        assert mgr._entry_modes == [None]
+
+
+class TestDraftRestoreMode:
+    """Walking past the newest entry restores the draft's own mode."""
+
+    def test_restored_draft_keeps_its_mode(
+        self, simple_history: HistoryManager
+    ) -> None:
+        """The draft comes back in the mode it was captured in."""
+        assert (
+            simple_history.get_previous("/tmp/assets", current_mode="normal")
+            is not None
+        )
+
+        while (entry := simple_history.get_next()) != "/tmp/assets":
+            assert entry is not None, "walked past the draft without restoring it"
+
+        assert simple_history.current_mode == "normal"
+
+    def test_stored_entry_mode_still_wins_while_navigating(
+        self, tmp_path: Path
+    ) -> None:
+        """Draft capture does not overwrite the mode of real entries."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("!ls", mode="shell")
+
+        assert mgr.get_previous("draft text", current_mode="normal") == "!ls"
+        assert mgr.current_mode == "shell"
+
+        assert mgr.get_next() == "draft text"
         assert mgr.current_mode == "normal"
 
 

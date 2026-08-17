@@ -1065,13 +1065,26 @@ class PastedEntryPayload(NamedTuple):
     """A paste payload classified as one or more filesystem entries."""
 
     prefix: str
-    """Leading source text belonging to the pasted entry payload."""
+    """Leading source text belonging to the pasted entry payload.
+
+    Normally the resolved span. When nothing resolved and the payload is kept
+    only because a probe failed, this is the whole payload instead -- there is
+    no narrower span to point at.
+    """
 
     paths: tuple[Path, ...]
     """Entries that resolved successfully, including files and directories."""
 
     failure: ProbeFailure | None
     """Most relevant failed probe, when an entry could not be inspected."""
+
+    failures: tuple[ProbeFailure, ...] = ()
+    """Every probe failure recorded while classifying, `failure` included.
+
+    A multi-entry drop can fail several times over. Callers report `failure` and
+    use the remaining count so a user who dropped five folders is not told about
+    one and left to assume the other four attached.
+    """
 
 
 _probe_failures: ContextVar[list[ProbeFailure] | None] = ContextVar(
@@ -1119,6 +1132,33 @@ def track_probe_failures() -> Iterator[list[ProbeFailure]]:
         _probe_failures.reset(token)
 
 
+def probe_failure_describes_payload(failure: ProbeFailure, payload: str) -> bool:
+    """Return whether `failure` plausibly concerns the entry in `payload`.
+
+    Two ways it can. The payload may name the failing path outright, or the
+    failing path may be an ancestor of it -- the Unicode-space fallback walks
+    ancestor segments, and a `~`-prefixed drop only matches after expansion, so
+    a literal substring test alone misses the common home-directory case.
+
+    Args:
+        failure: Recorded probe failure.
+        payload: Raw text the caller was classifying.
+
+    Returns:
+        `True` when the failure relates to the payload rather than to some
+        incidental probe elsewhere in the same classification block.
+    """
+    if str(failure.path) in payload:
+        return True
+    try:
+        candidate = Path(payload.strip()).expanduser()
+    except (OSError, RuntimeError, ValueError):
+        # `expanduser()` raises when the home directory cannot be resolved.
+        # No expansion means no ancestor test; fall back to "unrelated".
+        return False
+    return candidate.is_relative_to(failure.path)
+
+
 def select_probe_failure_for(
     failures: Sequence[ProbeFailure], payload: str
 ) -> ProbeFailure | None:
@@ -1126,22 +1166,30 @@ def select_probe_failure_for(
 
     The Unicode-space fallback re-walks ancestor segments, so the first
     recorded failure can name a parent directory the user never dropped.
-    Prefer a failure whose path the payload actually mentions, longest first,
-    so the message names the dropped entry rather than one of its ancestors.
+    Prefer a failure the payload actually names, longest first, so the message
+    points at the dropped entry rather than one of its ancestors; fall back to
+    an ancestor of the payload before any unrelated failure.
 
     Args:
         failures: Failures recorded by `track_probe_failures`.
         payload: Raw text the caller was classifying.
 
     Returns:
-        Best-matching failure, the first recorded one when none match, or
-        `None` when nothing was recorded.
+        Best-matching failure, the first recorded one when none relate to the
+        payload, or `None` when nothing was recorded.
     """
     if not failures:
         return None
     mentioned = [failure for failure in failures if str(failure.path) in payload]
     if mentioned:
         return max(mentioned, key=lambda failure: len(str(failure.path)))
+    related = [
+        failure
+        for failure in failures
+        if probe_failure_describes_payload(failure, payload)
+    ]
+    if related:
+        return max(related, key=lambda failure: len(str(failure.path)))
     return failures[0]
 
 
@@ -1180,9 +1228,16 @@ def classify_pasted_entry_payload(text: str) -> PastedEntryPayload | None:
                 resolved = (path,)
 
     failure = select_probe_failure_for(failures, text)
-    if not prefix and failure is None:
-        return None
-    return PastedEntryPayload(prefix or text.strip(), resolved, failure)
+    if not prefix:
+        # Nothing resolved. Keeping the text as a drop is justified only when a
+        # failure actually concerns *this* payload; an incidental failure on an
+        # unrelated ancestor would otherwise promote ordinary `/`-leading text
+        # to a drop, suppressing slash mode and toasting about a path the user
+        # never dropped.
+        if failure is None or not probe_failure_describes_payload(failure, text):
+            return None
+        return PastedEntryPayload(text.strip(), resolved, failure, tuple(failures))
+    return PastedEntryPayload(prefix, resolved, failure, tuple(failures))
 
 
 def _record_probe_failure(path: Path, error: Exception) -> None:
@@ -1390,7 +1445,9 @@ def _resolve_with_unicode_space_variants(
             match the final segment.
 
     Returns:
-        Matching filesystem path, or `None` when no variant match exists.
+        Matching filesystem path, or `None` when no variant match exists or a
+        probe along the way failed (recorded for any active tracker, so callers
+        can tell the two apart).
     """
     expanded = path.expanduser()
     if expanded.is_absolute():
@@ -1400,9 +1457,11 @@ def _resolve_with_unicode_space_variants(
         try:
             current = Path.cwd()
         except OSError as e:
-            # This *branch* is reached on POSIX for Windows-shaped payloads
-            # (`C:/x`, `\\server\share`), which `looks_like_dropped_payload`
-            # accepts but `Path` treats as relative.
+            # This *branch* is reached for any relative candidate: a non-leading
+            # token in a multi-entry drop, a bare relative path handed to
+            # `parse_pasted_file_paths`, or a Windows-shaped payload (`C:/x`,
+            # `\\server\share`) that `looks_like_dropped_payload` accepts but
+            # `Path` treats as relative on POSIX.
             #
             # The guard is separate: a deleted working directory would usually
             # already have raised out of the `resolve()` above, so reaching here

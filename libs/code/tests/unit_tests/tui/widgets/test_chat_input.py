@@ -6,6 +6,7 @@ import asyncio
 import errno
 import html
 import os
+import threading
 from typing import TYPE_CHECKING
 
 import pytest
@@ -897,6 +898,24 @@ async def _pause_for_strip(pilot: Pilot[None]) -> None:
     """Wait two frames so the prefix-strip text-change event propagates."""
     await pilot.pause()
     await pilot.pause()
+
+
+async def _recall_previous_then_restore(pilot: Pilot[None], chat: ChatInput) -> None:
+    """Press up into history, then down past the newest entry to the draft.
+
+    History fires only from the visual top (up) and visual bottom (down) of the
+    buffer. A long draft soft-wraps across several visual lines, so the cursor
+    is parked at each end explicitly rather than assuming one keypress spans
+    the buffer -- otherwise the down press just moves within the wrapped line
+    and the restore under test never happens.
+    """
+    assert chat._text_area is not None
+    chat._text_area.move_cursor((0, 0))
+    await pilot.press("up")
+    await _pause_for_strip(pilot)
+    chat._text_area.move_cursor(chat._text_area.document.end)
+    await pilot.press("down")
+    await _pause_for_strip(pilot)
 
 
 def _prompt_text(prompt: Static) -> str:
@@ -2803,7 +2822,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
 
@@ -2832,7 +2851,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
 
@@ -2867,7 +2886,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(f"{img1}\n{img2}")
+            await chat.handle_external_paste_async(f"{img1}\n{img2}")
             await pilot.pause()
             assert chat._text_area.text == "[image 1]\n[image 2]"
 
@@ -2895,7 +2914,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
 
@@ -2903,7 +2922,7 @@ class TestDroppedImagePaste:
             await pilot.pause()
             assert app.tracker.next_image_id == 1
 
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
@@ -2947,7 +2966,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
 
@@ -2982,7 +3001,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
             chat._text_area.text = "[image 2] [image 1]"
             await pilot.pause()
@@ -3016,7 +3035,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
 
             # Leading whitespace shifts every offset when submit strips it.
@@ -3049,7 +3068,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            assert chat.handle_external_paste(str(img_path))
+            assert await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
 
             assert chat._text_area.text.strip() == "[image 1]"
@@ -3070,7 +3089,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            assert chat.handle_external_paste(str(img_path))
+            assert await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
 
             assert chat._text_area.text.strip() == "[image 1]"
@@ -3083,7 +3102,7 @@ class TestDroppedImagePaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            assert chat.handle_external_paste("hello world")
+            assert await chat.handle_external_paste_async("hello world")
             await pilot.pause()
 
             assert chat._text_area.text == "hello world"
@@ -3415,7 +3434,7 @@ class TestDroppedImagePaste:
             assert chat._text_area is not None
 
             # Paste an image and submit
-            chat.handle_external_paste(str(img_path))
+            await chat.handle_external_paste_async(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
 
@@ -3484,7 +3503,7 @@ class TestDroppedVideoPaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            assert chat.handle_external_paste(str(video_path))
+            assert await chat.handle_external_paste_async(str(video_path))
             await pilot.pause()
 
             assert "[video 1]" in chat._text_area.text
@@ -3500,7 +3519,7 @@ class TestDroppedVideoPaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(video_path))
+            await chat.handle_external_paste_async(str(video_path))
             await pilot.pause()
             assert "[video 1]" in chat._text_area.text
 
@@ -3523,7 +3542,7 @@ class TestDroppedVideoPaste:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(str(video_path))
+            await chat.handle_external_paste_async(str(video_path))
             await pilot.pause()
             assert "[video 1]" in chat._text_area.text
 
@@ -3575,7 +3594,7 @@ class TestDroppedVideoPaste:
             assert chat._text_area is not None
 
             payload = f"{img_path}\n{video_path}"
-            chat.handle_external_paste(payload)
+            await chat.handle_external_paste_async(payload)
             await pilot.pause()
 
             text = chat._text_area.text
@@ -4377,7 +4396,7 @@ class TestDroppedFolderPaste:
             _capture_notifications(monkeypatch, app)
             chat._dropped_path_draft = None
 
-            assert chat._is_dropped_path_submission(str(folder)) is False
+            assert chat._starts_with_dropped_path(str(folder)) is False
 
     async def test_mixed_drop_with_unreadable_entry_warns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4443,6 +4462,60 @@ class TestDroppedFolderPaste:
             assert len(app.submitted) == 1
             assert app.submitted[0].value == f"[image 1] {denied}"
             assert app.submitted[0].mode == "normal"
+
+    async def test_media_drop_with_readable_folder_keeps_the_folder(
+        self, tmp_path: Path
+    ) -> None:
+        """A readable folder beside an image survives the media replacement.
+
+        The sibling of the unreadable-tail case above: both entries resolve, so
+        the folder rides through `_build_path_replacement` as a non-media token
+        rather than through `remaining_text`. Losing it there would delete a
+        path the user dropped, with no warning to explain it.
+        """
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="blue")
+        image.save(tmp_path / "drop.png", format="PNG")
+        img_path = tmp_path / "drop.png"
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await chat._text_area._on_paste(events.Paste(f"{img_path} {folder}"))
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text.strip() == f"[image 1] {folder}"
+            assert len(app.tracker.get_images()) == 1
+
+    async def test_directory_matching_a_command_case_insensitively_is_a_command(
+        self, tmp_path: Path
+    ) -> None:
+        """Case-insensitive dispatch means a same-named directory loses.
+
+        A deliberate trade-off, and user-visible on case-insensitive
+        filesystems, so it is pinned rather than left to emerge from two
+        `.lower()` calls.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            _register_command(chat, str(folder).lower())
+
+            chat._text_area.text = str(folder).upper()
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._dropped_path_draft is None
 
     async def test_backspacing_to_root_slash_restores_command_mode(
         self, tmp_path: Path
@@ -4722,6 +4795,267 @@ class TestDroppedFolderPaste:
 
             assert mode == "command"
             assert display_text == str(folder)[1:]
+
+    async def test_down_past_newest_restores_dropped_path_in_normal_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Walking up then back down returns the drop draft, not a command."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._history.add("an earlier message", mode="normal")
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+            assert chat.mode == "normal"
+
+            await _recall_previous_then_restore(pilot, chat)
+
+            # The restored draft is the user's own dropped path: it keeps its
+            # leading slash, stays out of command mode, and keeps the
+            # provenance that shields it at submission time.
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+            assert chat._dropped_path_draft == str(folder)
+
+    async def test_down_past_newest_restores_command_draft(self) -> None:
+        """The restored draft keeps command mode too, not just normal mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._history.add("an earlier message", mode="normal")
+
+            _register_command(chat, "/zzz")
+            chat._text_area.text = "/zzz"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            # Dismiss the suggestion popup so up/down reach history rather
+            # than navigating the completion list.
+            await pilot.press("escape")
+            await _pause_for_strip(pilot)
+
+            await _recall_previous_then_restore(pilot, chat)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "zzz"
+
+    async def test_second_unreadable_drop_warns_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clearing the drop context re-arms the warning for a different path."""
+        first = tmp_path / "first"
+        first.mkdir()
+        second = tmp_path / "second"
+        second.mkdir()
+        _deny_stat_for(monkeypatch, first)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            notifications = _capture_notifications(monkeypatch, app)
+
+            await chat.handle_external_paste_async(str(first))
+            await _pause_for_strip(pilot)
+            assert len(notifications) == 1
+
+            chat._text_area.clear_text()
+            await _pause_for_strip(pilot)
+            _deny_stat_for(monkeypatch, second)
+
+            await chat.handle_external_paste_async(str(second))
+            await _pause_for_strip(pilot)
+
+            assert len(notifications) == 2
+            assert str(second) in notifications[1][0]
+
+
+class TestKeystrokeBurstDropRouting:
+    """Bursts resolve command-vs-path differently from bracketed pastes."""
+
+    async def test_burst_of_registered_command_name_stays_a_command(
+        self, tmp_path: Path
+    ) -> None:
+        """A fast-typed command wins over a directory of the same name.
+
+        The asymmetry with `_on_paste` is deliberate: a burst is what a fast
+        typist produces, while a bracketed paste carries drop provenance.
+        """
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            _register_command(chat, str(folder))
+
+            chat._text_area._paste_burst_buffer = str(folder)
+            await chat._text_area._flush_paste_burst()
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._dropped_path_draft is None
+
+    async def test_burst_of_plain_directory_is_a_drop(self, tmp_path: Path) -> None:
+        """Without a matching command, the burst is classified as a drop."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area._paste_burst_buffer = str(folder)
+            await chat._text_area._flush_paste_burst()
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._dropped_path_draft is not None
+
+    async def test_burst_reports_probe_failure_even_when_command_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The command branch must not swallow the reason the probe failed."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        _deny_stat_for(monkeypatch, folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            _register_command(chat, str(folder))
+            notifications = _capture_notifications(monkeypatch, app)
+
+            chat._text_area._paste_burst_buffer = str(folder)
+            await chat._text_area._flush_paste_burst()
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert len(notifications) == 1
+            assert "Permission denied" in notifications[0][0]
+
+
+class TestProbeTimeout:
+    """A wedged mount must not take the message pump down with it."""
+
+    async def test_hung_probe_falls_back_to_text_and_warns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A classification that never returns is abandoned, not awaited forever."""
+        import deepagents_code.tui.widgets.chat_input as chat_input_module
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _hang(_payload: str) -> object:
+            started.set()
+            release.wait(timeout=30)
+            return None
+
+        monkeypatch.setattr(
+            chat_input_module, "_PATH_PROBE_TIMEOUT_SECONDS", 0.05, raising=False
+        )
+        monkeypatch.setattr(
+            "deepagents_code.input.classify_pasted_entry_payload", _hang
+        )
+
+        app = _ChatInputTestApp()
+        try:
+            async with app.run_test() as pilot:
+                chat = app.query_one(ChatInput)
+                assert chat._text_area is not None
+                notifications = _capture_notifications(monkeypatch, app)
+
+                assert await chat.handle_external_paste_async("/some/hung/mount")
+                await _pause_for_strip(pilot)
+
+                assert started.is_set()
+                # The payload survives as literal text rather than vanishing or
+                # being reinterpreted as a slash command.
+                assert chat._text_area.text == "/some/hung/mount"
+                assert len(notifications) == 1
+                assert "in time" in notifications[0][0]
+        finally:
+            release.set()
+
+
+class TestExternalPasteRouting:
+    """The unfocused app-level paste path, as `App.on_paste` reaches it."""
+
+    async def test_unfocused_folder_drop_installs_draft_and_normal_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """An unfocused drop gets the same provenance a focused one does."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert await chat.handle_external_paste_async(str(folder))
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text.startswith(str(folder))
+            assert chat._dropped_path_draft is not None
+
+    async def test_unfocused_unreadable_drop_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Probe failures reach the user on the unfocused path too."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        _deny_stat_for(monkeypatch, folder)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            notifications = _capture_notifications(monkeypatch, app)
+
+            assert await chat.handle_external_paste_async(str(folder))
+            await _pause_for_strip(pilot)
+
+            assert len(notifications) == 1
+            message, kwargs = notifications[0]
+            assert str(folder) in message
+            assert "Permission denied" in message
+            assert kwargs["markup"] is False
+
+    async def test_unfocused_plain_text_is_inserted(self) -> None:
+        """Non-path text still inserts verbatim."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert await chat.handle_external_paste_async("hello world")
+            await _pause_for_strip(pilot)
+
+            assert chat._text_area.text == "hello world"
+
+    async def test_unfocused_paste_focuses_input(self) -> None:
+        """The paste restores focus so typing continues in the input."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.blur()
+
+            assert await chat.handle_external_paste_async("hello")
+            await _pause_for_strip(pilot)
+
+            assert chat._text_area.has_focus
 
 
 class TestPathPayloadDetectionGating:
@@ -5230,7 +5564,7 @@ class TestModifiedBackspaceDeleteWordLeft:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste("p" * 900)
+            await chat.handle_external_paste_async("p" * 900)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
 
@@ -5250,7 +5584,7 @@ class TestModifiedBackspaceDeleteWordLeft:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste("p" * 900)
+            await chat.handle_external_paste_async("p" * 900)
             chat._text_area.insert("\t")
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]\t"
@@ -5979,7 +6313,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
 
             assert "[Pasted text #1]" in chat._text_area.text
@@ -5994,7 +6328,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste("short text")
+            await chat.handle_external_paste_async("short text")
             await pilot.pause()
 
             assert chat._text_area.text == "short text"
@@ -6009,7 +6343,7 @@ class TestPasteCollapseIntegration:
             assert chat._text_area is not None
             chat._collapse_pastes = False
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
 
             assert chat._text_area.text == big_text
@@ -6066,7 +6400,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(multi_line)
+            await chat.handle_external_paste_async(multi_line)
             await pilot.pause()
 
             assert "[Pasted text #1 +4 lines]" in chat._text_area.text
@@ -6080,7 +6414,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
 
             await pilot.press("enter")
@@ -6097,7 +6431,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
             assert len(chat._pasted_contents) == 1
 
@@ -6113,9 +6447,9 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste("X" * 900)
+            await chat.handle_external_paste_async("X" * 900)
             await pilot.pause()
-            chat.handle_external_paste("Y" * 900)
+            await chat.handle_external_paste_async("Y" * 900)
             await pilot.pause()
 
             assert "[Pasted text #1]" in chat._text_area.text
@@ -6132,9 +6466,9 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(text_a)
+            await chat.handle_external_paste_async(text_a)
             await pilot.pause()
-            chat.handle_external_paste(text_b)
+            await chat.handle_external_paste_async(text_b)
             await pilot.pause()
 
             await pilot.press("enter")
@@ -6155,7 +6489,7 @@ class TestPasteCollapseIntegration:
                 await pilot.press(char)
             await pilot.pause()
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
 
             await pilot.press("enter")
@@ -6172,7 +6506,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
             placeholder = chat._text_area.text
             assert 1 in chat._pasted_contents
@@ -6204,7 +6538,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(pasted)
+            await chat.handle_external_paste_async(pasted)
             await pilot.pause()
 
             assert chat.mode == mode
@@ -6226,11 +6560,11 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
 
             # Second identical paste expands the placeholder inline. The stored
@@ -6250,11 +6584,11 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
             placeholder = chat._text_area.text
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
             assert chat._text_area.text == text
 
@@ -6277,11 +6611,11 @@ class TestPasteCollapseIntegration:
 
             for char in "fix: ":
                 await pilot.press(char)
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
             assert chat._text_area.text == "fix: [Pasted text #1]"
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
 
             assert chat._text_area.text == f"fix: {text}"
@@ -6295,7 +6629,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
 
@@ -6304,11 +6638,11 @@ class TestPasteCollapseIntegration:
             assert chat._text_area.text == ""
             assert chat._pasted_contents[1].content == text
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #2]"
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
 
             assert chat._text_area.text == text
@@ -6357,7 +6691,7 @@ class TestPasteCollapseIntegration:
 
             calls = _capture_notifications(monkeypatch, app)
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
 
             assert chat._text_area.text == "[Pasted text #1]"
@@ -6380,7 +6714,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
 
@@ -6388,7 +6722,7 @@ class TestPasteCollapseIntegration:
             # expansion branch is recorded.
             calls = _capture_notifications(monkeypatch, app)
 
-            chat.handle_external_paste(text)
+            await chat.handle_external_paste_async(text)
             await pilot.pause()
 
             assert chat._text_area.text == text
@@ -6407,9 +6741,9 @@ class TestPasteCollapseIntegration:
 
             calls = _capture_notifications(monkeypatch, app)
 
-            chat.handle_external_paste(first)
+            await chat.handle_external_paste_async(first)
             await pilot.pause()
-            chat.handle_external_paste(second)
+            await chat.handle_external_paste_async(second)
             await pilot.pause()
 
             assert chat._text_area.text == "[Pasted text #1][Pasted text #2]"
@@ -6456,7 +6790,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
             assert "[Pasted text #1]" in chat._text_area.text
 
@@ -6476,7 +6810,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
             chat._text_area.move_cursor((0, 0))
 
@@ -6495,9 +6829,9 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste("A" * 900)
+            await chat.handle_external_paste_async("A" * 900)
             await pilot.pause()
-            chat.handle_external_paste("B" * 900)
+            await chat.handle_external_paste_async("B" * 900)
             await pilot.pause()
             assert "[Pasted text #1]" in chat._text_area.text
             assert "[Pasted text #2]" in chat._text_area.text
@@ -6540,7 +6874,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(multi_line)
+            await chat.handle_external_paste_async(multi_line)
             await pilot.pause()
             # The multi-line form carries a "+M lines" suffix, so its span is
             # longer than the bare "[Pasted text #N]" token.
@@ -6567,7 +6901,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
 
@@ -6590,11 +6924,11 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(multi_line)
+            await chat.handle_external_paste_async(multi_line)
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1 +4 lines]"
 
-            chat.handle_external_paste(multi_line)
+            await chat.handle_external_paste_async(multi_line)
             await pilot.pause()
 
             assert chat._text_area.text == multi_line
@@ -6621,7 +6955,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
 
             chat._copy_via_button()
@@ -6642,7 +6976,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
             assert 1 in chat._pasted_contents
 
@@ -6661,7 +6995,7 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat.handle_external_paste(big_text)
+            await chat.handle_external_paste_async(big_text)
             await pilot.pause()
 
             chat._text_area.text = ""

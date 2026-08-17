@@ -9,6 +9,7 @@ import pytest
 from deepagents_code.input import (
     ParsedPastedPathPayload,
     ProbeFailure,
+    classify_pasted_entry_payload,
     dropped_payload_paths,
     extract_leading_pasted_entry_path,
     extract_leading_pasted_file_path,
@@ -1048,3 +1049,96 @@ def test_parse_pasted_file_paths_handles_oserror_in_unicode_variant(
     mocker.patch("pathlib.Path.stat", side_effect=OSError(63, "File name too long"))
 
     assert parse_pasted_file_paths(pasted) == []
+
+
+class TestClassifyPastedEntryPayload:
+    """The single classifier every paste handler calls."""
+
+    def test_multi_entry_drop_resolves_all(self, tmp_path: Path) -> None:
+        """A folder and a file dropped together both resolve."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        image = tmp_path / "shot.png"
+        image.write_bytes(b"img")
+
+        parsed = classify_pasted_entry_payload(f"{folder} {image}")
+
+        assert parsed is not None
+        assert set(parsed.paths) == {folder, image}
+        assert parsed.failure is None
+        assert parsed.failures == ()
+
+    def test_leading_entry_with_trailing_prose(self, tmp_path: Path) -> None:
+        """A path followed by a question keeps only the path as the prefix."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        parsed = classify_pasted_entry_payload(f"{folder} what is in here")
+
+        assert parsed is not None
+        assert parsed.paths == (folder,)
+        assert parsed.prefix == str(folder)
+
+    def test_non_path_text_is_not_classified(self) -> None:
+        """Ordinary prose is not a drop."""
+        assert classify_pasted_entry_payload("just some words") is None
+
+    def test_probe_failure_keeps_payload_as_a_drop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable entry still returns a payload so it survives as text."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        def _deny(self: Path, *args: object, **kwargs: object) -> object:  # noqa: ARG001  # Replaces the stat probe signature
+            raise PermissionError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(Path, "stat", _deny)
+
+        parsed = classify_pasted_entry_payload(str(folder))
+
+        assert parsed is not None
+        assert parsed.paths == ()
+        assert parsed.failure is not None
+        assert parsed.failures
+
+    def test_unrelated_probe_failure_does_not_promote_text_to_a_drop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An incidental failure elsewhere must not make ordinary text a drop.
+
+        Otherwise one stray `EACCES` on an unrelated ancestor suppresses slash
+        mode and toasts about a path the user never dropped.
+        """
+        unrelated = tmp_path / "somewhere-else"
+
+        def _record_unrelated(self: Path, *args: object, **kwargs: object) -> object:  # noqa: ARG001  # Replaces the stat probe signature
+            raise OSError(errno.ENOENT, "No such file or directory")
+
+        monkeypatch.setattr(Path, "stat", _record_unrelated)
+
+        with track_probe_failures() as failures:
+            failures.append(ProbeFailure(unrelated, PermissionError("denied")))
+            parsed = classify_pasted_entry_payload("/nope/nope/nope")
+
+        assert parsed is None
+
+
+class TestProbeFailureSelection:
+    """Picking which recorded failure to show the user."""
+
+    def test_prefers_a_failure_the_payload_names(self) -> None:
+        """A path mentioned in the payload beats an ancestor."""
+        parent = ProbeFailure(Path("/a"), PermissionError("denied"))
+        child = ProbeFailure(Path("/a/b"), PermissionError("denied"))
+
+        assert select_probe_failure_for([parent, child], "/a/b") is child
+
+    def test_prefers_an_ancestor_over_an_unrelated_failure(self) -> None:
+        """When nothing is named outright, an ancestor of the payload wins."""
+        unrelated = ProbeFailure(Path("/elsewhere"), PermissionError("denied"))
+        ancestor = ProbeFailure(Path("/a"), PermissionError("denied"))
+
+        selected = select_probe_failure_for([unrelated, ancestor], "/a/b/c")
+
+        assert selected is ancestor

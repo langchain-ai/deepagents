@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
@@ -130,17 +131,137 @@ Covers every single-segment directory short enough for end coincidence to clear
 half its length -- `/tmp`, `/var`, `/etc`, `/opt`, `/usr`, `/dev`, `/proc`,
 `/home` -- while leaving longer root folders such as `/Volumes` and
 `/Applications` on the edit-tolerant proportional test, where a coincidence
-would have to survive four or more characters to matter."""
+would have to survive four or more characters to matter.
+
+Length is only half the test: `_retains_dropped_origin` also requires a single
+`/`, so a drop delivered with a trailing slash (`/tmp/`) has two and takes the
+proportional path instead. That is the safe direction -- a trailing slash is
+itself evidence of a directory rather than a command."""
+
+_PATH_PROBE_TIMEOUT_SECONDS = 2.0
+"""How long a dropped-path classification may run before it is abandoned.
+
+Moving the probes to a worker thread keeps them off the UI *thread*, but the
+paste handlers await the result, so a probe that never returns still stalls the
+Textual message pump -- the app stops repainting and stops accepting keys. A
+stale NFS/SMB mount or a wedged FUSE daemon does exactly that: `stat()` blocks
+uninterruptibly and no amount of thread offloading rescues it.
+
+Two seconds is far above any healthy local or warm network probe while staying
+short enough that the user reads the stall as a hitch rather than a hang. On
+expiry the payload is inserted as plain text -- the same safe direction every
+other probe failure takes."""
+
+_PATH_PROBE_MAX_WORKERS = 4
+"""Threads reserved for dropped-path classification.
+
+`asyncio.to_thread` cannot actually cancel a blocked thread, so a probe
+abandoned at the timeout keeps its worker until the mount recovers -- possibly
+forever. Running these probes in a dedicated pool bounds that leak: repeated
+drops onto a dead mount degrade to "every drop is plain text" instead of
+exhausting the default executor and stalling every unrelated `to_thread` caller
+in the app."""
+
+_path_probe_executor: ThreadPoolExecutor | None = None
+"""Lazily created pool backing `_classify_pasted_entry_off_thread`."""
+
+
+def _get_path_probe_executor() -> ThreadPoolExecutor:
+    """Return the shared dropped-path probe pool, creating it on first use.
+
+    Returns:
+        Executor dedicated to filesystem classification of pasted payloads.
+    """
+    global _path_probe_executor  # noqa: PLW0603  # process-wide pool, created once
+    if _path_probe_executor is None:
+        _path_probe_executor = ThreadPoolExecutor(
+            max_workers=_PATH_PROBE_MAX_WORKERS,
+            thread_name_prefix="path-probe",
+        )
+    return _path_probe_executor
+
+
+async def _classify_pasted_entry_off_thread(
+    payload: str,
+) -> tuple[PastedEntryPayload | None, bool]:
+    """Classify a paste payload in a worker thread, bounded by a timeout.
+
+    Args:
+        payload: Raw terminal paste or keystroke-burst payload.
+
+    Returns:
+        Tuple of `(parsed, timed_out)`. `parsed` is `None` when the payload is
+        not path-shaped, when classification raised, or when it timed out;
+        `timed_out` distinguishes the last case so callers can tell the user
+        why their drop became plain text.
+    """
+    from deepagents_code.input import classify_pasted_entry_payload
+
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(
+        _get_path_probe_executor(), classify_pasted_entry_payload, payload
+    )
+    try:
+        # `shield` because the executor future is not cancellable once the
+        # thread has entered a blocking syscall: letting `wait_for` cancel it
+        # would raise here *and* leave the thread running. Shielding makes the
+        # abandonment explicit -- the pool bound above is what limits the cost.
+        return await asyncio.wait_for(
+            asyncio.shield(future), _PATH_PROBE_TIMEOUT_SECONDS
+        ), False
+    except TimeoutError:
+        logger.warning(
+            "Dropped-path classification timed out after %.1fs; treating as text",
+            _PATH_PROBE_TIMEOUT_SECONDS,
+        )
+        return None, True
+    except (OSError, RuntimeError, ValueError):
+        # The parser answers `False` for probes it can guard, so only the
+        # unguarded edges reach here: `expanduser()` on an unresolvable home,
+        # or a working directory deleted mid-resolution. Anything outside this
+        # set is a defect in the parser rather than a hostile filesystem, and
+        # is deliberately left to propagate instead of being silently reported
+        # as "not a path" -- see the callers.
+        logger.warning(
+            "Path-payload parsing failed; treating payload as text",
+            exc_info=True,
+        )
+        return None, False
+
+
+def _notify_path_probe_timeout(widget: Widget) -> None:
+    """Tell the user a drop was kept as text because its probe timed out.
+
+    Callers must also route the payload down the drop path (a `PastedPaths`
+    with no resolved entries), so the buffer matches what this message
+    promises. Falling through to a plain insert would hand a `/`-leading
+    payload to command mode -- silently contradicting the toast.
+
+    Args:
+        widget: Widget used to reach the running app for the toast.
+    """
+    try:
+        widget.app.notify(
+            "Couldn't read the dropped path in time -- kept as text, not attached.",
+            severity="warning",
+            timeout=5,
+            markup=False,
+        )
+    except NoActiveAppError:
+        logger.warning("No app available to report dropped-path probe timeout")
+
 
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
+    from textual.widget import Widget
 
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.input import (
         MediaTracker,
         ParsedPastedPathPayload,
+        PastedEntryPayload,
         ProbeFailure,
     )
 
@@ -518,6 +639,7 @@ class ChatTextArea(PasteBurstTextArea):
             dropped_path: str,
             failure: ProbeFailure | None = None,
             remaining_text: str = "",
+            other_failure_count: int = 0,
         ) -> None:
             """Initialize with the parsed entry payload.
 
@@ -529,12 +651,15 @@ class ChatTextArea(PasteBurstTextArea):
                 remaining_text: Raw text after `dropped_path` that was not
                     resolved to a filesystem entry (for example the unreadable
                     tail of a mixed drop). Empty when every token resolved.
+                other_failure_count: Probes that failed beyond `failure`, so a
+                    multi-entry drop can report how much it could not read.
             """
             self.raw_text = raw_text
             self.paths = paths
             self.dropped_path = dropped_path
             self.failure = failure
             self.remaining_text = remaining_text
+            self.other_failure_count = other_failure_count
             super().__init__()
 
     @staticmethod
@@ -550,7 +675,9 @@ class ChatTextArea(PasteBurstTextArea):
             prefix: Leading span the classifier consumed.
 
         Returns:
-            The remainder with its separating whitespace stripped.
+            The remainder with its separating whitespace stripped, or `""`
+            when nothing resolved -- including the failure-only case, where
+            `prefix` covers the entire payload and there is no remainder.
         """
         if prefix and payload.startswith(prefix):
             return payload[len(prefix) :].lstrip()
@@ -940,27 +1067,40 @@ class ChatTextArea(PasteBurstTextArea):
         """Route a flushed burst through dropped-path and large-paste checks.
 
         When parsing fails, the buffered text is inserted unchanged so regular
-        typing behavior is preserved.
+        typing behavior is preserved. A burst whose first token names a
+        registered command bypasses drop handling entirely -- see the
+        `is_command` gate below for why this path differs from `_on_paste`.
         """
-        from deepagents_code.input import classify_pasted_entry_payload
-
-        try:
-            parsed = await asyncio.to_thread(classify_pasted_entry_payload, payload)
-        except Exception:
-            # The parser guards its own filesystem probes, but
-            # `_resolve_with_unicode_space_variants` calls `expanduser()` and
-            # `Path.cwd()` unguarded, so a deleted working directory or an
-            # unresolvable home still surfaces here.  Leave a breadcrumb (the
-            # message never carries the paste content) instead of swallowing it,
-            # then fall through to normal text handling.  Logged at warning (not
-            # debug) so it actually surfaces in production.
-            logger.warning(
-                "Path-payload parsing failed; treating burst as text",
-                exc_info=True,
-            )
-            parsed = None
+        parsed, timed_out = await _classify_pasted_entry_off_thread(payload)
         owner = self._chat_input_owner
+        if timed_out:
+            # See `_on_paste`. A burst that names a registered command still
+            # loses to it, matching the `is_command` gate below.
+            _notify_path_probe_timeout(self)
+            if owner is None or not owner._matches_known_command(payload):
+                self.post_message(self.PastedPaths(payload, [], dropped_path=payload))
+                return
+            self.insert(payload)
+            return
+        # Unlike `_on_paste`, a keystroke burst is ambiguous: it is what a fast
+        # typist produces, so a payload that names a real command is far more
+        # likely to be typed than dropped. A bracketed paste carries explicit
+        # drop provenance and so lets the path win instead.
         is_command = owner is not None and owner._matches_known_command(payload)
+        if parsed is not None and parsed.failure is not None and owner is not None:
+            # Report before branching. A probe failure is news to the user
+            # whichever way the payload is finally routed, and the command
+            # branch below would otherwise discard it without a trace.
+            owner._warn_unreadable_dropped_path(
+                parsed.failure,
+                payload=payload,
+                other_failure_count=max(len(parsed.failures) - 1, 0),
+            )
+        if is_command and parsed is not None:
+            logger.info(
+                "Burst payload matched a registered command; ignoring drop "
+                "classification"
+            )
         if parsed is not None and not is_command:
             self.post_message(
                 self.PastedPaths(
@@ -969,6 +1109,7 @@ class ChatTextArea(PasteBurstTextArea):
                     dropped_path=parsed.prefix,
                     failure=parsed.failure,
                     remaining_text=self._unresolved_pasted_span(payload, parsed.prefix),
+                    other_failure_count=max(len(parsed.failures) - 1, 0),
                 )
             )
             return
@@ -1268,18 +1409,16 @@ class ChatTextArea(PasteBurstTextArea):
         if self._paste_burst_buffer:
             await self._flush_paste_burst()
 
-        from deepagents_code.input import classify_pasted_entry_payload
-
-        try:
-            parsed = await asyncio.to_thread(classify_pasted_entry_payload, event.text)
-        except Exception:
-            # See _flush_paste_burst: swallowing here would silently break the
-            # drag-drop-file path, so log a breadcrumb and fall through to text.
-            logger.debug(
-                "Path-payload parsing failed; treating paste as text",
-                exc_info=True,
-            )
-            parsed = None
+        parsed, timed_out = await _classify_pasted_entry_off_thread(event.text)
+        if timed_out:
+            # Only a path-shaped payload reaches a probe at all, so keep it as
+            # a drop with nothing resolved rather than letting its leading `/`
+            # fall through to command mode.
+            _notify_path_probe_timeout(self)
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PastedPaths(event.text, [], dropped_path=event.text))
+            return
         if parsed is not None:
             event.prevent_default()
             event.stop()
@@ -1292,6 +1431,7 @@ class ChatTextArea(PasteBurstTextArea):
                     remaining_text=self._unresolved_pasted_span(
                         event.text, parsed.prefix
                     ),
+                    other_failure_count=max(len(parsed.failures) - 1, 0),
                 )
             )
             return
@@ -1599,19 +1739,20 @@ class ChatInput(Vertical):
         # completion controller calls (0 for normal, 1 for shell/command).
         self._completion_prefix_len = 0
 
-        # Text area content from the previous Changed event. Used to skip
-        # repeated diff calculations while maintaining explicit drop provenance.
+        # Buffer contents from the previous Changed event. Supplies the
+        # before-image for the edit diff that drives media sync, bulk-change
+        # detection, and draft tracking.
         self._prev_text = ""
 
         # Leading span of the buffer that belongs to an accepted dropped path.
         # It starts as the token filesystem detection accepted and is then kept
         # in sync with the buffer as the user edits, so it grows to include
         # prose typed after the path and shrinks as the path is cut down.
-        # Single-character edits deliberately skip the stat calls, so this
-        # remembered span stands in for them and keeps mode detection out of
-        # command mode. Also load-bearing at submission time via
-        # `_starts_with_dropped_path`, which keeps `_submit_value` from
-        # re-tagging the message as a command.
+        # Text changes never probe the filesystem, so this remembered span is
+        # the only record that the leading `/` came from a drop -- it is what
+        # keeps mode detection out of command mode. Also load-bearing at
+        # submission time via `_starts_with_dropped_path`, which keeps
+        # `_submit_value` from re-tagging the message as a command.
         #
         # Because it tracks the buffer, this span can legitimately shrink to a
         # bare `/` (editing immediately after the root slash). A bare `/` on its
@@ -1620,9 +1761,14 @@ class ChatInput(Vertical):
         # -- see `_retains_dropped_origin` for what "enough" means.
         self._dropped_path_draft: str | None = None
 
-        # The token detection originally accepted, frozen for the life of the
-        # drop. `_dropped_path_draft` follows the user's edits and so cannot say
-        # whether the dropped path is still in the buffer at all; this can.
+        # The span accepted when the drop context was established, frozen for
+        # the life of the drop. That is a resolved token when a paste handler
+        # classified one, but the whole buffer when the drop arrived as bulk
+        # text or came back from history recall -- worth knowing, because
+        # `_retains_dropped_origin` treats a short root-level origin far more
+        # strictly than a long one. `_dropped_path_draft` follows the user's
+        # edits and so cannot say whether the dropped path is still in the
+        # buffer at all; this can.
         self._dropped_path_origin: str | None = None
 
         # Failing path already reported by `_warn_unreadable_dropped_path` (not
@@ -1633,6 +1779,14 @@ class ChatInput(Vertical):
         # Upcoming Changed events caused by a path payload already classified
         # off-thread. Explicit paste provenance wins over command-name ambiguity
         # for an exact path such as `/tools`.
+        #
+        # Every `_set_dropped_path` in `on_chat_text_area_pasted_paths` is
+        # paired with exactly one increment here, because the insertion that
+        # follows fires exactly one Changed event. If that pairing ever drifts
+        # upward, the leftover count is consumed by an unrelated later edit,
+        # which skips the registered-command re-check and resets completions
+        # instead of updating them -- silently, for the rest of the session.
+        # `_clear_dropped_path` zeroes it for that reason.
         self._pending_dropped_path_change_events = 0
 
         # A slash-prefixed paste that did not resolve as a filesystem entry
@@ -1880,9 +2034,22 @@ class ChatInput(Vertical):
         explicit_drop_change = self._pending_dropped_path_change_events > 0
         if explicit_drop_change:
             self._pending_dropped_path_change_events -= 1
+        elif self._pending_dropped_path_change_events < 0:
+            logger.warning(
+                "_pending_dropped_path_change_events is negative (%d); resetting to 0",
+                self._pending_dropped_path_change_events,
+            )
+            self._pending_dropped_path_change_events = 0
         unresolved_slash_paste = self._pending_unresolved_slash_paste_events > 0
         if unresolved_slash_paste:
             self._pending_unresolved_slash_paste_events -= 1
+        elif self._pending_unresolved_slash_paste_events < 0:
+            logger.warning(
+                "_pending_unresolved_slash_paste_events is negative (%d); "
+                "resetting to 0",
+                self._pending_unresolved_slash_paste_events,
+            )
+            self._pending_unresolved_slash_paste_events = 0
         prefix_len = self._common_prefix_len(previous_text, text)
         suffix_len = self._common_suffix_len(
             previous_text, text, after_prefix_len=prefix_len
@@ -1913,6 +2080,15 @@ class ChatInput(Vertical):
                 # Paste event. Preserve its path-shaped prefix without probing
                 # the filesystem; submit-time media handling may resolve files,
                 # while ordinary text remains literal.
+                #
+                # Shape alone decides here, so path-shaped text that was never
+                # dropped also lands in normal mode. Log it: from the user's
+                # side this looks like "my slash command went to the model as
+                # chat", and the override is otherwise invisible.
+                logger.info(
+                    "Bulk edit looks like a dropped path; keeping normal mode "
+                    "instead of command mode"
+                )
                 self._set_dropped_path(text.strip())
                 draft = self._dropped_path_draft
         if not text:
@@ -2040,10 +2216,18 @@ class ChatInput(Vertical):
         self._dropped_path_origin = token
 
     def _clear_dropped_path(self) -> None:
-        """Forget the current drop context and its warning state."""
+        """Forget the current drop context, its warning state, and its counter.
+
+        The pending-event count belongs to the drop context: an insertion that
+        produces no `Changed` event (a replacement whose text is identical, say)
+        would otherwise strand the count, and the next unrelated bulk edit would
+        consume it -- silently skipping the command re-check and resetting
+        completions for the rest of the session.
+        """
         self._dropped_path_draft = None
         self._dropped_path_origin = None
         self._warned_unreadable_path = None
+        self._pending_dropped_path_change_events = 0
 
     def _retains_dropped_origin(self, text: str) -> bool:
         """Return whether enough of the dropped path survives in `text`.
@@ -2298,7 +2482,22 @@ class ChatInput(Vertical):
         return controller is not None and controller.has_command(name)
 
     def _matches_command_prefix(self, text: str) -> bool:
-        """Return whether a single-token payload prefixes a registered command."""
+        """Return whether the payload names or prefixes a registered command.
+
+        An exact match counts even with arguments attached (`/help me`), since
+        `_matches_known_command` matches on the first token. The weaker
+        prefix test that follows is restricted to single-token payloads.
+
+        Note this is time-dependent: it answers `False` before the slash
+        controller exists or before plugin and skill commands finish loading, so
+        the same text can be classified differently early in startup.
+
+        Args:
+            text: Payload to test.
+
+        Returns:
+            `True` when the payload matches or prefixes a known command.
+        """
         token = text.strip().lower()
         if not token:
             return False
@@ -2313,7 +2512,13 @@ class ChatInput(Vertical):
             controller.name_prefix_matches(token, len(token))
         )
 
-    def _warn_unreadable_dropped_path(self, failure: ProbeFailure) -> None:
+    def _warn_unreadable_dropped_path(
+        self,
+        failure: ProbeFailure,
+        *,
+        payload: str = "",
+        other_failure_count: int = 0,
+    ) -> None:
         """Tell the user which dropped path could not be read, and why.
 
         Fires once per failing path. The key is the failing path rather than the
@@ -2323,11 +2528,17 @@ class ChatInput(Vertical):
 
         Args:
             failure: The probe failure most relevant to the payload.
+            payload: Raw text being classified, when known. Used to tell whether
+                the failing path is the dropped entry itself or an ancestor
+                reached while resolving it, so the message never presents a path
+                the user never touched as the thing they dropped.
+            other_failure_count: How many further probes failed in the same
+                classification. Reported as a count so a multi-entry drop does
+                not look like a single failure.
         """
         failing_path = str(failure.path)
         if self._warned_unreadable_path == failing_path:
             return
-        self._warned_unreadable_path = failing_path
         # Warning, not debug: "my folder drop did nothing" is otherwise
         # unreportable, since the default log level hides the reason entirely.
         logger.warning(
@@ -2344,9 +2555,24 @@ class ChatInput(Vertical):
         )
         # Describes state rather than claiming an action: paste classification
         # completes before anything has been sent.
-        message = (
-            f"Couldn't read {failure.path} ({reason}) -- kept as text, not attached."
-        )
+        dropped = payload.strip()
+        if dropped and failing_path not in dropped:
+            # The failure names an ancestor rather than the drop. Say so
+            # explicitly instead of reporting a path the user never dropped as
+            # though it were the one they did.
+            message = (
+                f"Couldn't read {dropped} -- {failing_path} ({reason}). "
+                "Kept as text, not attached."
+            )
+        else:
+            message = (
+                f"Couldn't read {failure.path} ({reason}) "
+                "-- kept as text, not attached."
+            )
+        if other_failure_count > 0:
+            message += f" {other_failure_count} more entr"
+            message += "y" if other_failure_count == 1 else "ies"
+            message += " could not be read either."
         try:
             self.app.notify(
                 message,
@@ -2357,29 +2583,23 @@ class ChatInput(Vertical):
         except NoActiveAppError:
             # `MessagePump.app` raises rather than returning something falsy, so
             # this is the only way the "no app" case can be handled -- and it
-            # must be, since this runs inside a synchronous text-change handler.
+            # must be, since this runs inside a synchronous message handler.
+            # Leave the dedupe key unset so a later, deliverable attempt for the
+            # same path is not suppressed by this undelivered one.
             logger.warning(
                 "No app available to report unreadable dropped path: %s",
                 failing_path,
             )
-
-    def _is_dropped_path_submission(self, value: str) -> bool:
-        """Return whether a submission retains explicit drop provenance.
-
-        Paste handlers classify entries off-thread and install the transient
-        draft. Submission trusts that provenance without touching the filesystem,
-        so renamed, deleted, or slow-mounted paths retain their original mode.
-
-        Args:
-            value: Text about to be submitted.
-
-        Returns:
-            `True` when the submission should stay ordinary text.
-        """
-        return self._starts_with_dropped_path(value)
+            return
+        self._warned_unreadable_path = failing_path
 
     def _starts_with_dropped_path(self, value: str) -> bool:
         """Return whether `value` still begins with the accepted drop token.
+
+        Paste handlers classify entries off-thread and install the transient
+        draft. Submission trusts that provenance without touching the
+        filesystem, so renamed, deleted, or slow-mounted paths keep the mode
+        they were dropped in.
 
         Args:
             value: Text to test against the remembered draft.
@@ -2578,7 +2798,7 @@ class ChatInput(Vertical):
         mode = self.mode
         if mode == "normal":
             detected = detect_mode_prefix(value)
-            if detected is not None and not self._is_dropped_path_submission(value):
+            if detected is not None and not self._starts_with_dropped_path(value):
                 _, mode = detected
 
         # Prepend mode prefix so the app layer receives the original trigger
@@ -2617,7 +2837,12 @@ class ChatInput(Vertical):
         # `on_text_area_changed` and drop the draft today, but a stale draft
         # would silently suppress `/` for the rest of the session, so the
         # submit path owns the reset rather than relying on that side effect.
+        # (`_clear_dropped_path` also zeroes the drop change counter.)
         self._clear_dropped_path()
+        # Not part of the drop context, but stranded by the same mechanism: an
+        # unresolved slash paste that never produced its Changed event would
+        # otherwise demote the next bulk edit out of command mode.
+        self._pending_unresolved_slash_paste_events = 0
 
     def _sync_media_tracker_to_text(
         self,
@@ -2668,7 +2893,12 @@ class ChatInput(Vertical):
         self, event: ChatTextArea.HistoryPrevious
     ) -> None:
         """Handle history previous request."""
-        entry = self._history.get_previous(event.current_text, query=event.current_text)
+        # Hand the live mode across so walking back down to the draft restores
+        # it unchanged. Without it, a normal-mode dropped path is re-detected
+        # from its leading `/` and comes back as a slash command.
+        entry = self._history.get_previous(
+            event.current_text, query=event.current_text, current_mode=self.mode
+        )
         if entry is not None and self._text_area:
             mode, display_text = self._history_entry_mode_and_text(
                 entry, stored_mode=self._history.current_mode
@@ -2700,12 +2930,33 @@ class ChatInput(Vertical):
             self.app.bell()
 
     def on_chat_text_area_pasted_paths(self, event: ChatTextArea.PastedPaths) -> None:
-        """Insert an off-thread-classified filesystem-entry payload."""
-        if not self._text_area:
-            return
+        """Insert an off-thread-classified filesystem-entry payload.
 
+        Beyond inserting, this forces `normal` mode for a drop into an empty
+        buffer, installs the drop provenance later edits are judged against, and
+        emits the unreadable-path toast. Each `_set_dropped_path` here is paired
+        with exactly one `_pending_dropped_path_change_events` increment,
+        matching the single `Changed` event the insertion produces.
+
+        Args:
+            event: Classified payload posted by a paste handler.
+        """
+        # Report before the mount guard: a probe failure is news to the user
+        # whether or not the widget is composed, and returning first would drop
+        # it with no trace at all.
         if event.failure is not None:
-            self._warn_unreadable_dropped_path(event.failure)
+            self._warn_unreadable_dropped_path(
+                event.failure,
+                payload=event.raw_text,
+                other_failure_count=event.other_failure_count,
+            )
+
+        if not self._text_area:
+            logger.warning(
+                "Dropping classified path payload: text area not mounted (%d paths)",
+                len(event.paths),
+            )
+            return
 
         was_empty = not self._text_area.text
         self._insert_pasted_paths(
@@ -2717,6 +2968,11 @@ class ChatInput(Vertical):
         if text.startswith("/"):
             token = event.dropped_path
             if not text.startswith(token) and event.paths:
+                # The buffer leads with `/` but not with the classified span --
+                # the classifier consumed a quoted or `file://` form and what
+                # landed in the buffer is the resolved path instead. Fall back
+                # to that; if neither matches, install nothing rather than a
+                # span the buffer does not actually start with.
                 first = str(event.paths[0])
                 token = first if text.startswith(first) else ""
             if token:
@@ -2756,16 +3012,16 @@ class ChatInput(Vertical):
         if not self._text_area:
             return False
 
-        from deepagents_code.input import classify_pasted_entry_payload
-
-        try:
-            parsed = await asyncio.to_thread(classify_pasted_entry_payload, pasted)
-        except Exception:
-            logger.warning(
-                "External path-payload parsing failed; treating paste as text",
-                exc_info=True,
+        parsed, timed_out = await _classify_pasted_entry_off_thread(pasted)
+        if timed_out:
+            # See `_on_paste`: keep the payload as an unresolved drop so it
+            # stays literal text instead of turning into a slash command.
+            _notify_path_probe_timeout(self)
+            self.on_chat_text_area_pasted_paths(
+                ChatTextArea.PastedPaths(pasted, [], dropped_path=pasted)
             )
-            parsed = None
+            self._text_area.focus()
+            return True
         if parsed is not None:
             self.on_chat_text_area_pasted_paths(
                 ChatTextArea.PastedPaths(
@@ -2776,38 +3032,9 @@ class ChatInput(Vertical):
                     remaining_text=ChatTextArea._unresolved_pasted_span(
                         pasted, parsed.prefix
                     ),
+                    other_failure_count=max(len(parsed.failures) - 1, 0),
                 )
             )
-        elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
-            self._collapse_and_insert_paste(pasted)
-        else:
-            if pasted.lstrip().startswith("/"):
-                self._pending_unresolved_slash_paste_events += 1
-            self._text_area.insert(pasted)
-
-        self._text_area.focus()
-        return True
-
-    def handle_external_paste(self, pasted: str) -> bool:
-        """Handle paste text from app-level routing when input is not focused.
-
-        When the text area is mounted, the paste is always consumed: file paths
-        are attached as images, large text is collapsed into a placeholder,
-        and remaining plain text is inserted directly.
-
-        Args:
-            pasted: Raw pasted text payload.
-
-        Returns:
-            `True` when the text area is mounted and the paste was inserted,
-                `False` if the widget is not yet composed.
-        """
-        if not self._text_area:
-            return False
-
-        parsed = self._parse_dropped_path_payload(pasted)
-        if parsed is not None:
-            self._insert_pasted_paths(pasted, parsed.paths)
         elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
             self._collapse_and_insert_paste(pasted)
         else:
@@ -2862,13 +3089,15 @@ class ChatInput(Vertical):
 
         Args:
             raw_text: Original paste payload text.
-            paths: Resolved file paths parsed from the payload.
+            paths: Resolved filesystem entries parsed from the payload;
+                directories pass through as literal text.
             remaining_text: Unresolved tail of a partial classification (for
                 example the unreadable entry of a mixed drop). Kept as text so
                 a media replacement does not silently discard it.
 
         """
         if not self._text_area:
+            logger.warning("Dropping pasted paths: text area not mounted")
             return
         replacement, attached = self._build_path_replacement(
             raw_text, paths, add_trailing_space=True, remaining_text=remaining_text
@@ -2876,6 +3105,8 @@ class ChatInput(Vertical):
         inserted = replacement if attached else raw_text
         selection = self._text_area.selection
         if not selection.is_empty:
+            # A drop onto a selection replaces it, matching how a paste behaves
+            # everywhere else: the selected text is what the user aimed at.
             start, end = sorted((selection.start, selection.end))
             result = self._text_area.replace(inserted, start, end)
             self._text_area.move_cursor(result.end_location)
@@ -2894,7 +3125,8 @@ class ChatInput(Vertical):
 
         Args:
             raw_text: Original paste payload text.
-            paths: Resolved file paths parsed from the payload.
+            paths: Resolved filesystem entries parsed from the payload;
+                directories pass through as literal text.
             add_trailing_space: Whether to append a trailing space after the
                 last token when paths are separated by spaces.
             remaining_text: Unresolved tail of a partial classification (for
@@ -2952,7 +3184,13 @@ class ChatInput(Vertical):
                 except OSError as exc:
                     logger.debug("Failed to stat media file %s: %s", path, exc)
                     msg = f"Could not attach {label.lower()}: {path.name}"
-                self.app.notify(msg, severity="warning", timeout=5, markup=False)
+                try:
+                    self.app.notify(msg, severity="warning", timeout=5, markup=False)
+                except NoActiveAppError:
+                    # Same reasoning as `_warn_unreadable_dropped_path`: this is
+                    # reachable from the paste chain before the app is running,
+                    # and `MessagePump.app` raises rather than returning falsy.
+                    logger.warning("No app available to report: %s", msg)
 
             # Not a supported media file, keep as path
             logger.debug("Could not load media from dropped path: %s", path)
@@ -2985,9 +3223,22 @@ class ChatInput(Vertical):
         Returns:
             Submitted text with image placeholders when attachment succeeded.
         """
-        candidate, parsed = self._parse_dropped_path_payload_with_command_recovery(
-            value, allow_leading_path=True
-        )
+        from deepagents_code.input import select_probe_failure_for, track_probe_failures
+
+        # Submission re-probes the filesystem: a mount can go unreadable between
+        # the drop and Enter. Without this tracker those probes answer "not a
+        # path" and the literal text ships to the model with no attachment and
+        # no warning -- the exact silent degradation the drop-time toast exists
+        # to prevent.
+        with track_probe_failures() as failures:
+            candidate, parsed = self._parse_dropped_path_payload_with_command_recovery(
+                value, allow_leading_path=True
+            )
+        failure = select_probe_failure_for(failures, value)
+        if failure is not None:
+            self._warn_unreadable_dropped_path(
+                failure, payload=value, other_failure_count=max(len(failures) - 1, 0)
+            )
         if parsed is None:
             return value
 
@@ -3031,9 +3282,13 @@ class ChatInput(Vertical):
 
         Recognizing the path is not enough on its own: the recall path returns
         early from `on_text_area_changed` before draft detection runs, so this
-        also installs the drop context -- and clears it on both non-path
-        branches, so a command recalled after a drop is not still shielded by
-        the previous entry's draft.
+        also installs the drop context -- and clears it on every other branch,
+        so a command recalled after a drop is not still shielded by the previous
+        entry's draft.
+
+        Note the installed origin is the whole entry rather than the narrower
+        token an off-thread classification would have produced; see
+        `_dropped_path_origin` for why the distinction matters.
 
         Args:
             entry: Raw entry value read from history storage.

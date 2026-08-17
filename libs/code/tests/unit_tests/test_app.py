@@ -2916,7 +2916,7 @@ class TestCtrlDChatInput:
             chat_input = app.query_one(ChatInput)
             text_area = chat_input.input_widget
             assert text_area is not None
-            chat_input.handle_external_paste("p" * 900)
+            await chat_input.handle_external_paste_async("p" * 900)
             text_area.move_cursor((0, 0))
             assert chat_input.value == "[Pasted text #1]"
 

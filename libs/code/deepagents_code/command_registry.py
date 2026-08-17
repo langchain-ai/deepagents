@@ -454,7 +454,12 @@ class CommandEntry(NamedTuple):
     """
 
     aliases: tuple[str, ...] = ()
-    """Alternative command names accepted by the command dispatcher."""
+    """Alternative command names accepted by the command dispatcher.
+
+    Carried on the entry so path/command disambiguation can see the full set of
+    names a payload might invoke -- `SlashCommandController.has_command` is the
+    only reader. Autocomplete matches on `name`/`display_name`, not on these.
+    """
 
     def label(self) -> str:
         """Return the popup label, preferring `display_name` over `name`.

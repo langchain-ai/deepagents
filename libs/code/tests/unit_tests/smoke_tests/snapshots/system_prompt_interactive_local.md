@@ -240,7 +240,8 @@ Use this tool sparingly - only when you genuinely need information from the user
 
 When using `ask_user`:
 - Be concise and specific with your questions
-- Use multiple choice when there are clear options to choose from
+- Use multiple choice when there are clear options and exactly one applies
+- Use multi-select when the user may legitimately pick several of the options
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
 - Never ask questions you can answer yourself from the available context

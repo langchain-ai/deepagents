@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -912,6 +913,232 @@ class TestReloadInAutocomplete:
         assert any(entry.name == "/reload" for entry in get_slash_commands())
 
 
+class TestReloadInputResponsiveness:
+    """`/reload` should not block the Textual message pump."""
+
+    @pytest.mark.timeout(15)
+    async def test_keeps_chat_input_responsive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typing should render while the detached reload task is still running."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            chat_input.focus_input()
+            await pilot.pause()
+
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def _blocked_reload() -> None:
+                started.set()
+                await release.wait()
+
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
+
+            chat_input.mode = "command"
+            chat_input._submit_value("/reload")
+            await started.wait()
+
+            await pilot.press("h", "i")
+            await pilot.pause()
+            typed = chat_input.value
+
+            release.set()
+            await pilot.pause()
+
+            assert typed == "hi"
+
+    @pytest.mark.timeout(15)
+    async def test_queues_prompt_for_entire_reload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt submitted before restart must wait for reload completion."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def _blocked_reload() -> None:
+                started.set()
+                await release.wait()
+
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
+
+            task = app._schedule_reload()
+            await started.wait()
+            await app._submit_input("do not interrupt", "normal")
+
+            assert app._reloading is True
+            assert [message.text for message in app._pending_messages] == [
+                "do not interrupt"
+            ]
+
+            release.set()
+            await task
+
+    @pytest.mark.timeout(15)
+    async def test_coalesces_overlapping_reloads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second `/reload` shares the first task rather than racing it."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            started = asyncio.Event()
+            release = asyncio.Event()
+            runs = 0
+
+            async def _blocked_reload() -> None:
+                nonlocal runs
+                runs += 1
+                started.set()
+                await release.wait()
+
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
+
+            first = app._schedule_reload()
+            await started.wait()
+            second = app._schedule_reload()
+
+            assert second is first
+            assert runs == 1
+
+            release.set()
+            await first
+            assert app._reloading is False
+
+    @pytest.mark.parametrize("restarted", [True, False])
+    @pytest.mark.timeout(15)
+    async def test_runs_requested_restart_when_reload_skips_respawn(
+        self, monkeypatch: pytest.MonkeyPatch, *, restarted: bool
+    ) -> None:
+        """A skipped reload respawn preserves `/restart` and queued prompts."""
+        from deepagents_code.app import AppMessage, DeepAgentsApp
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def _blocked_reload() -> None:
+                started.set()
+                await release.wait()
+
+            restart = AsyncMock(return_value=restarted)
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+
+            task = app._schedule_reload()
+            await started.wait()
+            await app._handle_command("/restart")
+            await app._submit_input("keep this prompt", "normal")
+
+            restart.assert_not_awaited()
+            assert any(
+                "Reload already in progress" in str(message._content)
+                for message in app.query(AppMessage)
+            )
+
+            release.set()
+            await task
+            assert app._restart_respawn_task is not None
+            await app._restart_respawn_task
+
+            restart.assert_awaited_once()
+            assert [message.text for message in app._pending_messages] == [
+                "keep this prompt"
+            ]
+
+    @pytest.mark.parametrize("restart_raises", [False, True])
+    @pytest.mark.timeout(15)
+    async def test_reload_respawn_consumes_requested_restart(
+        self, monkeypatch: pytest.MonkeyPatch, *, restart_raises: bool
+    ) -> None:
+        """A `/restart` requested during reload's respawn does not run twice."""
+        from deepagents_code.app import DeepAgentsApp, UserMessage, _ServerRespawnResult
+        from deepagents_code.config import settings
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            started = asyncio.Event()
+            release = asyncio.Event()
+            echo_started = asyncio.Event()
+            release_echo = asyncio.Event()
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            async def _blocked_restart() -> _ServerRespawnResult:
+                started.set()
+                await release.wait()
+                if restart_raises:
+                    msg = "respawn exploded"
+                    raise RuntimeError(msg)
+                return _ServerRespawnResult(restarted=True)
+
+            mount_message = app._mount_message
+
+            async def _blocked_command_echo(widget: UserMessage) -> bool:
+                if isinstance(widget, UserMessage):
+                    echo_started.set()
+                    await release_echo.wait()
+                return await mount_message(widget)
+
+            restart = AsyncMock(side_effect=_blocked_restart)
+            monkeypatch.setattr(app, "_mount_message", _blocked_command_echo)
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_restart_server_manual_result", restart)
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=()),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            task = app._schedule_reload()
+            await started.wait()
+            command_task = asyncio.create_task(app._handle_command("/restart"))
+            await echo_started.wait()
+
+            assert restart.await_count == 1
+            release.set()
+            await task
+            release_echo.set()
+            await command_task
+
+            restart.assert_awaited_once()
+            assert app._restart_respawn_task is None
+
+
 class TestReloadModelProfileHints:
     """`/reload` should refresh profile-derived command hints."""
 
@@ -967,6 +1194,8 @@ reasoning_effort_levels = ["{level}"]
 
                 write_config("new")
                 await app._handle_command("/reload")
+                if app._reload_task is not None:
+                    await app._reload_task
 
                 assert app._chat_input._argument_hint_overrides["effort"] == (
                     "[new|clear]"
@@ -1028,6 +1257,8 @@ class TestReloadSkillReport:
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -1150,6 +1381,8 @@ class TestReloadThemeReapply:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -1854,6 +2087,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -1904,6 +2139,8 @@ class TestReloadPluginsViaReload:
             app._plugin_fingerprints = old
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2107,6 +2344,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2166,6 +2405,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             assert app._session_plugin_ids == expected_ids
@@ -2246,6 +2487,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2293,6 +2536,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2335,6 +2580,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2390,6 +2637,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2399,3 +2648,42 @@ class TestReloadPluginsViaReload:
                 assert "MCP is disabled for this session (--no-mcp)" in text
             else:
                 assert "hasn't started yet" in text
+
+    async def test_preserves_messages_queued_before_cancelling_for_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reload retains prompts queued while its active turn is cancelled."""
+        from deepagents_code.app import DeepAgentsApp, QueuedMessage
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            app._agent_worker = MagicMock()
+            app._set_agent_running(True)
+            app._pending_messages.append(QueuedMessage("follow up", "normal"))
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            async def _fake_restart() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+            monkeypatch.setattr(app, "_cancel_worker", app._discard_queue)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=()),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._run_reload()
+
+            assert [message.text for message in app._pending_messages] == ["follow up"]

@@ -18,7 +18,7 @@ from rich.console import Console
 if TYPE_CHECKING:
     from prompt_toolkit.layout import Layout
 
-from deepagents_code._env_vars import INVOKED_AS
+from deepagents_code._env_vars import INVOKED_AS, LAUNCH_TERM_PROGRAM
 from deepagents_code._invocation import invoked_name
 from deepagents_code.app import (
     AppResult,
@@ -1535,6 +1535,51 @@ class TestStartupAutoUpdate:
         assert "Aborted; no project MCP servers loaded" in capsys.readouterr().err
 
 
+class TestLaunchTermProgramSnapshot:
+    """`cli_main` records launch-time `TERM_PROGRAM` for the resume hint."""
+
+    def _run_cli_main(self) -> None:
+        """Run `cli_main` through its early exit, past the snapshot."""
+        with (
+            patch.object(sys, "argv", ["dcode", "--version"]),
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+
+    def test_snapshots_launch_term_program(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `TERM_PROGRAM` present at entry is recorded for the resume hint."""
+        monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+        monkeypatch.delenv(LAUNCH_TERM_PROGRAM, raising=False)
+
+        self._run_cli_main()
+
+        assert os.environ[LAUNCH_TERM_PROGRAM] == "WezTerm"
+
+    def test_skips_snapshot_when_term_program_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a launch `TERM_PROGRAM` no sentinel is written."""
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        monkeypatch.delenv(LAUNCH_TERM_PROGRAM, raising=False)
+
+        self._run_cli_main()
+
+        assert LAUNCH_TERM_PROGRAM not in os.environ
+
+    def test_inherited_snapshot_wins_over_launch_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The update re-exec's inherited sentinel is not overwritten."""
+        monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+        monkeypatch.setenv(LAUNCH_TERM_PROGRAM, "iTerm.app")
+
+        self._run_cli_main()
+
+        assert os.environ[LAUNCH_TERM_PROGRAM] == "iTerm.app"
+
+
 class TestAutoUpdateDefaultMigration:
     """First-run consent/migration notice for the auto-update opt-out default."""
 
@@ -1872,29 +1917,40 @@ class TestRenderTeardownThreadHints:
         return_code: int = 0,
         launch_name: str = "dcode",
         term_program: str = "",
+        launch_term_program: str | None = None,
     ) -> str:
-        """Render the hints with patched dependencies, returning the output."""
+        """Render the hints with patched dependencies, returning the output.
+
+        `term_program` is the live variable; `launch_term_program` is the
+        launch snapshot the hint actually reads. Passing only `term_program`
+        exercises the no-snapshot path (hint stays bare); passing both
+        exercises the launch-time-carry path.
+        """
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         # `launch_name` is resolved (and cached) inside the renderer.
         invoked_name.cache_clear()
+        env = {INVOKED_AS: launch_name, "TERM_PROGRAM": term_program}
+        if launch_term_program is not None:
+            env[LAUNCH_TERM_PROGRAM] = launch_term_program
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
-            # Always set explicitly: an ambient `TERM_PROGRAM` from the
-            # developer's or CI runner's shell would otherwise leak into the
-            # rendered command and flake the assertions here.
-            patch.dict(
-                os.environ,
-                {INVOKED_AS: launch_name, "TERM_PROGRAM": term_program},
-            ),
+            # Always set explicitly: an ambient `TERM_PROGRAM` or launch
+            # snapshot from the developer's or CI runner's shell would
+            # otherwise leak into the rendered command and flake assertions.
+            patch.dict(os.environ, env),
             # These cases describe POSIX behavior; pin the platform so they do
             # not take the native-Windows path when run on a Windows machine.
             patch.object(sys, "platform", "darwin"),
         ):
+            # `patch.dict` only merges, so drop an inherited launch snapshot
+            # when the case wants no snapshot at all.
+            if launch_term_program is None:
+                os.environ.pop(LAUNCH_TERM_PROGRAM, None)
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
 
@@ -1930,7 +1986,7 @@ class TestRenderTeardownThreadHints:
 
     @pytest.mark.parametrize("return_code", [0, 1])
     def test_resume_hint_carries_term_program(self, return_code: int) -> None:
-        """A set `TERM_PROGRAM` rides along as an env prefix on the command.
+        """A launch-time `TERM_PROGRAM` rides along as an env prefix.
 
         A shell alias that exports the variable cannot be recovered from
         `argv[0]`, so pasting a bare `dcode -r ...` would drop it (and with it
@@ -1943,9 +1999,23 @@ class TestRenderTeardownThreadHints:
             thread_url=None,
             return_code=return_code,
             term_program="WezTerm",
+            launch_term_program="WezTerm",
         )
 
         assert "TERM_PROGRAM=WezTerm dcode -r test123" in output
+
+    def test_resume_hint_omits_term_program_without_launch_snapshot(self) -> None:
+        """A `TERM_PROGRAM` set only after launch (a `.env` file) stays out."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
 
     def test_resume_hint_omits_prefix_when_term_program_unset(self) -> None:
         """An unset `TERM_PROGRAM` leaves the command bare, with no empty prefix."""
@@ -1965,6 +2035,7 @@ class TestRenderTeardownThreadHints:
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
             term_program=term_program,
+            launch_term_program=term_program,
         )
 
         assert "TERM_PROGRAM" not in output
@@ -1977,6 +2048,7 @@ class TestRenderTeardownThreadHints:
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
             term_program="Wez Term&whoami",
+            launch_term_program="Wez Term&whoami",
         )
 
         assert "TERM_PROGRAM='Wez Term&whoami' dcode -r test123" in output
@@ -1993,6 +2065,7 @@ class TestRenderTeardownThreadHints:
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
             term_program="Wez\x1b\nTerm",
+            launch_term_program="Wez\x1b\nTerm",
         )
 
         assert "TERM_PROGRAM" not in output
@@ -2015,7 +2088,12 @@ class TestRenderTeardownThreadHints:
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         invoked_name.cache_clear()
-        env = {INVOKED_AS: "dcode", "TERM_PROGRAM": "vscode", **(extra_env or {})}
+        env = {
+            INVOKED_AS: "dcode",
+            "TERM_PROGRAM": "vscode",
+            LAUNCH_TERM_PROGRAM: "vscode",
+            **(extra_env or {}),
+        }
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(

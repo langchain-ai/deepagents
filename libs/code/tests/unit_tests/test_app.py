@@ -32958,6 +32958,50 @@ class TestFormatMcpServerChanges:
             "MCP server changes:\n  - Failed to load: notion (use /mcp for details)"
         )
 
+    def test_reports_server_that_recovered_with_the_same_name(self) -> None:
+        """A same-name `error` -> `ok` transition is not "no changes"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+        current = [MCPServerInfo(name="notion", transport="stdio")]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Recovered: notion"
+        )
+
+    def test_reports_non_error_server_status_changes(self) -> None:
+        """Availability changes other than an error recovery remain visible."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="unauthenticated",
+                error="sign in required",
+            ),
+        ]
+        current = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="disabled",
+                error="disabled by user",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Status changed: notion (unauthenticated → disabled)"
+        )
+
     def test_reports_config_errors_separately_from_loaded_servers(self) -> None:
         """A bad config file is a parse error, not a newly loaded server."""
         from deepagents_code.mcp_tools import MCPServerInfo
@@ -32976,6 +33020,23 @@ class TestFormatMcpServerChanges:
             "MCP server changes:\n"
             "  - Removed: notion\n"
             "  - Config errors: <config:mcp.json>"
+        )
+
+    def test_reports_resolved_config_errors(self) -> None:
+        """A repaired config error changes MCP availability after `/reload`."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, []) == (
+            "MCP server changes:\n  - Resolved config errors: <config:mcp.json>"
         )
 
     def test_qualifies_no_changes_when_a_server_still_needs_attention(self) -> None:

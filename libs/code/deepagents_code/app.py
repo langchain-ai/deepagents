@@ -749,10 +749,10 @@ def _format_mcp_server_changes(
 ) -> str:
     """Format MCP server changes for the `/reload` report.
 
-    Diffs by server *name*, and separately flags servers that newly failed to
-    load and config files that newly failed to parse — a server can keep its
-    name while going from `ok` to `error`, and reporting that as "no changes"
-    would be actively misleading in the case `/reload` most exists to serve.
+    Diffs by server *name*, and separately flags server status transitions and
+    configuration files whose parse status changed. A server can keep its name
+    while recovering from an error, so reporting that as "no changes" would be
+    actively misleading in the case `/reload` most exists to serve.
 
     Argument order is load-bearing: swapping the two silently inverts
     "Loaded" and "Removed".
@@ -791,11 +791,35 @@ def _format_mcp_server_changes(
         for name, server in servers.items()
         if server.status == "error" and before.get(name, server).status != "error"
     )
+    recovered = sorted(
+        name
+        for name, server in servers.items()
+        if server.status == "ok" and before.get(name, server).status != "ok"
+    )
+    status_changed = sorted(
+        name
+        for name, server in servers.items()
+        if (
+            name in before
+            and before[name].status != server.status
+            and name not in failing
+            and name not in recovered
+        )
+    )
     new_config_errors = [
         name for name in config_errors if name not in before_config_errors
     ]
+    resolved_config_errors = sorted(before_config_errors - set(config_errors))
 
-    if not (loaded or removed or failing or new_config_errors):
+    if not (
+        loaded
+        or removed
+        or failing
+        or recovered
+        or status_changed
+        or new_config_errors
+        or resolved_config_errors
+    ):
         # Still-broken servers are not a *change*, but a bare "no changes"
         # reads as "all good" — qualify it rather than overclaim.
         stuck = sum(
@@ -815,8 +839,18 @@ def _format_mcp_server_changes(
         lines.append(f"  - Removed: {', '.join(removed)}")
     if failing:
         lines.append(f"  - Failed to load: {', '.join(failing)} (use /mcp for details)")
+    if recovered:
+        lines.append(f"  - Recovered: {', '.join(recovered)}")
+    if status_changed:
+        transitions = ", ".join(
+            f"{name} ({before[name].status} → {servers[name].status})"
+            for name in status_changed
+        )
+        lines.append(f"  - Status changed: {transitions}")
     if new_config_errors:
         lines.append(f"  - Config errors: {', '.join(new_config_errors)}")
+    if resolved_config_errors:
+        lines.append(f"  - Resolved config errors: {', '.join(resolved_config_errors)}")
     return "\n".join(lines)
 
 

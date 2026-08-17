@@ -21,7 +21,13 @@ from langchain.agents.middleware.types import (
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import (
+    AnyMessage,
+    InvalidToolCall,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+)
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.channels.delta import DeltaChannel
@@ -285,6 +291,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    patch_tool_calls_handler: Callable[[ToolCall | InvalidToolCall], ToolMessage] | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
@@ -560,6 +567,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        patch_tool_calls_handler: Optional callback to repair dangling tool calls.
+            Allows the host environment to dictate the failure message.
 
     Returns:
         A configured deep agent.
@@ -671,7 +680,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     _permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
-                PatchToolCallsMiddleware(),
+                PatchToolCallsMiddleware(repair_callback=patch_tool_calls_handler),
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
@@ -756,7 +765,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _permissions=permissions,
             ),
             create_summarization_middleware(model, backend),
-            PatchToolCallsMiddleware(),
+            PatchToolCallsMiddleware(repair_callback=patch_tool_calls_handler),
         ]
         if skills is not None:
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
@@ -841,7 +850,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
-            PatchToolCallsMiddleware(),
+            PatchToolCallsMiddleware(repair_callback=patch_tool_calls_handler),
         ]
     )
 

@@ -106,6 +106,33 @@ class TestMessageData:
         assert restored._content == "# Hello\n\nThis is **markdown**."
         assert restored.id == "test-asst-1"
 
+    def test_assistant_message_defaults_to_agent_output(self):
+        """A plain assistant message is agent output, not client output."""
+        data = MessageData.from_widget(AssistantMessage("hi", id="asst-plain"))
+
+        assert data.assistant_local_only is False
+
+    def test_local_only_assistant_message_roundtrip(self):
+        """`local_only` survives serialization and rehydration.
+
+        `!` shell output renders through `AssistantMessage`, and callers asking
+        whether the agent did anything in a thread rely on this flag. Losing it
+        on a virtualization round trip would make shell output read as a turn.
+        """
+        original = AssistantMessage(
+            "```text\nREADME.md\n```", id="asst-shell-1", local_only=True
+        )
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.ASSISTANT
+        assert data.assistant_local_only is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, AssistantMessage)
+        assert restored._local_only is True
+        # A second round trip must not lose the flag either.
+        assert MessageData.from_widget(restored).assistant_local_only is True
+
     def test_tool_message_roundtrip(self):
         """Test ToolCallMessage serialization and deserialization."""
         original = ToolCallMessage(

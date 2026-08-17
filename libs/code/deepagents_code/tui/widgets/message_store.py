@@ -285,6 +285,16 @@ class MessageData:
     chunks and should not be pruned or re-hydrated.
     """
 
+    assistant_local_only: bool = False
+    """Whether an `ASSISTANT` row holds client-side output, not agent output.
+
+    Set for non-incognito `!` shell output, which renders through
+    `AssistantMessage` without invoking the agent. Lets callers ask whether the
+    *agent* produced anything in a thread rather than trusting the row type.
+    Never set on a restored transcript: shell output reaches thread state as a
+    `<user_shell_command>` human message, not as an assistant turn.
+    """
+
     is_markdown: bool = False
     """For APP messages, whether `content` is a markdown source string.
 
@@ -376,7 +386,12 @@ class MessageData:
                 return widget
 
             case MessageType.ASSISTANT:
-                return AssistantMessage(self.content, id=self.id)
+                # Carry `local_only` back so a row pruned by virtualization and
+                # rehydrated does not read as agent output on the next
+                # `from_widget` round trip.
+                return AssistantMessage(
+                    self.content, id=self.id, local_only=self.assistant_local_only
+                )
 
             case MessageType.TOOL:
                 widget = ToolCallMessage(
@@ -515,6 +530,7 @@ class MessageData:
                 content=widget._content,
                 id=widget_id,
                 is_streaming=widget._stream is not None,
+                assistant_local_only=widget._local_only,
             )
 
         if isinstance(widget, ToolCallMessage):

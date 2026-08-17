@@ -1208,14 +1208,22 @@ class AssistantMessage(Vertical):
     }
     """
 
-    def __init__(self, content: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self, content: str = "", *, local_only: bool = False, **kwargs: Any
+    ) -> None:
         """Initialize an assistant message.
 
         Args:
             content: Initial markdown content
+            local_only: `True` when the content came from the client rather
+                than the agent — currently only non-incognito `!` shell
+                output, which borrows this widget for its markdown rendering
+                and streaming. Callers that ask "did the agent do anything in
+                this thread" must not count such a message.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+        self._local_only = local_only
         self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None

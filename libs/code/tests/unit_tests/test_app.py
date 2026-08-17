@@ -18980,7 +18980,7 @@ class TestToolsSlashCommand:
         )
 
     async def test_remote_agent_reports_unavailable_mcp_server(self) -> None:
-        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPServerStatus
 
         app = DeepAgentsApp(
             agent=MagicMock(spec=[]),
@@ -32975,6 +32975,36 @@ class TestFormatMcpServerChanges:
 
         assert _format_mcp_server_changes(previous, current) == (
             "MCP server changes:\n  - Failed to load: github (use /mcp for details)"
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "error"),
+        [
+            ("unauthenticated", "sign in required"),
+            ("disabled", "disabled by user"),
+            ("awaiting_reconnect", "reconnect required"),
+        ],
+    )
+    def test_reports_newly_added_unavailable_server(
+        self, status: str, error: str
+    ) -> None:
+        """New servers that are not ready must not be omitted from the diff."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            *previous,
+            MCPServerInfo(
+                name="github",
+                transport="stdio",
+                status=status,  # ty: ignore[invalid-argument-type]
+                error=error,
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            f"  - Unavailable: github ({status}) (use /mcp for details)"
         )
 
     def test_reports_server_that_recovered_with_the_same_name(self) -> None:

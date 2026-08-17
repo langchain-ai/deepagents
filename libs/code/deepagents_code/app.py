@@ -799,6 +799,11 @@ def _format_mcp_server_changes(
         # discovery is a failed load, not a self-comparison.
         and (name not in before or before[name].status != "error")
     )
+    unavailable = sorted(
+        name
+        for name, server in servers.items()
+        if name not in before and server.status not in {"ok", "error"}
+    )
     recovered = sorted(
         name
         for name, server in servers.items()
@@ -823,6 +828,7 @@ def _format_mcp_server_changes(
         loaded
         or removed
         or failing
+        or unavailable
         or recovered
         or status_changed
         or new_config_errors
@@ -847,6 +853,9 @@ def _format_mcp_server_changes(
         lines.append(f"  - Removed: {', '.join(removed)}")
     if failing:
         lines.append(f"  - Failed to load: {', '.join(failing)} (use /mcp for details)")
+    if unavailable:
+        statuses = ", ".join(f"{name} ({servers[name].status})" for name in unavailable)
+        lines.append(f"  - Unavailable: {statuses} (use /mcp for details)")
     if recovered:
         lines.append(f"  - Recovered: {', '.join(recovered)}")
     if status_changed:

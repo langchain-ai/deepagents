@@ -56,7 +56,7 @@ _PREVIEW_NOTE_HEAD_TAIL = "Here is a preview showing the head and tail of the {s
 _CAVEAT_OMITTED_LINES = (
     f"lines of the form `{TRUNCATION_MARKER_TEMPLATE.format(omitted_lines='N')}` indicate omitted lines in the middle of the content"
 )
-_CAVEAT_CLIPPED_LINES = f"lines longer than {PREVIEW_LINE_CHAR_LIMIT} characters are clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters"
+_CAVEAT_CLIPPED_LINES = f"the output contains lines longer than {PREVIEW_LINE_CHAR_LIMIT} characters; this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters"
 
 
 @dataclass(frozen=True, slots=True)

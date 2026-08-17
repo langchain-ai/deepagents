@@ -3203,8 +3203,8 @@ class TestPreviewNote:
 
     def test_explains_per_line_clipping(self):
         assert _preview_note(lines_omitted=False, lines_clipped=True) == (
-            f"Here is a preview of the result (lines longer than {PREVIEW_LINE_CHAR_LIMIT} characters "
-            f"are clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters):"
+            f"Here is a preview of the result (the output contains lines longer than {PREVIEW_LINE_CHAR_LIMIT} characters; "
+            f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters):"
         )
 
     def test_explains_both_kinds_of_loss(self):
@@ -3212,7 +3212,7 @@ class TestPreviewNote:
 
         assert note.startswith("Here is a preview showing the head and tail of the result (")
         assert "lines of the form" in note
-        assert f"clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters" in note
+        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in note
         assert note.endswith("):")
 
     def test_caveats_join_in_a_single_parenthetical(self):
@@ -3220,8 +3220,8 @@ class TestPreviewNote:
         assert _preview_note(lines_omitted=True, lines_clipped=True) == (
             "Here is a preview showing the head and tail of the result "
             "(lines of the form `... [N lines truncated] ...` indicate omitted lines "
-            f"in the middle of the content; lines longer than {PREVIEW_LINE_CHAR_LIMIT} "
-            f"characters are clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters):"
+            f"in the middle of the content; the output contains lines longer than {PREVIEW_LINE_CHAR_LIMIT} "
+            f"characters; this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters):"
         )
 
     def test_clipping_in_the_tail_is_reported(self):
@@ -3259,7 +3259,7 @@ class TestPreviewNote:
 
         assert isinstance(result, ToolMessage)
         assert "lines of the form" in result.content
-        assert f"clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
+        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
 
     def test_marker_explanation_quotes_the_shared_template(self):
         """The shape the note describes comes from the marker's single source of truth."""
@@ -3290,7 +3290,7 @@ class TestPreviewNote:
         assert "lines of the form" not in result.content
         # ...but ~4000 characters were clipped away, and the note says so rather
         # than presenting the excerpt as the whole result.
-        assert f"clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
+        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
 
     def test_offloaded_tool_message_explains_marker_when_lines_dropped(self):
         backend, _ = _make_backend()
@@ -3303,7 +3303,7 @@ class TestPreviewNote:
         assert "Here is a preview showing the head and tail of the result" in result.content
         assert "lines of the form" in result.content
         # Short lines, so nothing was clipped and that caveat stays out.
-        assert "clipped to their first" not in result.content
+        assert "this preview shows only their first" not in result.content
 
 
 class TestTruncatedHumanMessage:
@@ -3332,7 +3332,7 @@ class TestTruncatedHumanMessage:
 
         result = _build_truncated_human_message(message, "/evicted/h3")
 
-        assert f"clipped to their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
+        assert f"this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters" in result.content
         assert "of the content (" in result.content
 
 

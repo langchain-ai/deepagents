@@ -363,7 +363,12 @@ function warningBody({ warningDays, closeDays, bypassLabel }) {
     COMMENT_MARKER,
     `This PR has been open for at least ${warningDays} days.`,
     '',
-    `It will be closed automatically once it has been open for at least ${closeDays} days and this warning is at least ${noticeDays} days old, unless a maintainer applies the \`${bypassLabel}\` label or comments \`!keep-open\`.`,
+    `It will be closed automatically once it has been open for at least ${closeDays} days and this warning is at least ${noticeDays} days old, unless a maintainer applies the \`${bypassLabel}\` label or comments:`,
+      '',
+      // Fenced block so GitHub renders a copy button for the exact phrase.
+      '```',
+      '!keep-open',
+      '```',
   ].join('\n');
 }
 

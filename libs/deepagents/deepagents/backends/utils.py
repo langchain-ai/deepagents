@@ -9,7 +9,7 @@ import functools
 import logging
 import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, Final, Literal, overload
@@ -744,6 +744,29 @@ def _normalize_path(path: str | None) -> str:
         normalized = normalized.rstrip("/")
 
     return normalized
+
+
+def prefix_dir_missing(keys: Iterable[str], normalized_path: str) -> bool:
+    """Report whether a directory prefix is absent from a flat key namespace.
+
+    Prefix-based backends (state, store, context hub) synthesize directories
+    from `/`-separated file keys, so they have no way to observe an empty
+    directory: a prefix "exists" only if at least one key falls under it.
+
+    Root (`normalized_path == "/"`) is always considered present, even with no
+    keys, so listing an empty store returns `entries=[]` rather than an error.
+
+    Args:
+        keys: All stored file keys in the backend's namespace.
+        normalized_path: Directory prefix with a trailing slash (e.g. `/dir/`).
+
+    Returns:
+        `True` if no stored key equals or falls under `normalized_path` and the
+            path is not root, meaning the directory does not exist.
+    """
+    if normalized_path == "/":
+        return False
+    return not any(key == normalized_path or key.startswith(normalized_path) for key in keys)
 
 
 def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[str, Any]:

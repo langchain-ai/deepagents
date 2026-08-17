@@ -495,12 +495,24 @@ def _leaf_from_parent_listing(ls_result: LsResult, target: str) -> bool:
     return any(entry.get("is_dir") for entry in matches)
 
 
+def _ls_error_confirms_no_descendants(ls_error: str) -> bool:
+    """Whether an `ls` error proves the target is not a directory (so has no descendants).
+
+    This is used to fall back to the conservative check when `ls` returns an
+    error indicating the target is not a directory. The delete leaf check can then
+    fall through to the parent listing rather than conservatively assuming descendants.
+    """
+    return "not_a_directory" in ls_error or "path_not_found" in ls_error
+
+
 def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
     """Whether `delete` should use the conservative recursive permission check.
 
     Falls back to the conservative check when no permission rules are configured
     or the backend doesn't implement `ls`. Non-empty `ls(target)` results indicate
-    descendants, and `not_a_directory` confirms a plain file. Only an empty result
+    descendants, while `not_a_directory` (filesystem-style backends) and
+    `path_not_found` (flat backends listing an exact file key) both confirm the
+    target is not a directory and so has no descendants. Only an empty result
     with no error is ambiguous and requires `_leaf_from_parent_listing`.
     """
     if not permissions_configured:
@@ -510,7 +522,7 @@ def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *
     except NotImplementedError:
         return True
     if ls_result.error is not None:
-        return "not_a_directory" not in ls_result.error
+        return not _ls_error_confirms_no_descendants(ls_result.error)
     if ls_result.entries:
         return True
     try:
@@ -529,7 +541,7 @@ async def _adelete_target_may_have_descendants(backend: BackendProtocol, target:
     except NotImplementedError:
         return True
     if ls_result.error is not None:
-        return "not_a_directory" not in ls_result.error
+        return not _ls_error_confirms_no_descendants(ls_result.error)
     if ls_result.entries:
         return True
     try:

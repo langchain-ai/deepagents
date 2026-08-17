@@ -97,6 +97,23 @@ def test_state_backend_reads_legacy_list_content_for_non_text_path(monkeypatch: 
     assert files["/legacy.png"]["content"] == legacy_content
 
 
+# Regression test for https://github.com/langchain-ai/deepagents/issues/3930
+def test_state_backend_ls_nonexistent_path_sets_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ls on a missing path must surface the failure on .error, not return [].
+
+    Mirrors the FilesystemBackend contract from #3573 so that a missing path is
+    distinguishable from a genuinely empty directory.
+    """
+    backend = StateBackend()
+    files = {"/existing/notes.txt": {"content": "hello", "encoding": "utf-8"}}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+
+    result = backend.ls("/missing/")
+
+    assert result.entries is None
+    assert result.error == "Path '/missing/': path_not_found"
+
+
 def test_state_backend_edit_migrates_legacy_list_content(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = StateBackend()
     files = {"/legacy.txt": {"content": ["hello", "world"]}}

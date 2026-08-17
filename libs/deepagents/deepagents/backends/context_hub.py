@@ -565,6 +565,9 @@ class ContextHubBackend(BackendProtocol):
             logger.exception("Hub pull failed for %r", self._identifier)
             return LsResult(error=f"Hub unavailable: {exc}")
 
+        if hub_prefix and not any(key == hub_prefix or key.startswith(hub_prefix + "/") for key in cache):
+            return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+
         dirs: set[str] = set()
         entries: list[FileInfo] = []
 

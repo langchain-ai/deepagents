@@ -8,12 +8,13 @@ const DEFAULT_PENDING_DELETION_LABEL = 'pending-deletion';
 // this workflow has — is meaningless for them by construction.
 //
 // When the exemption actually fires: release PRs open as drafts
-// (`draft-pull-request: true` in release-please-config.json), and the
-// `draft:false` search plus the draft skip in processPr already exclude them
-// for most of their life. This exemption covers the ready-for-review window
-// between the curated-notes step and merge — narrow, but that is exactly
-// where #4297 was warned at 33 days old. Expect skippedRelease to read 0 on
-// most runs; a sustained 0 is not evidence the exemption is dead code.
+// (`draft-pull-request: true` in release-please-config.json) and stay drafts
+// for most of their life, and drafts go through the same warn/close schedule
+// as every other PR — so this provenance check is their only protection, on
+// every run from the day they open. skippedRelease reading non-zero is
+// expected whenever a release PR is still a draft past warningDays; a
+// sustained 0 means no release PR is currently old enough to warn, not that
+// the exemption is dead code.
 //
 // These labels do NOT gate the exemption — provenance does (see isReleasePr).
 // They are only a drift signal, matched to tell "a genuine release PR whose
@@ -391,7 +392,6 @@ async function getLivePr({ github, owner, repo, number }) {
     authorLogin: pr.user?.login,
     authorType: pr.user?.type,
     createdAt: pr.created_at,
-    draft: pr.draft === true,
     headRef: pr.head?.ref,
     headRepo: pr.head?.repo?.full_name,
     labels: labelNames(pr.labels ?? []),
@@ -452,7 +452,7 @@ async function refreshLabelsUnlessBypassed({
 }
 
 async function searchOpenPrs({ github, owner, repo, maxItems, core }) {
-  const query = `repo:${owner}/${repo} is:pr is:open draft:false`;
+  const query = `repo:${owner}/${repo} is:pr is:open`;
   const items = [];
   let incomplete = false;
   try {
@@ -510,9 +510,8 @@ async function processPr({
     return 'skipped';
   }
 
-  // Re-fetch before mutating: state, draft, and labels can all change between
-  // the search and now (the PR may have been closed, or gained the bypass
-  // label / a maintainer may have marked it draft).
+  // Re-fetch before mutating: state and labels can change between the search
+  // and now (the PR may have been closed or gained the bypass label).
   let live;
   try {
     live = await getLivePr({ github, owner, repo, number });
@@ -536,18 +535,6 @@ async function processPr({
       existingLabels: live.labels,
     });
     core.info(`PR #${number} is no longer open; skipping`);
-    return 'skipped';
-  }
-  if (live.draft) {
-    await removeIssueLabel({
-      github,
-      owner,
-      repo,
-      issueNumber: number,
-      name: pendingDeletionLabel,
-      existingLabels: live.labels,
-    });
-    core.info(`PR #${number} is a draft; skipping`);
     return 'skipped';
   }
   if (isReleasePr(live, { owner, repo, core, number })) {
@@ -619,7 +606,7 @@ async function processPr({
     if (labels === null) return 'skippedRaced';
 
     // Apply at warning time so the PR is filterable until it stops being a
-    // close candidate (closed, draft, release, or bypassed).
+    // close candidate (closed, release, or bypassed).
     await ensureIssueLabel({
       github,
       owner,
@@ -716,17 +703,16 @@ async function processPr({
   return 'skipped';
 }
 
-// The primary open-PR search omits drafts (`draft:false`) and closed PRs, so a
-// separate label query is needed to clear pending-deletion after those
-// transitions (or after a manual close).
+// The primary open-PR search omits closed PRs, so a separate label query is
+// needed to clear pending-deletion after a PR is closed (manually or
+// otherwise) without the main scan seeing it.
 //
 // The `stale` expression below mirrors processPr's *label-clearing*
-// exemptions, including the release check, even though an open non-draft
-// release PR is also handled there. The duplication earns its place because
-// processPr never sees PRs past the maxItems cap or dropped by a partial
-// search failure, and because letting the two exemption sets drift is how a PR
-// ends up skipped by one path while keeping a pending-deletion label applied
-// by the other.
+// exemptions, including the release check, even though an open release PR is
+// also handled there. The duplication earns its place because processPr never
+// sees PRs past the maxItems cap or dropped by a partial search failure, and
+// because letting the two exemption sets drift is how a PR ends up skipped by
+// one path while keeping a pending-deletion label applied by the other.
 //
 // processPr's age skip is deliberately not mirrored: age only increases, and
 // pending-deletion is applied at warning time, so a labeled PR can never
@@ -782,7 +768,6 @@ async function sweepStalePendingDeletionLabels({
         }
 
         const stale = live.state !== 'open'
-          || live.draft
           || isReleasePr(live, { owner, repo, core, number: item.number, warnOnAnomaly: false })
           || live.labels.includes(bypassLabel);
         if (!stale) continue;
@@ -872,9 +857,11 @@ async function run({ github, context, core, options = {} }) {
   // `skipped` stays the total across every skip reason; `skippedRelease` is a
   // sub-count so an exemption that starts over-applying (a spoofing vector, or
   // a loosened provenance check making PRs immortal) is visible as a jump in
-  // one number rather than hidden among young/draft/closed/bypassed PRs.
-  // Because release PRs are drafts for most of their life, this normally reads
-  // 0 — see RELEASE_LABELS.
+  // one number rather than hidden among young/closed/bypassed PRs. It reads
+  // non-zero whenever an open release PR is past warningDays — the common case
+  // now that drafts are swept, since release PRs stay drafts for most of
+  // their life — so a non-zero value is expected, not an anomaly; see
+  // RELEASE_LABELS.
   const summary = {
     checked: 0,
     warned: 0,

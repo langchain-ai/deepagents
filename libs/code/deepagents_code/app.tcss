@@ -369,11 +369,23 @@ ToolCallMessage.-ascii:hover {
 .ask-user-menu .ask-user-question {
     height: auto;
     margin-bottom: 1;
-    padding-left: 2;
 }
 
 .ask-user-menu .ask-user-question-inactive {
     opacity: 0.5;
+}
+
+/* Multi-question prompts mark the active question with a left border;
+inactive questions keep the same total left inset so text does not shift
+horizontally when focus moves between questions. Single-question prompts
+stay borderless and flush-left. */
+.ask-user-menu-multi .ask-user-question-active {
+    border-left: thick $success;
+    padding-left: 1;
+}
+
+.ask-user-menu-multi .ask-user-question-inactive {
+    padding-left: 2;
 }
 
 .ask-user-menu .ask-user-question-text {
@@ -394,12 +406,36 @@ ToolCallMessage.-ascii:hover {
     background: transparent;
 }
 
-.ask-user-menu .ask-user-other-input {
-    margin: 1 1 0 1;
+/* Keep custom multi-select answers compact: the field follows its checkbox on
+   the same line instead of opening a full-width box beneath it. */
+.ask-user-menu .ask-user-other-slot {
     height: auto;
-    min-height: 3;
-    max-height: 10;
+    width: 1fr;
+    margin: 0;
+    padding: 0;
+}
+
+.ask-user-menu .ask-user-other-slot > .ask-user-inline-other-choice,
+.ask-user-menu .ask-user-other-slot > .ask-user-inline-other-choice > .inline-prompt-option-label {
+    width: auto;
+}
+
+.ask-user-menu .ask-user-other-slot .ask-user-other-input {
+    width: 1fr;
+    margin: 0;
+    padding: 0;
+    height: auto;
+    min-height: 1;
+    max-height: 6;
+    border: none;
     background: transparent;
+}
+
+/* Beat TextArea DEFAULT_CSS `height: 1fr` while allowing multiline answers. */
+.ask-user-menu .ask-user-other-slot AskUserTextArea.ask-user-other-input {
+    height: auto;
+    min-height: 1;
+    max-height: 6;
 }
 
 /* ChatTextArea: override TextArea's built-in $surface background */

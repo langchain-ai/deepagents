@@ -102,8 +102,15 @@ _COMPACT_TOOL_NAME = "compact_conversation"
 _INVOCATION_NAMESPACE = UUID("f2896d18-cf2a-4e7d-b11a-d5b10fc0e335")
 
 
-class HookTransportInterruptError(Exception):
-    """Carry a hook request across a non-graph server operation boundary."""
+class HookTransportInterruptError(BaseException):
+    """Carry a hook request across a non-graph server operation boundary.
+
+    Derives from `BaseException`, not `Exception`, for the same reason
+    `asyncio.CancelledError` does: it is a control signal that must reach the
+    HTTP boundary intact. The compaction chain it crosses is lined with broad
+    `except Exception` handlers, any of which would otherwise turn a resumable
+    hook request into a permanent `"failed"` result.
+    """
 
     def __init__(self, request: HookInvocationRequest) -> None:
         """Initialize the transport interrupt.
@@ -135,6 +142,18 @@ def operation_hook_responses(
         yield
     finally:
         _HOOK_RESPONSES.reset(token)
+
+
+def _in_server_operation() -> bool:
+    """Report whether hooks are running under a non-graph server operation.
+
+    `None` means graph mode; an empty mapping means operation mode with no
+    answers accumulated yet, which is why this cannot be a truthiness check.
+
+    Returns:
+        `True` when the caller is inside `operation_hook_responses`.
+    """
+    return _HOOK_RESPONSES.get() is not None
 
 
 PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
@@ -894,6 +913,12 @@ def _invoke_hook(
     if operation_responses is None:
         raw = interrupt(build_hook_interrupt_payload(request))
     else:
+        # Operation mode: `interrupt()` is unusable outside a Pregel task, so a
+        # request the client has not answered yet is raised out to the HTTP
+        # boundary instead. Because the operation re-executes from the top on
+        # every resume round, an already-answered invocation is replayed from
+        # this mapping rather than re-invoked -- that is what makes an operation
+        # with several hooks terminate instead of looping forever.
         key = str(request.invocation_id)
         if key not in operation_responses:
             raise HookTransportInterruptError(request)
@@ -1127,6 +1152,24 @@ def _ask_permission_via_hitl(
     Returns:
         A deny ToolMessage when the user rejects, otherwise `None` to proceed.
     """
+    if _in_server_operation():
+        # `interrupt()` is only usable inside a Pregel task: it reaches into the
+        # run's scratchpad, which a server operation's fabricated config has no
+        # equivalent of. Deny with an actionable reason instead of raising a
+        # `KeyError` on an internal LangGraph config key. The operation
+        # transport carries hook *invocations*, not HITL review requests, so
+        # there is no channel to prompt the user on here.
+        return _denied_tool_message(
+            call,
+            PermissionEffect(
+                behavior="deny",
+                reason=(
+                    f"PreToolUse returned `ask` for {call.name}, which cannot "
+                    "prompt for approval during a server-side operation such as "
+                    "/offload. Return `allow` or `deny` for this tool instead."
+                ),
+            ),
+        )
     description = permission.reason or "PreToolUse hook requested approval"
     response = interrupt(
         HITLRequest(

@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HOST = "127.0.0.1"
 
 _EPHEMERAL_PORT = 0
-_DCODE_GRAPH_REF = "deepagents_code.server_graph:make_graph"
 """Sentinel port meaning "let `start()` pick a free ephemeral port".
 
 The server is internal and ephemeral — callers reach it via `ServerProcess.url`,
@@ -40,6 +39,10 @@ never a typed-in address — so it deliberately avoids binding the well-known
 `langgraph dev` default (2024). Leaving 2024 free lets users run their own
 `langgraph dev` projects alongside `deepagents-code` without a port collision.
 """
+
+_DCODE_GRAPH_REF = "deepagents_code.server_graph:make_graph"
+"""Built-in graph reference. Also gates registration of the offload HTTP app:
+a custom `graph_ref` gets no `http` block, so its client uses the fallback."""
 
 _HEALTH_POLL_INTERVAL_LOCAL = 0.1
 

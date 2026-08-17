@@ -1974,6 +1974,7 @@ class PreparedOperationCost:
     thread_id: str
     records: list[_ModelCallRecord]
     delta_usd: float
+    _settled: bool = False
 
     @property
     def update(self) -> dict[str, float]:
@@ -1981,12 +1982,26 @@ class PreparedOperationCost:
         return {"_session_cost_usd": self.delta_usd} if self.delta_usd > 0 else {}
 
     def rollback(self) -> None:
-        """Restore claimed records after the enclosing state update fails."""
+        """Return claimed records to the recorder when no charge was committed.
+
+        `_drain_recorded_costs` **removes** the entries from the process-wide
+        recorder, so a prepare that is neither committed nor rolled back deletes
+        that spend from the thread's lifetime total permanently. Restoring lets
+        the next drain price it again.
+
+        Only call this when the checkpoint write did not land: restoring records
+        for a write that *did* commit double-charges the thread on the next
+        drain. Repeat calls are ignored for the same reason.
+        """
+        if self._settled:
+            return
+        self._settled = True
         if not _restore_recorded_costs(self.thread_id, self.records):
             logger.warning(
                 "Could not restore %d operation cost record(s) after a failed "
-                "checkpoint update",
+                "checkpoint update; $%.6f is dropped from the thread total",
                 len(self.records),
+                self.delta_usd,
             )
 
 
@@ -1997,7 +2012,9 @@ def prepare_operation_cost(
     """Price model calls made by a server operation without committing them.
 
     The caller must persist `PreparedOperationCost.update` atomically with the
-    operation state, or call `rollback()` if that write fails.
+    operation state, or call `rollback()` if that write fails or is abandoned.
+    A prepare with a zero delta still consumes its records, so an abandoned
+    prepare must roll back even when it has nothing to write.
 
     Args:
         state: Current thread state used for model/provider fallback metadata.
@@ -2016,8 +2033,18 @@ def prepare_operation_cost(
                 record.usage_metadata,
                 *_pricing_target(record.model_name, record.provider, fallback),
             )
-            if cost_usd is not None:
-                delta_usd += cost_usd
+            if cost_usd is None:
+                # Matches `CostTrackingMiddleware`: silently omitting an
+                # unpriceable call leaves the total quietly short, so name what
+                # could not be priced.
+                logger.warning(
+                    "No pricing for operation model call %r (provider %r); "
+                    "its cost is omitted from the thread total",
+                    record.model_name,
+                    record.provider,
+                )
+                continue
+            delta_usd += cost_usd
     except BaseException:
         _restore_recorded_costs(thread_id, records)
         raise

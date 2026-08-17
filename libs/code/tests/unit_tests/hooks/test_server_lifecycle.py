@@ -8,7 +8,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NotRequired
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -1510,3 +1510,51 @@ def test_snapshot_configured_server_events() -> None:
         HookEvent.PRE_COMPACT,
         HookEvent.PRE_TOOL_USE,
     }
+
+
+class TestAskDecisionInServerOperation:
+    """`ask` cannot prompt on the server-operation path, so it fails closed."""
+
+    @staticmethod
+    def _ask_call() -> tuple[ToolCallData, PermissionEffect]:
+        """Build a compaction call and an `ask` permission for it."""
+        call = ToolCallData(
+            id="call-1", name="compact_conversation", args={"force": True}
+        )
+        return call, PermissionEffect(behavior="ask", reason="please confirm")
+
+    def test_ask_denies_instead_of_raising_a_scratchpad_keyerror(self) -> None:
+        """In operation mode there is no Pregel task for `interrupt()` to use.
+
+        Without this branch `interrupt()` raises `KeyError` on LangGraph's
+        internal scratchpad config key, which the compaction chain's broad
+        handler turns into "Offload hooks failed: KeyError: ...".
+        """
+        from deepagents_code.hooks.server_middleware import (
+            _ask_permission_via_hitl,
+            operation_hook_responses,
+        )
+
+        call, permission = self._ask_call()
+        with operation_hook_responses({}):
+            blocked = _ask_permission_via_hitl(call, permission)
+
+        assert blocked is not None
+        assert blocked.status == "error"
+        assert "cannot prompt for approval" in str(blocked.content)
+        assert "compact_conversation" in str(blocked.content)
+
+    def test_graph_mode_still_escalates_through_hitl(self) -> None:
+        """Outside an operation the `ask` path must still reach `interrupt()`."""
+        from deepagents_code.hooks import server_middleware
+
+        call, permission = self._ask_call()
+        with patch.object(
+            server_middleware,
+            "interrupt",
+            return_value={"decisions": [{"type": "approve"}]},
+        ) as interrupt_mock:
+            blocked = server_middleware._ask_permission_via_hitl(call, permission)
+
+        interrupt_mock.assert_called_once()
+        assert blocked is None

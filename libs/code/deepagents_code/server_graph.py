@@ -192,9 +192,10 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
 class ServerRuntime(NamedTuple):
     """The one-per-process result of building this server's agent.
 
-    A named tuple rather than a bare pair so the two slots are addressed by name:
-    both are structurally opaque to the type checker, and a positional
-    transposition would hand LangGraph the backend as its compiled graph.
+    A named tuple rather than a bare tuple so the three slots are addressed by
+    name: `agent` is structurally opaque to the type checker (the SDK exposes no
+    usable compiled-graph type here), so a positional transposition would hand
+    LangGraph the backend as its compiled graph with no complaint.
     """
 
     agent: Any
@@ -215,7 +216,8 @@ async def _make_graphs() -> ServerRuntime:
     model, assembles tools, and compiles the agent graph.
 
     Returns:
-        The normal agent graph and its configured composite backend.
+        The agent graph, its configured composite backend, and the server-owned
+            offload operation bound to that backend.
     """
     config = ServerConfig.from_env()
 
@@ -407,6 +409,19 @@ def _build_runtime_factory(
     builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
 ) -> Callable[[], Awaitable[ServerRuntime]]:
     """Build the cached factory for all server-owned runtime resources.
+
+    The cache is load-bearing, not an optimization: MCP discovery, sandbox
+    creation, and `atexit` registration each must happen exactly once. Building
+    per request would re-discover MCP servers, leak sandbox sessions, and stack
+    duplicate `atexit` handlers. Two consumers now share this cache -- the
+    interactive graph and the offload HTTP route -- so both must resolve the
+    *same* agent, backend, and compaction policy for a server-side archive to be
+    readable by the agent.
+
+    The cache and its lock live in this closure rather than in module-level
+    globals, so importing this module introduces no shared mutable state; the
+    single process-wide instance is created explicitly at the bottom of the
+    module.
 
     Args:
         builder: Optional alternate builder used by unit tests.

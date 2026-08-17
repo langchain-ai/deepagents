@@ -14,6 +14,7 @@ from typing import (
     Literal,
     NamedTuple,
     Protocol,
+    TypeAlias,
     cast,
 )
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -93,10 +94,15 @@ class _OffloadState(CostState, SummarizationState, total=False):
     """
 
 
+OffloadStatus: TypeAlias = Literal["compacted", "empty", "noop", "denied", "failed"]
+"""Outcome of one offload attempt. Aliased so the result type and the private
+`_result` factory cannot drift apart."""
+
+
 class OffloadResult(TypedDict):
     """Typed result emitted by the server-owned offload operation."""
 
-    status: Literal["compacted", "empty", "noop", "denied", "failed"]
+    status: OffloadStatus
     messages_offloaded: int
     messages_kept: int
     tokens_before: int
@@ -106,11 +112,53 @@ class OffloadResult(TypedDict):
     error: str | None
 
 
+class OffloadStateUpdate(TypedDict, total=False):
+    """The only checkpoint channels a server-owned operation may write.
+
+    Naming the permitted channels makes the load-bearing invariant -- that this
+    route can never write `messages` -- a property of the type rather than a
+    single string check performed after the summarizer has already been billed.
+    The runtime check in `offload_api` stays as a backstop for the `Any`-typed
+    values the summarization SDK hands back.
+    """
+
+    _summarization_event: dict[str, Any]
+    _session_cost_usd: float
+
+
 class OffloadExecution(NamedTuple):
     """State update and typed result produced by one server operation."""
 
-    update: dict[str, Any]
+    update: OffloadStateUpdate
     result: OffloadResult
+
+
+class OffloadCompleteResponse(TypedDict):
+    """Wire response for an attempt that finished without needing the client."""
+
+    status: Literal["complete"]
+    result: OffloadResult
+
+
+class OffloadInterruptResponse(TypedDict):
+    """Wire response carrying a hook request the client must fulfill.
+
+    `request` stays a plain mapping on purpose: the client transports it back
+    without inspecting it, and only `hooks.interrupt` owns its shape.
+    """
+
+    status: Literal["interrupt"]
+    request: dict[str, Any]
+
+
+OffloadResponse: TypeAlias = OffloadCompleteResponse | OffloadInterruptResponse
+"""One round of the offload operation protocol.
+
+Tagged on `status` so the producer (`offload_api._execute_offload`) and the
+consumer (`RemoteAgent.aoffload`) are checked against one definition instead of
+two independently hand-written `isinstance` ladders. The client still validates
+at runtime -- this crosses HTTP, so the type is a contract, not a guarantee.
+"""
 
 
 _OFFLOAD_OPERATION_ATTR = "_dcode_offload_operation"
@@ -129,6 +177,9 @@ def attach_offload_operation(
     Raises:
         ValueError: If compaction writes through a different backend.
     """
+    # The SDK requires `backend` in its constructor, so a real summarization
+    # middleware always has one; `None` here means a test double, which is
+    # allowed through rather than asserted against.
     bound = getattr(operation._compaction._summarization, "_backend", None)
     if bound is not None and bound is not backend:
         msg = "Offload operation must use the agent's composite backend"
@@ -164,13 +215,9 @@ COMPACTION_FAILURE_PREFIX = "Compaction failed"
 
 The seeded driver drives the tool rather than calling it, so the only failure
 signal it gets back is the resulting `ToolMessage` text; it therefore keys
-failure detection on this prefix. (The prefix predates the split of `/offload`
-into two paths, when that message always crossed the LangGraph server boundary.
-The driver is now used for local in-process agents, which cross no such
-boundary, but it still only sees message text.) Owning the literal here means
-the producers
-(`_forced_compact_error` and the server operation, which reuses the prefix
-in the `RuntimeError` it raises) and both consumers
+failure detection on this prefix. Owning the literal here means the producers
+(`_forced_compact_error`, and `OffloadOperation.execute`, which reuses the
+prefix in the `error` field of its typed result) and both consumers
 (`app._drive_local_seeded_compaction` live-stream detection and
 `app._find_compaction_failure` committed-state scan) reference one constant
 instead of re-hardcoding the wording independently.
@@ -831,9 +878,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         (apply prior event, determine cutoff, partition, summarize, offload,
         build result) minus the eligibility gate. Because it is a fork rather
         than an override, it must be kept in parity when the SDK's compaction
-        flow changes; the closest-fitting SDK-side fix (a `force=` seam on
-        `_run_compact`) is out of scope for this PR, which is confined to
-        Deep Agents Code. `test_forced_compact_matches_sdk_summarizer_calls`
+        flow changes. The closest-fitting fix is a `force=` seam on the SDK's own
+        `_run_compact`, which would remove the fork entirely; until the SDK
+        offers one, this stays a Deep Agents Code-local fork.
+        `test_forced_compact_matches_sdk_summarizer_calls`
         guards the summarizer-method call set against drift, but only by
         *existence*: it catches a renamed or removed dependency, not a changed
         signature nor a new step added to `_run_compact` (e.g. if the SDK later
@@ -992,11 +1040,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     ) -> dict[str, Any]:
         """Build the state-only result used by the server `/offload` operation.
 
-        Annotated with the SDK's own `SummarizationEvent` rather than a loose
-        `dict[str, object]` so the hand-built payload is checked against the
-        shape the channel actually stores -- in particular that
-        `_build_new_messages_with_path(...)[0]` really is the `HumanMessage`
-        the event expects.
+        The returned dict carries the `_summarization_event` payload plus the
+        session id, so it is not itself a `SummarizationEvent` and cannot be
+        annotated as one. That the event's `summary_message` really is the
+        `HumanMessage` the channel expects is therefore enforced at runtime by
+        the `isinstance` check below, not by the type checker.
 
         Args:
             summarization: SDK summarization middleware building the message.
@@ -1116,27 +1164,31 @@ def _forced_offload_call_id() -> str:
     Two requirements pull in opposite directions, and both are load-bearing:
 
     *Stable across resumes.* `ServerHooksMiddleware` folds this id into its hook
-    `invocation_id`, and answering a hook interrupt re-executes the node **from
-    the top** -- LangGraph replays the task rather than resuming mid-coroutine.
-    A `uuid4()` minted here would therefore differ between the request and the
-    resume, and `parse_hook_resume_value` rejects a mismatched invocation id as
-    fatal ("the client answered a different request"). That made `/offload` fail
-    outright for anyone with a `PreCompact`/`PreToolUse` hook configured, and
-    made the client's whole fulfill/resume loop unreachable.
+    `invocation_id`, and answering a hook request re-executes the operation
+    **from the top** rather than resuming mid-coroutine. An id minted fresh here
+    would therefore differ between the request and the resume, and
+    `parse_hook_resume_value` rejects a mismatched invocation id as fatal ("the
+    client answered a different request") -- which would break `/offload` for
+    exactly those users who have a `PreCompact`/`PreToolUse` hook configured,
+    and make the client's whole fulfill/resume loop unreachable.
 
-    *Distinct across runs.* The client memoizes fulfillments by
+    *Distinct across attempts.* The client memoizes fulfillments by
     `(snapshot_id, invocation_id)` for the session, and the hook `prompt_id`
     only rotates on user-prompt submit. A constant would make two `/offload`s
-    within one turn collide and replay the first run's decision -- including a
-    denial -- instead of re-running the user's hook.
+    within one turn collide and replay the first attempt's decision -- including
+    a denial -- instead of re-running the user's hook.
 
-    The task-scoped `checkpoint_ns` satisfies both: LangGraph reuses the task id
-    when it replays an interrupted task, and mints a fresh one for every run on
-    the thread (including a re-run after an abandoned or failed one).
+    `configurable.checkpoint_ns` satisfies both, and
+    `offload_api._execute_offload` is the invariant's owner: it derives the
+    namespace as `dcode_offload:{operation_id}` from the client's per-attempt
+    `operation_id`, which `RemoteAgent.aoffload` mints once and reuses across
+    every resume round of that attempt. Changing either that namespace format or
+    the client's reuse of `operation_id` breaks hook resume, silently, for hook
+    users only.
 
     Returns:
-        An id stable across this run's resumes and distinct from every other
-            run's.
+        An id stable across this attempt's resume rounds and distinct from every
+            other attempt's.
     """
     try:
         config = get_config()
@@ -1187,7 +1239,7 @@ class OffloadOperation:
 
     @staticmethod
     def _result(
-        status: Literal["compacted", "empty", "noop", "denied", "failed"],
+        status: OffloadStatus,
         *,
         messages: int,
         tokens: int,
@@ -1289,7 +1341,7 @@ class OffloadOperation:
             status, error = hook_failure
             result = self._result(
                 status,
-                messages=len(messages) - _event_cutoff(event),
+                messages=max(0, len(messages) - _event_cutoff(event)),
                 tokens=tokens_before,
                 error=error,
             )
@@ -1305,7 +1357,7 @@ class OffloadOperation:
             logger.exception("forced /offload compaction failed")
             result = self._result(
                 "failed",
-                messages=len(messages) - _event_cutoff(event),
+                messages=max(0, len(messages) - _event_cutoff(event)),
                 tokens=tokens_before,
                 error=f"{COMPACTION_FAILURE_PREFIX}: {type(exc).__name__}: {exc}",
             )
@@ -1314,7 +1366,7 @@ class OffloadOperation:
         if not update:
             result = self._result(
                 "noop",
-                messages=len(messages) - _event_cutoff(event),
+                messages=max(0, len(messages) - _event_cutoff(event)),
                 tokens=tokens_before,
             )
             return OffloadExecution({}, result)
@@ -1338,4 +1390,7 @@ class OffloadOperation:
             "archive_ephemeral": offload_storage_is_ephemeral(),
             "error": None,
         }
-        return OffloadExecution(dict(update), result)
+        # Forward only the permitted channel rather than the SDK's whole update
+        # dict, so a future SDK change that adds keys (`messages` above all)
+        # cannot reach the checkpoint write through this operation.
+        return OffloadExecution({"_summarization_event": new_event}, result)

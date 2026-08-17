@@ -15008,6 +15008,8 @@ class DeepAgentsApp(App):
 
     async def _handle_server_offload(self, config: RunnableConfig) -> None:
         """Request and render the built-in server-owned offload operation."""
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
         remote = self._remote_agent()
         if remote is None:
             await self._mount_message(
@@ -15060,9 +15062,6 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            from deepagents_code.hooks.models.domain import SessionStartCause
-
-            await self._run_session_start_hook(SessionStartCause.COMPACT)
             tokens_before = result["tokens_before"]
             tokens_after = result["tokens_after"]
             pct = (
@@ -15097,7 +15096,36 @@ class DeepAgentsApp(App):
                         f"Check logs for details.\n{stats_line}"
                     )
                 )
-            self._on_tokens_update(tokens_after)
+            # `tokens_after` is `count_tokens_approximately` on the server side,
+            # the same estimate the seeded path reports, so it is flagged the
+            # same way rather than presented as an exact provider figure.
+            self._on_tokens_update(tokens_after, approximate=True)
+
+            # Fired only after the outcome is on screen. Compaction has already
+            # committed server-side, so a hook that raises must not be allowed
+            # to replace the user's result with "Offload failed" and leave the
+            # status bar on pre-offload counts. `_run_session_start_hook` mounts
+            # a stop reason itself, so the user sees both facts in order.
+            from deepagents_code.hooks.models.domain import SessionStartCause
+
+            try:
+                await self._run_session_start_hook(SessionStartCause.COMPACT)
+            except ClientHookStopError:
+                # The stop reason is already mounted; the offload itself stands.
+                pass
+            except Exception:
+                logger.exception("SessionStart hook failed after server offload")
+                await self._mount_message(
+                    ErrorMessage(
+                        "The conversation was offloaded, but a configured "
+                        "SessionStart hook failed. Check logs for details."
+                    )
+                )
+        except ClientHookStopError:
+            # Raised before the compaction committed (e.g. from a hook the
+            # operation routed back to this client); the reason is mounted by
+            # the hook executor, so adding "Offload failed" would double-report.
+            return
         except Exception as exc:
             from deepagents_code.client.remote_client import format_agent_exception
 
@@ -15146,11 +15174,27 @@ class DeepAgentsApp(App):
         if remote is not None:
             try:
                 supports_offload = await remote.asupports_offload()
-            except Exception as exc:  # noqa: BLE001  # remote capability request
-                await self._mount_message(
-                    ErrorMessage(f"Failed to inspect server capabilities: {exc}")
+            except Exception as exc:  # remote capability request
+                # A probe that fails for any reason other than "no such route"
+                # (timeout, gateway 401/403/405, transient 5xx) says nothing
+                # about whether offload can work. The seeded path drives the
+                # agent's own tool and works against any server, so degrade to
+                # it rather than refusing an operation that has a working
+                # implementation. Say so: the fallback spends an extra model
+                # call and behaves differently on failure.
+                from deepagents_code.client.remote_client import (
+                    format_agent_exception,
                 )
-                return
+
+                logger.warning("Offload capability probe failed", exc_info=True)
+                await self._mount_message(
+                    AppMessage(
+                        "Could not confirm server offload support "
+                        f"({format_agent_exception(exc)}); using the "
+                        "compatibility path."
+                    )
+                )
+                supports_offload = False
             if supports_offload:
                 await self._handle_server_offload(config)
                 return
@@ -15179,10 +15223,6 @@ class DeepAgentsApp(App):
                 _effective_conversation(before_messages, prior_event)
             )
 
-            # Only local agents and custom servers without the operation route
-            # reach this fallback. They retain the established
-            # seeded-tool behavior because no server-owned operation exists.
-            local_seeded = True
             # Own the seeded tool-call id here so a failed run can clean up the
             # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
             seed_tool_call_id = str(uuid.uuid4())
@@ -15209,11 +15249,8 @@ class DeepAgentsApp(App):
                         "Failed to reconcile state after offload stream error",
                         exc_info=True,
                     )
-                    if (
-                        seed_tool_call_id is not None
-                        and not await self._remove_unanswered_offload_seed(
-                            config, seed_tool_call_id
-                        )
+                    if not await self._remove_unanswered_offload_seed(
+                        config, seed_tool_call_id
                     ):
                         await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise stream_error from state_error
@@ -15223,12 +15260,8 @@ class DeepAgentsApp(App):
                     # its tool call unanswered; remove it before re-raising so a
                     # failed `/offload` cannot wedge the thread with a dangling
                     # `tool_use` that the model API rejects on the next turn.
-                    # The server operation commits no seed to clean up.
-                    if (
-                        seed_tool_call_id is not None
-                        and not await self._remove_unanswered_offload_seed(
-                            config, seed_tool_call_id
-                        )
+                    if not await self._remove_unanswered_offload_seed(
+                        config, seed_tool_call_id
                     ):
                         await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise
@@ -15245,27 +15278,6 @@ class DeepAgentsApp(App):
                 # (the archive now lives in the agent's own backend, not a
                 # client-local directory the server can never read).
                 new_state = await self._get_thread_state_values(self._lc_thread_id)
-                if not new_state and not local_seeded:
-                    # On the operation-graph path this read is the *only*
-                    # evidence of the outcome -- there is no `ToolMessage` to
-                    # fall back on. `_get_thread_state_values` collapses a
-                    # missing snapshot (a 404 after the run rebound the thread,
-                    # a server restart, an un-flushed checkpoint) to `{}`, which
-                    # is indistinguishable from "no event" and would be reported
-                    # as the actively-wrong "already compact".
-                    logger.warning(
-                        "Offload completed but the thread state read came back "
-                        "empty; cannot confirm the result"
-                    )
-                    await self._mount_message(
-                        ErrorMessage(
-                            "Offload finished, but its result could not be "
-                            "confirmed — the thread state could not be read "
-                            "back. Run /context to check whether the "
-                            "conversation was compacted."
-                        )
-                    )
-                    return
             # The compaction run's summary model spend is priced and committed by
             # the graph, so the state just read is the complete total.
             self._sync_session_cost_from_state(new_state)
@@ -15274,36 +15286,29 @@ class DeepAgentsApp(App):
 
             if new_event is None or new_cutoff <= prior_cutoff:
                 # A failure and a genuine no-op both leave `_summarization_event`
-                # unchanged. On the seeded path, stream-based detection can miss
-                # the failure `ToolMessage` (e.g. an update-injected message that
-                # never surfaces on the `messages` stream), so cross-check
-                # committed state before concluding there was nothing to do. The
-                # server operation returns failure and so never reaches here
-                # with one pending; for it this branch is a true no-op.
+                # unchanged. Stream-based detection can miss the failure
+                # `ToolMessage` (e.g. an update-injected message that never
+                # surfaces on the `messages` stream), so cross-check committed
+                # state before concluding there was nothing to do.
                 current_messages = new_state.get("messages", [])[len(before_messages) :]
                 failure = _find_compaction_failure(current_messages)
                 if failure is not None:
                     await self._mount_message(ErrorMessage(failure))
                     return
-                if local_seeded:
-                    # A no-op seeded run still commits the synthetic assistant
-                    # seed and its tool result. Restore the exact pre-run
-                    # conversation so an operation reported as doing nothing
-                    # truly changes nothing. The server operation commits no
-                    # such artifacts.
-                    await self._remove_offload_artifacts(
-                        config, current_messages, prior_event
-                    )
+                # A no-op seeded run still commits the synthetic assistant seed
+                # and its tool result. Restore the exact pre-run conversation so
+                # an operation reported as doing nothing truly changes nothing.
+                await self._remove_offload_artifacts(
+                    config, current_messages, prior_event
+                )
                 # `force=True` bypasses the eligibility gate, so this branch is
                 # reached when there is nothing older than the retention window
                 # to summarize (effective cutoff 0), or in the degenerate
                 # chained case where only the prior summary would be
                 # re-summarized (effective cutoff 1 -> the absolute cutoff would
-                # not advance). The server operation detects that second case
-                # itself and returns before spending a model call, so on that
-                # path the report and the committed state now agree: nothing was
-                # written. The seeded path still commits a replacement event
-                # there, which is what `_remove_offload_artifacts` above undoes.
+                # not advance). This path still commits a replacement event in
+                # that second case, which is what `_remove_offload_artifacts`
+                # above undoes.
                 await self._mount_message(
                     AppMessage(
                         "Nothing to offload \u2014 the conversation is already "
@@ -15311,24 +15316,6 @@ class DeepAgentsApp(App):
                     ),
                 )
                 return
-
-            if not local_seeded:
-                # The seeded driver fires this from inside its drain, keyed on
-                # the compaction tool result. The server operation produces no
-                # tool result, so fire it here instead -- at the same point in
-                # the lifecycle (compaction has committed), so a configured
-                # `SessionStart` hook sees `/offload` exactly as it sees
-                # automatic compaction.
-                #
-                # A stop is deliberately not returned on: compaction has already
-                # committed to the checkpoint, so returning here would leave the
-                # user with only "stopped by a hook" while their conversation was
-                # in fact compacted and the status bar kept pre-offload counts.
-                # `_run_session_start_hook` mounts the stop reason itself, so the
-                # user sees both facts in lifecycle order.
-                from deepagents_code.hooks.models.domain import SessionStartCause
-
-                await self._run_session_start_hook(SessionStartCause.COMPACT)
 
             archive_path = (
                 new_event.get("file_path")

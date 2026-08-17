@@ -213,6 +213,114 @@ class TestOffloadCommand:
             assert kwargs["config"] == {"configurable": {"thread_id": "test-thread"}}
             assert "messages" not in kwargs["context"]
 
+    async def test_failing_session_start_hook_does_not_erase_the_result(self) -> None:
+        """A hook raising after a committed compaction must not hide the outcome.
+
+        The compaction is already durable server-side by this point, so letting
+        the hook's exception reach the generic handler would leave the user with
+        only "Offload failed" while their conversation really was compacted and
+        the status bar kept pre-offload counts.
+        """
+        app = DeepAgentsApp()
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 6,
+            "messages_kept": 4,
+            "tokens_before": 1000,
+            "tokens_after": 250,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            tokens = MagicMock()
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(
+                    app,
+                    "_run_session_start_hook",
+                    new=AsyncMock(side_effect=RuntimeError("hook spawn failed")),
+                ),
+                patch.object(app, "_on_tokens_update", new=tokens),
+            ):
+                await app._handle_offload()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Offloaded 6 older messages" in text
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "SessionStart hook failed" in errors
+            assert "Offload failed" not in errors
+            tokens.assert_called_once_with(250, approximate=True)
+
+    async def test_session_start_hook_fires_after_a_committed_offload(self) -> None:
+        """The `COMPACT` lifecycle event still reaches configured hooks."""
+        from deepagents_code.hooks.models.domain import SessionStartCause
+
+        app = DeepAgentsApp()
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 2,
+            "messages_kept": 1,
+            "tokens_before": 100,
+            "tokens_after": 50,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(return_value=result)
+            hook = AsyncMock()
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(app, "_run_session_start_hook", new=hook),
+            ):
+                await app._handle_offload()
+
+            hook.assert_awaited_once_with(SessionStartCause.COMPACT)
+
+    async def test_probe_failure_falls_back_instead_of_refusing(self) -> None:
+        """An unreachable capability probe must not disable a working /offload.
+
+        A timeout or a gateway 401/403/405 says nothing about whether offload
+        works, and the seeded path drives the agent's own tool against any
+        server -- so degrade to it, visibly, rather than refuse outright.
+        """
+        app = DeepAgentsApp()
+        before = _state_values([_make_dict_message("hi")])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.asupports_offload = AsyncMock(
+                side_effect=RuntimeError("gateway timeout")
+            )
+            with (
+                patch.object(
+                    app, "_get_thread_state_values", new=AsyncMock(return_value=before)
+                ),
+                patch.object(
+                    app,
+                    "_drive_local_seeded_compaction",
+                    new=AsyncMock(return_value="Compaction failed: nope"),
+                ) as seeded,
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+            ):
+                await app._handle_offload()
+
+            seeded.assert_awaited_once()
+            notices = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "compatibility path" in notices
+
     async def test_server_failure_is_rendered_from_typed_result(self) -> None:
         app = DeepAgentsApp()
         result = {
@@ -1871,6 +1979,43 @@ class TestOffloadOperation:
         assert "messages" not in execution.update
         assert execution.result["status"] == "compacted"
         assert execution.result["messages_offloaded"] == 2
+
+    async def test_reoffload_reports_the_absolute_cutoff_delta(self) -> None:
+        """Counts are deltas against the prior event, not absolute cutoffs.
+
+        With a prior cutoff of 0 the two are indistinguishable, so this drives a
+        chained offload: 6 messages, prior cutoff 2, new cutoff 5 must report 3
+        offloaded and 1 kept. Reporting `new_cutoff` directly would say 5.
+        """
+        middleware, compaction, _hooks = self._middleware()
+        compaction.arun_forced_compaction_update = AsyncMock(
+            return_value={"_summarization_event": _summary_event(5)}
+        )
+        state = {
+            "messages": _make_dict_messages(6),
+            "_summarization_event": _summary_event(2),
+        }
+
+        execution = await middleware.execute(state, self._runtime())
+
+        assert execution.result["status"] == "compacted"
+        assert execution.result["messages_offloaded"] == 3
+        assert execution.result["messages_kept"] == 1
+
+    async def test_non_compacted_counts_never_go_negative(self) -> None:
+        """A stale cutoff beyond the message count must not report a negative."""
+        middleware, compaction, _hooks = self._middleware()
+        compaction.arun_forced_compaction_update = AsyncMock(return_value=None)
+        state = {
+            "messages": _make_dict_messages(2),
+            "_summarization_event": _summary_event(9),
+        }
+
+        execution = await middleware.execute(state, self._runtime())
+
+        assert execution.result["status"] == "noop"
+        assert execution.result["messages_kept"] == 0
+        assert execution.update == {}
 
     async def test_hook_denial_skips_compaction(self) -> None:
         from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY

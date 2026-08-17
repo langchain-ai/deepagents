@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -30,6 +31,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphInterrupt, GraphRecursionError
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from deepagents_code._repository_bounds import (
     REPOSITORY_DIRECTORY_ENTRY_LIMIT as _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
@@ -78,7 +80,11 @@ from deepagents_code.goal_rubric import (
     create_goal_criteria_agent,
     create_goal_criteria_fallback_agent,
 )
-from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT
+from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    RUBRIC_CHAR_LIMIT,
+    GoalStateSizeError,
+)
 from deepagents_code.goal_tools import GoalToolState
 
 if TYPE_CHECKING:
@@ -1726,6 +1732,82 @@ class TestNoCompleteProposalFailure:
         with pytest.raises(RuntimeError, match="no complete proposal"):
             middleware.before_agent(state, TestGoalCriteriaMiddleware._runtime())
 
+    def test_before_agent_rejects_oversized_pair_from_raw_json(self) -> None:
+        """The text-fallback path cannot smuggle oversized state past the schema.
+
+        `_proposal_from_result` parses raw JSON out of message content when
+        structured output is absent, so `GoalProposal`'s validators never run.
+        `_update`'s own check is the only thing standing between that path and a
+        goal too large to include in the notice the model reads every turn.
+        """
+        criteria = MagicMock()
+        criteria.invoke.return_value = {
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "objective": "ship it",
+                            "criteria": "x" * GOAL_APPLICATION_CHAR_LIMIT,
+                        }
+                    )
+                )
+            ]
+        }
+        middleware = GoalCriteriaMiddleware(criteria)
+        state = cast(
+            "GoalCriteriaState",
+            {
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "r",
+                    "kind": "create",
+                    "objective": "ship it",
+                },
+            },
+        )
+
+        with pytest.raises(GoalStateSizeError, match="combined"):
+            middleware.before_agent(state, TestGoalCriteriaMiddleware._runtime())
+
+    def test_before_agent_validates_the_objective_it_actually_applies(self) -> None:
+        """A `create` applies the user's objective, not the model's paraphrase.
+
+        The model is told to preserve the objective verbatim and nothing enforces
+        that. A shortened paraphrase can satisfy `GoalProposal._fit_notice_budget`
+        while the pair that actually gets persisted exceeds the budget, so the
+        check has to run against the applied objective.
+        """
+        user_objective = "u" * (GOAL_APPLICATION_CHAR_LIMIT // 2)
+        criteria_text = "c" * (GOAL_APPLICATION_CHAR_LIMIT // 2 + 1)
+        criteria = MagicMock()
+        criteria.invoke.return_value = {
+            "messages": [
+                AIMessage(
+                    content=json.dumps(
+                        {"objective": "short", "criteria": criteria_text}
+                    )
+                )
+            ]
+        }
+        middleware = GoalCriteriaMiddleware(criteria)
+        state = cast(
+            "GoalCriteriaState",
+            {
+                "messages": [],
+                "goal_criteria_request": {
+                    "request_id": "r",
+                    "kind": "create",
+                    "objective": user_objective,
+                },
+            },
+        )
+
+        # The proposal the model returned fits on its own; the applied pair does not.
+        GoalProposal.model_validate({"objective": "short", "criteria": criteria_text})
+
+        with pytest.raises(GoalStateSizeError, match="combined"):
+            middleware.before_agent(state, TestGoalCriteriaMiddleware._runtime())
+
     def test_summarize_result_is_bounded(self) -> None:
         big = "x" * (_CRITERIA_RESULT_LOG_LIMIT + 100)
 
@@ -2246,6 +2328,41 @@ class TestGoalCriteriaFallback:
                     "criteria": "x" * RUBRIC_CHAR_LIMIT,
                 }
             )
+
+    @pytest.mark.parametrize("field", ["objective", "criteria"])
+    def test_goal_proposal_schema_rejects_whitespace_only_field(
+        self, field: str
+    ) -> None:
+        """Whitespace-only structured output becomes retry feedback, not a goal."""
+        payload = {"objective": "goal", "criteria": "- tests pass"}
+        payload[field] = "   \n\t "
+
+        with pytest.raises(ValueError, match="non-whitespace"):
+            GoalProposal.model_validate(payload)
+
+    def test_goal_proposal_schema_forbids_extra_keys(self) -> None:
+        """Unknown keys fail rather than being silently dropped downstream."""
+        with pytest.raises(ValueError, match="extra"):
+            GoalProposal.model_validate(
+                {
+                    "objective": "goal",
+                    "criteria": "- tests pass",
+                    "unexpected": "value",
+                }
+            )
+
+    def test_goal_proposal_is_frozen_after_validation(self) -> None:
+        """Validated text cannot be swapped for oversized text after the fact.
+
+        Pydantic does not validate assignment by default, so without `frozen`
+        a plain attribute write would bypass `_fit_notice_budget`.
+        """
+        proposal = GoalProposal.model_validate(
+            {"objective": "goal", "criteria": "- tests pass"}
+        )
+
+        with pytest.raises(ValidationError):
+            proposal.criteria = "x" * (RUBRIC_CHAR_LIMIT + 1)  # ty: ignore[invalid-assignment]
 
     def test_fallback_agent_can_be_created(self) -> None:
         agent = create_goal_criteria_fallback_agent(

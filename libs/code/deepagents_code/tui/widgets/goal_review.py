@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict
 
 from textual.binding import Binding, BindingType
@@ -27,6 +28,8 @@ from deepagents_code.tui.widgets._inline_prompt import (
     newline_hint,
     stop_inline_prompt_blur,
 )
+
+logger = logging.getLogger(__name__)
 
 # Menu options in display order: (label, `action_*` suffix). The list index is
 # the cursor position, so labels and dispatch stay aligned from one source.
@@ -385,6 +388,13 @@ class GoalReviewMenu(Container):
     def _hint_invalid_submission(self, error: str) -> None:
         """Keep an invalid edit open and explain how to correct it inline."""
         if self._help_widget is None:
+            # The caller has already abandoned the submission, so without the
+            # hint the editor no-ops on Enter with nothing shown at all. Log it
+            # rather than leaving the rejection completely invisible.
+            logger.warning(
+                "Suppressed goal-review validation hint (no help widget): %s",
+                error,
+            )
             return
         glyphs = get_glyphs()
         self._help_widget.update(

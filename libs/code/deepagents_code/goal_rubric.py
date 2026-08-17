@@ -38,6 +38,7 @@ from deepagents_code._repository_bounds import (
 from deepagents_code.goal_state_limits import (
     GOAL_OBJECTIVE_CHAR_LIMIT,
     RUBRIC_CHAR_LIMIT,
+    GoalStateSizeError,
     validate_goal_application,
 )
 from deepagents_code.goal_state_notice import is_conversation_control_message
@@ -144,7 +145,10 @@ GOAL_AMENDMENT_SYSTEM_PROMPT = (
 class GoalProposal(BaseModel):
     """Structured proposal returned by the criteria agent."""
 
-    model_config = ConfigDict(extra="forbid")
+    # Frozen so the validated text cannot be replaced after construction:
+    # pydantic does not validate assignment by default, so a plain attribute
+    # write would bypass `_fit_notice_budget` and reintroduce oversized text.
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     objective: Annotated[
         str,
@@ -181,7 +185,18 @@ class GoalProposal(BaseModel):
 
     @model_validator(mode="after")
     def _fit_notice_budget(self) -> Self:
-        """Return feedback to the model when the complete proposal is too large."""
+        """Reject a proposal whose objective and criteria exceed the budget.
+
+        The raised error reaches the structured-output loop as validation
+        feedback, so the model retries with shorter text instead of failing the
+        turn.
+
+        Returns:
+            The original proposal when it fits.
+
+        Raises:
+            GoalStateSizeError: If the combined text exceeds the notice budget.
+        """  # noqa: DOC502 - propagates from `validate_goal_application`
         validate_goal_application(self.objective, self.criteria)
         return self
 
@@ -1252,6 +1267,8 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
 
         Raises:
             RuntimeError: If the nested agent returned no complete proposal.
+            GoalStateSizeError: If the objective and criteria that will actually
+                be applied exceed the combined notice budget.
         """
         proposal = _proposal_from_result(result)
         if proposal is None:
@@ -1268,7 +1285,25 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         objective = (
             request["objective"] if request["kind"] == "create" else proposed_objective
         )
-        validate_goal_application(objective, criteria)
+        # `GoalProposal._fit_notice_budget` validated the objective the model
+        # echoed back, but a `create` applies the user's original. The model is
+        # told to preserve it verbatim and nothing enforces that, so a paraphrase
+        # can shrink its own total under the limit while the applied pair blows
+        # it. Validate what is actually applied.
+        try:
+            validate_goal_application(objective, criteria)
+        except GoalStateSizeError:
+            # The raised message names only the combined total, which is opaque
+            # to a user who typed an objective and never saw the criteria. Log
+            # the parts so the split is recoverable from the logs.
+            logger.warning(
+                "Applied goal proposal exceeds the combined budget: objective "
+                "%d chars (model proposed %d), criteria %d chars",
+                len(objective),
+                len(proposed_objective),
+                len(criteria),
+            )
+            raise
         return {
             "goal_criteria_request": None,
             "rubric": None,

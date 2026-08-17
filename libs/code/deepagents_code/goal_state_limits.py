@@ -17,7 +17,14 @@ GOAL_STATUS_NOTE_CHAR_LIMIT: Final = 4_000
 """Maximum characters in a completion-evidence or blocker note."""
 
 GOAL_NOTICE_TEXT_CHAR_LIMIT: Final = 16_000
-"""Maximum combined raw text embedded in one goal-state notice."""
+"""Maximum combined raw text embedded in one goal-state notice.
+
+Equal to `GOAL_APPLICATION_CHAR_LIMIT + GOAL_STATUS_NOTE_CHAR_LIMIT`, so the
+per-field limits already sum to it. The aggregate check is therefore only
+reachable via `prior_blocker`, the one section not covered by the application
+budget; on the primary path it is defense in depth rather than a live bound.
+Raise this deliberately if a new section is ever embedded in a notice.
+"""
 
 
 class GoalStateSizeError(ValueError):

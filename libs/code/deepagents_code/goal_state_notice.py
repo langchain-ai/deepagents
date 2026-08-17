@@ -5,15 +5,21 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
-from deepagents_code.goal_state_limits import validate_goal_notice_text
+from deepagents_code.goal_state_limits import (
+    GoalStateSizeError,
+    validate_goal_notice_text,
+)
 
 if TYPE_CHECKING:
     from langchain_core.messages import HumanMessage
+
+logger = logging.getLogger(__name__)
 
 GOAL_CONTROL_MESSAGE_SOURCE: Final = "goal_control"
 GOAL_STATE_MESSAGE_SOURCE: Final = "goal_state"
@@ -194,6 +200,7 @@ def build_goal_continuation(
     transition: GoalTransition,
     *,
     unsaved_objective: str | None = None,
+    unsaved_criteria: str | None = None,
     event_id: str | None = None,
 ) -> HumanMessage:
     """Build a one-time goal continuation.
@@ -202,18 +209,27 @@ def build_goal_continuation(
         transition: Goal lifecycle transition that should resume work.
         unsaved_objective: Accepted objective supplied directly when creation state
             could not be persisted.
+        unsaved_criteria: Accepted acceptance criteria supplied alongside
+            `unsaved_objective`. Carried here because the state notice — now the
+            model's only channel to the criteria — was never written for this
+            transition, so omitting them leaves the model working toward a goal
+            whose criteria it cannot obtain by any other means.
         event_id: Optional stable identifier for deterministic tests.
 
     Returns:
         Internal `HumanMessage` for the next agent turn.
 
     Raises:
-        ValueError: If an unsaved objective is supplied for a non-creation transition.
+        ValueError: If unsaved text is supplied for a non-creation transition, or
+            if criteria are supplied without an objective.
     """
     from langchain_core.messages import HumanMessage
 
     if unsaved_objective is not None and transition != "created":
         msg = "unsaved objective fallback is only valid for goal creation"
+        raise ValueError(msg)
+    if unsaved_criteria is not None and unsaved_objective is None:
+        msg = "unsaved criteria require an unsaved objective"
         raise ValueError(msg)
 
     persisted = unsaved_objective is None
@@ -228,10 +244,15 @@ def build_goal_continuation(
         content = (
             f"{SYSTEM_MESSAGE_PREFIX} Goal set by the user, but its checkpoint write "
             "failed. Earlier goal-state notices do not describe this accepted goal. "
-            "Do not use goal or rubric tools for this unsaved transition. Begin "
-            "working "
+            "Begin working "
             f"from the accepted objective supplied here as a JSON string: {objective}"
         )
+        if unsaved_criteria is not None:
+            criteria_json = json.dumps(unsaved_criteria, ensure_ascii=False)
+            content += (
+                " Its accepted acceptance criteria, also as a JSON string: "
+                f"{criteria_json}"
+            )
     else:
         content = (
             f"{SYSTEM_MESSAGE_PREFIX} Goal {transition} by the user. The current goal "
@@ -404,6 +425,32 @@ def _embedded_text(value: str) -> str:
     return html.escape(value, quote=False)
 
 
+def notice_text_sections(
+    projected: GoalStateProjection,
+) -> tuple[str | None, str | None, str | None]:
+    """Select the user-controlled text a notice built from `projected` embeds.
+
+    The objective and status note are withheld unless the goal is actionable,
+    while criteria are embedded whenever a rubric is active — a one-shot rubric
+    stays applicable over a paused goal. Every caller that validates notice size
+    must project identically to the renderer, or a size check passes against text
+    the notice does not contain (or vice versa).
+
+    Args:
+        projected: Canonical goal/rubric projection from `project_goal_state`.
+
+    Returns:
+        The `(objective, criteria, status_note)` triple to embed, with `None` for
+        each section this state omits.
+    """
+    is_actionable = projected["goal_actionable"]
+    return (
+        projected["goal_objective"] if is_actionable else None,
+        projected["rubric_criteria"],
+        projected["goal_status_note"] if is_actionable else None,
+    )
+
+
 def build_goal_state_notice(
     state: Mapping[str, object],
     *,
@@ -430,21 +477,19 @@ def build_goal_state_notice(
     projected = project_goal_state(state)
     status = projected["goal_status"] or "not set"
     is_actionable = projected["goal_actionable"]
-    objective = projected["goal_objective"] if is_actionable else None
-    status_note = projected["goal_status_note"] if is_actionable else None
-    criteria = projected["rubric_criteria"]
+    objective, criteria, status_note = notice_text_sections(projected)
     has_rubric = criteria is not None
     actionable = "yes" if is_actionable else "no"
     rubric_active = "yes" if has_rubric else "no"
-    size_error: ValueError | None = None
-    prior_blocker_error: ValueError | None = None
+    size_error: GoalStateSizeError | None = None
+    prior_blocker_error: GoalStateSizeError | None = None
     try:
         validate_goal_notice_text(
             objective=objective,
             criteria=criteria,
             status_note=status_note,
         )
-    except ValueError as exc:
+    except GoalStateSizeError as exc:
         size_error = exc
     if size_error is None and prior_blocker is not None:
         try:
@@ -454,34 +499,46 @@ def build_goal_state_notice(
                 status_note=status_note,
                 prior_blocker=prior_blocker,
             )
-        except ValueError as exc:
+        except GoalStateSizeError as exc:
             # `prior_blocker` is transient context for one resume event, not
             # authoritative state. Omit a legacy oversized value without turning
             # the otherwise-safe current notice into a persistent fallback whose
             # state fingerprint would prevent a later full notice from replacing it.
             prior_blocker_error = exc
             prior_blocker = None
+            logger.warning(
+                "Dropping oversized prior blocker context from the goal-state "
+                "notice; current goal/rubric state is unaffected: %s",
+                exc,
+            )
     if size_error is not None:
+        # Scrub `status` alongside the derived flags. Actionability is derived
+        # from status everywhere else, so leaving a live "active" beside
+        # "actionable: no" hands the model a self-contradicting header and asks
+        # it to trust the weaker half.
+        status = "unavailable"
         actionable = "no"
         rubric_active = "no"
         objective = None
         criteria = None
         status_note = None
         prior_blocker = None
-    if size_error is not None:
         guidance = (
             "Saved goal/rubric state is too large to include safely. Do not work "
             "toward it and do not grade against it. Ask the user to clear and "
             "recreate the goal, or replace/clear the rubric. "
             f"Validation detail: {size_error}"
         )
-    elif is_actionable:
-        guidance = "Work toward the goal; do not call any goal or rubric read tool."
-    elif has_rubric:
-        guidance = (
-            "Follow the active rubric while handling the user's request; do not call "
-            "any goal or rubric read tool."
+        logger.warning(
+            "Goal/rubric state exceeds the notice budget; suppressing the "
+            "objective, criteria, and status note, and instructing the model "
+            "not to work toward the goal: %s",
+            size_error,
         )
+    elif is_actionable:
+        guidance = "Work toward the goal."
+    elif has_rubric:
+        guidance = "Follow the active rubric while handling the user's request."
     else:
         guidance = (
             "No goal or rubric is currently actionable; do not let any prior goal "

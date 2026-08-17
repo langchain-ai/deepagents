@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -28,6 +29,7 @@ from typing_extensions import override
 
 from deepagents_code.goal_state_limits import (
     GOAL_STATUS_NOTE_CHAR_LIMIT,
+    GoalStateSizeError,
     validate_goal_notice_text,
     validate_goal_status_note,
 )
@@ -39,6 +41,7 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
+    notice_text_sections,
     project_goal_state,
     validated_summarization_cutoff,
 )
@@ -55,6 +58,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from langgraph.runtime import Runtime
+
+logger = logging.getLogger(__name__)
 
 GOAL_TOOL_NAMES = frozenset({"update_goal"})
 """Tool names used by behavioral absence gates and middleware contract tests."""
@@ -139,12 +144,14 @@ def _update_goal_command(
             the TUI to resolve once the rubric verdict lands, rather than
             committing the status directly; `blocked` commits immediately.
 
-            Nothing is committed in three cases, and the `ToolMessage` explains
+            Nothing is committed in four cases, and the `ToolMessage` explains
             what the model must do instead: no goal is set, the goal is paused or
-            already complete, or `note` is empty.
+            already complete, `note` is empty, or `note` exceeds
+            `GOAL_STATUS_NOTE_CHAR_LIMIT`.
     """
     # Enforced preconditions here are: an objective exists, its status is neither
-    # paused nor complete, and `note` is non-empty. Note the objective check alone
+    # paused nor complete, and `note` is non-empty and fits
+    # `GOAL_STATUS_NOTE_CHAR_LIMIT`. Note the objective check alone
     # does not imply actionability — a paused goal has an objective too, so the
     # status check is separate. Completion is staged because `RubricMiddleware`
     # records its final verdict after the model stops making tool calls; the TUI
@@ -194,7 +201,7 @@ def _update_goal_command(
         )
     try:
         validate_goal_status_note(clean_note)
-    except ValueError as exc:
+    except GoalStateSizeError as exc:
         return Command(
             update={
                 "messages": [ToolMessage(content=str(exc), tool_call_id=tool_call_id)]
@@ -240,10 +247,13 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     than a read tool: `before_model` persists a fresh notice into checkpointed
     history when the latest one no longer matches authoritative state (or has
     scrolled below the summarization cutoff), and `wrap_model_call` re-pins the
-    notice into the (post-summarization) request when the persisted one is out of
-    view. The notice carries the objective and status note for an actionable goal
-    and the acceptance criteria for an active rubric, so no `get_goal`/`get_rubric`
-    lookup is needed. Only the write-side `update_goal` tool is registered.
+    notice into the request when the persisted one is out of view. This
+    middleware wraps the summarizer rather than running after it, so the re-pin
+    sees untrimmed history and discounts it against the same cutoff
+    `before_model` uses. The notice carries the objective and status note for an
+    actionable goal and the acceptance criteria for an active rubric, so no
+    separate read tool is needed. Only the write-side `update_goal` tool is
+    registered.
     """
 
     state_schema = GoalToolState
@@ -304,8 +314,13 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         """Compute the checkpointed notice update for a `before_model` boundary.
 
         Returns:
-            A `messages` update carrying a fresh notice, or `None` when history
-            already reflects current goal/rubric state.
+            A state update with any of three independent parts, or `None` when
+            none apply: a `messages` entry carrying a fresh notice; a
+            `_summarization_event` reset discarding a malformed event; and a
+            `rubric` entry set to `None` when saved goal/rubric state exceeds
+            the notice budget, which clears the public per-invocation rubric so
+            grading cannot re-inject oversized text. The oversized case can
+            return a `rubric` clear with no `messages` key at all.
         """
         values = cast("dict[str, Any]", state)
         raw_messages = values.get("messages", [])
@@ -333,25 +348,24 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             update["_summarization_event"] = None
         if notice is not None:
             update["messages"] = [notice]
-        projected = project_goal_state(values)
+        objective, criteria, status_note = notice_text_sections(
+            project_goal_state(values)
+        )
         try:
             validate_goal_notice_text(
-                objective=(
-                    projected["goal_objective"]
-                    if projected["goal_actionable"]
-                    else None
-                ),
-                criteria=projected["rubric_criteria"],
-                status_note=(
-                    projected["goal_status_note"]
-                    if projected["goal_actionable"]
-                    else None
-                ),
+                objective=objective,
+                criteria=criteria,
+                status_note=status_note,
             )
-        except ValueError:
+        except GoalStateSizeError as exc:
             # Keep authoritative saved state recoverable, but clear the public
             # per-invocation rubric so grading cannot re-inject oversized text.
             if values.get("rubric") is not None:
+                logger.warning(
+                    "Goal/rubric state exceeds the notice budget; clearing the "
+                    "per-invocation rubric so this turn is not graded: %s",
+                    exc,
+                )
                 update["rubric"] = None
         return update or None
 
@@ -402,26 +416,38 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         remain model-visible beside its bounded replacement. The system prompt is
         left unchanged.
 
+        This middleware wraps the summarizer, so `request.messages` is the full
+        persisted list rather than a trimmed window. The summarization cutoff is
+        therefore passed through to `_goal_state_notice_for`, matching
+        `before_model`: without it a notice sitting below the cutoff counts as
+        visible here, the re-pin declines, and the inner summarizer then drops
+        the only copy the model had.
+
         Returns:
             The original request when no notice is needed, otherwise a request
             with a current goal-state notice appended to its messages.
         """
         values = cast("dict[str, Any]", request.state)
         event = values.get("_summarization_event")
-        if (
-            event is not None
-            and validated_summarization_cutoff(
-                event,
-                message_count=len(request.messages),
-            )
-            is None
-        ):
-            # This middleware wraps the summarizer. Disable an invalid restored
-            # event in the request passed inward so its Python slice cannot
-            # remove the only model-visible copy of the goal state.
+        cutoff = validated_summarization_cutoff(
+            event,
+            message_count=len(request.messages),
+        )
+        malformed_event = event is not None and cutoff is None
+        if malformed_event:
+            # Disable an invalid restored event in the request passed inward so
+            # its Python slice cannot remove the only model-visible copy of the
+            # goal state.
             values = {**values, "_summarization_event": None}
             request = request.override(state=cast("AgentState[Any]", values))
-        notice = _goal_state_notice_for(values, request.messages)
+        notice = _goal_state_notice_for(
+            values,
+            request.messages,
+            # Force a fresh notice when discarding an event, matching
+            # `_notice_update`, so a summarization regenerated on this boundary
+            # retains the canonical goal state.
+            cutoff=len(request.messages) if malformed_event else (cutoff or 0),
+        )
         messages = list(request.messages)
         if notice is not None:
             messages.append(notice)

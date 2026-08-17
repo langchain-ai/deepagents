@@ -207,7 +207,13 @@ def _fake_request(
     state: dict[str, object] | None = None,
     messages: list[object] | None = None,
 ) -> SimpleNamespace:
-    """Build a `ModelRequest`-shaped double with an `override` that mirrors it."""
+    """Build a `ModelRequest`-shaped double with an `override` that mirrors it.
+
+    `override` rebuilds from the receiver rather than from this factory's
+    request, so chained calls compose the way `ModelRequest.override` does.
+    Rebuilding from the original would silently drop an earlier override — for
+    example the `_summarization_event` reset applied before a notice is pinned.
+    """
     request = SimpleNamespace(
         system_message=system_message,
         runtime=SimpleNamespace(context=context or {}),
@@ -215,13 +221,16 @@ def _fake_request(
         messages=messages or [],
     )
 
-    def override(**kw: object) -> SimpleNamespace:
-        updated = SimpleNamespace(**vars(request))
-        updated.__dict__.update(kw)
-        return updated
+    def _attach(target: SimpleNamespace) -> SimpleNamespace:
+        def override(**kw: object) -> SimpleNamespace:
+            updated = SimpleNamespace(**vars(target))
+            updated.__dict__.update(kw)
+            return _attach(updated)
 
-    request.override = override
-    return request
+        target.override = override
+        return target
+
+    return _attach(request)
 
 
 def test_before_model_persists_public_rubric_notice() -> None:
@@ -318,6 +327,39 @@ def test_notice_update_disables_grading_for_oversized_legacy_rubric() -> None:
     assert "too large to include safely" in update["messages"][0].content
 
 
+def test_oversized_state_notice_settles_after_one_append() -> None:
+    """The bounded fallback must not re-append on every later boundary.
+
+    `messages` is an append-only channel, so a predicate that never considers
+    itself satisfied grows history once per turn for the rest of the thread. This
+    converges today only because the fallback fingerprints the *state* rather
+    than its own bounded content — a refactor to fingerprint the rendered text
+    would turn the fallback into an unbounded per-turn append.
+    """
+    rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+    messages: list[object] = [HumanMessage(content="continue")]
+    state = cast(
+        "AgentState[Any]",
+        {"rubric": rubric, "_sticky_rubric": rubric, "messages": messages},
+    )
+
+    first = GoalToolsMiddleware._notice_update(state)
+
+    assert first is not None
+    # `rubric` is cleared alongside the notice, so the settled state reflects
+    # both halves of the update the graph would apply.
+    settled = cast(
+        "AgentState[Any]",
+        {
+            "rubric": None,
+            "_sticky_rubric": rubric,
+            "messages": [*messages, *first["messages"]],
+        },
+    )
+    for _ in range(2):
+        assert GoalToolsMiddleware._notice_update(settled) is None
+
+
 async def test_abefore_model_matches_before_model() -> None:
     # The async boundary must produce the same notice update as the sync one;
     # tests elsewhere only exercise `_notice_update` directly, so drive the
@@ -396,7 +438,11 @@ def test_wrap_model_call_disables_malformed_summarization_cutoff(
     )
 
     assert captured["request"].state["_summarization_event"] is None
-    assert goal_state_notice_info(captured["request"].messages[0]) is not None
+    # Discarding the event forces a fresh tail notice and drops the superseded
+    # one, so exactly one notice stays visible and it is the last message.
+    sent = captured["request"].messages
+    assert goal_state_notice_info(sent[-1]) is not None
+    assert sum(goal_state_notice_info(m) is not None for m in sent) == 1
     assert state["_summarization_event"] is not None
 
 
@@ -752,11 +798,27 @@ def test_notice_below_summarization_cutoff_is_rewritten() -> None:
         )
     )
 
+    at_cutoff = middleware._notice_update(
+        cast(
+            "AgentState[Any]",
+            {
+                **state,
+                "messages": messages,
+                "_summarization_event": {"cutoff_index": 1},
+            },
+        )
+    )
+
     assert in_view is None
     assert trimmed_away is not None
     assert "<goal_objective>ship it</goal_objective>" in (
         trimmed_away["messages"][0].content
     )
+    # The comparison is `>=`, not `>`: `_effective_conversation` slices with
+    # `messages[cutoff:]`, so the message at exactly `cutoff` is the first one
+    # still visible and its notice remains authoritative. Weakening this to `>`
+    # appends a redundant notice whenever summarization lands on the boundary.
+    assert at_cutoff is None
 
 
 @pytest.mark.parametrize("cutoff", [-1, 99])

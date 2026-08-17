@@ -10610,6 +10610,88 @@ class TestGoalCommand:
             assert "goal work and grading are disabled" in errors
             assert "maximum is 12,000" in errors
 
+    async def test_oversized_legacy_goal_warns_with_history_present(self) -> None:
+        """The warning survives the branch every real resume actually takes.
+
+        A thread carrying oversized goal state also carries conversation
+        history, so the empty-history early return is the one path that never
+        runs in practice. `_restore_goal_rubric_state` has already made the
+        oversized goal live by this point, and every later turn ships a degraded
+        notice, so losing the warning here leaves the user with a silently
+        non-functional goal and no explanation.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        MessageType.USER,
+                        "do the thing",
+                        id="history-before-oversized-goal",
+                    )
+                ],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+
+            await app._load_thread_history(
+                thread_id="thread-1",
+                preloaded_payload=payload,
+            )
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "goal work and grading are disabled" in errors
+            assert "maximum is 12,000" in errors
+
+    async def test_oversized_legacy_goal_warns_when_transcript_render_fails(
+        self,
+    ) -> None:
+        """A failed transcript render cannot swallow the recovery warning.
+
+        `_restore_goal_rubric_state` runs before the render, so the oversized
+        goal is already live when the failure happens. Reporting only
+        "Could not load history" would leave the goal silently disabled.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        MessageType.USER,
+                        "do the thing",
+                        id="history-before-render-failure",
+                    )
+                ],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status="active",
+                goal_rubric="x" * (RUBRIC_CHAR_LIMIT + 1),
+            )
+            # Patched after the size check and before the transcript render, and
+            # unused by `_mount_message`, so the warning path stays intact.
+            with patch.object(
+                app,
+                "_reset_thread_usage",
+                side_effect=RuntimeError("history load exploded"),
+            ):
+                await app._load_thread_history(
+                    thread_id="thread-1",
+                    preloaded_payload=payload,
+                )
+
+            messages = "\n".join(
+                str(w._content)
+                for w in (*app.query(ErrorMessage), *app.query(AppMessage))
+            )
+            assert "Could not load history" in messages
+            assert "goal work and grading are disabled" in messages
+
     async def test_oversized_paused_legacy_goal_cannot_resume(self) -> None:
         """A paused old goal is rejected before becoming model-actionable."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -11888,6 +11970,30 @@ class TestGoalCommand:
             errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
             assert "maximum is 8,000" in errors
 
+    async def test_oversized_amendment_base_is_rejected_before_generation(
+        self,
+    ) -> None:
+        """Amending oversized saved state is refused before spending tokens.
+
+        `/goal amend` re-submits the current objective and criteria as the base
+        for a new proposal, so saved state that already exceeds the combined
+        budget would otherwise reach the criteria agent and fail only after
+        generation. This is also the path the rejection-retry loop re-enters.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship it"
+            app._active_rubric = "x" * (GOAL_APPLICATION_CHAR_LIMIT + 1)
+
+            with patch.object(app, "_run_goal_criteria_request") as run:
+                await app._propose_goal_amendment(feedback="tighten it")
+                await pilot.pause()
+
+            run.assert_not_called()
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "maximum is 12,000" in errors
+
     async def test_accept_goal_rubric_without_pending_reports_nothing(self) -> None:
         """Accepting with no pending objective must not set a half-formed goal."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -12041,6 +12147,53 @@ class TestRubricCommand:
                 "Rubric set for next turn." in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_next_rubric_revalidated_when_goal_grows_before_consumption(
+        self,
+    ) -> None:
+        """A rubric that fit at set time is re-checked when the turn actually runs.
+
+        `_next_rubric_size_error` validates against goal state as it stood when
+        the command was typed, and that state is mutable: amending the goal or
+        recording a blocker note afterwards can push the combined notice over
+        budget. Consuming it unchecked degrades the notice and silently disables
+        the one-shot grade the command promised.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+            # Fits beside a short objective, but not beside a maximal one: the
+            # pair has to cross GOAL_APPLICATION_CHAR_LIMIT once the goal grows.
+            criteria = "x" * (GOAL_APPLICATION_CHAR_LIMIT // 2)
+
+            await app._handle_command(f"/rubric next {criteria}")
+            await pilot.pause()
+            assert app._next_rubric == criteria
+
+            # The goal grows after the one-shot rubric was accepted.
+            app._active_goal = "g" * GOAL_OBJECTIVE_CHAR_LIMIT
+
+            assert app._next_rubric_size_error(app._next_rubric) is not None
+
+            # `_run_agent_task` owns the consumption check, so stub only the
+            # streaming call it makes afterwards.
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new=AsyncMock(),
+            ):
+                await app._run_agent_task("keep going")
+                await pilot.pause()
+
+            assert app._next_rubric is None
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "no longer fits alongside the current goal state" in errors
 
     async def test_bare_rubric_shows_usage(self) -> None:
         """Bare `/rubric` should teach the command instead of showing only state."""

@@ -586,6 +586,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
           match rather than widening it.
 
             Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+        - Leading-dot names match only when the pattern segment itself starts
+          with `.`. Since `**` will not descend into dot-directories, a bare
+          pattern is *broader* than its `**/` form.
+
+            Example: `*.yml` matches `.github/workflows/ci.yml`; `**/*.yml`
+            does not. `.env` matches `.env`; `*` does not.
+
+        Only regular files are returned; directories are never matched.
 
         Args:
             pattern: Glob pattern with wildcards to match file paths.
@@ -595,8 +603,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `*` matches any characters within a path segment
                 - `**` matches any directories recursively
                 - `?` matches a single character
-                - `[abc]` matches one character from a set
-                - `{a,b}` brace expansion where the backend supports it
+                - `[abc]` matches one character from a set, `[!abc]` negates
+                - `{a,b}` brace expansion, including nested groups
 
             path: Optional base directory to search from.
 
@@ -605,7 +613,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 The pattern is applied relative to this path.
 
         Returns:
-            `GlobResult` with matching files or error.
+            `GlobResult` with matching files or error. Patterns the matcher
+            refuses (e.g. brace expansion past its limit) are reported as
+            `error`, not raised.
 
         Raises:
             NotImplementedError: If the backend does not implement `glob`.

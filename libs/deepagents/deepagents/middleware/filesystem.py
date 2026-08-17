@@ -933,9 +933,12 @@ class GlobSchema(BaseModel):
 
     pattern: str = Field(
         description=(
-            "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md'). "
+            "Glob pattern to match files (e.g., '*.py', '**/*.py', '/subdir/**/*.md'). "
             "A pattern without '/' matches the file name at any depth; a pattern containing "
-            "'/' matches the search-root-relative path."
+            "'/' matches the search-root-relative path; a leading '/' anchors to the search "
+            "root ('/*.py' matches only top-level files). Leading-dot names are excluded "
+            "unless the pattern segment starts with '.', so prefer the bare form '*.py' over "
+            "'**/*.py' -- '**' will not descend into dot-directories like '.github'."
         )
     )
 
@@ -1045,9 +1048,11 @@ Usage:
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern, returning absolute paths.
 
-Supports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`.
+Supports `*` (any characters within a path segment), `**` (any directories), `?` (single character), `[abc]` (one character from a set), and `{a,b}` (alternatives), e.g. `*.py`, `src/**/*.py`, `*.{yml,yaml}`.
 
-A pattern without `/` matches the file name at any depth under the search root (`*.py` matches `src/app/main.py`). A pattern containing `/` matches the search-root-relative path (`src/**/*.py`). A leading `/` anchors to the search root (`/*.py` matches only top-level Python files)."""
+A pattern without `/` matches the file name at any depth under the search root (`*.py` matches `src/app/main.py`). A pattern containing `/` matches the search-root-relative path (`src/**/*.py`). A leading `/` anchors to the search root (`/*.py` matches only top-level Python files).
+
+Leading-dot names are only matched when the pattern segment itself starts with `.` (use `.env`, or `.github/**/*.yml`). Because `**` will not descend into dot-directories, the bare form `*.yml` is *broader* than `**/*.yml` and is usually what you want."""
 
 # Carries its own leading newline so the empty-string substitution below drops
 # the whole line cleanly, with no blank line left behind.

@@ -1449,13 +1449,16 @@ class TestGlobResultPermissionFiltering:
     def test_sandbox_glob_matches_are_filtered_end_to_end(self):
         """A denied subtree must not appear in sandbox glob output."""
         rules = [FilesystemPermission(operations=["read"], paths=["/w/secrets/**"], mode="deny")]
-        output = "\n".join(
-            [
-                json.dumps({"path": "secrets/key.py", "is_dir": False}),
-                json.dumps({"path": "app.py", "is_dir": False}),
-            ]
+        resp = ExecuteResponse(
+            output="\n".join(
+                [
+                    json.dumps({"path": "secrets/key.py", "is_dir": False}),
+                    json.dumps({"path": "app.py", "is_dir": False}),
+                ]
+            ),
+            exit_code=0,
         )
 
-        parsed = _parse_glob_output(output, "/w")
+        parsed = _parse_glob_output(resp, "/w")
 
         assert _apply_permissions_to_glob_results(rules, parsed.matches) == ["/w/app.py"]

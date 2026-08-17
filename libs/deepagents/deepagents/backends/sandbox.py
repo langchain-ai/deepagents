@@ -21,7 +21,7 @@ import logging
 import os
 import shlex
 from abc import ABC, abstractmethod
-from typing import Final
+from typing import Any, Final
 
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
@@ -51,47 +51,143 @@ import fnmatch
 import os
 import json
 import base64
+import time
 
 # Decode base64-encoded parameters
 path = base64.b64decode('{path_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 
+MAX_EXPANSIONS = 1000
+MAX_MATCHES = 10000
+TIME_BUDGET = 5.0
+
+
+def _find_group_end(pat, start):
+    # Index of the '}}' closing the group opened at 'start', or -1 if unbalanced.
+    depth = 0
+    for index in range(start, len(pat)):
+        if pat[index] == '{{':
+            depth += 1
+        elif pat[index] == '}}':
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _split_alternatives(body):
+    # Split on top-level commas only, so nested groups survive intact.
+    parts = []
+    depth = 0
+    current = ''
+    for ch in body:
+        if ch == '{{':
+            depth += 1
+            current += ch
+        elif ch == '}}':
+            depth -= 1
+            current += ch
+        elif ch == ',' and depth == 0:
+            parts.append(current)
+            current = ''
+        else:
+            current += ch
+    parts.append(current)
+    return parts
+
 
 def _brace_expand(pat):
+    # pattern is model/user supplied, so expansion must be bounded: the full
+    # Cartesian product is materialized in memory, and 2**n groups would
+    # otherwise hang or OOM the sandbox before the walk starts. Returns None
+    # past the budget, mirroring the expansion limit wcmatch enforces in
+    # compile_grep_include_glob. Nested groups expand like wcmatch's BRACE.
     start = pat.find('{{')
     if start < 0:
         return [pat]
-    end = pat.find('}}', start + 1)
-    if end < 0 or '{{' in pat[start + 1 : end]:
+    end = _find_group_end(pat, start)
+    if end < 0:
         return [pat]
     prefix, body, suffix = pat[:start], pat[start + 1 : end], pat[end + 1 :]
-    parts = body.split(',')
+    parts = _split_alternatives(body)
     if len(parts) < 2:
-        return [pat]
+        # A single-element group is literal, but the rest may still expand.
+        tails = _brace_expand(suffix)
+        if tails is None:
+            return None
+        return [prefix + '{{' + body + '}}' + tail for tail in tails]
     out = []
     for part in parts:
-        out.extend(_brace_expand(prefix + part + suffix))
+        tails = _brace_expand(part + suffix)
+        if tails is None:
+            return None
+        for tail in tails:
+            out.append(prefix + tail)
+            if len(out) > MAX_EXPANSIONS:
+                return None
     return out
 
 
-def _basename_match(name, pat):
-    for candidate in _brace_expand(pat):
+def _normalize_classes(pat):
+    # fnmatch reads a leading '^' in a bracket expression as a literal, while
+    # wcmatch (and bash/ripgrep) read it as negation. Without this rewrite
+    # '[^a]*.py' is inverted on the sandbox: it returns exactly the files the
+    # caller meant to exclude.
+    out = ''
+    index = 0
+    while index < len(pat):
+        if pat[index] != '[':
+            out += pat[index]
+            index += 1
+            continue
+        # Start at index + 2 so a literal ']' first in the set is kept ('[]]').
+        close = pat.find(']', index + 2)
+        if close < 0:
+            out += pat[index:]
+            break
+        body = pat[index + 1 : close]
+        if body.startswith('^'):
+            body = '!' + body[1:]
+        out += '[' + body + ']'
+        index = close + 1
+    return out
+
+
+def _basename_match(name, candidates):
+    for candidate in candidates:
         # No DOTMATCH: leading-dot basenames need an explicit leading '.' pattern.
         if name.startswith('.') and not candidate.startswith('.'):
             continue
-        if fnmatch.fnmatch(name, candidate):
+        # fnmatchcase, not fnmatch: fnmatch applies os.path.normcase, which would
+        # make matching case-insensitive on a non-POSIX host. wcmatch is always
+        # case-sensitive here.
+        if fnmatch.fnmatchcase(name, candidate):
             return True
     return False
 
 
 def _parts_match(rel_parts, pat_parts):
+    # Memoized on (path index, pattern index): '**' otherwise backtracks
+    # exponentially, so '**/*/**/*'-shaped patterns hang the sandbox.
+    cache = {{}}
+
     def match_from(ri, pi):
+        key = (ri, pi)
+        if key in cache:
+            return cache[key]
+        result = _compute(ri, pi)
+        cache[key] = result
+        return result
+
+    def _compute(ri, pi):
         while pi < len(pat_parts):
             if pat_parts[pi] == '**':
                 while pi < len(pat_parts) and pat_parts[pi] == '**':
                     pi += 1
                 if pi == len(pat_parts):
-                    return all(not part.startswith('.') for part in rel_parts[ri:])
+                    # A slash before a trailing ** requires at least one
+                    # descendant; a.py/** must not match the file a.py.
+                    return ri < len(rel_parts) and all(not part.startswith('.') for part in rel_parts[ri:])
                 while ri <= len(rel_parts):
                     if match_from(ri, pi):
                         return True
@@ -108,7 +204,7 @@ def _parts_match(rel_parts, pat_parts):
             seg = pat_parts[pi]
             if name.startswith('.') and not seg.startswith('.'):
                 return False
-            if not fnmatch.fnmatch(name, seg):
+            if not fnmatch.fnmatchcase(name, seg):
                 return False
             ri += 1
             pi += 1
@@ -117,65 +213,115 @@ def _parts_match(rel_parts, pat_parts):
     return match_from(0, 0)
 
 
-def _path_match(rel, pat):
-    rel_parts = [] if rel in ('', '.') else rel.split('/')
-    for candidate in _brace_expand(pat):
-        pat_parts = candidate.split('/') if candidate else []
+def _path_match(rel, candidates):
+    rel_parts = [] if rel in ('', '.') else [seg for seg in rel.split('/') if seg]
+    for candidate in candidates:
+        relative_candidate = candidate.lstrip('/')
+        segments = relative_candidate.split('/')
+        # Drop empty segments so 'a//b.py' matches 'a/b.py', as wcmatch does.
+        pat_parts = [seg for seg in segments if seg]
+        # A trailing slash means directory-only, and only regular files are
+        # emitted -- except after '**', which absorbs it.
+        if len(segments) > 1 and segments[-1] == '' and (not pat_parts or pat_parts[-1] != '**'):
+            continue
         if _parts_match(rel_parts, pat_parts):
             return True
     return False
 
 
-def _include_match(rel, pat):
+def _include_match(rel, pat, candidates):
     # Shared backend contract (same idea as compile_grep_include_glob):
     # - no '/' -> basename at any depth (including under hidden dirs)
     # - with '/' -> path-relative, ** supported, leading '/' anchors after lstrip
     if '/' not in pat:
         name = rel.rsplit('/', 1)[-1]
-        return _basename_match(name, pat)
-    return _path_match(rel, pat.lstrip('/'))
+        return _basename_match(name, candidates)
+    return _path_match(rel, candidates)
+
+
+walk_errors = []
+
+
+def _on_walk_error(err):
+    walk_errors.append(type(err).__name__)
 
 
 try:
     real_root = os.path.realpath(path)
+    # os.path.realpath('/') is '/', so a naive real_root + os.sep is '//', which
+    # no absolute path starts with. Normalize, or a search rooted at '/' (the
+    # default when no path is passed) silently drops every match.
+    root_prefix = real_root if real_root.endswith(os.sep) else real_root + os.sep
     os.chdir(path)
     if any(seg == '..' for seg in pattern.replace(chr(92), '/').split('/')):
         print(json.dumps({{'error': 'invalid_pattern'}}))
     else:
-        matches = []
-        # os.walk includes hidden directories; matching rules still exclude leading-dot
-        # basenames unless the pattern is explicit (no DOTMATCH). Regular files only,
-        # mirroring FilesystemBackend.glob's is_file() filter; also drops broken symlinks.
-        for dirpath, dirnames, filenames in os.walk('.'):
-            for name in filenames:
-                full = name if dirpath == '.' else os.path.join(dirpath, name)
-                rel = full.replace(chr(92), '/')
-                if rel.startswith('./'):
-                    rel = rel[2:]
-                if not _include_match(rel, pattern):
-                    continue
-                candidate = os.path.realpath(full)
-                if candidate != real_root and not candidate.startswith(real_root + os.sep):
-                    continue
-                if not os.path.isfile(candidate):
-                    continue
-                matches.append(rel)
-        for item in sorted(matches):
-            print(json.dumps({{'path': item, 'is_dir': False}}))
+        expanded = _brace_expand(pattern)
+        if expanded is None:
+            print(json.dumps({{'error': 'pattern_too_broad'}}))
+        else:
+            candidates = [_normalize_classes(item) for item in expanded]
+            deadline = time.monotonic() + TIME_BUDGET
+            truncated = False
+            matches = []
+            # os.walk includes hidden directories; matching rules still exclude
+            # leading-dot basenames unless the pattern is explicit (no DOTMATCH).
+            # onerror is required: os.walk otherwise discards unreadable subtrees
+            # silently, shrinking the result set with no signal to the caller.
+            for dirpath, dirnames, filenames in os.walk('.', onerror=_on_walk_error):
+                if truncated:
+                    break
+                if time.monotonic() > deadline:
+                    truncated = True
+                    break
+                for name in filenames:
+                    if time.monotonic() > deadline or len(matches) >= MAX_MATCHES:
+                        truncated = True
+                        break
+                    full = name if dirpath == '.' else os.path.join(dirpath, name)
+                    rel = full.replace(chr(92), '/')
+                    if rel.startswith('./'):
+                        rel = rel[2:]
+                    if not _include_match(rel, pattern, candidates):
+                        continue
+                    candidate = os.path.realpath(full)
+                    if candidate != real_root and not candidate.startswith(root_prefix):
+                        continue
+                    # Regular files only, mirroring FilesystemBackend.glob's
+                    # is_file() filter; also drops broken symlinks.
+                    if not os.path.isfile(candidate):
+                        continue
+                    matches.append(rel)
+            for item in sorted(matches):
+                print(json.dumps({{'path': item, 'is_dir': False}}))
+            if walk_errors:
+                print(json.dumps({{'warning': 'walk_errors', 'count': len(walk_errors)}}))
+            if truncated:
+                print(json.dumps({{'warning': 'truncated'}}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'path_not_found'}}))
 except NotADirectoryError:
     print(json.dumps({{'error': 'not_a_directory'}}))
 except PermissionError:
     print(json.dumps({{'error': 'permission_denied'}}))
+except Exception as exc:
+    # Without this, any other failure reaches stdout as a traceback that the
+    # host parser cannot read, and the caller sees a successful empty search.
+    print(json.dumps({{'error': 'internal_error: ' + type(exc).__name__}}))
 
 " 2>&1"""
-"""Find files matching a pattern with metadata.
+"""Find files matching a pattern.
 
 Uses base64-encoded parameters to avoid shell escaping issues. Walks the search
 tree with `os.walk` (including hidden directories) and applies the shared
 basename/path glob contract so bare `*.py` matches nested files under hidden
 dirs while still excluding leading-dot basenames unless the pattern is explicit.
+
+Emits one JSON object per matching regular file (directories are omitted, as in
+`FilesystemBackend.glob`), then an out-of-band `warning` record when the walk
+was cut short by its time/match budget or skipped an unreadable subtree, so a
+partial result is never mistaken for an exhaustive one. Every failure path emits
+a structured `error` code rather than a traceback.
 """
 
 
@@ -854,24 +1000,89 @@ def _absolutize_glob_path(search_path: str, rel_path: str) -> str:
     return f"{search_path.rstrip('/')}/{rel_path}"
 
 
-def _parse_glob_output(output: str, search_path: str) -> GlobResult:
-    output = output.strip()
+def _classify_glob_line(line: str) -> tuple[str, Any]:
+    """Classify one line of remote glob output.
+
+    Args:
+        line: A single non-blank stdout line.
+
+    Returns:
+        `(kind, payload)` where `kind` is `"match"` (payload is the record),
+        `"error"` (payload is the error code), `"warning"` (payload is the
+        record) or `"unparsed"` (payload is the raw line).
+    """
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return ("unparsed", line)
+    if not isinstance(data, dict):
+        return ("unparsed", line)
+    if "error" in data:
+        return ("error", data["error"])
+    if "warning" in data:
+        return ("warning", data)
+    if "path" not in data:
+        return ("unparsed", line)
+    return ("match", data)
+
+
+def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
+    """Parse the remote glob script's JSON-lines output into a `GlobResult`.
+
+    Unrecognized lines are a hard error rather than a skip: with `2>&1` merging
+    stderr into stdout, silently dropping them turns any remote crash — or a
+    transport-clipped line — into a successful empty search, and the agent
+    concludes the files do not exist.
+
+    Args:
+        result: Raw `execute` response; its `truncated` flag means the transport
+            clipped the output, so matches are incomplete.
+        search_path: Search root, used to absolutize matches and prefix errors.
+
+    Returns:
+        `GlobResult` with absolute paths. `truncated` is `True` when the walk or
+        the transport cut results short.
+    """
+    output = result.output.strip()
     if not output:
         return GlobResult(matches=[])
     file_infos: list[FileInfo] = []
+    unparsed: list[str] = []
     error: str | None = None
+    truncated = result.truncated
     for line in output.split("\n"):
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
+        if not line.strip():
             continue
-        if isinstance(data, dict) and "error" in data:
-            error = data["error"]
-            continue
-        file_infos.append({"path": _absolutize_glob_path(search_path, data["path"]), "is_dir": data["is_dir"]})
+        kind, payload = _classify_glob_line(line)
+        if kind == "match":
+            file_infos.append(
+                {
+                    "path": _absolutize_glob_path(search_path, payload["path"]),
+                    "is_dir": bool(payload.get("is_dir", False)),
+                }
+            )
+        elif kind == "error":
+            error = payload
+        elif kind == "warning":
+            # Budget exhausted or a subtree was unreadable: results are valid
+            # but partial, which `truncated` is exactly for.
+            truncated = True
+        else:
+            unparsed.append(payload)
     if error is not None:
         return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
-    return GlobResult(matches=file_infos)
+    if unparsed:
+        logger.error(
+            "Sandbox glob emitted %d unparseable line(s) for path %r; first: %s",
+            len(unparsed),
+            search_path,
+            unparsed[0][:200],
+        )
+        return GlobResult(
+            matches=None,
+            error=f"Path '{search_path}': glob helper emitted unexpected output: {unparsed[0][:200]}",
+        )
+    return GlobResult(matches=file_infos, truncated=truncated)
 
 
 def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, *, replace_all: bool) -> str:
@@ -1578,13 +1789,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         """Structured glob matching returning `GlobResult`."""
         search_path = path or "/"
         result = self.execute(_build_glob_cmd(pattern, search_path))
-        return _parse_glob_output(result.output, search_path)
+        return _parse_glob_output(result, search_path)
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Async version of `glob`, delegating to `aexecute`."""
         search_path = path or "/"
         result = await self.aexecute(_build_glob_cmd(pattern, search_path))
-        return _parse_glob_output(result.output, search_path)
+        return _parse_glob_output(result, search_path)
 
     @property
     @abstractmethod

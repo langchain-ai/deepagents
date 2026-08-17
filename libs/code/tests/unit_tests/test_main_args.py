@@ -1964,7 +1964,7 @@ class TestUpdateSubcommand:
                 return_value=release_requires_prereleases,
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=log_path,
             ),
             patch(

@@ -1,4 +1,4 @@
-"""Classifier-backed approval policy for the local interactive TUI."""
+"""Classifier-backed approval policy for local TUI and ACP runtimes."""
 
 from __future__ import annotations
 
@@ -1815,7 +1815,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
-        """Initialize the local interactive Auto policy.
+        """Initialize the local Auto policy.
 
         Args:
             interrupt_on: Shared Manual interrupt map.

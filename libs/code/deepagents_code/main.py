@@ -497,7 +497,7 @@ def _run_startup_auto_update(console: "Console") -> None:
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
         clear_startup_auto_update_failure,
-        create_update_log_path,
+        create_update_log_file,
         detect_shadowed_dcode_safe,
         format_log_follow_command,
         format_release_age_parenthetical,
@@ -645,13 +645,14 @@ def _run_startup_auto_update(console: "Console") -> None:
             if os.environ.get(DEBUG_UPDATE):
                 console.print("Skipped update install (debug mode).", style="dim")
                 return
-            log_path = create_update_log_path()
-            console.print(
-                f"Update log: {format_log_follow_command(log_path)}",
-                style="dim",
-                highlight=False,
-                markup=False,
-            )
+            log_path = create_update_log_file()
+            if log_path is not None:
+                console.print(
+                    f"Update log: {format_log_follow_command(log_path)}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
             pending_failure_version = latest
             success, output, _installed = asyncio.run(
                 perform_upgrade(log_path=log_path, target_version=latest)
@@ -4608,7 +4609,7 @@ def cli_main() -> None:
                 from deepagents_code.config import _is_editable_install
                 from deepagents_code.update_check import (
                     _PRERELEASE_UNSUPPORTED_MESSAGE,
-                    create_update_log_path,
+                    create_update_log_file,
                     format_age_suffix,
                     format_installed_age_suffix,
                     format_log_follow_command,
@@ -4699,13 +4700,14 @@ def cli_main() -> None:
                             "Skipped update install (debug mode).", style="dim"
                         )
                         sys.exit(0)
-                    log_path = create_update_log_path()
-                    console.print(
-                        f"Update log: {format_log_follow_command(log_path)}",
-                        style="dim",
-                        highlight=False,
-                        markup=False,
-                    )
+                    log_path = create_update_log_file()
+                    if log_path is not None:
+                        console.print(
+                            f"Update log: {format_log_follow_command(log_path)}",
+                            style="dim",
+                            highlight=False,
+                            markup=False,
+                        )
                     success, output, _installed = asyncio.run(
                         perform_upgrade(
                             log_path=log_path,

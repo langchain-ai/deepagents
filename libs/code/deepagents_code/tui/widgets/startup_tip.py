@@ -39,6 +39,7 @@ _TIPS: dict[str, int] = {
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /timestamps to show or hide message timestamp footers": 1,
     "Click a collapsed message or press Ctrl+O to expand it": 1,
+    "Drag the chat input's top border to resize it": 1,
     "Use /agents to browse and switch between your available agents": 2,
     "Use /auto model to review Auto actions with a faster, cheaper model": 1,
     _TIP_SHIFT_TAB_WITH_YOLO: 2,

@@ -55,15 +55,16 @@ _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
 
 
 class _TrustAction(Enum):
-    """Actions available in any project-scope trust prompt.
+    """Actions available in the shared pre-TUI decision picker.
 
-    Shared by the project MCP server and project hook prompts; both offer the
-    same allow-once / remember / deny choice over a different subject.
+    Project trust prompts use allow-once / remember / deny. The editable
+    dependency-floor prompt also offers an explicit environment refresh.
     """
 
     ALLOW_ONCE = "allow_once"
     REMEMBER = "remember"
     DENY = "deny"
+    REFRESH = "refresh"
 
 
 class _TrustPromptOutcome(Enum):
@@ -3306,12 +3307,14 @@ def _run_trust_action_picker(
     remember_label: str = "Allow for this project — until changed",
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
+    refresh_label: str | None = None,
     deny_first: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome | None:
-    """Show the inline allow-once / remember / deny picker for a trust prompt.
+    """Show the inline decision picker shared by pre-TUI prompts.
 
-    Subject-agnostic: callers describe what is being trusted before calling and
-    supply the label for the persistent option.
+    Subject-agnostic: callers describe the decision before calling and supply
+    labels that match what each action does. Trust prompts omit `refresh_label`
+    and keep their existing three choices.
 
     Args:
         console: Console to print fallback notices to (stderr).
@@ -3319,6 +3322,7 @@ def _run_trust_action_picker(
             what the caller actually persists, since scope differs by subject.
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
+        refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: When `True`, list the deny option first; callers whose
             "deny" reads as a safe default (e.g. aborting a launch) put it in
             the leading position. The picker starts highlighted on the deny
@@ -3358,7 +3362,23 @@ def _run_trust_action_picker(
         (_TrustAction.REMEMBER, remember_label),
         (_TrustAction.DENY, deny_label),
     ]
-    if deny_first:
+    if refresh_label is not None:
+        actions = (
+            [
+                (_TrustAction.DENY, deny_label),
+                (_TrustAction.REFRESH, refresh_label),
+                (_TrustAction.ALLOW_ONCE, allow_label),
+                (_TrustAction.REMEMBER, remember_label),
+            ]
+            if deny_first
+            else [
+                (_TrustAction.ALLOW_ONCE, allow_label),
+                (_TrustAction.REMEMBER, remember_label),
+                (_TrustAction.REFRESH, refresh_label),
+                (_TrustAction.DENY, deny_label),
+            ]
+        )
+    elif deny_first:
         actions.reverse()
     # Highlight the refusing option by identity, not position: `deny_first`
     # moves it to the front, so a positional index would silently default to
@@ -3454,7 +3474,7 @@ def prompt_for_dep_floor_mismatch(
     console: "Console",
     violations: "Sequence[_FloorViolation]",
 ) -> _TrustAction | _TrustPromptOutcome:
-    """Block on a continue / mute / abort picker for a stale editable install.
+    """Block on a refresh / continue / mute / abort picker for stale dependencies.
 
     Lives here (not in `_dep_floor_check`) beside the other pre-TUI trust
     prompts so the picker implementation is shared. The prompt prints to
@@ -3466,11 +3486,11 @@ def prompt_for_dep_floor_mismatch(
         violations: The detected below-floor dependencies.
 
     Returns:
-        `ALLOW_ONCE` to continue this session, `REMEMBER` to mute this exact
-        mismatch for this checkout, `CANCELLED` to abort the launch (chosen
-        "Abort launch", Esc, or Ctrl+D — `abort_on_deny` collapses all three
-        into one outcome, so `DENY` is never returned), or `INTERRUPTED` on
-        Ctrl+C.
+        `REFRESH` to update the active environment, `ALLOW_ONCE` to continue
+        this session, `REMEMBER` to mute this exact mismatch for this checkout,
+        `CANCELLED` to abort the launch (chosen "Abort launch", Esc, or Ctrl+D —
+        `abort_on_deny` collapses all three into one outcome, so `DENY` is never
+        returned), or `INTERRUPTED` on Ctrl+C.
     """
     console.print()
     console.print(
@@ -3499,6 +3519,7 @@ def prompt_for_dep_floor_mismatch(
         remember_label="Continue and hide until versions change",
         allow_label="Continue this session only",
         deny_label="Abort launch",
+        refresh_label="Refresh environment now",
         deny_first=True,
         abort_on_deny=True,
     )
@@ -3510,10 +3531,11 @@ def _select_trust_action(
     remember_label: str = "Allow for this project — until changed",
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
+    refresh_label: str | None = None,
     deny_first: bool = False,
     abort_on_deny: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome:
-    """Choose whether to allow once, remember, or deny a project-scoped subject.
+    """Choose an action for a project trust or dependency-floor prompt.
 
     Falls back to a text prompt when the inline picker cannot run. Every failure
     mode resolves to a decision the caller can act on without knowing which
@@ -3527,6 +3549,7 @@ def _select_trust_action(
             inline picker.
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
+        refresh_label: Label for an explicit environment refresh, when offered.
         deny_first: Forwarded to the picker to list the deny option first.
         abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
             on every input path (picker, typed answer, and EOF), so prompts
@@ -3543,6 +3566,7 @@ def _select_trust_action(
         remember_label=remember_label,
         allow_label=allow_label,
         deny_label=deny_label,
+        refresh_label=refresh_label,
         deny_first=deny_first,
     )
     if selected is not None:
@@ -3551,16 +3575,28 @@ def _select_trust_action(
         return selected
 
     # Mirror the caller's labels: for the dep-floor prompt the choices are
-    # continue / mute / abort, and a hardcoded "allow once / deny" would
+    # refresh / continue / mute / abort, and a hardcoded "allow once / deny" would
     # misdescribe what the default does. Both lines go to stderr, where the
     # rest of the prompt already went; passing the question to `input()`
     # instead would split it onto stdout, so `dcode 2>log` would show a bare
     # question with all of its context redirected away.
-    console.print(
-        f"[dim]{allow_label} [y] · {remember_label} [r] · {deny_label} [N][/dim]",
-        highlight=False,
-    )
-    console.print("Choose [y/r/N]: ", end="", highlight=False)
+    if refresh_label is None:
+        choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
+        prompt = "Choose [y/r/N]: "
+    elif deny_first:
+        choices = (
+            f"{deny_label} [N] · {refresh_label} [u] · "
+            f"{allow_label} [y] · {remember_label} [r]"
+        )
+        prompt = "Choose [N/u/y/r]: "
+    else:
+        choices = (
+            f"{allow_label} [y] · {remember_label} [r] · "
+            f"{refresh_label} [u] · {deny_label} [N]"
+        )
+        prompt = "Choose [y/r/u/N]: "
+    console.print(f"[dim]{choices}[/dim]", highlight=False)
+    console.print(prompt, end="", highlight=False)
     try:
         answer = input().strip().lower()
     except KeyboardInterrupt:
@@ -3571,6 +3607,8 @@ def _select_trust_action(
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
         return _TrustAction.REMEMBER
+    if refresh_label is not None and answer in {"u", "update", "f", "refresh"}:
+        return _TrustAction.REFRESH
     return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 
 

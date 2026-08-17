@@ -50,7 +50,12 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Override _generate to capture inputs and outputs."""
+        """Override _generate to capture inputs and outputs.
+
+        Only the non-streaming path is intercepted. `ainvoke` reaches this
+        through `BaseChatModel._agenerate`, but a future switch to streaming
+        would route through `_stream` instead and leave `captured_calls` empty.
+        """
         result = super()._generate(
             messages, stop=stop, run_manager=run_manager, **kwargs
         )
@@ -116,7 +121,16 @@ def mock_settings(
 
 
 class TestDeepAgentsCLIEndToEnd:
-    """Test suite for end-to-end deepagents-code functionality with fake LLM."""
+    """Test suite for end-to-end deepagents-code functionality with fake LLM.
+
+    These invoke the graph asynchronously because that is what the CLI does:
+    every production entrypoint streams (`app.py`, `tui/textual_adapter.py`,
+    `client/non_interactive.py`, `client/remote_client.py`), so the synchronous
+    path these tests once used covered a graph traversal no user reaches. Driving
+    the async path also keeps them off the bounded synchronous Pregel executor,
+    which starves under `pytest-xdist` oversubscription and presents as a hang.
+    Do not convert these back to `invoke`.
+    """
 
     async def test_cli_agent_with_fake_llm_basic(self, tmp_path: Path) -> None:
         """Test basic CLI agent functionality with a fake LLM model.

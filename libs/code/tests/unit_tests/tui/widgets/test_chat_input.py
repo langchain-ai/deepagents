@@ -4727,6 +4727,30 @@ class TestDroppedFolderPaste:
 class TestPathPayloadDetectionGating:
     """Filesystem classification stays off the synchronous Changed handler."""
 
+    async def test_unregistered_slash_command_bulk_paste_keeps_command_mode(
+        self,
+    ) -> None:
+        """An unresolved slash command must not acquire dropped-path provenance."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await chat._text_area._on_paste(events.Paste("/custom-command"))
+            chat._text_area.insert("/custom-command")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._dropped_path_draft is None
+
+            chat.dismiss_completion()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/custom-command"
+            assert app.submitted[0].mode == "command"
+
     async def test_bulk_text_change_uses_shape_without_filesystem_probe(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

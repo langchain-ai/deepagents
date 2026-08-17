@@ -1305,6 +1305,9 @@ class ChatTextArea(PasteBurstTextArea):
             self.post_message(self.PastedText(event.text))
             return
 
+        if event.text.lstrip().startswith("/") and self._chat_input_owner is not None:
+            self._chat_input_owner._pending_unresolved_slash_paste_events += 1
+
         # Don't call super() here — Textual's MRO dispatch already calls
         # TextArea._on_paste after this handler returns. Calling super()
         # would insert the text a second time, duplicating the paste.
@@ -1632,6 +1635,12 @@ class ChatInput(Vertical):
         # for an exact path such as `/tools`.
         self._pending_dropped_path_change_events = 0
 
+        # A slash-prefixed paste that did not resolve as a filesystem entry
+        # must still enter command mode. Its next Changed event is otherwise
+        # indistinguishable from terminals that insert a dropped path as plain
+        # text, which use the shape-only fallback below.
+        self._pending_unresolved_slash_paste_events = 0
+
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
@@ -1871,6 +1880,9 @@ class ChatInput(Vertical):
         explicit_drop_change = self._pending_dropped_path_change_events > 0
         if explicit_drop_change:
             self._pending_dropped_path_change_events -= 1
+        unresolved_slash_paste = self._pending_unresolved_slash_paste_events > 0
+        if unresolved_slash_paste:
+            self._pending_unresolved_slash_paste_events -= 1
         prefix_len = self._common_prefix_len(previous_text, text)
         suffix_len = self._common_suffix_len(
             previous_text, text, after_prefix_len=prefix_len
@@ -1891,6 +1903,7 @@ class ChatInput(Vertical):
             is_bulk_change
             and len(text.strip()) > 1
             and draft is None
+            and not unresolved_slash_paste
             and not self._matches_command_prefix(text)
         ):
             from deepagents_code.input import looks_like_dropped_payload
@@ -2768,6 +2781,8 @@ class ChatInput(Vertical):
         elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
             self._collapse_and_insert_paste(pasted)
         else:
+            if pasted.lstrip().startswith("/"):
+                self._pending_unresolved_slash_paste_events += 1
             self._text_area.insert(pasted)
 
         self._text_area.focus()
@@ -2796,6 +2811,8 @@ class ChatInput(Vertical):
         elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
             self._collapse_and_insert_paste(pasted)
         else:
+            if pasted.lstrip().startswith("/"):
+                self._pending_unresolved_slash_paste_events += 1
             self._text_area.insert(pasted)
 
         self._text_area.focus()

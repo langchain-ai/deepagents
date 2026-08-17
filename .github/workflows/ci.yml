@@ -20,8 +20,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# `pull-requests: read` lets the called `_test.yml` reusable workflow read live
+# PR labels (re-runs replay the original event payload, so the API is the only
+# fresh source). A called workflow's token can only narrow the caller's grants.
+# The issues labels endpoint it uses accepts either `issues: read` or
+# `pull-requests: read`, so no `issues` grant is needed here.
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   UV_NO_SYNC: "true"
@@ -62,6 +68,10 @@ jobs:
           # NOT in that glob" — causing unrelated files (e.g. .github/
           # templates) to match every filter and trigger full CI.
           # See: https://github.com/dorny/paths-filter/issues/97
+          # Packages that editable-install the SDK (`deepagents = { path = ... }`)
+          # must include 'libs/deepagents/**' so an SDK change runs their tests
+          # too — otherwise a breaking SDK change merges green and only fails
+          # on main, where every job runs unconditionally.
           filters: |
             deepagents:
               - 'libs/deepagents/**'
@@ -78,6 +88,7 @@ jobs:
               - '.github/actions/**'
             code:
               - 'libs/code/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -92,6 +103,7 @@ jobs:
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
+              - 'libs/deepagents/**'
               # The evals test suite asserts on its own workflow files (e.g.
               # test_harbor_langsmith_integration.py reads harbor.yml and
               # _eval.yml), so editing any eval workflow must run the evals
@@ -116,30 +128,35 @@ jobs:
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             runloop:
               - 'libs/partners/runloop/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             vercel:
               - 'libs/partners/vercel/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
             quickjs:
               - 'libs/partners/quickjs/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -435,6 +452,58 @@ jobs:
           echo "$STATUS"
           echo "$STATUS" | grep 'nothing to commit, working tree clean'
 
+  drbench-dataset:
+    name: "🗂️ Build DRBench dataset"
+    needs: changes
+    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    # `datasets/drbench-evals` commits no task directories: all 100 are generated from
+    # upstream's configs at the pinned commit. Since the generated tree is no longer in
+    # the PR diff, this job is what proves generation still works and is reproducible.
+    # `make dataset-check` builds the dataset twice and diffs -- catching a
+    # nondeterministic generator, which would otherwise silently give this runner and a
+    # developer's laptop different datasets and make their scores incomparable.
+    env:
+      UV_FROZEN: "true"
+    defaults:
+      run:
+        working-directory: "libs/evals"
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "🐍 Set up Python 3.12 + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: drbench-dataset
+          working-directory: "libs/evals"
+
+      - name: "📦 Install Dependencies"
+        shell: bash
+        run: uv sync
+
+      - name: "🔁 Verify generation is deterministic"
+        shell: bash
+        run: make dataset-check
+
+      - name: "🗂️ Build the dataset in place"
+        shell: bash
+        run: make dataset
+
+      # The generated task directories are git-ignored, so building them must leave the
+      # tree clean. A failure here means a generated path escaped .gitignore.
+      - name: "🧹 Verify Clean Working Directory"
+        shell: bash
+        run: |
+          set -eu
+          STATUS="$(git status)"
+          echo "$STATUS"
+          echo "$STATUS" | grep 'nothing to commit, working tree clean'
+
   # Validates every helper script under .github/scripts/tests/. Job id/name
   # are kept for branch-protection compatibility; rename only with a coordinated PR.
   check-release-options:
@@ -485,6 +554,7 @@ jobs:
       - test-vercel
       - test-quickjs
       - test-quickjs-sdk-smoke
+      - drbench-dataset
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

@@ -108,6 +108,15 @@ effectively unbounded traversal. A resolved value above the ceiling is rejected
 and falls through to the next layer / default.
 """
 
+COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
+"""Context size above which a resumed thread is offered compaction.
+
+Zero or negative disables the suggestion.
+"""
+
+SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
+"""Default warning threshold in USD; zero or negative disables the warning."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -958,7 +967,13 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "together": ("langchain_together", "together"),
     "xai": ("langchain_xai", "xai"),
 }
-"""Provider integration import modules and the extras that install them."""
+"""Provider integration import modules and the extras that install them.
+
+Every import module name here must equal its PyPI distribution name up to
+underscore-for-hyphen substitution -- `provider_package_name` derives the
+distribution from it to build a `pypi.org/project/...` link, and a provider
+whose two names diverge would render a link to a nonexistent project.
+"""
 
 
 def provider_install_extra(provider: str) -> str | None:
@@ -974,6 +989,26 @@ def provider_install_extra(provider: str) -> str | None:
     """
     dependency = _PROVIDER_DEPENDENCIES.get(provider)
     return dependency[1] if dependency else None
+
+
+def provider_package_name(provider: str) -> str | None:
+    """Return the PyPI distribution that provides `provider`, if known.
+
+    Derived from the provider's integration import module by replacing
+    underscores with hyphens (e.g. `langchain_google_genai` ->
+    `langchain-google-genai`), which matches the distribution name for every
+    curated entry -- see the `_PROVIDER_DEPENDENCIES` docstring. This is not
+    PEP 503 normalization, and the result is not validated against PyPI.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`, `"google_genai"`).
+
+    Returns:
+        The distribution name, or `None` when the provider has no curated
+            extra (custom `class_path` providers, ambient-auth providers, etc.).
+    """
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    return dependency[0].replace("_", "-") if dependency else None
 
 
 def is_provider_package_installed(provider: str) -> bool:
@@ -1132,6 +1167,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Override kitty-keyboard detection (1 forces on, 0 forces off).",
         kind=OptionKind.BOOL,
         env_var=_env_vars.KITTY_KEYBOARD,
+    ),
+    ConfigOption(
+        key="display.show_diff_line_numbers",
+        group="Display",
+        summary="Show file line numbers in diff hunks.",
+        kind=OptionKind.BOOL,
+        default=True,
+        toml_keys=("ui", "show_diff_line_numbers"),
     ),
     ConfigOption(
         key="display.show_scrollbar",
@@ -1473,6 +1516,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Threads (config.toml-only; structured column table excepted) ---
     ConfigOption(
+        key="threads.compact_on_resume_threshold",
+        group="Threads",
+        summary=(
+            "Offer to compact a resumed thread above this context size (0 disables)."
+        ),
+        kind=OptionKind.INT,
+        default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+        toml_keys=("threads", "compact_on_resume_threshold"),
+    ),
+    ConfigOption(
         key="threads.relative_time",
         group="Threads",
         summary="Show thread timestamps as relative time.",
@@ -1498,6 +1551,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("threads", "columns"),
     ),
     # --- Warnings ------------------------------------------------------
+    ConfigOption(
+        key="warnings.session_cost_threshold_usd",
+        group="Warnings",
+        summary=(
+            "Warn once when estimated thread cost exceeds this USD amount (0 disables)."
+        ),
+        kind=OptionKind.FLOAT,
+        default=SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+        toml_keys=("warnings", "session_cost_threshold_usd"),
+    ),
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
@@ -1567,6 +1630,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="MCP server names disabled by the user from the server viewer.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
+    ),
+    # --- Plugins --------------------------------------------------------
+    ConfigOption(
+        key="plugins.auto_update",
+        group="Plugins",
+        summary="Update opted-in plugins after the first prompt; disable globally.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PLUGIN_AUTO_UPDATE,
+        toml_keys=("plugins", "auto_update"),
+        empty_env_is_false=True,
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(
@@ -1688,6 +1762,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.LOG_LEVEL_DELEGATE,
         env_var=_env_vars.LOG_LEVEL,
+    ),
+    ConfigOption(
+        key="debug.dep_floor",
+        group="Debug",
+        summary="Synthesize the stale editable-dependency prompt/warning at launch.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_DEP_FLOOR,
     ),
     ConfigOption(
         key="debug.notifications",

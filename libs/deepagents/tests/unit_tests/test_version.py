@@ -350,6 +350,9 @@ class TestIsEditableInstallAgainstRealMetadata:
         with patch("deepagents._version.distributions", return_value=[corrupt, editable]):
             assert _is_editable_install() is True
 
+    # The deliberately nameless `PathDistribution` below makes importlib.metadata
+    # emit this warning; only this test should tolerate it.
+    @pytest.mark.filterwarnings("ignore:Implicit None on return values is deprecated:DeprecationWarning")
     def test_metadata_less_dist_info_does_not_raise(self, tmp_path: Path, editable_root: Path) -> None:
         """A partial install leaves a `*.dist-info` whose real `.name` is `None`.
 

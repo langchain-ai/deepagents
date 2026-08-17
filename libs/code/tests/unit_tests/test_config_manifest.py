@@ -34,6 +34,7 @@ from deepagents_code.config_manifest import (
     option_keys,
     options_with_key_prefix,
     provider_install_extra,
+    provider_package_name,
     resolve_interpreter_kwargs,
     resolve_scalar,
 )
@@ -55,6 +56,32 @@ def _declared_deepagents_env_vars() -> set[str]:
         and isinstance(value, str)
         and value.startswith("DEEPAGENTS_CODE_")
     }
+
+
+def test_show_diff_line_numbers_defaults_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Diff hunk line numbers remain enabled when app config is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.app import _load_show_diff_line_numbers
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    assert _load_show_diff_line_numbers() is True
+
+
+def test_show_diff_line_numbers_reads_app_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`[ui].show_diff_line_numbers` can disable the diff gutter."""
+    from deepagents_code import config_manifest
+    from deepagents_code.app import _load_show_diff_line_numbers
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"ui": {"show_diff_line_numbers": False}},
+    )
+    assert _load_show_diff_line_numbers() is False
 
 
 # --- Drift / coverage -------------------------------------------------------
@@ -470,6 +497,36 @@ def test_provider_install_extra_extra_only_provider() -> None:
 def test_provider_install_extra_unknown_provider() -> None:
     """Providers without a curated extra resolve to `None`."""
     assert provider_install_extra("not-a-real-provider") is None
+
+
+def test_provider_package_name_known_provider() -> None:
+    """Known providers resolve to their PyPI distribution name."""
+    assert provider_package_name("baseten") == "langchain-baseten"
+    # Every underscore in the import module becomes a hyphen, not just the
+    # first -- `nvidia` is the entry with the most.
+    assert provider_package_name("nvidia") == "langchain-nvidia-ai-endpoints"
+    assert provider_package_name("google_genai") == "langchain-google-genai"
+
+
+def test_provider_package_name_differs_from_extra() -> None:
+    """The distribution name is not the extra name.
+
+    `provider_package_name` feeds a `pypi.org/project/...` link, so confusing
+    it with `provider_install_extra` would link an unrelated real project.
+    """
+    assert provider_install_extra("google_vertexai") == "vertex"
+    assert provider_package_name("google_vertexai") == "langchain-google-vertexai"
+
+
+def test_provider_package_name_aliased_providers() -> None:
+    """Providers sharing an integration resolve to the same distribution."""
+    assert provider_package_name("azure_openai") == "langchain-openai"
+    assert provider_package_name("openai") == "langchain-openai"
+
+
+def test_provider_package_name_unknown_provider() -> None:
+    """Providers without a curated extra resolve to `None`."""
+    assert provider_package_name("not-a-real-provider") is None
 
 
 def test_is_provider_package_installed_unknown_provider() -> None:
@@ -1624,6 +1681,16 @@ def test_resolve_bool_presence_enables_on_any_value(monkeypatch) -> None:
     monkeypatch.setenv(opt.env_var, "")
     # An empty value is unset (see resolve_scalar), so it falls back to default.
     assert resolve_scalar(opt, toml_data={}) == (False, "default")
+
+
+@pytest.mark.parametrize("value", ["0", "false"])
+def test_debug_dep_floor_uses_boolean_semantics(monkeypatch, value: str) -> None:
+    """Config inspection agrees with the runtime for explicitly falsy values."""
+    opt = get_option("debug.dep_floor")
+    assert opt is not None
+    assert opt.kind is OptionKind.BOOL
+    monkeypatch.setenv(_env_vars.DEBUG_DEP_FLOOR, value)
+    assert resolve_scalar(opt, toml_data={})[0] is False
 
 
 def test_resolve_malformed_int_env_falls_back_with_warning(monkeypatch, caplog) -> None:

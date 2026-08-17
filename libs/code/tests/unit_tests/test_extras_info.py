@@ -130,20 +130,20 @@ def test_real_distribution_skips_self_references() -> None:
             assert pkg_name.lower() != "deepagents-code"
 
 
-def test_missing_packages_are_omitted() -> None:
+def test_incomplete_extras_are_omitted() -> None:
     mock_dist = MagicMock()
     mock_dist.requires = [
         "langchain-anthropic>=1.0.0 ; extra == 'anthropic'",
         "fake-absent-package>=1.0.0 ; extra == 'custom'",
-        "partially-present>=1.0.0 ; extra == 'mixed'",
-        "also-missing>=1.0.0 ; extra == 'mixed'",
+        "aiohttp>=3.14.3 ; extra == 'nvidia'",
+        "langchain-nvidia-ai-endpoints>=1.4.3 ; extra == 'nvidia'",
     ]
 
     def fake_version(name: str) -> str:
         if name == "langchain-anthropic":
             return "1.4.0"
-        if name == "partially-present":
-            return "2.0.0"
+        if name == "aiohttp":
+            return "3.14.3"
         raise PackageNotFoundError(name)
 
     with (
@@ -152,11 +152,34 @@ def test_missing_packages_are_omitted() -> None:
     ):
         extras = get_extras_status()
 
-    # Fully absent extras disappear; partially present extras keep only
-    # the installed packages.
+    assert extras == {"anthropic": [("langchain-anthropic", "1.4.0")]}
+
+
+def test_complete_multi_package_extras_are_kept() -> None:
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "aiohttp>=3.14.3 ; extra == 'nvidia'",
+        "langchain-nvidia-ai-endpoints>=1.4.3 ; extra == 'nvidia'",
+    ]
+
+    def fake_version(name: str) -> str:
+        if name == "aiohttp":
+            return "3.14.3"
+        if name == "langchain-nvidia-ai-endpoints":
+            return "1.4.3"
+        raise PackageNotFoundError(name)
+
+    with (
+        patch("deepagents_code.extras_info.distribution", return_value=mock_dist),
+        patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
+    ):
+        extras = get_extras_status()
+
     assert extras == {
-        "anthropic": [("langchain-anthropic", "1.4.0")],
-        "mixed": [("partially-present", "2.0.0")],
+        "nvidia": [
+            ("aiohttp", "3.14.3"),
+            ("langchain-nvidia-ai-endpoints", "1.4.3"),
+        ],
     }
 
 

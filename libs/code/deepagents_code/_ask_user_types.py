@@ -195,9 +195,11 @@ ASK_USER_CANCELLED_SUMMARY = "Question cancelled"
 Rewording it changes that hook contract. Not rendered on any row: a live cancel
 calls `set_rejected` (which records no output), and a transcript of `(cancelled)`
 placeholders from a non-TUI client is summarized from the recorded status like
-any other, so it reads as `ASK_USER_ANSWERED_SUMMARY`. The cancel banner in
-`textual_adapter` shares this wording but deliberately not this constant — it is
-user-facing prose, not the hook contract.
+any other, so it reads as `ASK_USER_ANSWERED_SUMMARY`. The dismissal banner in
+`textual_adapter` deliberately does not use this constant, and no longer even
+shares its wording — the banner says "dismissed" where this says "cancelled".
+That divergence is intentional: the banner is user-facing prose free to be
+reworded, this is the hook contract. Do not "de-duplicate" them.
 """
 
 ASK_USER_FAILED_SUMMARY: AskUserRowSummary = "Question failed"

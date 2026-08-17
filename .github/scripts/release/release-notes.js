@@ -23,6 +23,7 @@ const CONTENT_END = '<!-- release-notes-content-end -->';
 const STALE_MARKER = '<!-- release-notes-stale';
 const FAILURE_MARKER = '<!-- release-notes-draft-failure';
 const APPLY_FAILURE_MARKER = '<!-- release-notes-apply-failure';
+const REFRESH_MARKER = '<!-- release-notes-refreshed';
 // Prefix shared by every marker above. validateDraftOutput rejects it wholesale so
 // model output cannot forge any of them.
 const MARKER_PREFIX = '<!-- release-notes-';
@@ -358,6 +359,16 @@ function latestApplied({ comments, login, id, component, version }) {
 // limit keeps both readable. Applies to instructions only, not the command.
 const INSTRUCTIONS_MAX_LENGTH = 500;
 
+// Escape HTML metacharacters in the instructions echo so the <details>
+// wrapper cannot be broken by instruction text that mentions HTML.
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // Tokens that must never reach the override comment via the instructions echo.
 // parseOverrideComment locates the curated section by scanning for the first
 // CONTENT_START/CONTENT_END, and validateDraftOutput rejects MARKER_PREFIX and
@@ -433,8 +444,11 @@ function overrideBody({ component, version, head, headingHash, fingerprint, sect
     `Review and edit the release notes between the content markers below as needed. Keep the version heading intact. To regenerate with steering instead of editing by hand, run \`${COMMAND_MENTION} draft <instructions>\`.`,
     // Echo the maintainer's draft instructions so the prompt that produced this
     // draft is auditable on the PR, and so a later draft with different
-    // instructions produces a visibly distinct comment.
-    ...(instructions ? ['', `Drafted with maintainer instructions: ${instructions}`] : []),
+    // instructions produces a visibly distinct comment. Escape HTML so the
+    // instructions cannot break the <details> wrapper or inject markup.
+    ...(instructions
+        ? ['', '<details>', '<summary>📝 <strong>Drafted with maintainer instructions</strong></summary>', '', escapeHtml(instructions), '</details>']
+        : []),
     '',
     '---',
     CONTENT_START,
@@ -513,6 +527,9 @@ async function createComment(github, owner, repo, number, body) {
   return github.rest.issues.createComment({ owner, repo, issue_number: number, body });
 }
 
+// Upserts the latest bot-owned comment carrying `marker`. Returns
+// { comment, created } so a caller can tell a fresh comment from an in-place
+// edit — an edit is what maintainers would otherwise never notice.
 async function upsertOwnMarkedComment({ github, owner, repo, number, comments, login, id, marker, body }) {
   const existing = [...comments]
     .filter(comment => matchesBot(comment, login, id) && (comment.body ?? '').startsWith(`<!-- ${marker}\n`))
@@ -524,10 +541,53 @@ async function upsertOwnMarkedComment({ github, owner, repo, number, comments, l
       comment_id: existing.id,
       body,
     });
-    return response.data;
+    return { comment: response.data, created: false };
   }
   const response = await createComment(github, owner, repo, number, body);
-  return response.data;
+  return { comment: response.data, created: true };
+}
+
+// Re-drafting replaces the curated-notes comment in place, and GitHub surfaces
+// comment edits quietly (no notification, no timeline entry), so a regenerated
+// draft is easy to miss — the PR looks unchanged unless someone re-opens the
+// original comment. After an in-place update, post a small pointer comment so
+// the refresh shows up in the timeline. Best-effort: a failure here must not
+// turn an already-successful draft post into a job failure. The pointer body
+// must never include COMMAND_MENTION; bot-authored comments are already dropped
+// by validateTrigger and by the workflow's author_association gate, and keeping
+// the mention out means neither of those is the only thing standing between an
+// echo and a self-trigger loop.
+//
+// REFRESH_MARKER is only there for humans and `grep` — nothing parses it back,
+// and unlike every other marked comment these notices are deliberately *not*
+// upserted. Editing a prior notice in place would be exactly as silent as the
+// problem being solved, so one notice per re-draft is the point.
+async function announceRefresh({ github, owner, repo, number, core, refreshedComment, component, version }) {
+  // Misuse must fail here rather than inside the catch below, where it would
+  // replace a real API error with a TypeError from an absent `core`.
+  if (typeof core?.warning !== 'function') {
+    throw new TypeError('announceRefresh requires a core with a warning() method');
+  }
+  // `||`, not `??`: an empty-string html_url would otherwise produce a dead link.
+  const url = refreshedComment.html_url
+    || `https://github.com/${owner}/${repo}/pull/${number}#issuecomment-${refreshedComment.id}`;
+  try {
+    await createComment(
+      github,
+      owner,
+      repo,
+      number,
+      `${REFRESH_MARKER} for ${component} ${version} -->\nThe curated release-notes comment on this PR was regenerated in place; review the latest draft in [the original comment](${url}).`,
+    );
+  } catch (error) {
+    // Include the status: a transient 403 rate limit and a permanent 422 body
+    // rejection both land here, but only the latter will recur on every
+    // re-draft and needs a human to notice it in the run log.
+    const status = error?.status ? ` (HTTP ${error.status})` : '';
+    core.warning(
+      `Draft comment ${refreshedComment.id} on ${owner}/${repo}#${number} (${component} ${version}) was updated but posting the refreshed notice failed${status}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function getPr(github, owner, repo, number) {
@@ -624,6 +684,26 @@ async function validateTrigger({ github, context, core, botLogin = null, botId =
       }
       return { shouldRun: false };
     }
+    // A manual command otherwise passes silently into a queued Actions run,
+    // leaving the maintainer unsure whether it registered at all. Unlike the
+    // rejection replies above this is not gated on `canNotify`: clearing the
+    // write-permission check already proves the commenter is an insider.
+    // Best-effort by design — a createComment failure (e.g. secondary rate
+    // limit) must not fail validation and drop a command that passed every
+    // check. Never include COMMAND_MENTION here, or the ack re-triggers us.
+    try {
+      await createComment(
+        github,
+        owner,
+        repo,
+        number,
+        `Running \`${command}\` for the \`${target.component}\` release PR; the release-notes comment on this PR will be created or updated when the run finishes.`,
+      );
+    } catch (error) {
+      core.warning(
+        `Failed to post acknowledgment comment for ${command} on PR #${number}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   const result = {
@@ -706,7 +786,12 @@ function validateDraftOutput(output) {
   return notes;
 }
 
-async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, login, id }) {
+// `core` is required, not optional: an absent one would skip the refresh notice
+// with no throw and no warning, silently restoring the very bug it exists to fix.
+async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, login, id, core }) {
+  if (typeof core?.warning !== 'function') {
+    throw new TypeError('postDraft requires a core with a warning() method');
+  }
   await authenticatedBot(github, appSlug, login, id);
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   const pr = await getPr(github, owner, repo, state.number);
@@ -723,7 +808,7 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
   const notes = validateDraftOutput(fs.readFileSync(outputFile, 'utf8'));
   const section = `${state.heading}\n\n${notes.trim()}\n`;
   const comments = await listComments(github, owner, repo, state.number);
-  return upsertOwnMarkedComment({
+  const { comment, created } = await upsertOwnMarkedComment({
     github,
     owner,
     repo,
@@ -742,6 +827,19 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
       instructions: state.instructions ?? '',
     }),
   });
+  if (!created) {
+    await announceRefresh({
+      github,
+      owner,
+      repo,
+      number: state.number,
+      core,
+      refreshedComment: comment,
+      component: state.component,
+      version: state.version,
+    });
+  }
+  return comment;
 }
 
 // Post a bot-authored failure notice once per PR head (deduped by the head-scoped
@@ -928,7 +1026,7 @@ async function publishAppliedState({ github, owner, repo, stateFile, appliedHead
   });
   await validateReleaseBranchHead({ github, owner, repo, releaseBranch: target.releaseBranch, expectedHead: appliedHead });
   await github.rest.pulls.update({ owner, repo, pull_number: state.number, body: state.body });
-  return upsertOwnMarkedComment({
+  const { comment } = await upsertOwnMarkedComment({
     github,
     owner,
     repo,
@@ -948,6 +1046,7 @@ async function publishAppliedState({ github, owner, repo, stateFile, appliedHead
       contentHash: state.contentHash,
     }),
   });
+  return comment;
 }
 
 async function fetchChangelog(github, owner, repo, ref, changelogPath) {
@@ -1222,6 +1321,7 @@ module.exports = {
   CONTENT_END,
   CONTENT_START,
   RELEASE_BRANCH_PREFIX,
+  announceRefresh,
   canonical,
   changelogFingerprint,
   checkCuratedState,

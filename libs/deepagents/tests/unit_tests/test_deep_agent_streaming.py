@@ -275,10 +275,10 @@ class TestCreateDeepAgentAstreamV2:
 
         The `task` tool catches the exception and converts it into an error
         `ToolMessage` for that tool call, so nothing raises through Pregel into
-        the parent stream: the subagent handle still surfaces on `run.subagents`
-        and reaches the completed terminal state, the parent receives the error
-        result and recovers, and sibling task calls in the same batch are not
-        discarded.
+        the parent stream. The subagent handle still surfaces on
+        `run.subagents` with its failed terminal state, while the parent receives
+        the error result and recovers without discarding sibling task calls in the
+        same batch.
         """
         agent = _build_agent_with_failing_subagent()
         run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
@@ -302,8 +302,8 @@ class TestCreateDeepAgentAstreamV2:
         (sub,) = handles
         assert isinstance(sub, AsyncSubagentRunStream)
         assert sub.name == "researcher"
-        assert sub.status == "completed"
-        assert sub.error is None
+        assert sub.status == "failed"
+        assert sub.error is not None
 
         # The parent receives the isolated error ToolMessage and recovers.
         output = await run.output()

@@ -489,10 +489,17 @@ def _apply_overrides(
                 "continuing with current model",
                 model,
             )
+            # `model_params_known=False` deliberately: the override never
+            # reached `_build_overrides`, so which params are in effect is
+            # exactly what this path does not know. Writing the default `None`
+            # instead would clear the checkpoint's params while the app still
+            # holds its override, and the cold-cache identity check would then
+            # compare a populated map against `None` on every send -- a
+            # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
-                model_params_known=True,
+                model_params_known=False,
             )
 
     updated = _build_overrides(
@@ -549,10 +556,17 @@ async def _apply_overrides_async(
                 "continuing with current model",
                 model,
             )
+            # `model_params_known=False` deliberately: the override never
+            # reached `_build_overrides`, so which params are in effect is
+            # exactly what this path does not know. Writing the default `None`
+            # instead would clear the checkpoint's params while the app still
+            # holds its override, and the cold-cache identity check would then
+            # compare a populated map against `None` on every send -- a
+            # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
-                model_params_known=True,
+                model_params_known=False,
             )
 
     updated = _build_overrides(

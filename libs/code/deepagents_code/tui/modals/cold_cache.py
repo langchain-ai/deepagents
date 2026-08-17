@@ -12,18 +12,14 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_code._session_stats import format_cost_estimate, format_token_count
-from deepagents_code.cold_cache import (
-    ColdCacheReason,
-    PromptCachePolicy,
-    RewarmEstimate,
-    format_cache_age,
-    format_cache_window,
-)
+from deepagents_code.cold_cache import format_cache_age, format_cache_window
 from deepagents_code.config import get_glyphs
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
+
+    from deepagents_code.cold_cache import ColdCacheWarning
 
 
 class ColdCacheChoice(Enum):
@@ -41,15 +37,6 @@ class ColdCacheChoice(Enum):
     CANCEL = "cancel"
     """Keep the draft instead of sending."""
 
-    @property
-    def sends(self) -> bool:
-        """Whether this choice authorizes dispatching the turn.
-
-        Returns:
-            `True` for the send variants, `False` for cancel.
-        """
-        return self in SEND_CHOICES
-
 
 SEND_CHOICES: frozenset[ColdCacheChoice] = frozenset(
     {
@@ -60,9 +47,14 @@ SEND_CHOICES: frozenset[ColdCacheChoice] = frozenset(
 )
 """Choices that authorize spend.
 
-Lives with the enum so callers ask the type rather than restating the set. A
-new variant is excluded until added here, which fails closed: an unlisted
-choice is treated as cancel rather than silently sending.
+Lives with the enum so callers restate the set in one place only. A new variant
+is excluded until added here, which fails closed: an unlisted choice is treated
+as cancel rather than silently sending.
+
+Membership is the required spelling rather than a property on the enum, because
+the value under test is `ColdCacheChoice | None` -- a programmatic pop dismisses
+with `None`, and `None in SEND_CHOICES` is safely `False` where an attribute
+access would raise.
 """
 
 
@@ -188,30 +180,20 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
     }
     """
 
-    def __init__(
-        self,
-        *,
-        policy: PromptCachePolicy,
-        estimate: RewarmEstimate,
-        context_tokens: int,
-        age_seconds: float | None,
-        reason: ColdCacheReason = "idle",
-    ) -> None:
+    def __init__(self, warning: ColdCacheWarning) -> None:
         """Initialize the warning from validated policy and pricing data.
 
+        Takes the whole `ColdCacheWarning` rather than its fields separately so
+        the `age_seconds`/`reason` pairing it enforces cannot be split apart at
+        this boundary. Passing them individually let an `age_unknown` warning
+        arrive with a defaulted `reason`, which rendered "idle for 0m" -- an
+        idle duration the caller had explicitly determined it did not know.
+
         Args:
-            policy: Resolved provider retention and pricing treatment.
-            estimate: Cold and incremental cost figures to present.
-            context_tokens: Prefix size the copy quotes.
-            age_seconds: Idle time, or `None` when `reason` is `age_unknown`.
-            reason: Why the cache is treated as cold; selects the copy.
+            warning: Validated policy, pricing, and cause for this turn.
         """
         super().__init__()
-        self._policy = policy
-        self._estimate = estimate
-        self._context_tokens = context_tokens
-        self._age_seconds = age_seconds
-        self._reason = reason
+        self._warning = warning
         self._options: list[_ChoiceOption] = []
         self._selected = 0
 
@@ -221,57 +203,73 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         Returns:
             Plain-text warning body.
         """
-        window = format_cache_window(self._policy.window_seconds)
-        match self._reason:
+        policy = self._warning.policy
+        window = format_cache_window(policy.window_seconds)
+        expires = policy.confidence == "expired"
+        # `certain` is set by the arm that already knows the answer rather than
+        # re-tested afterwards, so the cost sentence cannot drift out of step
+        # with the status sentence above it.
+        match self._warning.reason:
             case "identity_changed":
+                certain = True
                 status = (
                     "The active model or prompt-cache settings differ from the "
                     "last successful turn, so the previous cached prefix "
                     "cannot be reused."
                 )
             case "age_unknown":
+                certain = False
+                # Qualified by `confidence` for the same reason the `idle` arm
+                # is: a bare "keeps entries for 30m" states a ceiling, and for
+                # GPT-5.6+ that window is a guaranteed floor the provider may
+                # exceed. Saying it unqualified inverts the one distinction
+                # `CacheConfidence` exists to preserve.
+                retention = (
+                    f"keeps entries for at most {window}"
+                    if expires
+                    else f"only guarantees {window} of retention"
+                )
                 status = (
                     "There is no record of when this thread last reached the "
                     "model, so the cached prefix cannot be assumed to still "
-                    f"exist ({self._policy.provider_name} keeps entries for "
-                    f"{window})."
+                    f"exist ({policy.provider_name} {retention})."
                 )
             case "idle":
-                age = format_cache_age(self._age_seconds or 0.0)
-                if self._policy.confidence == "expired":
+                certain = expires
+                age = format_cache_age(self._warning.age_seconds or 0.0)
+                if expires:
                     status = (
                         f"This thread has been idle for {age}, longer than "
-                        f"{self._policy.provider_name}'s {window} prompt-cache "
+                        f"{policy.provider_name}'s {window} prompt-cache "
                         "lifetime. The cached conversation prefix has likely "
                         "expired."
                     )
                 else:
                     status = (
                         f"This thread has been idle for {age}, longer than "
-                        f"{self._policy.provider_name}'s {window} minimum "
+                        f"{policy.provider_name}'s {window} minimum "
                         "cache-retention window. The provider may still have "
                         "retained the cache."
                     )
             case _:  # pragma: no cover - exhaustiveness guard
-                assert_never(self._reason)
+                assert_never(self._warning.reason)
         # Both figures are worst-case estimates from synthetic usage payloads:
         # the cache may be partially warm and the actual spend lower, so the
         # modal rounds them and frames the total as an "up to" bound and the
-        # delta as a "roughly" figure. Only `identity_changed` is a certainty;
-        # `may_be_cold` and `age_unknown` both leave open that the cache is
-        # intact, so the cost sentence stays conditional on it having expired.
+        # delta as a "roughly" figure. Only `identity_changed` and an expired
+        # window are certainties; `may_be_cold` and `age_unknown` both leave
+        # open that the cache is intact, so the cost sentence stays conditional
+        # on it having expired.
         conditional = (
-            "Re-processing"
-            if self._reason == "identity_changed"
-            or (self._reason == "idle" and self._policy.confidence == "expired")
-            else "If the cache has expired, re-processing"
+            "Re-processing" if certain else "If the cache has expired, re-processing"
         )
+        estimate = self._warning.estimate
         cost = (
             f"{conditional} approximately "
-            f"{format_token_count(self._context_tokens)} history tokens may "
-            f"cost up to {format_cost_estimate(self._estimate.cold_cost_usd)} "
+            f"{format_token_count(self._warning.context_tokens)} history tokens "
+            f"may cost up to {format_cost_estimate(estimate.cold_cost_usd)} "
             f"in input tokens, roughly "
-            f"{format_cost_estimate(self._estimate.incremental_cost_usd)} more "
+            f"{format_cost_estimate(estimate.incremental_cost_usd)} more "
             "than a warm cache hit."
         )
         return f"{status}\n\n{cost}"

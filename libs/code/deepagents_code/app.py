@@ -338,6 +338,43 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     return path, path.read_text(encoding="utf-8")
 
 
+def _load_float_option(
+    key: str,
+    default: float,
+    *,
+    label: str,
+    toml_data: dict[str, Any],
+    minimum: float | None = None,
+) -> float:
+    """Resolve a float config option, falling back to *default* when unusable.
+
+    Args:
+        key: Manifest option key.
+        default: Value used when the option is absent or fails validation.
+        label: Human-readable option name for the invalid-value warning.
+        toml_data: Pre-loaded config data, so callers reading several options
+            parse `config.toml` once.
+        minimum: Lowest accepted value, or `None` to accept any finite float.
+
+    Returns:
+        The configured value, or *default* when it is missing or invalid.
+    """
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+
+    option = get_option(key)
+    value: object = default
+    if option is not None:
+        value, _ = resolve_scalar(option, toml_data=toml_data)
+    if (
+        not isinstance(value, float)
+        or not math.isfinite(value)
+        or (minimum is not None and value < minimum)
+    ):
+        logger.warning("Invalid %s %r; using the default", label, value)
+        return default
+    return value
+
+
 def _coerce_session_cost_usd(value: object) -> float:
     """Coerce a persisted cost to a finite non-negative float.
 
@@ -1028,11 +1065,7 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
-    from deepagents_code.cold_cache import (
-        ColdCacheReason,
-        PromptCachePolicy,
-        RewarmEstimate,
-    )
+    from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
@@ -2270,26 +2303,6 @@ which has much larger gaps, never trips it."""
 
 SubmissionOrigin = Literal["interactive", "external"]
 """Source policy controlling whether a normal message may open a cost modal."""
-
-
-@dataclass(frozen=True, slots=True)
-class _ColdCacheWarning:
-    """Validated data needed to render one advisory warning."""
-
-    policy: PromptCachePolicy
-    estimate: RewarmEstimate
-    context_tokens: int
-
-    age_seconds: float | None
-    """Idle time since the last successful turn.
-
-    `None` exactly when `reason` is `age_unknown`, which is the only case where
-    no usable request time exists. Optional rather than a sentinel so the modal
-    cannot render an age it does not have.
-    """
-
-    reason: ColdCacheReason
-    """Why the cache is treated as cold; selects the modal's copy."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -4390,47 +4403,36 @@ class DeepAgentsApp(App):
         from deepagents_code.config_manifest import (
             COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
-            get_option,
             load_config_toml,
-            resolve_scalar,
         )
 
         toml_data = load_config_toml()
-        cost_warning_option = get_option("warnings.session_cost_threshold_usd")
-        cost_warning_threshold: object = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
-        if cost_warning_option is not None:
-            cost_warning_threshold, _ = resolve_scalar(
-                cost_warning_option, toml_data=toml_data
-            )
-        if not isinstance(cost_warning_threshold, float) or not math.isfinite(
-            cost_warning_threshold
-        ):
-            logger.warning(
-                "Invalid session cost warning threshold %r; using the default",
-                cost_warning_threshold,
-            )
-            cost_warning_threshold = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
-        self._session_cost_warning_threshold_usd = cost_warning_threshold
+        self._session_cost_warning_threshold_usd = _load_float_option(
+            "warnings.session_cost_threshold_usd",
+            SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+            label="session cost warning threshold",
+            toml_data=toml_data,
+        )
         """Configured soft limit for the active thread's estimated cost."""
 
-        cold_cache_option = get_option("warnings.cold_cache_min_delta_usd")
-        cold_cache_threshold: object = COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT
-        if cold_cache_option is not None:
-            cold_cache_threshold, _ = resolve_scalar(
-                cold_cache_option, toml_data=toml_data
-            )
-        if (
-            not isinstance(cold_cache_threshold, float)
-            or not math.isfinite(cold_cache_threshold)
-            or cold_cache_threshold < 0
-        ):
-            logger.warning(
-                "Invalid cold-cache warning threshold %r; using the default",
-                cold_cache_threshold,
-            )
-            cold_cache_threshold = COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT
-        self._cold_cache_warning_threshold_usd = cold_cache_threshold
+        # Negative is rejected here but accepted above: the manifest documents
+        # a negative session-cost threshold as "disabled", while a negative
+        # cold-cache delta has no meaning -- every delta would clear it.
+        self._cold_cache_warning_threshold_usd = _load_float_option(
+            "warnings.cold_cache_min_delta_usd",
+            COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
+            label="cold-cache warning threshold",
+            toml_data=toml_data,
+            minimum=0.0,
+        )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
+
+        self._cold_cache_degraded_notified = False
+        """Whether this session already reported that the warning failed open.
+
+        Latched so a persistent cause cannot toast on every send; see
+        `_notify_cold_cache_degraded_once`.
+        """
 
         self._cold_cache_suppressed_for_session = False
         """Whether the user muted the cold-cache warning until app restart.
@@ -8565,12 +8567,13 @@ class DeepAgentsApp(App):
         raw_timestamp = state_values.get("_last_model_request_at")
         timestamp = parse_cache_timestamp(raw_timestamp)
         if timestamp is None:
-            # Without a parseable request time, cold-cache warnings stay off
-            # until the next successful model request writes a fresh one.
+            # Without a parseable request time the age cannot be computed, so
+            # the next send is treated as `age_unknown` -- which warns rather
+            # than staying silent. It self-heals once any model request
+            # checkpoints a fresh timestamp.
             logger.warning(
-                "Discarding checkpointed _last_model_request_at "
-                "(%s); cold-cache warnings will not fire until the next "
-                "successful model request",
+                "Discarding checkpointed _last_model_request_at (%s); the next "
+                "send is treated as unknown cache age and will warn",
                 type(raw_timestamp).__name__,
             )
         self._last_model_request_at = timestamp.isoformat() if timestamp else None
@@ -8601,6 +8604,25 @@ class DeepAgentsApp(App):
         raw_params = state_values.get("_model_params")
         self._last_cache_model_params = (
             dict(raw_params) if isinstance(raw_params, dict) else None
+        )
+
+    def _stamp_cache_identity_locally(self) -> None:
+        """Record the just-run model as the cache identity, without a checkpoint.
+
+        Used when a turn reached the model but ended without a readable
+        checkpoint (an interrupt, say). The timestamp is "now" rather than the
+        turn's last request time, which the client does not track: within a
+        long turn that slightly understates the true age, and the next
+        checkpoint read corrects it. Understating age is the safe direction
+        here only because the alternative -- leaving the field unset -- warns
+        on every subsequent send with a reason that is plainly false.
+        """
+        from datetime import UTC, datetime
+
+        self._last_model_request_at = datetime.now(UTC).isoformat()
+        self._last_cache_model_spec = self._effective_model_spec() or ""
+        self._last_cache_model_params = (
+            dict(self._model_params_override) if self._model_params_override else None
         )
 
     async def _sync_session_cost_from_checkpoint(self) -> None:
@@ -10972,7 +10994,7 @@ class DeepAgentsApp(App):
     async def _cold_cache_warning_for(
         self,
         message: QueuedMessage,
-    ) -> _ColdCacheWarning | None:
+    ) -> ColdCacheWarning | None:
         """Build a warning when an interactive turn may miss a material cache.
 
         Returns:
@@ -11013,11 +11035,14 @@ class DeepAgentsApp(App):
         last_spec = self._last_cache_model_spec
         last_params = self._last_cache_model_params
 
-        def _evaluate() -> _ColdCacheWarning | None:
+        def _evaluate() -> ColdCacheWarning | None:
             from datetime import UTC, datetime
 
             from deepagents_code.cold_cache import (
+                COLD_CACHE_WARNING_KEY,
+                ColdCacheWarning,
                 RewarmEstimate,
+                cache_identity_params,
                 debug_stand_in_policy,
                 estimate_rewarm_cost,
                 parse_cache_timestamp,
@@ -11053,7 +11078,7 @@ class DeepAgentsApp(App):
             # `debug_forced` bypasses persistent suppression too, so the env
             # var stays a true override rather than silently no-opping for
             # anyone who once chose "Send and never warn again".
-            if not debug_forced and is_warning_suppressed("cold-cache"):
+            if not debug_forced and is_warning_suppressed(COLD_CACHE_WARNING_KEY):
                 return None
             if debug_forced:
                 if policy is None:
@@ -11065,7 +11090,7 @@ class DeepAgentsApp(App):
                         cold_cost_usd=0.0,
                         incremental_cost_usd=0.0,
                     )
-                return _ColdCacheWarning(
+                return ColdCacheWarning(
                     policy=policy,
                     estimate=estimate,
                     context_tokens=tokens,
@@ -11093,6 +11118,11 @@ class DeepAgentsApp(App):
             # self-heals once any model call re-checkpoints a fresh timestamp.
             timestamp = parse_cache_timestamp(timestamp_value)
             age_seconds: float | None = None
+            elapsed = (
+                None
+                if timestamp is None
+                else (datetime.now(UTC) - timestamp).total_seconds()
+            )
             if timestamp is None:
                 reason: ColdCacheReason = "age_unknown"
                 logger.debug(
@@ -11100,9 +11130,25 @@ class DeepAgentsApp(App):
                     "treating the cache as cold",
                     type(timestamp_value).__name__,
                 )
+            elif elapsed is not None and elapsed < 0:
+                # A request time in the future (clock correction, a thread
+                # synced from a skewed machine) is as untrustworthy as an
+                # unparseable one. Clamping it to zero instead would read as
+                # maximally warm and suppress the warning outright, which is
+                # the one reading that silently bills the user.
+                reason = "age_unknown"
+                logger.warning(
+                    "Checkpointed model-request time is %.0fs in the future "
+                    "(clock skew?); treating the cache age as unknown",
+                    -elapsed,
+                )
             else:
-                age_seconds = max((datetime.now(UTC) - timestamp).total_seconds(), 0.0)
-                if model_spec != last_spec or current_params != last_params:
+                age_seconds = max(elapsed or 0.0, 0.0)
+                # Only cache-participating params are compared: `/effort` and
+                # friends rewrite `model_params` without touching the prefix.
+                if model_spec != last_spec or cache_identity_params(
+                    current_params
+                ) != cache_identity_params(last_params):
                     reason = "identity_changed"
                 elif age_seconds > policy.window_seconds:
                     reason = "idle"
@@ -11137,7 +11183,7 @@ class DeepAgentsApp(App):
                     threshold,
                 )
                 return None
-            return _ColdCacheWarning(
+            return ColdCacheWarning(
                 policy=policy,
                 estimate=estimate,
                 context_tokens=context_tokens,
@@ -11152,7 +11198,26 @@ class DeepAgentsApp(App):
                 "Could not evaluate the cold prompt-cache warning; sending normally",
                 exc_info=True,
             )
+            # A failure here sends at full cold-cache price without asking, so
+            # it cannot stay in the log alone: the person paying is the one who
+            # needs to know the protection stopped working. Once per session,
+            # because a persistent cause (a corrupt config file, say) would
+            # otherwise toast on every single send.
+            self._notify_cold_cache_degraded_once()
             return None
+
+    def _notify_cold_cache_degraded_once(self) -> None:
+        """Warn once per session that cold-cache checks are failing open."""
+        if self._cold_cache_degraded_notified:
+            return
+        self._cold_cache_degraded_notified = True
+        self.notify(
+            "Cold prompt-cache cost warnings are unavailable this session; "
+            "messages will send without a cost check. See the log for details.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
 
     def _restore_cold_cache_draft(self, text: str) -> None:
         """Restore a canceled cold-cache submission to an empty chat input."""
@@ -11164,15 +11229,16 @@ class DeepAgentsApp(App):
             self.call_after_refresh(self._chat_input.focus_input)
             return
         self.notify(
-            "Message canceled, but its text could not be restored to the chat input.",
+            "Message canceled. Its text could not be restored to the chat "
+            "input, but pressing Up recalls it from history.",
             severity="warning",
-            timeout=6,
+            timeout=8,
             markup=False,
         )
 
     async def _emit_cold_cache_warning_hook(
         self,
-        warning: _ColdCacheWarning,
+        warning: ColdCacheWarning,
     ) -> None:
         """Notify Hooks v2 before displaying a cold-cache confirmation.
 
@@ -11201,7 +11267,7 @@ class DeepAgentsApp(App):
     async def _confirm_cold_cache_message(
         self,
         message: QueuedMessage,
-        warning: _ColdCacheWarning,
+        warning: ColdCacheWarning,
         thread_id: str | None,
     ) -> None:
         """Resolve a detached cold-cache confirmation and continue safely.
@@ -11215,13 +11281,7 @@ class DeepAgentsApp(App):
             ColdCacheWarningScreen,
         )
 
-        screen = ColdCacheWarningScreen(
-            policy=warning.policy,
-            estimate=warning.estimate,
-            context_tokens=warning.context_tokens,
-            age_seconds=warning.age_seconds,
-            reason=warning.reason,
-        )
+        screen = ColdCacheWarningScreen(warning)
         try:
             # Watchdog-bounded like every other confirmation modal: this
             # continuation holds the single `_schedule_off_message_pump` slot,
@@ -11274,10 +11334,16 @@ class DeepAgentsApp(App):
             )
             return
         if self._lc_thread_id != thread_id:
+            # The draft is deliberately not restored: it belongs to the thread
+            # the user left, and dropping it into a different thread's input is
+            # its own surprise. Say so plainly -- "canceled" alone reads as
+            # deferred rather than discarded -- and point at history, where
+            # `ChatInput` recorded the text at submit time.
             self.notify(
-                "Canceled a pending send because the active thread changed.",
+                "Canceled a pending send because the active thread changed. "
+                "The message was not sent; press Up to recall its text.",
                 severity="warning",
-                timeout=6,
+                timeout=8,
                 markup=False,
             )
             return
@@ -11315,17 +11381,20 @@ class DeepAgentsApp(App):
         Used by the warning modal's "Send and never warn again" choice. The
         setting can be reverted from the `/notifications` settings screen.
         """
-        from deepagents_code.model_config import suppress_warning
+        from deepagents_code.cold_cache import COLD_CACHE_WARNING_KEY
+        from deepagents_code.model_config import suppress_warning_reason
 
         # Guarded like the `/notifications` settings persistence: this runs in
         # a detached continuation ahead of `_process_message`, so an
         # unexpected raise here would silently drop the submitted message.
         try:
-            ok = await asyncio.to_thread(suppress_warning, "cold-cache")
+            reason = await asyncio.to_thread(
+                suppress_warning_reason, COLD_CACHE_WARNING_KEY
+            )
         except Exception:
             logger.warning("Failed to persist cold-cache suppression", exc_info=True)
-            ok = False
-        if ok:
+            reason = "the config file could not be written"
+        if reason is None:
             self.notify(
                 "Won't warn about cold prompt caches again. "
                 "Re-enable from /notifications.",
@@ -11334,11 +11403,14 @@ class DeepAgentsApp(App):
                 markup=False,
             )
         else:
+            # Names the actual cause: a malformed `[warnings]` table and an
+            # unwritable file need different fixes, and a generic "check
+            # permissions" sends the first case to `chmod` a file that was
+            # never the problem.
             self.notify(
-                "Could not save notification preference. "
-                "Check file permissions for ~/.deepagents/config.toml.",
+                f"Could not save notification preference: {reason}.",
                 severity="warning",
-                timeout=6,
+                timeout=8,
                 markup=False,
             )
 
@@ -17576,6 +17648,14 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
+            elif turn_stats.request_count > 0:
+                # An interrupted turn never reads the checkpoint back (its
+                # writes may have been dropped), but the model *was* reached,
+                # and the checkpoint read is the only other thing that advances
+                # the in-memory request time. Leaving it stale would make the
+                # very next send report "no record of when this thread last
+                # reached the model" seconds after a turn that plainly did.
+                self._stamp_cache_identity_locally()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the

@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+logger = logging.getLogger(__name__)
+
+COLD_CACHE_WARNING_KEY = "cold-cache"
+"""Suppression key for the cold-cache warning in `[warnings].suppress`.
+
+Named rather than spelled inline at each site: the reader, the writer, and the
+`/notifications` settings row must agree exactly, and a typo in any one would
+leave the warning firing after the user asked it to stop, with no error
+anywhere to explain why.
+"""
 
 CacheConfidence = Literal["expired", "may_be_cold"]
 """How firmly a passed retention window implies the cached prefix is gone.
@@ -23,18 +38,19 @@ CacheWriteBucket = Literal["generic", "generic_write", "5m"]
 """Which pricing treatment a cold (cache-writing) request receives.
 
 `5m` prices Anthropic's five-minute ephemeral write premium. `generic_write`
-tags the miss as a cache write: GPT-5.6+ bills writes at 1.25x the uncached
-input rate, and omitting the detail would price the miss at plain input.
-`generic` covers misses with no write surcharge, which is how OpenAI priced
-prompt caching before GPT-5.6.
+tags the miss as a cache write, which GPT-5.6+ bills above the plain input
+rate; omitting the detail would price the miss at plain input. The premium's
+current magnitude comes from the pricing catalog, not from here. `generic`
+covers misses with no write surcharge, which is how OpenAI priced prompt
+caching before GPT-5.6.
 
 `generic_write` is assigned by *model-name version* (see
-`_openai_uses_thirty_minute_cache`), not by inspecting the catalog. Every
-current `gpt-5.6-*` entry does publish a write rate, but that coupling is not
-enforced: a future 5.6-family model with no cache rates would be tagged
-`generic_write` and priced at plain input by `estimate_cost`, which drops
-detail keys the catalog cannot price. The `-pro` variants are the precedent --
-`gpt-5.4-pro` and `gpt-5.5-pro` publish no cache rates at all.
+`_openai_uses_thirty_minute_cache`), not by inspecting the catalog, and that
+coupling is not enforced: a future 5.6-family model with no published cache
+rates would be tagged `generic_write` and priced at plain input by
+`estimate_cost`, which drops detail keys the catalog cannot price. Models
+carrying no cache rates at all already exist in the catalog, so this is a
+reachable state rather than a theoretical one.
 """
 
 ColdCacheReason = Literal["idle", "identity_changed", "age_unknown"]
@@ -49,6 +65,24 @@ or one whose timestamp could not be parsed -- so the cache cannot be assumed
 warm. Each maps to distinct modal copy; they are not interchangeable, and in
 particular `age_unknown` must not be reported as `identity_changed`, which
 would claim a model change that never happened.
+"""
+
+CACHE_IDENTITY_PARAM_KEYS = frozenset(
+    {
+        "cache_control",
+        "prompt_cache_key",
+        "prompt_cache_options",
+        "prompt_cache_retention",
+    }
+)
+"""Invocation params that select or invalidate a provider cache entry.
+
+The identity check compares only these. Comparing whole `model_params` maps
+instead would report a model change for every unrelated knob -- `/effort`
+rewrites `reasoning_effort` wholesale, and `temperature` or `max_tokens` are
+just as inert for caching -- and the modal would then assert that "the previous
+cached prefix cannot be reused" when nothing about the prefix moved. A modal
+that fires on a false premise trains users into the permanent suppression.
 """
 
 _OPENAI_MODEL_VERSION = re.compile(r"^gpt-(?P<major>\d+)(?:\.(?P<minor>\d+))?")
@@ -67,13 +101,14 @@ _ANTHROPIC_MINIMUM_TOKENS: tuple[tuple[str, int], ...] = (
 """Prefixes for Claude models whose cache minimum differs from 1,024 tokens.
 
 From the per-model minimums in Anthropic's prompt-caching docs:
-https://docs.claude.com/en/docs/build-with-claude/prompt-caching
+https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 
 Prefixes must match real model ids. Haiku 3.5 predates the family-then-version
 naming and ships as `claude-3-5-haiku-*`, so a `claude-haiku-3-5` prefix would
 never match and would silently fall through to the 1,024 default. Order
-matters: the first matching prefix wins, so a more specific prefix must
-precede any shorter prefix of it.
+matters: the first matching prefix wins, so a more specific prefix must precede
+any shorter prefix of it. No current pair nests; the rule constrains future
+additions (`claude-opus-5-mini` would have to precede `claude-opus-5`).
 """
 
 _ANTHROPIC_DEFAULT_MINIMUM_TOKENS = 1024
@@ -86,8 +121,10 @@ _ANTHROPIC_MIDDLEWARE_TTL_SECONDS = 300
 """Retention implied by the `cache_control` this stack actually sends.
 
 `AnthropicPromptCachingMiddleware` runs *inside* `ConfigurableModelMiddleware`
-and unconditionally rewrites `model_settings["cache_control"]` with its own
-`ttl` (5m, the middleware default this stack never overrides). A user-supplied
+and rewrites `model_settings["cache_control"]` with its own `ttl` on every
+Anthropic request (its only gate is `isinstance(request.model, ChatAnthropic)`;
+`min_messages_to_cache` defaults to 0). The `ttl` is 5m, the middleware default
+this stack never overrides. A user-supplied
 `cache_control.ttl` in `model_params` is therefore overwritten before the
 request leaves the process, so honoring it here would promise an hour of
 retention the API never agreed to and suppress the warning for 55 minutes of a
@@ -142,12 +179,25 @@ class RewarmEstimate:
     """How much of `cold_cost_usd` a warm cache would have saved."""
 
     def __post_init__(self) -> None:
-        """Enforce the documented ordering and non-negativity invariants.
+        """Enforce the documented finiteness, ordering, and sign invariants.
 
         Raises:
-            ValueError: When either figure is negative or the delta exceeds the
-                total it is a part of.
+            ValueError: When either figure is non-finite or negative, or the
+                delta exceeds the total it is a part of.
         """
+        # Checked first, and separately: `NaN` satisfies neither comparison
+        # below (`nan < 0` and `nan > nan` are both `False`), so it would slide
+        # past both guards and reach `format_cost_estimate`, where the
+        # magnitude arithmetic raises far from the value's real origin.
+        if not math.isfinite(self.cold_cost_usd) or not math.isfinite(
+            self.incremental_cost_usd
+        ):
+            msg = (
+                f"RewarmEstimate costs must be finite, got "
+                f"cold={self.cold_cost_usd!r}, "
+                f"incremental={self.incremental_cost_usd!r}"
+            )
+            raise ValueError(msg)
         if self.cold_cost_usd < 0 or self.incremental_cost_usd < 0:
             msg = (
                 f"RewarmEstimate costs must be non-negative, got "
@@ -159,6 +209,47 @@ class RewarmEstimate:
             msg = (
                 f"RewarmEstimate incremental cost {self.incremental_cost_usd!r} "
                 f"cannot exceed the cold cost {self.cold_cost_usd!r}"
+            )
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class ColdCacheWarning:
+    """Validated data needed to render one advisory warning.
+
+    Constructed only after every gate has passed -- a policy resolved, the
+    prefix cleared the provider's cache minimum, and the priced delta reached
+    the configured threshold -- so the modal renders it without re-deciding
+    anything.
+    """
+
+    policy: PromptCachePolicy
+    estimate: RewarmEstimate
+    context_tokens: int
+
+    age_seconds: float | None
+    """Idle time since the last successful turn.
+
+    `None` exactly when `reason` is `age_unknown`, which is the only case where
+    no usable request time exists. Optional rather than a sentinel so the modal
+    cannot render an age it does not have.
+    """
+
+    reason: ColdCacheReason
+    """Why the cache is treated as cold; selects the modal's copy."""
+
+    def __post_init__(self) -> None:
+        """Enforce the documented `age_seconds`/`reason` pairing.
+
+        Raises:
+            ValueError: When an age is present for `age_unknown`, or absent for
+                any other reason.
+        """
+        if (self.age_seconds is None) != (self.reason == "age_unknown"):
+            msg = (
+                f"ColdCacheWarning age_seconds={self.age_seconds!r} does not "
+                f"pair with reason={self.reason!r}: an age is required except "
+                f"for 'age_unknown', which must have none"
             )
             raise ValueError(msg)
 
@@ -195,6 +286,15 @@ def _official_endpoint(base_url: str | None, hostname: str) -> bool:
     try:
         parsed = urlparse(base_url)
     except ValueError:
+        # Logged here rather than left to the caller's "no documented policy"
+        # debug line, which reports only that *a* base URL was configured and
+        # so cannot distinguish a deliberate gateway (a correct skip) from a
+        # typo that silently disables cost warnings for this provider.
+        logger.warning(
+            "Could not parse configured base URL %r; treating it as a custom "
+            "endpoint, which disables prompt-cache warnings for this provider",
+            base_url,
+        )
         return False
     return parsed.scheme in {"http", "https"} and parsed.hostname == hostname
 
@@ -258,36 +358,68 @@ def resolve_prompt_cache_policy(
 
     if provider != "openai" or not _official_endpoint(base_url, "api.openai.com"):
         return None
-    if _openai_uses_thirty_minute_cache(model_name):
-        # 30 minutes is the documented guaranteed *minimum* for GPT-5.6+, but
-        # OpenAI may retain the prefix longer, so past the window it can only
-        # be treated as possibly cold.
+
+    # Write pricing follows the model version, independent of retention: only
+    # GPT-5.6+ bills a miss as a cache write.
+    write_bucket: CacheWriteBucket = (
+        "generic_write" if _openai_uses_thirty_minute_cache(model_name) else "generic"
+    )
+
+    # `in_memory` and `24h` are documented *maximums* ("up to one hour", "a
+    # maximum, not a guarantee"): entries may be evicted earlier, so a warning
+    # is only defensible once the maximum has passed -- at which point the
+    # entry is gone rather than merely doubtful.
+    #
+    # Checked before the GPT-5.6+ minimum because the two knobs are
+    # independent: `prompt_cache_retention` states a maximum lifetime while the
+    # 5.6+ guarantee states a minimum one, and an explicitly configured
+    # retention is the later, firmer bound. Warning a user who asked for `24h`
+    # at the 30-minute mark would contradict their own configuration.
+    # https://platform.openai.com/docs/guides/prompt-caching
+    retention = params.get("prompt_cache_retention")
+    retention_windows = {"in_memory": 3600, "24h": 86400}
+    window = retention_windows.get(retention) if isinstance(retention, str) else None
+    if window is not None:
+        return PromptCachePolicy(
+            provider_name="OpenAI",
+            window_seconds=window,
+            confidence="expired",
+            minimum_tokens=_OPENAI_MINIMUM_TOKENS,
+            write_bucket=write_bucket,
+        )
+
+    if write_bucket == "generic_write":
+        # 30 minutes is the documented guaranteed *minimum* for GPT-5.6+ with
+        # no explicit retention configured, but OpenAI may retain the prefix
+        # longer, so past the window it can only be treated as possibly cold.
         # https://platform.openai.com/docs/guides/prompt-caching
         return PromptCachePolicy(
             provider_name="OpenAI",
             window_seconds=1800,
             confidence="may_be_cold",
             minimum_tokens=_OPENAI_MINIMUM_TOKENS,
-            write_bucket="generic_write",
+            write_bucket=write_bucket,
         )
+    return None
 
-    # `in_memory` and `24h` are documented *maximums* ("up to one hour", "a
-    # maximum, not a guarantee"): entries may be evicted earlier, so a warning
-    # is only defensible once the maximum has passed -- at which point the
-    # entry is gone rather than merely doubtful.
-    # https://platform.openai.com/docs/guides/prompt-caching
-    retention = params.get("prompt_cache_retention")
-    retention_windows = {"in_memory": 3600, "24h": 86400}
-    window = retention_windows.get(retention) if isinstance(retention, str) else None
-    if window is None:
-        return None
-    return PromptCachePolicy(
-        provider_name="OpenAI",
-        window_seconds=window,
-        confidence="expired",
-        minimum_tokens=_OPENAI_MINIMUM_TOKENS,
-        write_bucket="generic",
-    )
+
+def cache_identity_params(model_params: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project the params that participate in prompt-cache identity.
+
+    Args:
+        model_params: Full invocation params, or `None`.
+
+    Returns:
+        Only the `CACHE_IDENTITY_PARAM_KEYS` entries present, so two calls can
+            be compared without unrelated knobs reading as a cache change.
+    """
+    if not model_params:
+        return {}
+    return {
+        key: value
+        for key, value in model_params.items()
+        if key in CACHE_IDENTITY_PARAM_KEYS
+    }
 
 
 def estimate_rewarm_cost(
@@ -354,6 +486,17 @@ def estimate_rewarm_cost(
     if warm_cost is None or cold_cost is None:
         return None
     if not math.isfinite(warm_cost) or not math.isfinite(cold_cost):
+        # Distinct from "the catalog has no price for this model", which is the
+        # ordinary `None` above: a non-finite price is corrupt pricing data,
+        # and the caller's shared debug line would file it under the benign
+        # case.
+        logger.warning(
+            "Skipping cold-cache warning: %s priced to a non-finite value "
+            "(warm=%r, cold=%r), which is a pricing-catalog defect",
+            model_spec,
+            warm_cost,
+            cold_cost,
+        )
         return None
     # Clamp both sides before subtracting. Clamping only the total would let a
     # negative `cold_cost` produce an incremental figure larger than the cold

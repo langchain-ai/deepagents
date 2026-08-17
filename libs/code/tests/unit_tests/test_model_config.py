@@ -66,6 +66,7 @@ from deepagents_code.model_config import (
     save_recent_model,
     save_thread_columns,
     suppress_warning,
+    suppress_warning_reason,
     touch_recent_model,
     unsuppress_warning,
 )
@@ -6235,6 +6236,27 @@ class TestSuppressWarning:
 
         assert result is False
         assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_reason_names_a_malformed_warnings_table(self, tmp_path: Path) -> None:
+        """The cause must be distinguishable from an I/O failure.
+
+        The two need different fixes, and a bare `False` supports only the
+        generic "check file permissions" advice -- which sends a user with one
+        line of bad TOML to `chmod` a file that was never unwritable.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        reason = suppress_warning_reason("ripgrep", config_path)
+
+        assert reason is not None
+        assert "not a table" in reason
+
+    def test_reason_is_none_on_success(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+
+        assert suppress_warning_reason("ripgrep", config_path) is None
+        assert is_warning_suppressed("ripgrep", config_path) is True
 
 
 class TestUnsuppressWarning:

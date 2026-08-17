@@ -70,7 +70,6 @@ from deepagents_code.app import (
     TextualSessionState,
     _build_whats_new_message,
     _ChatScroll,
-    _ColdCacheWarning,
     _display_model_label,
     _extra_is_ready,
     _format_mcp_server_changes,
@@ -84,6 +83,7 @@ from deepagents_code.app import (
 from deepagents_code.cold_cache import (
     CacheConfidence,
     CacheWriteBucket,
+    ColdCacheWarning,
     PromptCachePolicy,
     RewarmEstimate,
 )
@@ -37774,7 +37774,7 @@ async def _run_cold_cache_gate(
     app: DeepAgentsApp,
     *,
     message: QueuedMessage | None = None,
-) -> _ColdCacheWarning | None:
+) -> ColdCacheWarning | None:
     """Run the gate with pricing pinned to a $0.35 cold / $0.10 warm turn."""
     config = MagicMock()
     config.get_base_url.return_value = None
@@ -37998,7 +37998,7 @@ class TestColdCacheWarningFlow:
         other prompt first, so sending anyway would contradict that toast.
         """
         app = DeepAgentsApp()
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
             estimate=RewarmEstimate(cold_cost_usd=0.35, incremental_cost_usd=0.25),
             context_tokens=50_000,
@@ -38035,7 +38035,7 @@ class TestColdCacheWarningFlow:
         from deepagents_code.hooks.models.domain import DcodeNotificationKind
 
         app = DeepAgentsApp()
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
             estimate=RewarmEstimate(cold_cost_usd=0.35, incremental_cost_usd=0.25),
             context_tokens=50_000,
@@ -38100,7 +38100,7 @@ class TestColdCacheWarningFlow:
         chat_input.value = ""
         chat_input.set_value_at_end.return_value = True
         app._chat_input = chat_input
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38131,7 +38131,7 @@ class TestColdCacheWarningFlow:
             AsyncMock(return_value=ColdCacheChoice.SEND_SUPPRESS_SESSION),
         )
         monkeypatch.setattr(app, "_process_message", process)
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38231,7 +38231,7 @@ class TestColdCacheWarningFlow:
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
         app = DeepAgentsApp()
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
             estimate=RewarmEstimate(cold_cost_usd=0.35, incremental_cost_usd=0.25),
             context_tokens=50_000,
@@ -38340,11 +38340,13 @@ class TestColdCacheWarningFlow:
         )
 
     def test_resumed_thread_restores_checkpointed_cache_identity(self) -> None:
-        """Resuming must repopulate the fields the thread reset just cleared.
+        """A checkpointed identity is adopted whole, including its params.
 
-        `_reset_thread_usage` clears all three cache fields and runs earlier in
-        `_apply_thread_history` than the restore, so a reordering would leave
-        the warning permanently blind on resumed threads.
+        Covers the validator in isolation, starting from the cleared state
+        `_reset_thread_usage` leaves behind. It does not exercise
+        `_apply_thread_history`, so it cannot detect a reordering of the reset
+        against the restore; `TestColdCacheStateLifecycle` covers the payload
+        that feeds this call.
         """
         app = DeepAgentsApp()
         app._last_model_request_at = None
@@ -38441,7 +38443,7 @@ class TestColdCacheWarningFlow:
             "_push_screen_wait",
             AsyncMock(side_effect=RuntimeError("compose exploded")),
         )
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38487,7 +38489,7 @@ class TestColdCacheWarningFlow:
             "deepagents_code.app._MODAL_WATCHDOG_TIMEOUT_SECONDS",
             0.01,
         )
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38535,7 +38537,7 @@ class TestColdCacheWarningFlow:
             "_push_screen_wait",
             AsyncMock(return_value=ColdCacheChoice.SEND),
         )
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38568,7 +38570,7 @@ class TestColdCacheWarningFlow:
         )
         monkeypatch.setattr(app, "_process_message", process)
         monkeypatch.setattr(app, "_suppress_cold_cache_warning", suppress)
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38602,7 +38604,7 @@ class TestColdCacheWarningFlow:
         )
         monkeypatch.setattr(app, "_process_message", process)
         monkeypatch.setattr(app, "_suppress_cold_cache_warning", suppress)
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38639,12 +38641,12 @@ class TestColdCacheWarningFlow:
         monkeypatch.setattr(app, "notify", notify)
 
         with patch(
-            "deepagents_code.model_config.suppress_warning",
+            "deepagents_code.model_config.suppress_warning_reason",
             side_effect=AttributeError("'list' object has no attribute 'get'"),
         ):
             await app._confirm_cold_cache_message(
                 QueuedMessage("continue", "normal"),
-                _ColdCacheWarning(
+                ColdCacheWarning(
                     policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
                     estimate=RewarmEstimate(
                         cold_cost_usd=1.25, incremental_cost_usd=1.15
@@ -38676,7 +38678,7 @@ class TestColdCacheWarningFlow:
         monkeypatch.setattr(app, "_process_message", process)
         monkeypatch.setattr(app, "_restore_cold_cache_draft", restore)
         monkeypatch.setattr(app, "notify", notify)
-        warning = _ColdCacheWarning(
+        warning = ColdCacheWarning(
             policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
             estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
             context_tokens=50_000,
@@ -38950,12 +38952,17 @@ class TestColdCacheWarningFlow:
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = ColdCacheWarningScreen(
-                policy=_cold_cache_policy(
-                    "OpenAI", 1800, "may_be_cold", 1024, "generic"
-                ),
-                estimate=RewarmEstimate(cold_cost_usd=0.42, incremental_cost_usd=0.35),
-                context_tokens=84_000,
-                age_seconds=11_520,
+                ColdCacheWarning(
+                    policy=_cold_cache_policy(
+                        "OpenAI", 1800, "may_be_cold", 1024, "generic"
+                    ),
+                    estimate=RewarmEstimate(
+                        cold_cost_usd=0.42, incremental_cost_usd=0.35
+                    ),
+                    context_tokens=84_000,
+                    age_seconds=11_520,
+                    reason="idle",
+                )
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -39000,3 +39007,323 @@ class TestColdCacheWarningFlow:
             assert screen._selected_index != before
             # The key must be consumed by the modal, never reach the toggle.
             assert app._approval_mode is ApprovalMode.MANUAL
+
+
+class TestColdCacheStateLifecycle:
+    """Tests for the paths that keep the cache identity fresh.
+
+    These are the two writers that stand between the feature working and it
+    warning on every send: the end-of-turn refresh and the resume restore.
+    Both were previously exercised only through helpers that bypassed the real
+    call site.
+    """
+
+    async def test_completed_turn_refreshes_cache_state_from_checkpoint(self) -> None:
+        """The end-of-turn sync must advance the cache identity, not just cost.
+
+        `_sync_session_cost_from_checkpoint` is the only in-session writer of
+        `_last_model_request_at`. Without it the field never leaves its `None`
+        initial value, and every send after the first opens the modal claiming
+        no record of a turn that plainly happened.
+        """
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._lc_thread_id = "thread-1"
+        stamped = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
+        app._get_thread_state_values = AsyncMock(
+            return_value={
+                "_session_cost_usd": 1.25,
+                "_last_model_request_at": stamped,
+                "_last_cache_model_spec": "openai:gpt-5.6",
+                "_model_params": {"prompt_cache_retention": "24h"},
+            }
+        )
+
+        await app._sync_session_cost_from_checkpoint()
+
+        assert app._last_model_request_at == stamped
+        assert app._last_cache_model_spec == "openai:gpt-5.6"
+        assert app._last_cache_model_params == {"prompt_cache_retention": "24h"}
+
+    async def test_unreadable_checkpoint_leaves_cache_state_untouched(self) -> None:
+        """A failed state read must not clear a good in-memory identity."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._lc_thread_id = "thread-1"
+        app._last_model_request_at = "2026-08-17T00:00:00+00:00"
+        app._last_cache_model_spec = "openai:gpt-5.6"
+        app._get_thread_state_values = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await app._sync_session_cost_from_checkpoint()
+
+        assert app._last_model_request_at == "2026-08-17T00:00:00+00:00"
+        assert app._last_cache_model_spec == "openai:gpt-5.6"
+
+    async def test_interrupted_turn_stamps_the_cache_identity_locally(self) -> None:
+        """A turn that reached the model but was interrupted still counts.
+
+        The checkpoint is not read back on an aborted turn (its writes may have
+        been dropped), so without a local stamp the next send reports
+        `age_unknown` seconds after the model was demonstrably reached.
+        """
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.6"
+        app._model_params_override = {"prompt_cache_retention": "24h"}
+        assert app._last_model_request_at is None
+
+        app._stamp_cache_identity_locally()
+
+        assert app._last_model_request_at is not None
+        assert app._last_cache_model_spec == "openai:gpt-5.6"
+        assert app._last_cache_model_params == {"prompt_cache_retention": "24h"}
+        # Fresh enough that the very next send stays inside every window.
+        stamped = datetime.fromisoformat(app._last_model_request_at)
+        assert (datetime.now(UTC) - stamped).total_seconds() < 5
+
+    def test_thread_history_payload_carries_checkpointed_cache_state(self) -> None:
+        """The resume payload must forward the checkpointed identity."""
+        app = DeepAgentsApp()
+        stamped = "2026-08-17T00:00:00+00:00"
+        payload = app._goal_rubric_payload_from_state(
+            {
+                "_last_model_request_at": stamped,
+                "_last_cache_model_spec": "openai:gpt-5.6",
+            },
+            messages=[],
+            context_tokens=0,
+            model_spec="openai:gpt-5.6",
+        )
+
+        assert payload.cache_state is not None
+        assert payload.cache_state["_last_model_request_at"] == stamped
+        assert payload.cache_state["_last_cache_model_spec"] == "openai:gpt-5.6"
+
+    def test_thread_history_payload_omits_absent_cache_state(self) -> None:
+        """A thread checkpointed before cache tracking carries no cache state."""
+        app = DeepAgentsApp()
+
+        payload = app._goal_rubric_payload_from_state(
+            {},
+            messages=[],
+            context_tokens=0,
+            model_spec="openai:gpt-5.6",
+        )
+
+        assert payload.cache_state is None
+
+
+class TestColdCacheGateCorrectness:
+    """Tests for reasons the gate must not report."""
+
+    async def test_effort_change_alone_is_not_a_model_change(self) -> None:
+        """Non-cache params must not read as an invalidated prefix.
+
+        `/effort` rewrites `reasoning_effort` wholesale. Comparing whole param
+        maps made every effort change open the modal asserting the prefix
+        "cannot be reused", which is false on OpenAI and overstated on
+        Anthropic -- and a modal that fires on a false premise trains users
+        into the permanent suppression.
+        """
+        app = _cold_cache_app()
+        app._last_model_request_at = (
+            datetime.now(UTC) - timedelta(minutes=1)
+        ).isoformat()
+        app._last_cache_model_params = {"reasoning_effort": "low"}
+        app._model_params_override = {"reasoning_effort": "high"}
+
+        assert await _run_cold_cache_gate(app) is None
+
+    async def test_cache_affecting_param_change_still_warns(self) -> None:
+        """The narrowed comparison must keep catching real cache changes."""
+        app = _cold_cache_app()
+        app._last_model_request_at = (
+            datetime.now(UTC) - timedelta(minutes=1)
+        ).isoformat()
+        app._last_cache_model_params = {"prompt_cache_retention": "in_memory"}
+        app._model_params_override = {"prompt_cache_retention": "24h"}
+
+        warning = await _run_cold_cache_gate(app)
+
+        assert warning is not None
+        assert warning.reason == "identity_changed"
+
+    async def test_future_request_time_is_treated_as_unknown_age(self) -> None:
+        """Clock skew must not read as a maximally warm cache.
+
+        Clamping a future timestamp to zero puts it inside every retention
+        window, which suppresses the warning outright -- the one reading that
+        silently bills the user.
+        """
+        app = _cold_cache_app()
+        app._last_model_request_at = (
+            datetime.now(UTC) + timedelta(hours=3)
+        ).isoformat()
+
+        warning = await _run_cold_cache_gate(app)
+
+        assert warning is not None
+        assert warning.reason == "age_unknown"
+        assert warning.age_seconds is None
+
+    async def test_provider_is_normalized_before_the_base_url_lookup(self) -> None:
+        """`get_base_url` does exact lowercase-key lookups.
+
+        An unnormalized `OpenAI:gpt-5.6` would report no custom endpoint and
+        price a gateway user at official-API rates.
+        """
+        app = _cold_cache_app()
+        app._model_override = "OpenAI:gpt-5.6"
+        app._last_cache_model_spec = "OpenAI:gpt-5.6"
+        config = MagicMock()
+        config.get_base_url.return_value = None
+
+        with (
+            patch("deepagents_code.model_config.ModelConfig.load", return_value=config),
+            patch(
+                "deepagents_code.model_config.is_warning_suppressed",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.cost_tracking.estimate_cost",
+                lambda usage, *_a: (
+                    0.10
+                    if "cache_read" in usage.get("input_token_details", {})
+                    else 0.35
+                ),
+            ),
+        ):
+            await app._cold_cache_warning_for(QueuedMessage("continue", "normal"))
+
+        config.get_base_url.assert_called_once_with("openai")
+
+    async def test_evaluation_failure_notifies_once_per_session(self) -> None:
+        """Failing open spends money, so it cannot stay in the log alone."""
+        app = _cold_cache_app()
+        app.notify = MagicMock()
+
+        with patch(
+            "deepagents_code.model_config.ModelConfig.load",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert (
+                await app._cold_cache_warning_for(QueuedMessage("continue", "normal"))
+                is None
+            )
+            assert (
+                await app._cold_cache_warning_for(QueuedMessage("again", "normal"))
+                is None
+            )
+
+        assert app.notify.call_count == 1
+        assert "unavailable this session" in app.notify.call_args[0][0]
+
+
+class TestColdCacheConfirmationBoundary:
+    """Tests for the app/modal seam and the non-send outcomes."""
+
+    async def test_unknown_age_warning_renders_without_inventing_an_age(self) -> None:
+        """The real screen must receive the reason, not a default.
+
+        Every other confirmation test mocks `_push_screen_wait`, so nothing
+        else executes the real construction. When the reason was passed as a
+        separate defaulted argument, dropping it rendered "idle for 0m" -- an
+        idle duration the gate had explicitly determined it did not know.
+        """
+        from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+
+        warning = ColdCacheWarning(
+            policy=_cold_cache_policy("Anthropic", 300, "expired", 1024, "5m"),
+            estimate=RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
+            context_tokens=50_000,
+            age_seconds=None,
+            reason="age_unknown",
+        )
+        screen = ColdCacheWarningScreen(warning)
+
+        body = screen._body()
+
+        assert "no record of when this thread last reached the model" in body
+        assert "idle for" not in body
+
+    async def test_none_dismissal_fails_closed_into_the_restore_branch(self) -> None:
+        """A programmatic pop is not an authorization to spend."""
+        app = _cold_cache_app()
+        app._lc_thread_id = "thread-1"
+        app._process_message = AsyncMock()
+        app._restore_cold_cache_draft = MagicMock()
+        app._push_screen_wait = AsyncMock(return_value=None)
+        app._dismiss_orphaned_screen = MagicMock()
+        warning = ColdCacheWarning(
+            policy=_cold_cache_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+            estimate=RewarmEstimate(cold_cost_usd=0.35, incremental_cost_usd=0.25),
+            context_tokens=50_000,
+            age_seconds=1860.0,
+            reason="idle",
+        )
+
+        await app._confirm_cold_cache_message(
+            QueuedMessage("continue", "normal"), warning, "thread-1"
+        )
+
+        app._process_message.assert_not_awaited()
+        app._restore_cold_cache_draft.assert_called_once_with("continue")
+
+    def test_unrestorable_draft_points_at_history(self) -> None:
+        """A draft that cannot be restored must not vanish without a hint.
+
+        The realistic case is a user who typed a new message while the blocking
+        modal was up: the input is no longer empty, so the restore is refused
+        and the queued text would otherwise be dropped silently.
+        """
+        app = DeepAgentsApp()
+        app.notify = MagicMock()
+        chat_input = MagicMock()
+        chat_input.value = "a different draft"
+        app._chat_input = chat_input
+
+        app._restore_cold_cache_draft("the canceled message")
+
+        chat_input.set_value_at_end.assert_not_called()
+        app.notify.assert_called_once()
+        assert "Up recalls it" in app.notify.call_args[0][0]
+
+    async def test_thread_change_says_the_message_was_not_sent(self) -> None:
+        """A bare "canceled" reads as deferred; the text is actually dropped."""
+        app = _cold_cache_app()
+        app._lc_thread_id = "thread-2"
+        app.notify = MagicMock()
+        app._process_message = AsyncMock()
+        app._restore_cold_cache_draft = MagicMock()
+        app._push_screen_wait = AsyncMock(return_value=None)
+        warning = ColdCacheWarning(
+            policy=_cold_cache_policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
+            estimate=RewarmEstimate(cold_cost_usd=0.35, incremental_cost_usd=0.25),
+            context_tokens=50_000,
+            age_seconds=1860.0,
+            reason="idle",
+        )
+
+        await app._confirm_cold_cache_message(
+            QueuedMessage("continue", "normal"), warning, "thread-1"
+        )
+
+        app._process_message.assert_not_awaited()
+        app._restore_cold_cache_draft.assert_not_called()
+        message = app.notify.call_args[0][0]
+        assert "was not sent" in message
+        assert "recall its text" in message
+
+    async def test_malformed_warnings_table_is_named_in_the_failure(self) -> None:
+        """Telling the user to check permissions misdiagnoses a TOML error."""
+        app = DeepAgentsApp()
+        app.notify = MagicMock()
+
+        with patch(
+            "deepagents_code.model_config.suppress_warning_reason",
+            return_value="[warnings] in /tmp/config.toml is not a table",
+        ):
+            await app._suppress_cold_cache_warning()
+
+        message = app.notify.call_args[0][0]
+        assert "is not a table" in message
+        assert "permissions" not in message

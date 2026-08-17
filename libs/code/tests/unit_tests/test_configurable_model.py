@@ -507,9 +507,14 @@ class TestModelSwap:
 
         assert captured[0].model is original
         assert captured[0].model_settings == {}
+        # `_model_params` is deliberately absent rather than `None`: the
+        # override never reached `_build_overrides`, so the params in effect
+        # are unknown and the checkpoint's previous value must stand. Writing
+        # `None` here would clear it while the app still holds its override,
+        # pinning the cold-cache identity check to a permanent false
+        # "model changed".
         assert _checkpoint_update(result) == {
             "_model_spec": "anthropic:claude-sonnet-4-6",
-            "_model_params": None,
         }
 
     def test_failed_override_records_original_as_cache_identity(self) -> None:

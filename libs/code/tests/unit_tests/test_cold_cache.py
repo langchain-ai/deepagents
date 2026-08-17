@@ -10,8 +10,11 @@ import pytest
 from deepagents_code.cold_cache import (
     CacheConfidence,
     CacheWriteBucket,
+    ColdCacheReason,
+    ColdCacheWarning,
     PromptCachePolicy,
     RewarmEstimate,
+    cache_identity_params,
     debug_stand_in_policy,
     estimate_rewarm_cost,
     format_cache_age,
@@ -348,3 +351,162 @@ def test_debug_stand_in_policy_tracks_the_anthropic_constants() -> None:
     assert stand_in.window_seconds == real.window_seconds
     assert stand_in.minimum_tokens == real.minimum_tokens
     assert stand_in.write_bucket == real.write_bucket
+
+
+def test_explicit_retention_widens_the_gpt_56_minimum_window() -> None:
+    """An explicitly configured retention outranks the 30-minute guarantee.
+
+    The two knobs are independent: `prompt_cache_retention` states a maximum
+    lifetime while the GPT-5.6+ guarantee states a minimum one. Warning a user
+    who configured `24h` at the 30-minute mark would contradict their own
+    configuration, and the modal would tell them they had exceeded a window
+    they explicitly widened.
+    """
+    policy = resolve_prompt_cache_policy(
+        "openai:gpt-5.6",
+        {"prompt_cache_retention": "24h"},
+    )
+
+    # Write pricing still follows the model version, not the retention knob.
+    assert policy == _policy("OpenAI", 86400, "expired", 1024, "generic_write")
+
+
+def test_explicit_in_memory_retention_applies_to_gpt_56() -> None:
+    policy = resolve_prompt_cache_policy(
+        "openai:gpt-5.6",
+        {"prompt_cache_retention": "in_memory"},
+    )
+
+    assert policy == _policy("OpenAI", 3600, "expired", 1024, "generic_write")
+
+
+def test_unparseable_gpt_56_retention_falls_back_to_the_minimum() -> None:
+    """A non-string retention is ignored, leaving the documented guarantee."""
+    policy = resolve_prompt_cache_policy(
+        "openai:gpt-5.6",
+        {"prompt_cache_retention": 3600},
+    )
+
+    assert policy == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic_write")
+
+
+def test_cache_identity_params_ignores_non_cache_knobs() -> None:
+    """Only cache-participating params take part in the identity comparison.
+
+    `/effort` rewrites `reasoning_effort` wholesale on every change. Comparing
+    whole param maps would report a model change for a knob that does not move
+    the cached prefix, and the modal would assert that the prefix "cannot be
+    reused" on a false premise.
+    """
+    before = {"reasoning_effort": "low", "temperature": 0.2}
+    after = {"reasoning_effort": "high", "temperature": 0.9, "max_tokens": 512}
+
+    assert cache_identity_params(before) == cache_identity_params(after) == {}
+
+
+def test_cache_identity_params_keeps_cache_affecting_knobs() -> None:
+    params = {
+        "reasoning_effort": "high",
+        "prompt_cache_retention": "24h",
+        "prompt_cache_key": "thread-1",
+    }
+
+    assert cache_identity_params(params) == {
+        "prompt_cache_retention": "24h",
+        "prompt_cache_key": "thread-1",
+    }
+    # A change to one of them must still register.
+    assert cache_identity_params(params) != cache_identity_params(
+        {**params, "prompt_cache_retention": "in_memory"}
+    )
+
+
+def test_cache_identity_params_handles_absent_params() -> None:
+    assert cache_identity_params(None) == {}
+    assert cache_identity_params({}) == {}
+
+
+@pytest.mark.parametrize(
+    ("cold", "incremental"),
+    [
+        (float("nan"), float("nan")),
+        (float("inf"), 1.0),
+        (1.0, float("nan")),
+    ],
+)
+def test_rewarm_estimate_rejects_non_finite_costs(
+    cold: float, incremental: float
+) -> None:
+    """The type enforces the finiteness its docstring promises.
+
+    `NaN` satisfies neither the sign nor the ordering guard (`nan < 0` and
+    `nan > nan` are both `False`), so without an explicit check it would
+    construct cleanly and only fail later inside cost formatting.
+    """
+    with pytest.raises(ValueError, match="must be finite"):
+        RewarmEstimate(cold_cost_usd=cold, incremental_cost_usd=incremental)
+
+
+def test_non_finite_price_is_reported_not_silently_skipped(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Corrupt pricing data warns instead of reading as "no price published"."""
+    from deepagents_code import cost_tracking
+
+    monkeypatch.setattr(cost_tracking, "estimate_cost", lambda *_a, **_k: float("inf"))
+
+    with caplog.at_level("WARNING"):
+        estimate = estimate_rewarm_cost(
+            50_000,
+            "anthropic:claude-opus-4-5",
+            _policy("Anthropic", 300, "expired", 1024, "5m"),
+        )
+
+    assert estimate is None
+    assert "non-finite" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "reason"),
+    [
+        (None, "idle"),
+        (None, "identity_changed"),
+        (60.0, "age_unknown"),
+    ],
+)
+def test_cold_cache_warning_enforces_the_age_reason_pairing(
+    age_seconds: float | None, reason: ColdCacheReason
+) -> None:
+    """An age and its reason cannot be split apart.
+
+    Without this guard an `age_unknown` warning carrying a defaulted reason
+    rendered "idle for 0m" -- an idle duration the caller had explicitly
+    determined it did not know.
+    """
+    with pytest.raises(ValueError, match="does not pair with"):
+        ColdCacheWarning(
+            policy=_policy("Anthropic", 300, "expired", 1024, "5m"),
+            estimate=RewarmEstimate(cold_cost_usd=1.0, incremental_cost_usd=0.9),
+            context_tokens=50_000,
+            age_seconds=age_seconds,
+            reason=reason,
+        )
+
+
+def test_unparseable_base_url_warns_before_disabling_the_policy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A malformed base URL disables cost warnings, so it cannot be silent.
+
+    The caller's skip line reports only that *a* base URL was configured, so
+    it cannot distinguish a deliberate gateway from a typo that switches the
+    protection off.
+    """
+    with caplog.at_level("WARNING"):
+        policy = resolve_prompt_cache_policy(
+            "anthropic:claude-opus-4-5",
+            base_url="http://[",
+        )
+
+    assert policy is None
+    assert "Could not parse configured base URL" in caplog.text

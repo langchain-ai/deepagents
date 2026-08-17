@@ -51,6 +51,12 @@ def _editable_install(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _resolved_uv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub `shutil.which("uv")` so refresh paths never depend on the host."""
+    monkeypatch.setattr(dep_floor_check.shutil, "which", lambda _name: "/usr/bin/uv")
+
+
+@pytest.fixture(autouse=True)
 def dismissal_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolate the dismissal store: every test gets a fresh, writable file."""
     path = tmp_path / "dep_floor_dismissed.json"
@@ -251,6 +257,9 @@ class TestRefreshCommand:
         monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
         monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
         monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
+        monkeypatch.setattr(
+            dep_floor_check.shutil, "which", lambda _name: "/usr/bin/uv"
+        )
 
         installed = siblings.keys() if editable is None else editable
 
@@ -294,7 +303,7 @@ class TestRefreshCommand:
         command = dep_floor_check.refresh_command()
 
         assert command == (
-            "uv pip install --python /venv/bin/python "
+            "/usr/bin/uv pip install --python /venv/bin/python "
             f"-e {code} -e {deepagents} -e {acp} -e {quickjs} --upgrade"
         )
 
@@ -308,7 +317,7 @@ class TestRefreshCommand:
         deepagents = (code / "../deepagents").resolve()
 
         assert dep_floor_check.refresh_command() == (
-            "uv pip install --python /venv/bin/python "
+            "/usr/bin/uv pip install --python /venv/bin/python "
             f"-e {code} -e {deepagents} --upgrade"
         )
 
@@ -325,7 +334,7 @@ class TestRefreshCommand:
         deepagents = (code / "../deepagents").resolve()
 
         assert dep_floor_check.refresh_command() == (
-            "uv pip install --python /venv/bin/python "
+            "/usr/bin/uv pip install --python /venv/bin/python "
             f"-e {code} -e {deepagents} --upgrade"
         )
 
@@ -339,7 +348,7 @@ class TestRefreshCommand:
         (code / "../deepagents").resolve().rmdir()
 
         assert dep_floor_check.refresh_command() == (
-            f"uv pip install --python /venv/bin/python -e {code} --upgrade"
+            f"/usr/bin/uv pip install --python /venv/bin/python -e {code} --upgrade"
         )
 
     def test_unc_editable_record_is_preserved(
@@ -379,9 +388,12 @@ class TestRefreshCommand:
         monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
         monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
         monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
+        monkeypatch.setattr(
+            dep_floor_check.shutil, "which", lambda _name: "/usr/bin/uv"
+        )
 
         assert dep_floor_check.refresh_command() == (
-            f"uv pip install --python /venv/bin/python -e {code} --upgrade"
+            f"/usr/bin/uv pip install --python /venv/bin/python -e {code} --upgrade"
         )
 
 
@@ -722,6 +734,9 @@ class TestInteractivePrompt:
         scans = iter([list(_VIOLATIONS), []])
         seen: dict[str, object] = {}
         monkeypatch.setattr(dep_floor_check, "_collect_violations", lambda: next(scans))
+        monkeypatch.setattr(
+            dep_floor_check.shutil, "which", lambda _name: "/usr/bin/uv"
+        )
         self._stub_prompt(monkeypatch, _TrustAction.REFRESH)
 
         def _run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -736,7 +751,7 @@ class TestInteractivePrompt:
         monkeypatch.setattr(main_module, "_restart_current_process", _restart)
 
         assert prompt_if_editable_deps_stale() is None
-        assert seen["args"] == dep_floor_check._refresh_args()
+        assert seen["args"] == dep_floor_check._refresh_args("/usr/bin/uv")
         assert seen["check"] is False
         assert seen["shell"] is False
         assert seen["restarted"] is True

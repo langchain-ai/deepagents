@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import subprocess  # noqa: S404  # fixed-argv environment refresh and Windows quoting
 import sys
 import tempfile
@@ -352,15 +353,21 @@ def _workspace_editable_paths() -> list[Path]:
     return paths
 
 
-def _refresh_args() -> list[str]:
+def _refresh_args(uv_path: str) -> list[str]:
     """Build the fixed argv used to refresh this editable environment.
+
+    Args:
+        uv_path: Absolute path to the resolved `uv` binary. Bare names are
+            never used: on Windows `subprocess` searches the current working
+            directory before `%PATH%`, so a planted `uv.exe` at the project
+            root would execute instead of the legitimate binary.
 
     Returns:
         Arguments for the user-approved `uv pip install` process.
     """
     checkout = _checkout_root()
     args = [
-        "uv",
+        uv_path,
         "pip",
         "install",
         "--python",
@@ -381,7 +388,10 @@ def refresh_command() -> str:
     `libs/code` would let `--upgrade` replace them with PyPI wheels. The
     warning and interactive refresh share this argv so they cannot drift.
     """
-    return " ".join(_quote_arg(arg) for arg in _refresh_args())
+    uv_path = shutil.which("uv")
+    if uv_path is None:
+        return "uv pip install --python <python> -e <checkout> --upgrade"
+    return " ".join(_quote_arg(arg) for arg in _refresh_args(uv_path))
 
 
 def _refresh_environment(console: Console) -> bool:
@@ -393,10 +403,17 @@ def _refresh_environment(console: Console) -> bool:
     Returns:
         `True` when `uv` exits successfully, otherwise `False`.
     """
+    uv_path = shutil.which("uv")
+    if uv_path is None:
+        console.print(
+            "[yellow]Environment refresh failed: `uv` not found on PATH.[/yellow]",
+            highlight=False,
+        )
+        return False
     console.print("[dim]Refreshing environment...[/dim]", highlight=False)
     try:
         result = subprocess.run(  # noqa: S603  # fixed uv argv, never a shell command
-            _refresh_args(),
+            _refresh_args(uv_path),
             check=False,
             shell=False,
         )

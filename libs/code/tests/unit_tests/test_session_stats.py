@@ -53,40 +53,35 @@ class TestFormatCostEstimate:
             (-1.0, "$0.00"),
             (0.0001, "<$0.01"),
             (0.009, "<$0.01"),
-            # Sub-dime values keep cent-level precision so they do not
-            # collapse to a single significant figure.
+            # Sub-dime values keep cent-level precision and round upward.
             (0.01, "~$0.01"),
-            (0.042, "~$0.04"),
+            (0.042, "~$0.05"),
             (0.0999, "~$0.10"),
-            # Two significant figures from a dime upward, halves away from
-            # zero so an upper-bound estimate never rounds down on a half.
-            (0.6234, "~$0.62"),
+            # Two significant figures from a dime upward, always rounding up
+            # so an upper-bound estimate never understates the cost.
+            (0.6234, "~$0.63"),
             (0.5062, "~$0.51"),
             (0.999, "~$1.0"),
-            (1.234, "~$1.2"),
+            (1.234, "~$1.3"),
             (1.25, "~$1.3"),
             (1.15, "~$1.2"),
             (1.0, "~$1.0"),
             (9.9, "~$9.9"),
             (9.99, "~$10"),
-            (12.34, "~$12"),
+            (12.34, "~$13"),
             (99.9, "~$100"),
-            (123.4, "~$120"),
+            (123.4, "~$130"),
             (999.9, "~$1000"),
         ],
     )
     def test_format(self, cost_usd: float, expected: str) -> None:
         assert format_cost_estimate(cost_usd) == expected
 
-    def test_exact_half_boundary_rounds_away_from_zero(self) -> None:
-        """Halves round up: an upper bound must not shrink on a tie.
-
-        `Decimal(str(...))` + `ROUND_HALF_UP` pins 0.105 to `~$0.11` -- plain
-        float `round` would give `~$0.10` (banker's rounding on 0.105's exact
-        float, which sits just under the tie).
-        """
+    def test_rounds_up_to_preserve_upper_bound(self) -> None:
+        """A displayed upper bound must never be lower than the estimate."""
         assert format_cost_estimate(0.105) == "~$0.11"
         assert format_cost_estimate(0.115) == "~$0.12"
+        assert format_cost_estimate(1.24) == "~$1.3"
 
 
 class TestFormatTokenCount:

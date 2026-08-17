@@ -813,18 +813,26 @@ class ExecuteOffloadResult:
     preview_has_truncation_marker: bool = False
     """Whether the preview contains a `... [N lines truncated] ...` marker.
 
-    The code that builds the preview sets this flag. Do not search the preview
-    text for the marker: the command output itself can contain a line that
-    looks the same.
+    Set by the code that builds the preview (not inferred from the text).
 
-    This flag tells you only that the marker is there. It does not tell you the
-    preview is complete. The preview can lose text in other ways (for example,
-    when a byte limit cuts a line in half). The preview text itself describes
-    those losses.
+    This is the only reliable way to know the marker was inserted, as the
+    command output itself can contain a line that looks the same
+    (scanning the text is unsafe).
+
+    This flag covers only the `... [N lines truncated] ...` marker. The preview
+    can carry other notices instead:
+
+    - `... [output clipped here; {N} bytes total, full output at the path above] ...`
+        when the preview is a byte excerpt (fewer lines than head+tail budget) and
+        the excerpt is shorter than the captured output.
+    - `... [output clipped here; capture stopped at its {N}-byte limit, so the
+        file at the path above is also incomplete] ...` when the excerpt is shorter
+        and capture hit its byte cap.
+    - `... [the excerpts above and below are byte-capped, so the lines bordering
+        this marker may be cut mid-line] ...` inserted before the truncation marker
+        when head/tail excerpts hit their byte caps and cut lines mid-line.
 
     When `offloaded` is `False`, this flag is always `False`.
-    `_parse_capture_execute_output` makes sure of this when it builds the
-    result.
     """
 
 

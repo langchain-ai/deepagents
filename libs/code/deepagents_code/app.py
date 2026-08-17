@@ -4207,6 +4207,15 @@ class DeepAgentsApp(App):
         `_log_task_exception` done callback.
         """
 
+        self._reloading = False
+        """Whether `/reload` is refreshing mutable runtime state.
+
+        Keeps submitted prompts queued for the entire reload, including its
+        pre-restart discovery phases. A server restart only protects the final
+        phase, and allowing a prompt to start before it would let that restart
+        cancel the prompt's worker.
+        """
+
         self._plugin_fingerprints: dict[str, _PluginFingerprint] | None = None
         """Rolling plugin-fingerprint baseline keyed by plugin id.
 
@@ -10546,6 +10555,13 @@ class DeepAgentsApp(App):
             await self._process_message(value, mode)
             return
 
+        # A second `/reload` must reach `_schedule_reload` immediately so it
+        # can coalesce with the in-flight reload instead of waiting in the
+        # normal queue and starting another destructive refresh afterward.
+        if mode == "command" and normalized == "/reload" and self._reloading:
+            await self._process_message(value, mode)
+            return
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -10566,6 +10582,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or self._shell_running
             or self._modal_command_running()
+            or self._reloading
             or self._connecting
             or self._startup_sequence_running
             or self._server_startup_error is not None
@@ -14772,8 +14789,8 @@ class DeepAgentsApp(App):
         theme, skill, plugin, and hook refreshes, plus a possible server
         restart), so awaiting it inline in `_handle_command` blocks key events
         from reaching the chat input for its whole duration. Detaching lets
-        the pump keep routing keys; submissions made mid-reload queue as usual
-        once the app goes busy for the server restart.
+        the pump keep routing keys while `_reloading` queues submissions for
+        the entire refresh, before and during any server restart.
 
         `_schedule_off_message_pump` is deliberately not used: its single
         global slot is for modal-opening continuations, `/reload` opens no
@@ -14783,10 +14800,33 @@ class DeepAgentsApp(App):
         Returns:
             The reload task, so tests can await completion.
         """
+        if self._reloading and self._reload_task is not None:
+            self.notify("Reload already in progress.", severity="information")
+            return self._reload_task
+
+        # Set the guard before scheduling: `create_task` does not run the
+        # coroutine inline, so otherwise a prompt or second reload can enter
+        # in the gap before `_run_reload` starts.
+        self._reloading = True
         task = asyncio.create_task(self._run_reload(), name="reload")
         task.add_done_callback(_log_task_exception)
+        task.add_done_callback(self._finish_reload)
         self._reload_task = task
         return task
+
+    def _finish_reload(self, task: asyncio.Task[None]) -> None:
+        """Release the reload guard and resume prompts queued during reload.
+
+        Args:
+            task: The completed reload task.
+        """
+        if task is not self._reload_task:
+            return
+        self._reloading = False
+        if self._pending_messages and not self._agent_running:
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._process_next_from_queue()),
+            )
 
     async def _run_reload(self) -> None:
         """Refresh config, themes, skills, plugins, and hooks, then report.
@@ -15013,12 +15053,6 @@ class DeepAgentsApp(App):
 
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()
-            # Process any messages queued during the reload (e.g. submitted while
-            # the app was busy with the server restart and preserved above).
-            if self._pending_messages and not self._agent_running:
-                self.call_after_refresh(
-                    lambda: asyncio.create_task(self._process_next_from_queue()),
-                )
         except Exception:
             logger.exception("Detached /reload failed unexpectedly")
             await self._mount_message(
@@ -16622,6 +16656,7 @@ class DeepAgentsApp(App):
             or not self._pending_messages
             or self._exit
             or self._exiting
+            or self._reloading
             or self._connecting
         ):
             return
@@ -16654,6 +16689,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or self._shell_running
             or self._modal_command_running()
+            or self._reloading
         )
         if not busy and self._pending_messages:
             await self._process_next_from_queue()

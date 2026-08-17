@@ -953,6 +953,70 @@ class TestReloadInputResponsiveness:
 
             assert typed == "hi"
 
+    @pytest.mark.timeout(15)
+    async def test_queues_prompt_for_entire_reload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt submitted before restart must wait for reload completion."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def _blocked_reload() -> None:
+                started.set()
+                await release.wait()
+
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
+
+            task = app._schedule_reload()
+            await started.wait()
+            await app._submit_input("do not interrupt", "normal")
+
+            assert app._reloading is True
+            assert [message.text for message in app._pending_messages] == [
+                "do not interrupt"
+            ]
+
+            release.set()
+            await task
+
+    @pytest.mark.timeout(15)
+    async def test_coalesces_overlapping_reloads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second `/reload` shares the first task rather than racing it."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            started = asyncio.Event()
+            release = asyncio.Event()
+            runs = 0
+
+            async def _blocked_reload() -> None:
+                nonlocal runs
+                runs += 1
+                started.set()
+                await release.wait()
+
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
+
+            first = app._schedule_reload()
+            await started.wait()
+            second = app._schedule_reload()
+
+            assert second is first
+            assert runs == 1
+
+            release.set()
+            await first
+            assert app._reloading is False
+
 
 class TestReloadModelProfileHints:
     """`/reload` should refresh profile-derived command hints."""

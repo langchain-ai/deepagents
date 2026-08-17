@@ -4216,6 +4216,9 @@ class DeepAgentsApp(App):
         cancel the prompt's worker.
         """
 
+        self._restart_requested_during_reload = False
+        """Whether an explicit `/restart` still needs a reload-owned respawn."""
+
         self._plugin_fingerprints: dict[str, _PluginFingerprint] | None = None
         """Rolling plugin-fingerprint baseline keyed by plugin id.
 
@@ -14800,15 +14803,16 @@ class DeepAgentsApp(App):
         Returns:
             The reload task, so tests can await completion.
         """
-        if self._reloading and self._reload_task is not None:
+        reload_task = self._reload_task
+        if self._reloading and reload_task is not None and not reload_task.done():
             self.notify("Reload already in progress.", severity="information")
-            return self._reload_task
+            return reload_task
 
         # Set the guard before scheduling: `create_task` does not run the
         # coroutine inline, so otherwise a prompt or second reload can enter
         # in the gap before `_run_reload` starts.
         self._reloading = True
-        task = asyncio.create_task(self._run_reload(), name="reload")
+        task = asyncio.create_task(self._run_reload_sequence(), name="reload")
         task.add_done_callback(_log_task_exception)
         task.add_done_callback(self._finish_reload)
         self._reload_task = task
@@ -14823,10 +14827,33 @@ class DeepAgentsApp(App):
         if task is not self._reload_task:
             return
         self._reloading = False
-        if self._pending_messages and not self._agent_running:
+        if (
+            self._pending_messages
+            and not self._agent_running
+            and self._agent is not None
+        ):
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._process_next_from_queue()),
             )
+
+    async def _run_reload_sequence(self) -> None:
+        """Run reload work, then honor restart requests it did not satisfy.
+
+        Raises:
+            asyncio.CancelledError: If app teardown cancels the active reload.
+        """
+        try:
+            await self._run_reload()
+        except asyncio.CancelledError:
+            self._restart_requested_during_reload = False
+            raise
+
+        if self._exiting:
+            self._restart_requested_during_reload = False
+            return
+        while self._restart_requested_during_reload:
+            self._restart_requested_during_reload = False
+            await self._run_restart_command(preserve_queue=True)
 
     async def _run_reload(self) -> None:
         """Refresh config, themes, skills, plugins, and hooks, then report.
@@ -15042,10 +15069,13 @@ class DeepAgentsApp(App):
                         # running-agent path snapshots before its cancellation.
                         preserved = list(self._pending_messages)
                         self._discard_queue()
-                    restarted = await self._restart_server_manual()
-                    if preserved:
-                        self._pending_messages.extendleft(reversed(preserved))
-                        self._sync_status_queued()
+                    try:
+                        restarted = await self._restart_server_manual()
+                    finally:
+                        self._restart_requested_during_reload = False
+                        if preserved:
+                            self._pending_messages.extendleft(reversed(preserved))
+                            self._sync_status_queued()
                     if restarted:
                         self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
@@ -24591,30 +24621,39 @@ class DeepAgentsApp(App):
         server subprocess. Used as a recovery escape hatch when the
         server wedges.
 
-        Cancels any in-flight agent work and drops the queued message
-        backlog before respawning. The streaming HTTP connection to the
-        dying subprocess would otherwise raise into the Textual reactor
+        A direct restart cancels in-flight agent work and drops the queued
+        message backlog before respawning. The streaming HTTP connection to
+        the dying subprocess would otherwise raise into the Textual reactor
         after the new server advertises ready, leaving the UI wedged.
 
         Args:
             command: Raw command string for echoing back to chat.
         """
-        await self._mount_message(UserMessage(command))
+        # Snapshot active reload state before mounting the command echo, which
+        # yields to the reload task. Recording the intent first lets that task
+        # consume or honor it even if it finishes while the message is mounted.
+        reload_task = self._reload_task
+        defer_restart = (
+            self._reloading and reload_task is not None and not reload_task.done()
+        )
+        if defer_restart:
+            self._restart_requested_during_reload = True
 
-        # `/reload` can restart the owned server after refreshing plugins.
-        # `/restart` normally bypasses every busy state, but starting a second
-        # respawn here would race that reload and could leave the final agent
-        # bound to stale plugin state. The active reload already includes the
-        # restart, so coalesce this request with it.
-        if self._reloading:
+        await self._mount_message(UserMessage(command))
+        if defer_restart:
             await self._mount_message(
-                AppMessage(
-                    "Reload already in progress; the agent server will restart "
-                    "when it finishes."
-                )
+                AppMessage("Reload already in progress; server restart requested.")
             )
             return
 
+        await self._run_restart_command()
+
+    async def _run_restart_command(self, *, preserve_queue: bool = False) -> None:
+        """Validate and schedule a restart without echoing another command.
+
+        Args:
+            preserve_queue: Keep prompts submitted during an active reload.
+        """
         # A duplicate `/restart` bypasses the normal input queue while the
         # first detached respawn is still connecting. Reject it before the
         # destructive setup below so prompts queued during that respawn are
@@ -24632,15 +24671,18 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
-        # discards the queued backlog too — those messages would otherwise
-        # fire against the freshly respawned agent silently. This restart *is*
-        # the reconnect, so suppress the dropped-reconnect warning: the respawn
-        # below reloads every on-disk MCP token regardless.
+        # Sever in-flight work bound to the dying subprocess. A direct restart
+        # drops the queued backlog, but a restart requested during `/reload`
+        # preserves prompts that the reload guard already accepted for later.
+        preserved = None
         if self._agent_running and self._agent_worker:
+            preserved = list(self._pending_messages) if preserve_queue else None
             self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
-        else:
+        elif not preserve_queue:
             self._discard_queue()
+        if preserved is not None:
+            self._pending_messages.extendleft(reversed(preserved))
+            self._sync_status_queued()
 
         if not await self._reload_configuration_for_restart():
             return

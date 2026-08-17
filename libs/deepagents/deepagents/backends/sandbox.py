@@ -1030,9 +1030,10 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
     """Parse the remote glob script's JSON-lines output into a `GlobResult`.
 
     Unrecognized lines are a hard error rather than a skip: with `2>&1` merging
-    stderr into stdout, silently dropping them turns any remote crash — or a
-    transport-clipped line — into a successful empty search, and the agent
-    concludes the files do not exist.
+    stderr into stdout, silently dropping them turns any remote crash into a
+    successful empty search, and the agent concludes the files do not exist.
+    The sole exception is an unparseable final line when the transport reports
+    truncation, because that line may be an incomplete JSON record.
 
     Args:
         result: Raw `execute` response; its `truncated` flag means the transport
@@ -1050,7 +1051,8 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
     unparsed: list[str] = []
     error: str | None = None
     truncated = result.truncated
-    for line in output.split("\n"):
+    lines = output.split("\n")
+    for index, line in enumerate(lines):
         if not line.strip():
             continue
         kind, payload = _classify_glob_line(line)
@@ -1067,7 +1069,7 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
             # Budget exhausted or a subtree was unreadable: results are valid
             # but partial, which `truncated` is exactly for.
             truncated = True
-        else:
+        elif not (truncated and index == len(lines) - 1):
             unparsed.append(payload)
     if error is not None:
         return GlobResult(matches=None, error=f"Path '{search_path}': {error}")

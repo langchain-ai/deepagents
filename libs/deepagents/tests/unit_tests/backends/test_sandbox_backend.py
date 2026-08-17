@@ -1996,6 +1996,21 @@ def test_glob_propagates_transport_truncation() -> None:
     assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
 
 
+def test_glob_keeps_complete_matches_before_transport_clipped_line() -> None:
+    """A clipped final JSONL record must not discard its complete predecessors."""
+    resp = ExecuteResponse(
+        output='{"path": "a.py", "is_dir": false}\n{"path": "b.py", "is_d',
+        exit_code=0,
+        truncated=True,
+    )
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.error is None
+    assert result.truncated is True
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
 def test_glob_walk_warning_marks_result_truncated() -> None:
     """A budget-exhausted or partial walk is valid but incomplete."""
     lines = [

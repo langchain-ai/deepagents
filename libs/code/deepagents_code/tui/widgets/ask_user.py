@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
@@ -52,6 +51,10 @@ MULTI_SELECT_COMMA_TOAST = (
     "Custom multi-select answers cannot contain a comma "
     f"({MULTI_SELECT_FORBIDDEN_IN_VALUE!r})."
 )
+MAX_OTHER_ENTRIES_TOAST = (
+    f"At most {MAX_MULTI_SELECT_OTHER_ENTRIES} custom answers can be added to one "
+    "question. Combine values into an existing field to add more."
+)
 UNSUBMITTABLE_ANSWER_TOAST = (
     "Could not submit this answer (internal UI error). Press Esc to cancel and retry."
 )
@@ -82,9 +85,15 @@ Defense-in-depth alongside the instruction in `ASK_USER_TOOL_DESCRIPTION`
 class AskUserTextArea(InlinePromptTextArea):
     """Free-form answer input for ask-user questions.
 
-    Adds one behavior over the shared base: when the cursor is on the first or
-    last line of a choice question's Other free-text input, Up/Down are handed
-    back to the enclosing choice list instead of moving the text cursor.
+    Adds two behaviors over the shared base:
+
+    - When the cursor is on the first or last line of a choice question's Other
+      free-text input, Up/Down are handed back to the enclosing choice list
+      instead of moving the text cursor.
+    - Escape deselects the checked custom multi-select option that owns this
+      field (via the `uncheck_other` binding), instead of cancelling the whole
+      prompt. `check_action` keeps the binding unmatched otherwise, so Escape
+      still bubbles to `AskUserMenu.action_cancel`.
     """
 
     # TextArea defaults to `height: 1fr`, which lets open Other fields swallow
@@ -122,12 +131,6 @@ class AskUserTextArea(InlinePromptTextArea):
             question.uncheck_other_input(self)
 
     async def _on_key(self, event: events.Key) -> None:
-        if event.key == "escape":
-            question = self._find_question_widget()
-            if question is not None and question.uncheck_other_input(self):
-                event.prevent_default()
-                event.stop()
-                return
         if event.key in {"up", "down"}:
             cursor_location = self.cursor_location
             at_top = self.get_cursor_up_location() == cursor_location
@@ -257,8 +260,7 @@ class AskUserMenu(Container):
 
         The `Ctrl+X external editor` hint is included only while one of this
         menu's text areas holds focus, matching the routing in
-        `App.action_open_editor`. Multi-select prompts add a Space-toggle tip
-        and skip the newline hint when no text area is present.
+        `App.action_open_editor`. Multi-select prompts add a Space-toggle tip.
 
         Returns:
             The bullet-joined footer hint string.
@@ -270,12 +272,10 @@ class AskUserMenu(Container):
         # wholesale would describe the wrong keys while they are active.
         if any(qw.question_type == "multi_select" for qw in self._question_widgets):
             parts.append("Space toggle")
-        parts.append("Enter to continue")
-        # Choice questions always own an Other free-text input, and text
-        # questions own a main text area, so every prompt has somewhere to insert
-        # a newline unless compose somehow produced zero questions.
-        if any(qw.has_text_input for qw in self._question_widgets):
-            parts.append(newline_hint())
+        # The newline hint is unconditional: choice questions always own an Other
+        # free-text input and text questions own a main text area, so every
+        # question type has somewhere to insert a newline.
+        parts.extend(("Enter to continue", newline_hint()))
         if self._show_editor_hint():
             editor = editor_display_name()
             parts.append(
@@ -353,6 +353,12 @@ class AskUserMenu(Container):
                         markup=False,
                     )
                 return
+        # The event is already stopped, so a text area this menu does not
+        # recognize would make Enter do nothing at all. Only reachable if a slot
+        # is removed while its field still holds focus.
+        logger.warning(
+            "ask_user menu received a submit from an unrecognized text area",
+        )
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Grow multi-select Other slots as custom answers are filled in."""
@@ -378,28 +384,30 @@ class AskUserMenu(Container):
         # All confirmed — collect final answers and submit.
         for i, qw in enumerate(self._question_widgets):
             self._answers[i] = qw.get_answer()
-        if all(
-            a.strip() or not self._question_widgets[i]._required
-            for i, a in enumerate(self._answers)
-        ):
-            self._submit()
-            return
 
-        # A confirmed required question was left empty. Reachable normally for
-        # any type: the user can Shift+Tab back to a confirmed question and
-        # clear it (un-toggle every multi-select option, or empty a text area),
-        # then confirm a different question, which re-collects all answers here.
-        # Re-open it and say why, so the jump is not unexplained.
-        for i, a in enumerate(self._answers):
-            if not a.strip() and self._question_widgets[i]._required:
+        # Re-validate every question, not just the one being confirmed. Answers
+        # are read live, so confirming one question is not a promise that the
+        # others still hold: the user can Shift+Tab back into a confirmed
+        # question and edit it (`focus_input` even drops the cursor straight into
+        # a checked Other field), or leave a question unconfirmed entirely and
+        # Tab past it. Without this, a comma typed into a custom multi-select
+        # answer after confirming reaches the agent as two selections, silently
+        # breaking the guarantee `_validate_choices` enforces on the tool side.
+        #
+        # This subsumes the empty-required check for `multi_select`, and reports
+        # the more specific Other-row errors in preference to the generic
+        # "answer all questions" toast.
+        for i, qw in enumerate(self._question_widgets):
+            error = qw.validate_for_submit()
+            if error is None and not self._answers[i].strip() and qw._required:
+                error = MISSING_ANSWER_TOAST
+            if error is not None:
                 self._confirmed[i] = False
                 self._set_active_question(i)
-                self.app.notify(
-                    MISSING_ANSWER_TOAST,
-                    severity="warning",
-                    markup=False,
-                )
+                self.app.notify(error, severity="warning", markup=False)
                 return
+
+        self._submit()
 
     def _set_active_question(self, index: int) -> None:
         """Update the visual indicator and focus for the active question."""
@@ -528,8 +536,7 @@ class _MultiSelectOption(_ChoiceOption):
                 that.
             **kwargs: Additional `_ChoiceOption` arguments.
         """
-        # Must precede `super().__init__()`: `compose` runs during mount and
-        # reads `self._checked` for the initial box glyph.
+        # Set before mount: `compose` reads `_checked` for the initial box glyph.
         self._checked = False
         self._checked_label: str | None = None
         self._label_widget: Static | None = None
@@ -601,11 +608,17 @@ class _MultiSelectOption(_ChoiceOption):
         return Content.from_markup("$box $text", box=box, text=label)
 
 
-class _OtherSlot(Horizontal):
-    """One multi-select Other checkbox paired with its inline text field."""
+class _MultiSelectOtherEntry(Horizontal):
+    """One multi-select custom Other row: checkbox paired with its text field.
+
+    Both widgets and the row containing them are one object, so there is no way
+    for a caller to pair a checkbox with the wrong field. `set_checked` is the
+    only way to toggle the row, which is what keeps the field's visibility from
+    drifting out of sync with the checkbox.
+    """
 
     DEFAULT_CSS = """
-    _OtherSlot {
+    _MultiSelectOtherEntry {
         height: auto;
         width: 1fr;
         margin: 0;
@@ -623,18 +636,39 @@ class _OtherSlot(Horizontal):
         self._option = option
         self._text_input = text_input
 
+    @property
+    def option(self) -> _MultiSelectOption:
+        """The checkbox for this custom answer."""
+        return self._option
+
+    @property
+    def text_input(self) -> AskUserTextArea:
+        """The free-text field for this custom answer."""
+        return self._text_input
+
+    @property
+    def checked(self) -> bool:
+        """Whether this custom answer is toggled on."""
+        return self._option.checked
+
+    def set_checked(self, checked: bool) -> None:
+        """Toggle this row, revealing or hiding its text field to match.
+
+        Args:
+            checked: Whether the custom answer is toggled on. The text field is
+                shown exactly when it is; a typed draft is preserved either way,
+                so re-checking restores the same text.
+        """
+        self._option.set_checked(checked)
+        self.sync_display()
+
+    def sync_display(self) -> None:
+        """Re-assert that the text field is visible exactly when the box is checked."""
+        self._text_input.display = self._option.checked
+
     def compose(self) -> ComposeResult:
         yield self._option
         yield self._text_input
-
-
-@dataclass(slots=True)
-class _MultiSelectOtherEntry:
-    """One multi-select custom Other row: checkbox + free-text input."""
-
-    option: _MultiSelectOption
-    text_input: AskUserTextArea
-    slot: _OtherSlot
 
 
 class _QuestionWidget(Vertical):
@@ -705,7 +739,10 @@ class _QuestionWidget(Vertical):
         # `multiple_choice` keeps a single Other input here. Multi-select Others
         # live in `_other_entries` instead.
         self._other_input: AskUserTextArea | None = None
+        # `multiple_choice` only: whether the cursor is on its Other row. Multi-select
+        # reads `entry.checked` per row instead, since several can be on at once.
         self._is_other_selected: bool = False
+        self._max_other_notified: bool = False
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Disable `toggle_choice` on questions that have nothing to toggle.
@@ -730,19 +767,6 @@ class _QuestionWidget(Vertical):
     def question_type(self) -> QuestionType:
         """Resolved type of this question."""
         return self._q_type
-
-    @property
-    def has_text_input(self) -> bool:
-        """Whether this question owns a text area.
-
-        Recomputed from `_q_type` rather than read off `_text_input` /
-        `_other_input`, because `AskUserMenu.compose` consults this before the
-        child widgets have composed, when both attributes are still `None`.
-
-        Every question type yields a text area: plain text has a main input, and
-        both choice types always append Other free-text input(s).
-        """
-        return True
 
     def owns_other_input(self, text_area: object) -> bool:
         """Return whether `text_area` is an Other free-text input of this question."""
@@ -791,7 +815,9 @@ class _QuestionWidget(Vertical):
                 self._choice_widgets.append(msw)
                 self._multi_select_widgets.append(msw)
                 yield msw
-            yield from self._compose_other_entry(selected=not self._choices)
+            # Never highlighted initially: `__init__` guarantees a non-empty
+            # `_choices` here, so choice 0 owns the cursor.
+            yield from self._compose_other_entry(selected=False)
         elif self._q_type == "text":
             self._text_input = AskUserTextArea(classes="ask-user-text-input")
             yield self._text_input
@@ -819,38 +845,54 @@ class _QuestionWidget(Vertical):
         )
         text_input = AskUserTextArea(classes="ask-user-other-input")
         text_input.display = False
-        slot = _OtherSlot(option, text_input)
         option.set_checked_label("")
         option.add_class("ask-user-inline-other-choice")
         self._choice_widgets.append(option)
-        entry = _MultiSelectOtherEntry(option, text_input, slot)
+        entry = _MultiSelectOtherEntry(option, text_input)
         self._other_entries.append(entry)
         return entry
 
     def _compose_other_entry(self, *, selected: bool) -> ComposeResult:
         """Yield one multi-select Other slot (checkbox + free-text)."""
-        yield self._make_other_entry(selected=selected).slot
+        yield self._make_other_entry(selected=selected)
 
     def _mount_other_entry(self) -> None:
         """Dynamically append another multi-select Other slot."""
         if self._q_type != "multi_select":
             return
+        # Defensive: `sync_other_slots` owns the cap decision (and explains it to
+        # the user); this keeps any other caller from exceeding it.
         if len(self._other_entries) >= MAX_MULTI_SELECT_OTHER_ENTRIES:
             return
-        entry = self._make_other_entry(selected=False)
-        self.mount(entry.slot)
+        self.mount(self._make_other_entry(selected=False))
+
+    def _other_entry_at(self, cursor: int) -> _MultiSelectOtherEntry | None:
+        """Return the Other entry a cursor row maps to, if any.
+
+        The choice list is the predefined choices followed by the Other entries,
+        so this is the one place that translates between the two index spaces.
+
+        Args:
+            cursor: Index into `_choice_widgets`.
+
+        Returns:
+            The entry at `cursor`, or `None` when `cursor` is a predefined choice
+            or out of range.
+        """
+        index = cursor - len(self._choices)
+        if 0 <= index < len(self._other_entries):
+            return self._other_entries[index]
+        return None
 
     @staticmethod
     def _entry_custom_text(entry: _MultiSelectOtherEntry) -> str:
-        # Prefer live `.text` so slot growth happens while the user is still
-        # typing, not only after Enter expands collapsed-paste submissions.
-        live = entry.text_input.text.strip()
-        if live:
-            return live
+        # `submitted_value` (not `.text`) so a collapsed paste counts as its
+        # expanded content rather than the `[Pasted text #N]` placeholder,
+        # matching what `get_answer` and `validate_for_submit` read.
         return entry.text_input.submitted_value.strip()
 
     def _entry_is_filled(self, entry: _MultiSelectOtherEntry) -> bool:
-        return bool(entry.option.checked and self._entry_custom_text(entry))
+        return bool(entry.checked and self._entry_custom_text(entry))
 
     def sync_other_slots(self) -> None:
         """Keep exactly one empty trailing Other slot after filled customs.
@@ -858,36 +900,48 @@ class _QuestionWidget(Vertical):
         Filling a checked Other (non-empty text) reveals an "Add another" row.
         Trailing empty unchecked slots beyond that spare are removed when the
         previous custom is cleared.
+
+        The spare stops appearing at `MAX_MULTI_SELECT_OTHER_ENTRIES`, which is
+        explained once via `MAX_OTHER_ENTRIES_TOAST` rather than left to look
+        like a broken UI.
         """
         if self._q_type != "multi_select":
             return
+        if not self._other_entries:
+            # `compose` has not run yet, so there is no slot layout to sync.
+            return
 
         # Drop extra trailing empty slots while the last filled boundary allows.
+        # Entry 0 is never removed, so `_other_entries` stays non-empty.
         while len(self._other_entries) > 1:
             last = self._other_entries[-1]
-            if last.option.checked or last.text_input.text.strip():
+            if last.checked or last.text_input.text.strip():
                 break
             # Keep a single spare empty slot only when the prior entry is filled.
             if self._entry_is_filled(self._other_entries[-2]):
                 break
             self._remove_last_other_entry()
 
-        if not self._other_entries:
+        if not self._entry_is_filled(self._other_entries[-1]):
+            return
+        if len(self._other_entries) < MAX_MULTI_SELECT_OTHER_ENTRIES:
             self._mount_other_entry()
             return
-
-        last = self._other_entries[-1]
-        if (
-            self._entry_is_filled(last)
-            and len(self._other_entries) < MAX_MULTI_SELECT_OTHER_ENTRIES
-        ):
-            self._mount_other_entry()
+        # At the cap. Notify once: this runs on every keystroke, so an
+        # unconditional toast would spam a user who keeps typing in the last slot.
+        if not self._max_other_notified:
+            self._max_other_notified = True
+            self.app.notify(
+                MAX_OTHER_ENTRIES_TOAST,
+                severity="warning",
+                markup=False,
+            )
 
     def _remove_last_other_entry(self) -> None:
         entry = self._other_entries.pop()
-        if entry.option in self._choice_widgets:
-            self._choice_widgets.remove(entry.option)
-        entry.slot.remove()
+        # `_make_other_entry` always appends the option, so it is present.
+        self._choice_widgets.remove(entry.option)
+        entry.remove()
         if self._selected_choice >= len(self._choice_widgets):
             self._selected_choice = max(0, len(self._choice_widgets) - 1)
             self._update_choice_selection(focus_other_input=False)
@@ -905,16 +959,23 @@ class _QuestionWidget(Vertical):
             self._other_input.focus()
             return
         if self._q_type == "multi_select":
-            other_index = self._selected_choice - len(self._choices)
-            if 0 <= other_index < len(self._other_entries):
-                entry = self._other_entries[other_index]
-                if entry.option.checked:
-                    # Only pull focus into that row's free-text when the cursor is
-                    # already on it and it is checked.
-                    entry.text_input.focus()
-                    return
+            entry = self._other_entry_at(self._selected_choice)
+            if entry is not None and entry.checked:
+                # Only pull focus into that row's free-text when the cursor is
+                # already on it and it is checked.
+                entry.text_input.focus()
+                return
         if self._choice_widgets:
             self.focus()
+            return
+        # Unreachable: `__init__` degrades a choice question with no choices to
+        # `text`, so one of the branches above always fires. Log rather than
+        # leaving a prompt the user silently cannot interact with.
+        logger.warning(
+            "ask_user question %d has no focusable input (type %r)",
+            self._index,
+            self._q_type,
+        )
 
     def get_answer(self) -> str:
         """Return the current answer text for this question.
@@ -926,9 +987,14 @@ class _QuestionWidget(Vertical):
         A multi-select answer is the toggled predefined values in choice-list
         order, then each filled custom Other value in slot order, joined with
         `MULTI_SELECT_ANSWER_SEPARATOR`, and is empty when nothing is toggled.
+        A custom value duplicating an already-selected one is dropped, so the
+        agent never sees the same selection twice.
+
         On the tool path `_validate_choices` rejects predefined values containing
-        `MULTI_SELECT_FORBIDDEN_IN_VALUE`, and the TUI also blocks submitting
-        Other text that contains it.
+        `MULTI_SELECT_FORBIDDEN_IN_VALUE`, and `validate_for_submit` blocks
+        submitting Other text that contains it — including on the final
+        all-confirmed submit, since answers are read live and a confirmed
+        question can still be edited.
         """
         if self._q_type == "text":
             return self._text_input.submitted_value if self._text_input else ""
@@ -940,10 +1006,10 @@ class _QuestionWidget(Vertical):
                 if widget.checked
             ]
             for entry in self._other_entries:
-                if not entry.option.checked:
+                if not entry.checked:
                     continue
-                other_text = entry.text_input.submitted_value.strip()
-                if other_text:
+                other_text = self._entry_custom_text(entry)
+                if other_text and other_text not in selected:
                     selected.append(other_text)
             return MULTI_SELECT_ANSWER_SEPARATOR.join(selected)
 
@@ -958,6 +1024,10 @@ class _QuestionWidget(Vertical):
     def validate_for_submit(self) -> str | None:
         """Return a user-facing error if this question cannot be submitted yet.
 
+        Called both when this question is confirmed and again for every question
+        on the final submit (`AskUserMenu.confirm_and_advance`), because answers
+        are read live and a confirmed question can still be edited afterwards.
+
         Returns:
             A toast message when the current draft is incomplete or ambiguous,
             otherwise `None`.
@@ -965,7 +1035,7 @@ class _QuestionWidget(Vertical):
         if self._q_type != "multi_select":
             return None
         for entry in self._other_entries:
-            if not entry.option.checked:
+            if not entry.checked:
                 continue
             other_text = entry.text_input.submitted_value
             if not other_text.strip():
@@ -977,18 +1047,28 @@ class _QuestionWidget(Vertical):
         return None
 
     def _focused_other_entry_index(self) -> int | None:
+        """Return the index in `_other_entries` of the focused custom field, if any.
+
+        Multi-select only. Kept separate from `_multiple_choice_other_focused`
+        because that type's single Other field lives in `_other_input` and has no
+        index — folding both into one `int` return would conflate two different
+        index spaces.
+        """
         for i, entry in enumerate(self._other_entries):
             if entry.text_input.has_focus:
                 return i
-        if self._other_input and self._other_input.has_focus:
-            return 0
         return None
+
+    def _multiple_choice_other_focused(self) -> bool:
+        """Return whether this `multiple_choice` question's Other field has focus."""
+        return self._other_input is not None and self._other_input.has_focus
 
     def uncheck_other_input(self, text_input: AskUserTextArea) -> bool:
         """Uncheck the custom multi-select option that owns `text_input`.
 
-        This is the Escape shortcut for a focused custom answer. It returns
-        focus to the checkbox so a second Escape can still cancel the prompt.
+        This is the Escape shortcut for a focused custom answer. It returns focus
+        to the question container (which owns the choice bindings, since options
+        are not individually focusable), so a second Escape cancels the prompt.
 
         Args:
             text_input: Focused custom-answer field requesting deselection.
@@ -1017,7 +1097,7 @@ class _QuestionWidget(Vertical):
     def can_uncheck_other_input(self, text_input: AskUserTextArea) -> bool:
         """Return whether `text_input` belongs to a checked custom option."""
         return self._q_type == "multi_select" and any(
-            entry.text_input is text_input and entry.option.checked
+            entry.text_input is text_input and entry.checked
             for entry in self._other_entries
         )
 
@@ -1025,17 +1105,19 @@ class _QuestionWidget(Vertical):
         """Move the highlight cursor up in the choice list."""
         if self._q_type not in CHOICE_QUESTION_TYPES or not self._choice_widgets:
             return
-        focused_other = self._focused_other_entry_index()
-        if focused_other is not None:
-            if self._q_type == "multi_select":
+        if self._q_type == "multi_select":
+            focused_other = self._focused_other_entry_index()
+            if focused_other is not None:
                 # Land on that Other checkbox row so Space can uncheck it.
                 self._selected_choice = len(self._choices) + focused_other
                 self._update_choice_selection(focus_other_input=False)
-            else:
-                # Jump directly to the last real choice instead of requiring
-                # two presses (one to defocus, one to navigate).
-                self._selected_choice = max(0, len(self._choices) - 1)
-                self._update_choice_selection()
+                self.focus()
+                return
+        elif self._multiple_choice_other_focused():
+            # Jump directly to the last real choice instead of requiring two
+            # presses (one to defocus, one to navigate).
+            self._selected_choice = max(0, len(self._choices) - 1)
+            self._update_choice_selection()
             self.focus()
             return
         old = self._selected_choice
@@ -1047,18 +1129,20 @@ class _QuestionWidget(Vertical):
         """Move the highlight cursor down in the choice list."""
         if self._q_type not in CHOICE_QUESTION_TYPES or not self._choice_widgets:
             return
-        focused_other = self._focused_other_entry_index()
-        if focused_other is not None and self._q_type == "multi_select":
-            # From an Other free-text box, Down jumps to the next Other checkbox
-            # (the "Add another" row once the current slot is filled), or no-ops
-            # at the final free-text span.
-            next_row = len(self._choices) + focused_other + 1
-            if next_row < len(self._choice_widgets):
-                self._selected_choice = next_row
-                self._update_choice_selection(focus_other_input=False)
-                self.focus()
-            return
-        if focused_other is not None and self._q_type == "multiple_choice":
+        if self._q_type == "multi_select":
+            focused_other = self._focused_other_entry_index()
+            if focused_other is not None:
+                # From an Other free-text box, Down jumps to the next Other
+                # checkbox (the "Add another" row once the current slot is
+                # filled), or no-ops at the final free-text span.
+                next_row = len(self._choices) + focused_other + 1
+                if next_row < len(self._choice_widgets):
+                    self._selected_choice = next_row
+                    self._update_choice_selection(focus_other_input=False)
+                    self.focus()
+                return
+        elif self._multiple_choice_other_focused():
+            # Other is the last row, so there is nowhere below it to move.
             return
         max_idx = len(self._choice_widgets) - 1
         old = self._selected_choice
@@ -1072,22 +1156,35 @@ class _QuestionWidget(Vertical):
             return
         index = self._selected_choice
         if not 0 <= index < len(self._choice_widgets):
+            # Do not clamp into range and toggle anyway: that would flip a
+            # checkbox the user never highlighted, and leave the cursor pointing
+            # somewhere else. Refuse the keypress instead — the answer stays as
+            # the user last saw it, and pressing Space again is harmless.
             logger.error(
                 "multi_select question %d cursor %d outside 0..%d toggleable choices",
                 self._index,
                 index,
                 len(self._choice_widgets) - 1,
             )
-            index = min(max(index, 0), len(self._choice_widgets) - 1)
+            return
 
-        other_index = index - len(self._choices)
-        if other_index >= 0:
-            if other_index >= len(self._other_entries):
+        if index >= len(self._choices):
+            entry = self._other_entry_at(index)
+            if entry is None:
+                # `_choice_widgets` and `_choices + _other_entries` have diverged;
+                # same invariant break as the cursor check above, so say so rather
+                # than presenting as "Space does nothing".
+                logger.error(
+                    "multi_select question %d cursor %d has no Other entry "
+                    "(%d choices, %d entries)",
+                    self._index,
+                    index,
+                    len(self._choices),
+                    len(self._other_entries),
+                )
                 return
-            entry = self._other_entries[other_index]
-            checked = not entry.option.checked
-            entry.option.set_checked(checked)
-            entry.text_input.display = checked
+            checked = not entry.checked
+            entry.set_checked(checked)
             if checked:
                 entry.text_input.focus()
             else:
@@ -1114,15 +1211,13 @@ class _QuestionWidget(Vertical):
             and event.key != "space"
             and self._q_type == "multi_select"
         ):
-            other_index = self._selected_choice - len(self._choices)
-            if 0 <= other_index < len(self._other_entries):
-                entry = self._other_entries[other_index]
-                if not entry.option.checked:
-                    self.action_toggle_choice()
-                    entry.text_input.insert(event.character)
-                    event.prevent_default()
-                    event.stop()
-                    return
+            entry = self._other_entry_at(self._selected_choice)
+            if entry is not None and not entry.checked:
+                self.action_toggle_choice()
+                entry.text_input.insert(event.character)
+                event.prevent_default()
+                event.stop()
+                return
         await super()._on_key(event)
 
     def action_select_or_submit(self) -> None:
@@ -1204,15 +1299,14 @@ class _QuestionWidget(Vertical):
             return
 
         if self._q_type == "multi_select":
-            any_checked_other = False
+            # `_is_other_selected` is deliberately not maintained here: it is a
+            # `multiple_choice` concept (one cursor row), and every reader is
+            # gated on that type. Multi-select rows carry their own `checked`.
             for i, entry in enumerate(self._other_entries):
-                entry.text_input.display = entry.option.checked
-                if entry.option.checked:
-                    any_checked_other = True
+                entry.sync_display()
                 if (
                     focus_other_input
-                    and entry.option.checked
+                    and entry.checked
                     and self._selected_choice == len(self._choices) + i
                 ):
                     entry.text_input.focus()
-            self._is_other_selected = any_checked_other

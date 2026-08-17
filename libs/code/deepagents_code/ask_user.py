@@ -93,8 +93,8 @@ def _validate_choices(
     Args:
         choices: Candidate `choices` value from a question definition.
         question_text: Question text, for error messages.
-        question_type: Question type. Selects the `multi_select`-only separator
-            check, and names the type in error messages.
+        question_type: Question type. Selects the `multi_select`-only
+            forbidden-substring check, and names the type in error messages.
 
     Raises:
         ValueError: If any choice is malformed, blank, or ambiguous.
@@ -144,10 +144,13 @@ def _validate_questions(questions: list[Question]) -> None:
             msg = f"unsupported ask_user question type: {question_type!r}"
             raise ValueError(msg)
 
-        # `_ask_user_question_count` rejects a non-boolean `required` on the raw
-        # tool args, so accepting one here would let pydantic's lax coercion
-        # ("false" -> False) render the prompt and then silently drop every
-        # answer in the call as same-turn authorization. Fail loudly instead.
+        # Belt-and-braces: on the tool path `Question.required` is `strict=True`,
+        # so pydantic has already rejected a non-boolean before this runs. This
+        # only covers a caller that reaches here with a raw, unparsed payload.
+        # It matters because `_ask_user_question_count` reads the raw tool args
+        # and also requires a real bool: a coerced `"false"` would render the
+        # prompt and then silently drop every answer in the call as same-turn
+        # authorization.
         required = q.get("required")
         if required is not None and not isinstance(required, bool):
             msg = (
@@ -171,8 +174,13 @@ def _validate_questions(questions: list[Question]) -> None:
                 question_type=question_type,
             )
 
-        if question_type == "text" and q.get("choices"):
-            msg = f"text question {q.get('question')!r} must not define 'choices'"
+        # Derived from `CHOICE_QUESTION_TYPES` rather than spelled `== "text"`, so
+        # a future non-choice `QuestionType` member keeps this check instead of
+        # silently letting stray `choices` through.
+        if question_type not in CHOICE_QUESTION_TYPES and q.get("choices"):
+            msg = (
+                f"{question_type} question {question_text!r} must not define 'choices'"
+            )
             raise ValueError(msg)
 
 

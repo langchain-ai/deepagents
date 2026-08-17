@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from pydantic import TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
@@ -140,12 +141,12 @@ class TestValidateQuestions:
             _validate_questions(questions)
 
     def test_rejects_non_boolean_required(self) -> None:
-        """A non-boolean `required` would silently void same-turn authorization.
+        """Belt-and-braces for a raw, unparsed payload.
 
-        Pydantic coerces `"false"` to `False`, so the prompt would render and the
-        user would answer — but `_ask_user_question_count` reads the raw tool
-        args, rejects the string, and returns `None`, dropping every answer in
-        the call as authorization with no error. Fail loudly here instead.
+        The tool path never reaches this check — `Question.required` is
+        `strict=True`, so pydantic rejects a non-boolean first (see
+        `test_tool_schema_rejects_non_boolean_required`, which pins that). This
+        covers a caller that bypasses pydantic.
         """
         questions = cast(
             "list[Question]",
@@ -153,6 +154,31 @@ class TestValidateQuestions:
         )
         with pytest.raises(ValueError, match="non-boolean 'required'"):
             _validate_questions(questions)
+
+    def test_tool_schema_rejects_non_boolean_required(self) -> None:
+        """Pydantic must reject `required: "false"` rather than coercing it.
+
+        This is the check that actually runs in production, and it has to be
+        strict. `_ask_user_question_count` reads the *raw* tool args and requires
+        a real bool, so a coerced `"false"` would render the prompt, let the user
+        answer, and then return `None` — dropping every answer in the call as
+        same-turn authorization with no error.
+        """
+        adapter = TypeAdapter(list[Question])
+
+        # A real bool is still accepted, in both Python and JSON form.
+        assert adapter.validate_python(
+            [{"question": "Q?", "type": "text", "required": False}]
+        ) == [{"question": "Q?", "type": "text", "required": False}]
+        assert adapter.validate_json(
+            '[{"question": "Q?", "type": "text", "required": true}]'
+        ) == [{"question": "Q?", "type": "text", "required": True}]
+
+        for coercible in ("false", "true", 0, 1):
+            with pytest.raises(ValidationError):
+                adapter.validate_python(
+                    [{"question": "Q?", "type": "text", "required": coercible}]
+                )
 
     def test_accepts_every_declared_question_type(self) -> None:
         """Guards against a `QuestionType` member the validator rejects.

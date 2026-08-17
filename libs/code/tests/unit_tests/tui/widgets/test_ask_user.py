@@ -19,6 +19,8 @@ from deepagents_code.tool_display import format_tool_display
 from deepagents_code.tui.widgets.ask_user import (
     _TRAILING_ANNOTATION_RE,
     ADD_ANOTHER_OTHER_LABEL,
+    MAX_MULTI_SELECT_OTHER_ENTRIES,
+    MAX_OTHER_ENTRIES_TOAST,
     MISSING_ANSWER_TOAST,
     MISSING_OTHER_TEXT_TOAST,
     MULTI_SELECT_COMMA_TOAST,
@@ -27,7 +29,7 @@ from deepagents_code.tui.widgets.ask_user import (
     AskUserTextArea,
     _ChoiceOption,
     _MultiSelectOption,
-    _OtherSlot,
+    _MultiSelectOtherEntry,
     _QuestionWidget,
 )
 
@@ -174,7 +176,7 @@ class TestAskUserMenu:
         async with app.run_test() as pilot:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            slot = menu.query_one(".ask-user-other-slot", _OtherSlot)
+            slot = menu.query_one(".ask-user-other-slot", _MultiSelectOtherEntry)
             other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
 
             assert isinstance(slot, Horizontal)
@@ -190,11 +192,13 @@ class TestAskUserMenu:
             assert str(other_option._label_widget.render()) == (
                 get_glyphs().checkbox_checked
             )
+            # Same row, field to the right of the collapsed checkbox. Deliberately
+            # not an exact-pixel assertion: the label collapsing to just the box is
+            # already pinned above, and padding changes should not break this.
             assert other_input.region.y == other_option.region.y
-            assert other_input.region.x == (
+            assert other_input.region.x >= (
                 other_option.region.x + other_option.region.width
             )
-            assert other_option.region.width < len(OTHER_CHOICE_LABEL)
             assert other_input.region.height == 1
 
     def test_find_menu_logs_when_hierarchy_is_missing(
@@ -232,7 +236,6 @@ class TestAskUserMenu:
             )
 
         assert question_widget.question_type == "text"
-        assert question_widget.has_text_input
         assert "has no choices" in caplog.text
 
     async def test_no_question_type_silently_renders_as_bare_text(self) -> None:
@@ -475,14 +478,14 @@ class TestAskUserMenu:
 
             question = menu.query_one(_QuestionWidget)
             entry = question._other_entries[0]
-            assert entry.option.checked
+            assert entry.checked
             assert entry.text_input.has_focus
             assert "Esc to deselect" in str(menu.query_one(".ask-user-help").render())
 
             await pilot.press("escape")
 
             assert not future.done()
-            assert not entry.option.checked
+            assert not entry.checked
             assert entry.text_input.display is False
             assert question.has_focus
             assert "Esc to cancel" in str(menu.query_one(".ask-user-help").render())
@@ -962,7 +965,7 @@ class TestAskUserMenu:
             await pilot.pause()
 
             other_entry = menu._question_widgets[0]._other_entries[0]
-            assert other_entry.option.checked
+            assert other_entry.checked
             assert other_entry.text_input.has_focus
             assert other_entry.text_input.text == "p"
 
@@ -1030,9 +1033,11 @@ class TestAskUserMenu:
                 "type": "answered",
                 "answers": ["teal, cyan"],
             }
-            # A spare empty Add-another row may remain mounted after the second
-            # custom is filled; it must not contribute to the answer.
-            assert len(list(menu.query(_MultiSelectOption))) >= 4
+            # Exactly one spare empty Add-another row remains mounted after the
+            # second custom is filled (2 choices + 3 Other rows); it must not
+            # contribute to the answer.
+            assert len(list(menu.query(_MultiSelectOption))) == 5
+            assert len(question._other_entries) == 3
 
     async def test_multi_select_other_pruning_removes_empty_slot(self) -> None:
         """Clearing Other text removes its spare slot and wrapper."""
@@ -1183,6 +1188,456 @@ class TestAskUserMenu:
                 "type": "answered",
                 "answers": ["red", "Alice"],
             }
+
+    async def test_comma_edited_into_a_confirmed_custom_answer_blocks_submit(
+        self,
+    ) -> None:
+        """Editing a confirmed custom answer must be re-validated before submit.
+
+        Answers are read live, so confirming question 1 is not a promise that it
+        still holds. `focus_input` drops the cursor straight back into a checked
+        Other field, so adding a comma afterwards takes no unusual input — and
+        without a final re-validation the agent receives `"teal, cyan"`, reading
+        one custom answer as two selections.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            # Check Other on Q1 and confirm it with a clean custom value.
+            await pilot.pause()
+            await pilot.press("down", "down", "space")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "teal"
+            other_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert menu._current_question == 1
+
+            # Back into the confirmed question; add a comma without re-confirming.
+            menu.action_previous_question()
+            await pilot.pause()
+            assert other_input.has_focus
+            other_input.text = "teal, cyan"
+
+            # Answer Q2 and submit. Q1 is the question that must bounce.
+            menu.action_next_question()
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "Alice"
+            text_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            assert MULTI_SELECT_COMMA_TOAST in [n.message for n in app._notifications]
+            assert menu._current_question == 0
+            assert menu._confirmed[0] is False
+
+    async def test_clearing_a_confirmed_custom_answer_blocks_submit(self) -> None:
+        """A checked-but-emptied Other must bounce, not vanish from the answer.
+
+        `get_answer` skips a checked Other with no text, so without the final
+        re-validation the selection the user explicitly checked would silently
+        disappear — and the sibling "red" selection keeps the answer non-empty,
+        so the empty-required check would not catch it either.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            # Check "red" and Other, give Other a value, and confirm.
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.press("down", "down", "space")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "teal"
+            other_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Empty the custom text again, leaving its box checked.
+            menu.action_previous_question()
+            await pilot.pause()
+            other_input.text = ""
+
+            menu.action_next_question()
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "Alice"
+            text_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            assert MISSING_OTHER_TEXT_TOAST in [n.message for n in app._notifications]
+            assert menu._current_question == 0
+
+    async def test_unconfirmed_comma_answer_blocks_submit_from_another_question(
+        self,
+    ) -> None:
+        """Tabbing past an invalid question must not smuggle it into the submit.
+
+        `action_next_question` deliberately does no validation, and confirming
+        the *last* question re-collects every answer — including one the user
+        never confirmed.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down", "down", "space")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "teal, cyan"
+
+            # Never confirm Q1 — Tab straight past it.
+            menu.action_next_question()
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "Alice"
+            text_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            assert MULTI_SELECT_COMMA_TOAST in [n.message for n in app._notifications]
+
+    async def test_typing_a_custom_answer_reveals_the_next_slot(self) -> None:
+        """Real keystrokes must grow the slots, not only an explicit sync call.
+
+        Pins the `AskUserMenu.on_text_area_changed` -> `sync_other_slots` wiring:
+        with the handler removed, slots would grow only on Enter, and every test
+        that calls `sync_other_slots()` by hand would still pass.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+
+            await pilot.pause()
+            await pilot.press("down", "down", "space")
+            await pilot.pause()
+            assert len(question._other_entries) == 1
+            assert question._other_entries[0].text_input.has_focus
+
+            await pilot.press("t", "e", "a", "l")
+            await pilot.pause()
+
+            assert question._other_entries[0].text_input.text == "teal"
+            assert len(question._other_entries) == 2
+            options = list(menu.query(_MultiSelectOption))
+            assert options[-1]._text == ADD_ANOTHER_OTHER_LABEL
+
+    async def test_custom_answers_stop_growing_at_the_cap_and_say_so(self) -> None:
+        """The cap is explained once, rather than silently withholding the row.
+
+        The prompt advertises that filling one custom answer reveals another, so
+        a row that stops appearing with no message reads as a broken UI.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+            await pilot.pause()
+
+            for i in range(MAX_MULTI_SELECT_OTHER_ENTRIES):
+                entry = question._other_entries[i]
+                entry.set_checked(True)
+                entry.text_input.text = f"custom {i}"
+                question.sync_other_slots()
+                await pilot.pause()
+
+            assert len(question._other_entries) == MAX_MULTI_SELECT_OTHER_ENTRIES
+            messages = [n.message for n in app._notifications]
+            assert MAX_OTHER_ENTRIES_TOAST in messages
+
+            # Notified once: this runs on every keystroke in the last slot.
+            question.sync_other_slots()
+            question.sync_other_slots()
+            await pilot.pause()
+            assert [n.message for n in app._notifications].count(
+                MAX_OTHER_ENTRIES_TOAST
+            ) == 1
+            assert len(question._other_entries) == MAX_MULTI_SELECT_OTHER_ENTRIES
+
+    async def test_multi_select_other_expands_collapsed_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in a custom multi-select answer expands on submit.
+
+        `get_answer` and `validate_for_submit` must agree on reading
+        `submitted_value`: if one read raw `.text` instead, a pasted comma would
+        pass validation and then corrupt the joined answer.
+        """
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down", "space")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.focus()
+            big = "detail\n" * 5
+            pilot.app.post_message(events.Paste(big))
+            await pilot.pause()
+            assert other_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            # Stripped, unlike the `multiple_choice` Other path: a custom value is
+            # one item in a `", "`-joined list, and the same strip is what makes
+            # "this slot is filled" decidable for slot growth.
+            assert future.result() == {"type": "answered", "answers": [big.strip()]}
+
+    async def test_pasted_comma_in_a_custom_answer_is_rejected(self) -> None:
+        """Validation reads the expanded paste, not the collapsed placeholder."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            question = menu.query_one(_QuestionWidget)
+
+            await pilot.pause()
+            await pilot.press("down", "space")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "teal, cyan"
+
+            assert question.validate_for_submit() == MULTI_SELECT_COMMA_TOAST
+            other_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not future.done()
+
+    async def test_return_to_multi_select_other_refocuses_input(self) -> None:
+        """Tab away from a checked custom answer and Shift+Tab back refocuses it."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+
+            await pilot.pause()
+            await pilot.press("down", "space")
+            await pilot.pause()
+            other_input = question._other_entries[0].text_input
+            assert other_input.has_focus
+
+            menu.action_next_question()
+            await pilot.pause()
+            assert menu._current_question == 1
+            assert not other_input.has_focus
+
+            menu.action_previous_question()
+            await pilot.pause()
+            assert menu._current_question == 0
+            assert other_input.has_focus
+
+    async def test_custom_answer_duplicating_a_selection_is_dropped(self) -> None:
+        """The agent must not see the same selection twice."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Check "red", then type "red" again as a custom answer.
+            await pilot.press("space")
+            await pilot.press("down", "down", "space")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "red"
+            other_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["red"]}
+
+    async def test_multiline_custom_answer_keeps_its_newline(self) -> None:
+        """A newline inside a custom value is preserved, not flattened.
+
+        Pins the current contract: only `,` is forbidden, because it is what
+        joins selections. A newline is legible in the `A:` transcript block, so
+        it is passed through rather than rejected or silently stripped.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down", "space")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "line one\nline two"
+            other_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ["line one\nline two"],
+            }
+
+    async def test_out_of_range_cursor_refuses_to_toggle(self, caplog) -> None:
+        """A corrupt cursor must not flip a checkbox the user never highlighted."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+            await pilot.pause()
+
+            before = [w.checked for w in question._multi_select_widgets]
+            question._selected_choice = 99
+            with caplog.at_level(
+                "ERROR", logger="deepagents_code.tui.widgets.ask_user"
+            ):
+                question.action_toggle_choice()
+
+            assert [w.checked for w in question._multi_select_widgets] == before
+            assert not any(e.checked for e in question._other_entries)
+            assert "outside" in caplog.text
 
     async def test_help_text_includes_newline_hint_for_multi_select_only(self) -> None:
         """Multi-select owns an Other free-text input, so the newline hint stays."""

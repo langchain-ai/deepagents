@@ -67,10 +67,16 @@ MULTI_SELECT_ANSWER_SEPARATOR = ", "
 MULTI_SELECT_FORBIDDEN_IN_VALUE = ","
 """Substring a `multi_select` choice value must not contain.
 
-Kept separate from `MULTI_SELECT_ANSWER_SEPARATOR` so validation states the
-forbidden text outright instead of deriving it by stripping the separator. That
-derivation only happened to work for punctuation: a separator of `" and "` would
-have rejected every value containing "and".
+Deliberately stated outright rather than derived from
+`MULTI_SELECT_ANSWER_SEPARATOR`, so the two can evolve independently: a separator
+of `" and "` would, if the forbidden text were derived from it, reject every value
+containing "and".
+
+This buys *legibility* of the joined answer, not invertibility. Nothing decodes a
+multi-select answer back into its components, and per
+`format_ask_user_transcript` the transcript is not unambiguously decodable
+anyway. If one is ever written, that is the moment to introduce a structured
+answer type instead of leaning on this ban.
 """
 
 
@@ -129,8 +135,18 @@ class Question(TypedDict):
     required: NotRequired[
         Annotated[
             bool,
+            # `strict=True` so a stringly-typed `"false"` is rejected at the tool
+            # boundary rather than coerced. Without it pydantic accepts the string,
+            # the prompt renders, and then `_ask_user_question_count` — which reads
+            # the *raw* tool args and requires a real bool — returns `None`, which
+            # drops every answer in the call as same-turn authorization with no
+            # error. Strict here keeps the two boundaries agreeing, and makes the
+            # coercion loud instead of silently expensive.
             Field(
-                description="Whether the user must answer. Defaults to true if omitted."
+                description=(
+                    "Whether the user must answer. Defaults to true if omitted."
+                ),
+                strict=True,
             ),
         ]
     ]

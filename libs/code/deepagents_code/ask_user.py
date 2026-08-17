@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
@@ -26,10 +26,14 @@ from pydantic import Field
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     ASK_USER_CANCELLED_ANSWER,
+    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    MULTI_SELECT_FORBIDDEN_IN_VALUE,
+    QUESTION_TYPES,
     AskUserAuthorizationReceipt,
     AskUserRequest,
     Question,
+    QuestionType,
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
@@ -39,11 +43,14 @@ logger = logging.getLogger(__name__)
 
 ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need clarification or input before proceeding.
 
-Each question can be either:
+Each question can be one of:
 - "text": Free-form text response from the user
-- "multiple_choice": User selects from predefined options (an "Other" option is always available)
+- "multiple_choice": User selects exactly one of the predefined options (an "Other" option is always available)
+- "multi_select": User selects one or more of the predefined options (an "Other" free-form option is always available; filling one reveals an "Add another" slot for more custom values)
 
-For multiple choice questions, provide a list of choices. The user can pick one or type a custom answer via the "Other" option.
+For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options and may also add one or more custom free-form Other values among the selected values.
+
+A "multi_select" answer is returned as the selected values joined with ", " (an optional question the user leaves untouched returns an empty string). Because of that joining, "multi_select" choice values and custom Other text must not themselves contain a comma.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
@@ -65,10 +72,52 @@ Use this tool sparingly - only when you genuinely need information from the user
 
 When using `ask_user`:
 - Be concise and specific with your questions
-- Use multiple choice when there are clear options to choose from
+- Use multiple choice when there are clear options and exactly one applies
+- Use multi-select when the user may legitimately pick several of the options
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
+
+
+def _validate_choices(
+    choices: Sequence[object], *, question_text: str, question_type: QuestionType
+) -> None:
+    """Validate the choice list of a choice-type question.
+
+    Rejects blank values, which would otherwise render as an unlabelled option
+    the user can select but whose answer reads as "no answer". For
+    `multi_select`, also rejects values containing
+    `MULTI_SELECT_FORBIDDEN_IN_VALUE`, since a value carrying the punctuation
+    that separates selections would make the joined answer ambiguous.
+
+    Args:
+        choices: Candidate `choices` value from a question definition.
+        question_text: Question text, for error messages.
+        question_type: Question type. Selects the `multi_select`-only
+            forbidden-substring check, and names the type in error messages.
+
+    Raises:
+        ValueError: If any choice is malformed, blank, or ambiguous.
+    """
+    # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
+    # so the shape checks below are redundant there. They are kept — and the
+    # parameter typed as a plain sequence — so this stays safe if it is ever
+    # called on a raw, unparsed payload.
+    for choice in choices:
+        value = choice.get("value") if isinstance(choice, Mapping) else None
+        if not isinstance(value, str) or not value.strip():
+            msg = (
+                f"{question_type} question {question_text!r} has a choice with a "
+                f"missing or blank 'value': {choice!r}"
+            )
+            raise ValueError(msg)
+        if question_type == "multi_select" and MULTI_SELECT_FORBIDDEN_IN_VALUE in value:
+            msg = (
+                f"multi_select question {question_text!r} has a choice value "
+                f"containing {MULTI_SELECT_FORBIDDEN_IN_VALUE!r}, which would "
+                f"make the joined answer ambiguous: {value!r}"
+            )
+            raise ValueError(msg)
 
 
 def _validate_questions(questions: list[Question]) -> None:
@@ -91,20 +140,47 @@ def _validate_questions(questions: list[Question]) -> None:
             raise ValueError(msg)
 
         question_type = q.get("type")
-        if question_type not in {"text", "multiple_choice"}:
+        if question_type not in QUESTION_TYPES:
             msg = f"unsupported ask_user question type: {question_type!r}"
             raise ValueError(msg)
 
-        if question_type == "multiple_choice" and not q.get("choices"):
+        # Belt-and-braces: on the tool path `Question.required` is `strict=True`,
+        # so pydantic has already rejected a non-boolean before this runs. This
+        # only covers a caller that reaches here with a raw, unparsed payload.
+        # It matters because `_ask_user_question_count` reads the raw tool args
+        # and also requires a real bool: a coerced `"false"` would render the
+        # prompt and then silently drop every answer in the call as same-turn
+        # authorization.
+        required = q.get("required")
+        if required is not None and not isinstance(required, bool):
             msg = (
-                f"multiple_choice question "
-                f"{q.get('question')!r} requires a "
-                f"non-empty 'choices' list"
+                f"ask_user question {question_text!r} has a non-boolean "
+                f"'required': {required!r}"
             )
             raise ValueError(msg)
 
-        if question_type == "text" and q.get("choices"):
-            msg = f"text question {q.get('question')!r} must not define 'choices'"
+        if question_type in CHOICE_QUESTION_TYPES:
+            choices = q.get("choices")
+            if not choices:
+                msg = (
+                    f"{question_type} question "
+                    f"{q.get('question')!r} requires a "
+                    f"non-empty 'choices' list"
+                )
+                raise ValueError(msg)
+            _validate_choices(
+                choices,
+                question_text=question_text,
+                question_type=question_type,
+            )
+
+        # Derived from `CHOICE_QUESTION_TYPES` rather than spelled `== "text"`, so
+        # a future non-choice `QuestionType` member keeps this check instead of
+        # silently letting stray `choices` through.
+        if question_type not in CHOICE_QUESTION_TYPES and q.get("choices"):
+            msg = (
+                f"{question_type} question {question_text!r} must not define 'choices'"
+            )
             raise ValueError(msg)
 
 
@@ -349,7 +425,8 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware that provides an ask_user tool for interactive questioning.
 
     This middleware adds an `ask_user` tool that allows agents to ask the user
-    questions during execution. Questions can be free-form text or multiple choice.
+    questions during execution. Questions can be free-form text, multiple choice
+    (pick exactly one), or multi-select (pick one or more).
     The tool uses LangGraph interrupts to pause execution and wait for user input.
     """
 

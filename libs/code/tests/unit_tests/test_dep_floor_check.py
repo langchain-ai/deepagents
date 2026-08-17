@@ -226,14 +226,20 @@ class TestRefreshCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         siblings: dict[str, str],
+        *,
+        editable: set[str] | None = None,
     ) -> Path:
-        """Build a fake repo layout with a `code` checkout and its pyproject.
+        """Build a fake repo layout plus installed-distribution metadata.
 
         Args:
             tmp_path: Per-test scratch root from pytest.
             monkeypatch: Pytest patch registry.
             siblings: Workspace source name to relative path entries for the
                 checkout's `[tool.uv.sources]`; directories are created.
+            editable: Subset of `siblings` keys whose distribution is
+                installed editable from its source path. Other names resolve
+                to no distribution, as a wheel-only or absent install would.
+                Defaults to every source.
         """
         code = tmp_path / "repo" / "libs" / "code"
         code.mkdir(parents=True)
@@ -245,6 +251,27 @@ class TestRefreshCommand:
         monkeypatch.setattr(dep_floor_check, "_checkout_root", lambda: code)
         monkeypatch.setattr(dep_floor_check.sys, "executable", "/venv/bin/python")
         monkeypatch.setattr(dep_floor_check.sys, "platform", "linux")
+
+        installed = siblings.keys() if editable is None else editable
+
+        class _Dist:
+            def __init__(self, direct_url: str) -> None:
+                self._direct_url = direct_url
+
+            def read_text(self, filename: str) -> str:
+                if filename == "direct_url.json":
+                    return self._direct_url
+                raise FileNotFoundError(filename)
+
+        def _distribution(name: str) -> _Dist:
+            if name not in installed:
+                raise dep_floor_check.importlib.metadata.PackageNotFoundError(name)
+            url = (code / siblings[name]).resolve().as_uri()
+            return _Dist(json.dumps({"url": url, "dir_info": {"editable": True}}))
+
+        monkeypatch.setattr(
+            dep_floor_check.importlib.metadata, "distribution", _distribution
+        )
         return code
 
     def test_workspace_siblings_are_included(
@@ -285,10 +312,27 @@ class TestRefreshCommand:
             f"-e {code} -e {deepagents} --upgrade"
         )
 
+    def test_uninstalled_optional_source_is_not_installed_fresh(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wheel-only or absent optional extra stays out of the refresh."""
+        code = self._stub_checkout(
+            tmp_path,
+            monkeypatch,
+            {"deepagents": "../deepagents", "langchain-daytona": "../partners/daytona"},
+            editable={"deepagents"},
+        )
+        deepagents = (code / "../deepagents").resolve()
+
+        assert dep_floor_check.refresh_command() == (
+            "uv pip install --python /venv/bin/python "
+            f"-e {code} -e {deepagents} --upgrade"
+        )
+
     def test_missing_sibling_dir_falls_back_to_its_release(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A declared source whose directory is absent is not passed to `uv`."""
+        """An editable record pointing at a deleted directory does not qualify."""
         code = self._stub_checkout(
             tmp_path, monkeypatch, {"deepagents": "../deepagents"}
         )

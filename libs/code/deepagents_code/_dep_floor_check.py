@@ -261,20 +261,65 @@ def _checkout_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _workspace_editable_paths() -> list[Path]:
-    """List the sibling checkouts this checkout installs as editable path deps.
+def _is_editable_dist(dist_name: str, path: Path) -> bool:
+    """Check whether an installed distribution is an editable install of `path`.
 
-    Reads the checkout's own `[tool.uv.sources]` so the refresh preserves
-    every workspace editable the environment was built with — not just the
-    ones a hardcoded list happens to name. Each source is independent: a
-    partial checkout (say, `libs/deepagents` present without `libs/acp`)
-    still passes the editables it does have, and only missing directories
-    fall back to their PyPI releases.
+    Reads the distribution's own PEP 610 `direct_url.json` rather than the
+    directory's existence: most `[tool.uv.sources]` entries back optional
+    extras, so a source directory that merely exists in a full monorepo
+    checkout must not be reinstalled as an editable over an environment that
+    deliberately tracks the released wheel.
+
+    Args:
+        dist_name: Distribution name as passed to `importlib.metadata`.
+        path: The source checkout the `[tool.uv.sources]` entry points at.
 
     Returns:
-        Absolute paths of `editable = true` path sources that exist on disk,
-        in `pyproject.toml` declaration order. Empty when the checkout's
-        `pyproject.toml` cannot be read or declares no editable sources.
+        `True` when the distribution is installed editable with a `file://`
+        URL resolving to `path`; `False` for wheel installs, missing
+        distributions, and unreadable or mismatched metadata.
+    """
+    try:
+        raw = importlib.metadata.distribution(dist_name).read_text("direct_url.json")
+        if not raw:
+            return False
+        data = json.loads(raw)
+    except (
+        importlib.metadata.PackageNotFoundError,
+        json.JSONDecodeError,
+        TypeError,
+    ):
+        return False
+    if not isinstance(data, dict):
+        return False
+    dir_info = data.get("dir_info")
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return False
+    url = data.get("url", "")
+    if not isinstance(url, str) or not url.startswith("file://"):
+        return False
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    return Path(url2pathname(urlparse(url).path)).resolve() == path
+
+
+def _workspace_editable_paths() -> list[Path]:
+    """List the workspace sources this environment actually installed editable.
+
+    Reads the checkout's own `[tool.uv.sources]`, then keeps only the entries
+    whose distribution is currently installed as an editable pointing at that
+    same path. Directory existence alone is not enough: partner packages
+    (`langchain-daytona`, `langchain-modal`, ...) are optional extras whose
+    checkouts always exist in a full monorepo clone, and re-passing them as
+    `-e` would replace their released wheels with editables and pull in their
+    transitive dependencies.
+
+    Returns:
+        Absolute paths of `editable = true` path sources whose distribution is
+        installed editable from that path, in `pyproject.toml` declaration
+        order. Empty when the checkout's `pyproject.toml` cannot be read or no
+        source qualifies.
     """
     pyproject = _checkout_root() / "pyproject.toml"
     try:
@@ -290,7 +335,7 @@ def _workspace_editable_paths() -> list[Path]:
         return []
     checkout = _checkout_root()
     paths: list[Path] = []
-    for source in sources.values():
+    for dist_name, source in sources.items():
         if not isinstance(source, dict):
             continue
         if source.get("editable") is not True or not isinstance(
@@ -298,7 +343,7 @@ def _workspace_editable_paths() -> list[Path]:
         ):
             continue
         path = (checkout / source["path"]).resolve()
-        if path.is_dir():
+        if path.is_dir() and _is_editable_dist(dist_name, path):
             paths.append(path)
     return paths
 

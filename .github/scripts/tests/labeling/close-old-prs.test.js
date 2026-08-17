@@ -295,9 +295,11 @@ test('the release branch prefix matches release-please-config.json', () => {
     RELEASE_PLEASE_BRANCH_PREFIX, 'release-please--branches--main--components--',
   );
 
-  // The exemption only ever fires in the ready-for-review window because
-  // release PRs open as drafts and drafts are skipped earlier. If this flips,
-  // the exemption becomes load-bearing for a release PR's whole life.
+  // Drafts are warned and closed like any other PR, so if release PRs ever
+  // stop opening as drafts nothing here breaks: the provenance check above is
+  // their only protection either way. This pin keeps the "stay drafts for
+  // most of their life" assumption the comments in close-old-prs.js make
+  // verifiable against the config.
   assert.equal(
     config['draft-pull-request'], true,
     'release PRs are expected to open as drafts',
@@ -503,6 +505,7 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   const live = new Map([
     [102, { labels: ['pending-deletion'] }],
     [103, { labels: ['do-not-close'] }],
+    // Drafts get no exemption: #104 is warned like any other 30-day-old PR.
     [104, { draft: true }],
   ]);
   const { github, calls } = makeGithub({
@@ -520,17 +523,19 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   const summary = await run({ github, context, core, options: { now } });
 
   assert.deepEqual(summary, {
-    checked: 4, warned: 1, closed: 1, skipped: 2, skippedRelease: 0,
+    checked: 4, warned: 2, closed: 1, skipped: 1, skippedRelease: 0,
     skippedRaced: 0,
     staleCleared: 0, sweepNotFound: 0, sweepTruncated: false, sweepFailure: null,
     incomplete: false, truncated: false, errors: [],
   });
-  assert.equal(calls.createComment.length, 1);
+  assert.equal(calls.createComment.length, 2);
   assert.equal(calls.createComment[0].issue_number, 101);
+  assert.equal(calls.createComment[1].issue_number, 104);
   assert.match(calls.createComment[0].body, /open for at least 14 days/);
+  assert.match(calls.createComment[1].body, /open for at least 14 days/);
   assert.deepEqual(
     calls.addLabels.map(call => [call.issue_number, call.labels]),
-    [[101, ['pending-deletion']]],
+    [[101, ['pending-deletion']], [104, ['pending-deletion']]],
   );
   assert.equal(calls.updateComment.length, 1);
   assert.equal(calls.updateComment[0].comment_id, 77);
@@ -1064,7 +1069,7 @@ test('sweep counts and logs PRs that vanished before it read them', async () => 
 test('sweep does not count a PR whose label is already gone', async () => {
   const { github, calls } = makeGithub({
     labeledItems: [{ number: 112, created_at: '2026-04-01T00:00:00Z' }],
-    live: new Map([[112, { draft: true, labels: [] }]]),
+    live: new Map([[112, { labels: [] }]]),
   });
   const core = makeCore();
 
@@ -1472,24 +1477,53 @@ test('removes pending-deletion when a PR gains do-not-close', async () => {
   assert.deepEqual(calls.close, []);
 });
 
-test('removes pending-deletion when a PR becomes a draft', async () => {
+test('warns a draft PR past the warning threshold', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 322, created_at: '2026-04-23T00:00:00Z' }],
-    live: new Map([[322, { draft: true, labels: ['pending-deletion'] }]]),
+    live: new Map([[322, { draft: true, labels: [] }]]),
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
 
-  assert.equal(summary.skipped, 1);
-  assert.deepEqual(calls.removeLabel, [{
+  assert.equal(summary.warned, 1);
+  assert.equal(summary.skipped, 0);
+  assert.equal(calls.createComment.length, 1);
+  assert.equal(calls.createComment[0].issue_number, 322);
+  assert.match(calls.createComment[0].body, /open for at least 14 days/);
+  assert.deepEqual(calls.addLabels, [{
     owner: 'langchain-ai',
     repo: 'deepagents',
     issue_number: 322,
+    labels: ['pending-deletion'],
+  }]);
+  assert.deepEqual(calls.close, []);
+});
+
+test('closes a draft PR past the close threshold with an old-enough warning', async () => {
+  const comments = new Map([
+    [323, [{ id: 96, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 323, created_at: '2026-04-01T00:00:00Z' }],
+    comments,
+    live: new Map([[323, { draft: true, labels: ['pending-deletion'] }]]),
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.closed, 1);
+  assert.deepEqual(calls.close, [323]);
+  assert.equal(calls.createComment.length, 0);
+  assert.match(calls.updateComment[0].body, /open for at least 30 days/);
+  assert.deepEqual(calls.removeLabel, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 323,
     name: 'pending-deletion',
   }]);
 });
 
-test('sweep clears pending-deletion on closed or draft PRs missed by open search', async () => {
+test('sweep clears pending-deletion on closed PRs missed by open search', async () => {
   const { github, calls } = makeGithub({
     items: [],
     labeledItems: [
@@ -1499,6 +1533,7 @@ test('sweep clears pending-deletion on closed or draft PRs missed by open search
     ],
     live: new Map([
       [330, { state: 'closed', labels: ['pending-deletion'] }],
+      // A draft is still a close candidate, so its label is not stale.
       [331, { draft: true, labels: ['pending-deletion'] }],
       [332, { labels: ['pending-deletion'] }],
     ]),
@@ -1506,12 +1541,13 @@ test('sweep clears pending-deletion on closed or draft PRs missed by open search
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
 
-  assert.equal(summary.staleCleared, 2);
+  assert.equal(summary.staleCleared, 1);
   assert.deepEqual(
-    calls.removeLabel.map(call => call.issue_number).sort((a, b) => a - b),
-    [330, 331],
+    calls.removeLabel.map(call => call.issue_number),
+    [330],
   );
-  // Still-open non-exempt PRs keep the label.
+  // Still-open non-exempt PRs — drafts included — keep the label.
+  assert.ok(!calls.removeLabel.some(call => call.issue_number === 331));
   assert.ok(!calls.removeLabel.some(call => call.issue_number === 332));
 });
 
@@ -1620,11 +1656,11 @@ test('honors maxItems truncation', async () => {
   assert.equal(core.failed, null);
 });
 
-test('uses all non-draft open PRs and rejects invalid thresholds', async () => {
+test('uses all open PRs and rejects invalid thresholds', async () => {
   const { github, calls } = makeGithub();
   await run({ github, context, core: makeCore(), options: { now } });
 
-  assert.equal(calls.queries[0].q, 'repo:langchain-ai/deepagents is:pr is:open draft:false');
+  assert.equal(calls.queries[0].q, 'repo:langchain-ai/deepagents is:pr is:open');
   assert.equal(calls.queries[0].sort, 'created');
   assert.equal(calls.queries[0].order, 'asc');
 

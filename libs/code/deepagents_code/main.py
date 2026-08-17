@@ -15,7 +15,6 @@ import importlib.util
 import json
 import logging
 import os
-import shlex
 import shutil
 import signal
 import sys
@@ -110,11 +109,6 @@ def _install_termination_signal_handlers() -> None:
     if sys.platform != "win32":
         for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
             signal.signal(signum, _handle_termination_signal)
-
-
-def _tail_log_command(log_path: Path | str) -> str:
-    """Return a copy-pasteable command for following a log file."""
-    return f"tail -f {shlex.quote(str(log_path))}"
 
 
 def build_version_text() -> str:
@@ -505,6 +499,7 @@ def _run_startup_auto_update(console: "Console") -> None:
         clear_startup_auto_update_failure,
         create_update_log_path,
         detect_shadowed_dcode_safe,
+        format_log_follow_command,
         format_release_age_parenthetical,
         format_shadowed_dcode_warning,
         get_cached_update_available,
@@ -652,7 +647,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                 return
             log_path = create_update_log_path()
             console.print(
-                f"Update log: {_tail_log_command(log_path)}",
+                f"Update log: {format_log_follow_command(log_path)}",
                 style="dim",
                 highlight=False,
                 markup=False,
@@ -4586,6 +4581,7 @@ def cli_main() -> None:
                     create_update_log_path,
                     format_age_suffix,
                     format_installed_age_suffix,
+                    format_log_follow_command,
                     format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
@@ -4675,7 +4671,7 @@ def cli_main() -> None:
                         sys.exit(0)
                     log_path = create_update_log_path()
                     console.print(
-                        f"Update log: {_tail_log_command(log_path)}",
+                        f"Update log: {format_log_follow_command(log_path)}",
                         style="dim",
                         highlight=False,
                         markup=False,

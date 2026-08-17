@@ -68,6 +68,20 @@ def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
         yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_update_log_dir(tmp_path: Path) -> Iterator[None]:
+    """Keep `/update` tests out of the developer's real update-log directory.
+
+    `UPDATE_LOG_DIR` is a module-level constant baked from `default_cache_dir()`
+    at import, so no environment variable redirects it. Any test that reaches
+    `create_update_log_path` therefore runs `cleanup_update_logs` against the
+    real cache dir, pruning a user's genuine logs past `UPDATE_LOG_MAX_FILES`.
+    Tests that assert on a specific path override this with their own patch.
+    """
+    with patch("deepagents_code.update_check.UPDATE_LOG_DIR", tmp_path / "update_logs"):
+        yield
+
+
 def test_version_matches_pyproject() -> None:
     """Verify `__version__` in `_version.py` matches version in `pyproject.toml`."""
     # Get the project root directory
@@ -726,7 +740,7 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
 async def test_update_slash_command_links_log_instead_of_listing_dependencies() -> None:
     """A normal app upgrade keeps dependency churn in its exact update log."""
     from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.tui.widgets.messages import AppMessage
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
     log_path = Path("/tmp/dcode update.log")
     app = DeepAgentsApp()
@@ -742,7 +756,7 @@ async def test_update_slash_command_links_log_instead_of_listing_dependencies() 
                 return_value=(True, "99.0.0"),
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=log_path,
             ),
             patch(
@@ -772,10 +786,15 @@ async def test_update_slash_command_links_log_instead_of_listing_dependencies() 
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         )
         assert "Update log: tail -f '/tmp/dcode update.log'" in content
+        # Pin the success branch. The negative assertions below are only
+        # meaningful if the flow actually reached the branch that used to print
+        # the dependency summary — a swallowed exception (e.g. a `perform_upgrade`
+        # arity change) would otherwise make them pass vacuously. `ErrorMessage`
+        # is not an `AppMessage` subclass, so `content` cannot see failures.
         assert "Updated to v99.0.0" in content
-        assert "/update failed" not in content
+        assert not app.query(ErrorMessage)
         assert "Dependencies updated:" not in content
-        assert "anthropic  0.120.2 -> 0.122.0" not in content
+        assert "anthropic" not in content
 
 
 async def test_update_slash_command_uses_powershell_to_follow_logs() -> None:
@@ -797,10 +816,10 @@ async def test_update_slash_command_uses_powershell_to_follow_logs() -> None:
                 return_value=(True, "99.0.0"),
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=log_path,
             ),
-            patch("deepagents_code.app.sys.platform", "win32"),
+            patch("deepagents_code.update_check.sys.platform", "win32"),
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
@@ -1961,6 +1980,99 @@ async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
         assert "Auto-update failed" in content
         assert "resolver: conflict" in content
         assert "uv tool install -U 'deepagents-code==1.1.0'" in content
+
+
+async def test_perform_app_upgrade_failure_repeats_log_path() -> None:
+    """A failed upgrade names its log again, not just in the pre-install hint.
+
+    The failure detail is truncated to 200 characters, so the log is the only
+    complete record — and the hint mounted before the install has scrolled away
+    behind the installer's streamed output by the time the failure lands.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    log_path = Path("/tmp/dcode failed-update.log")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=log_path,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict", None),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool install -U 'deepagents-code==1.1.0'",
+            ),
+        ):
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version="1.1.0",
+            )
+            await pilot.pause()
+
+        failures = [
+            str(m._content)
+            for m in app.query(AppMessage)
+            if not m._is_markdown and "Auto-update failed" in str(m._content)
+        ]
+        assert failures
+        assert f"Log: {log_path}" in failures[0]
+
+
+async def test_perform_app_upgrade_omits_log_hint_when_log_uncreatable() -> None:
+    """An uncreatable log is silently skipped, never advertised as a dead path.
+
+    `create_update_log_file` returns `None` when the cache dir cannot be
+    written. Pointing the user at `tail -f <path>` for a file that will never
+    exist is worse than saying nothing, and the upgrade itself must still run.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, "", "1.1.0"),
+            ) as perform_upgrade_mock,
+        ):
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version="1.1.0",
+            )
+            await pilot.pause()
+
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path=None,
+            include_prereleases=None,
+            target_version="1.1.0",
+        )
+        content = "\n".join(
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        )
+        assert "Update log:" not in content
+        assert "Updated to v1.1.0" in content
+        assert not app.query(ErrorMessage)
 
 
 async def test_perform_app_upgrade_defers_to_another_session() -> None:

@@ -4816,6 +4816,35 @@ class TestPasteBurstPromotion:
             assert payload not in ta.text
             assert chat._pasted_contents[1].content == payload
 
+    async def test_rapid_slash_command_is_not_promoted_as_a_dropped_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key-event `/help` burst must retain command submission semantics."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/help":
+                await pilot.press(char)
+
+            assert chat.mode == "command"
+            assert ta.text == "help"
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/help"
+            assert app.submitted[0].mode == "command"
+
     @pytest.mark.parametrize("payload", ["hello world", '"hello world"'])
     async def test_ordinary_rapid_typing_is_never_promoted(
         self, monkeypatch: pytest.MonkeyPatch, payload: str

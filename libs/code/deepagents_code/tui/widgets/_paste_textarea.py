@@ -465,10 +465,15 @@ class PasteBurstTextArea(TextArea):
             return
         payload = self._paste_burst_run_text
         dispatch_payload = self._burst_run_payload_for_dispatch(payload)
+        is_path_payload = looks_like_dropped_payload(dispatch_payload)
+        # A virtual slash prefix is restored only for a ChatInput absolute
+        # path. Its visible suffix has its own separator (for example,
+        # `private/tmp/...`), unlike a slash-command name such as `help`.
+        recovered_path_has_separator = dispatch_payload != payload and "/" in payload
         if (
-            looks_like_dropped_payload(dispatch_payload)
-            or len(payload) >= PASTE_BURST_PROMOTE_CHARS
-        ):
+            (not self._in_slash_command_context() or recovered_path_has_separator)
+            and is_path_payload
+        ) or len(payload) >= PASTE_BURST_PROMOTE_CHARS:
             promoted = self._promote_paste_burst_run(
                 self._paste_burst_last_key_time or 0.0
             )

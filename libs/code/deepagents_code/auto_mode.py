@@ -56,7 +56,9 @@ from typing_extensions import TypedDict
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
+    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    QUESTION_TYPES,
 )
 from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
 from deepagents_code.approval_mode import (
@@ -1057,11 +1059,11 @@ def _ask_user_question_count(call: ToolCall) -> int | None:
         if (
             not isinstance(question, str)
             or not question.strip()
-            or question_type not in {"text", "multiple_choice"}
+            or question_type not in QUESTION_TYPES
             or (required is not None and not isinstance(required, bool))
         ):
             return None
-        if question_type == "multiple_choice":
+        if question_type in CHOICE_QUESTION_TYPES:
             if not isinstance(choices, list) or not choices:
                 return None
             if not all(

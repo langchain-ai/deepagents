@@ -8,12 +8,12 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents.middleware import TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, PrivateStateAttr
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -1145,6 +1145,42 @@ class TestStateSchema:
         mw_stack = mock_create.call_args.kwargs["middleware"]
         sub_mw = next(m for m in mw_stack if isinstance(m, SubAgentMiddleware))
         assert sub_mw._state_schema is MyState
+
+    def test_custom_subagent_middleware_receives_private_state_keys(self) -> None:
+        """A caller-supplied task middleware filters private state like the default one."""
+
+        class _PrivateState(DeepAgentState):
+            secret: Annotated[str, PrivateStateAttr]
+
+        class _PrivateStateMiddleware(AgentMiddleware[Any, Any, Any]):
+            state_schema = _PrivateState
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        custom_subagent_middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "A worker subagent.",
+                    "system_prompt": "You are a worker.",
+                    "model": fake_model,
+                    "tools": [],
+                }
+            ],
+        )
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(
+                model="testprov:some-model",
+                middleware=[_PrivateStateMiddleware(), custom_subagent_middleware],
+            )
+
+        assert "secret" in custom_subagent_middleware.private_state_keys
 
     def test_declarative_subagent_compiles_with_custom_state_schema(self) -> None:
         """A declarative subagent's compiled runnable exposes the custom field as a channel."""

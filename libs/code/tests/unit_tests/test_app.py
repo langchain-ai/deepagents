@@ -14338,6 +14338,27 @@ class TestChatScrollKeepsInputFocus:
 class TestMessageTimestampFooters:
     """Tests for toggleable message timestamp footers."""
 
+    async def test_spacer_mount_skips_detached_footer_anchor(self) -> None:
+        """Spacer recreation tolerates a footer still listed during removal."""
+        from deepagents_code.app import _MESSAGE_TOP_SPACER_ID
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            footer = Static("", id="stale-timestamp-footer")
+            message = AppMessage("new", id="new-message")
+            await messages.mount(footer, message)
+            footer._detach()
+
+            await app._ensure_transcript_spacers(messages)
+
+            top = app.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
+            assert top.parent is messages
+            assert messages.children.index(top) < messages.children.index(message)
+            footer._parent = messages
+            await footer.remove()
+
     @staticmethod
     def _sync_tz() -> None:
         if hasattr(time, "tzset"):
@@ -25959,8 +25980,9 @@ class TestNotificationCenterIntegration:
         )
 
     async def test_install_success_removes_entry(self) -> None:
-        """Successful install removes the entry and toasts restart hint."""
+        """Successful install removes the entry and updates the splash version."""
         from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
@@ -25970,12 +25992,100 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.0.0")),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+                splash = (
+                    app.query_one("#welcome-banner", WelcomeBanner)
+                    ._build_banner()
+                    .plain
+                )
+
+        assert app._notice_registry.get("update:available") is None
+        assert "v2.0.0" in splash
+        assert f"v{__version__}" not in splash
+
+    async def test_install_success_marks_modal_without_a_banner(self) -> None:
+        """A missing splash banner cannot spoil a successful install.
+
+        The splash repaint is cosmetic, but the modal refuses to close until
+        it is marked done, and `_dispatch_notification_action` turns any
+        escaping exception into an "Install now failed" toast. So a banner
+        miss must neither precede `mark_success` (which would strand the
+        modal) nor raise (which would report a completed install as failed).
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.query_one("#welcome-banner", WelcomeBanner).remove()
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.0.0")),
             ):
                 await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()
 
+            assert isinstance(app.screen, UpdateProgressScreen)
+            status = app.screen.query(Static).filter(".up-status").first()
+            assert "Update complete" in str(status.render())
+            # The modal is dismissable, so the session is not stranded.
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, UpdateProgressScreen)
+
         assert app._notice_registry.get("update:available") is None
+        assert not any("failed" in m for m in notified)
+
+    async def test_install_success_reports_installed_version_over_checked_version(
+        self,
+    ) -> None:
+        """The splash shows what the installer resolved, not the stale check.
+
+        The install command is unpinned, so a release published between the
+        update check and the install is what lands on disk. `perform_upgrade`
+        reads that back; the splash must use the readback version.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry(latest="2.0.0")
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.1.0")),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+                splash = (
+                    app.query_one("#welcome-banner", WelcomeBanner)
+                    ._build_banner()
+                    .plain
+                )
+
+        assert "v2.1.0" in splash
+        assert "v2.0.0" not in splash
 
     async def test_install_defers_to_another_session(
         self, monkeypatch: pytest.MonkeyPatch
@@ -26036,7 +26146,7 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
         app._notice_registry.add(entry)
-        upgrade_mock = AsyncMock(return_value=(False, "resolver: conflict"))
+        upgrade_mock = AsyncMock(return_value=(False, "resolver: conflict", None))
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -26125,6 +26235,7 @@ class TestNotificationCenterIntegration:
         """
         from deepagents_code.notifications import ActionId
         from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
         from deepagents_code.update_check import (
             ShadowedDcode,
             format_shadowed_dcode_fix_command,
@@ -26155,7 +26266,9 @@ class TestNotificationCenterIntegration:
             with (
                 patch(
                     "deepagents_code.update_check.perform_upgrade",
-                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                    new=AsyncMock(
+                        return_value=(True, "Updated deepagents-code", "2.0.0")
+                    ),
                 ),
                 # Override the autouse `None` patch.
                 patch(
@@ -26171,6 +26284,15 @@ class TestNotificationCenterIntegration:
             assert "Update complete" not in str(status.render())
             assert "/opt/stale/bin/dcode" in str(status.render())
             assert "/home/user/.local/bin/dcode" in str(status.render())
+            # The splash must keep advertising the running version: a stale
+            # shim earlier on PATH means relaunching keeps the old binary, so
+            # bumping the banner here would promise an upgrade that never
+            # takes effect.
+            splash = (
+                app.query_one("#welcome-banner", WelcomeBanner)._build_banner().plain
+            )
+            assert "v2.0.0" not in splash
+            assert f"v{__version__}" in splash
             await pilot.press("c")
             await pilot.pause()
 
@@ -26235,7 +26357,9 @@ class TestNotificationCenterIntegration:
             with (
                 patch(
                     "deepagents_code.update_check.perform_upgrade",
-                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                    new=AsyncMock(
+                        return_value=(True, "Updated deepagents-code", "2.0.0")
+                    ),
                 ),
                 patch(
                     "deepagents_code.update_check.detect_shadowed_dcode",
@@ -26286,7 +26410,7 @@ class TestNotificationCenterIntegration:
             monkeypatch.setenv(DEBUG_UPDATE, "1")
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.0.0")),
             ) as mock_upgrade:
                 with patch(
                     "deepagents_code.app.asyncio.sleep",
@@ -26303,6 +26427,7 @@ class TestNotificationCenterIntegration:
     async def test_install_failure_removes_entry_and_toasts_manual(self) -> None:
         """Failed install removes the stale entry and surfaces the manual command."""
         from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
@@ -26321,14 +26446,23 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(return_value=(False, "ERROR: network unreachable")),
+                new=AsyncMock(return_value=(False, "ERROR: network unreachable", None)),
             ):
                 await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()
+                # Nothing was installed, so the splash must not advertise the
+                # version the notification was offering.
+                splash = (
+                    app.query_one("#welcome-banner", WelcomeBanner)
+                    ._build_banner()
+                    .plain
+                )
 
         assert app._notice_registry.get("update:available") is None
         assert any("Run manually" in m for m in notified)
         assert any("network unreachable" in m for m in notified)
+        assert "v2.0.0" not in splash
+        assert f"v{__version__}" in splash
 
     async def test_install_immediate_failure_updates_mounted_modal(self) -> None:
         """Immediate install failures still render the completed modal state."""
@@ -26342,13 +26476,13 @@ class TestNotificationCenterIntegration:
 
         def fail_immediately(
             **kwargs: Any,
-        ) -> tuple[bool, str]:
+        ) -> tuple[bool, str, None]:
             assert kwargs["progress"] is not None
             assert kwargs["log_path"] is not None
             assert isinstance(app.screen, UpdateProgressScreen)
             assert app.screen._status_widget is not None
             assert app.screen._tail_widget is not None
-            return False, "brew: command not found"
+            return False, "brew: command not found", None
 
         async with app.run_test() as pilot:
             await pilot.pause()

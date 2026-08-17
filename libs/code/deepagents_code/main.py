@@ -2085,7 +2085,7 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-haiku-4-5). Interactive TUI only. Defaults to "
+        "(e.g. anthropic:claude-haiku-4-5). Local TUI or ACP only. Defaults to "
         "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
         "then the main agent model. A weaker model weakens Auto's review.",
     )
@@ -2235,14 +2235,14 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help="Interactive local TUI only: enable classifier-backed Auto mode.",
+        help="Enable classifier-backed Auto mode in the local TUI or ACP server.",
     )
     approval_group.add_argument(
         "--yolo",
         action="store_true",
         help=(
-            "Interactive mode only: run gated actions without review after the "
-            "one-time local risk acknowledgement."
+            "Run gated actions without review after the one-time local risk "
+            "acknowledgement (interactive TUI or ACP mode)."
         ),
     )
 
@@ -2843,6 +2843,9 @@ async def _run_acp_cli_async(
     trust_project_mcp: bool | None = None,
     allow_fs_tools: "list[FsToolName] | None" = None,
     recursion_limit: int | None = None,
+    auto: bool = False,
+    yolo: bool = False,
+    auto_classifier_model: str | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2863,6 +2866,9 @@ async def _run_acp_cli_async(
             `None` leaves the SDK default (all tools).
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env/`config.toml`/default at agent-build time.
+        auto: Enable classifier-backed approval routing.
+        yolo: Disable approval prompts for this ACP server.
+        auto_classifier_model: Optional model for Auto approval classification.
 
     Returns:
         Exit code for ACP mode.
@@ -2967,6 +2973,9 @@ async def _run_acp_cli_async(
 
         async with get_checkpointer() as checkpointer:
             await checkpointer.setup()
+            from langgraph.store.memory import InMemoryStore
+
+            store = InMemoryStore() if auto else None
 
             def build_agent(
                 context: "AgentSessionContext",
@@ -2991,16 +3000,29 @@ async def _run_acp_cli_async(
                     async_subagents=async_subagents,
                     fs_tools=allow_fs_tools,
                     recursion_limit=recursion_limit,
+                    auto_approve=yolo,
+                    auto_mode_enabled=auto,
+                    auto_classifier_model=auto_classifier_model,
                     memory_auto_save=is_memory_auto_save_enabled(),
+                    store=store,
                     cwd=context.cwd,
                     project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
                 )
                 return agent_graph
 
-            server = agent_server_cls(
+            if auto:
+                from deepagents_code.acp import AgentServerACP
+
+                server_cls = AgentServerACP
+                server_kwargs = {"store": cast("Any", store)}
+            else:
+                server_cls = agent_server_cls
+                server_kwargs = {}
+            server = server_cls(
                 build_agent,
                 models=models,
                 load_sessions=True,
+                **server_kwargs,
             )
             await run_acp_agent(server)
     except KeyboardInterrupt:
@@ -4280,16 +4302,21 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
-                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+            if getattr(args, "yolo", False):
+                from deepagents_code.approval_mode import has_yolo_acknowledgement
+
+                if not has_yolo_acknowledgement():
+                    sys.stderr.write(
+                        "Error: acknowledge YOLO in the interactive TUI before "
+                        "using it in ACP mode.\n"
+                    )
+                    sys.exit(2)
+            if getattr(args, "auto_classifier_model", None) is not None and not getattr(
+                args, "auto_approve", False
+            ):
                 sys.stderr.write(
-                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
-                )
-                sys.exit(2)
-            if getattr(args, "auto_classifier_model", None) is not None:
-                sys.stderr.write(
-                    "Error: --auto-classifier-model is only supported by the "
-                    "interactive Textual TUI.\n"
+                    "Error: --auto-classifier-model requires --auto-approve "
+                    "in ACP mode.\n"
                 )
                 sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
@@ -4330,6 +4357,9 @@ def cli_main() -> None:
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
                     recursion_limit=getattr(args, "recursion_limit", None),
+                    auto=getattr(args, "auto_approve", False),
+                    yolo=getattr(args, "yolo", False),
+                    auto_classifier_model=getattr(args, "auto_classifier_model", None),
                 )
             )
             sys.exit(exit_code)

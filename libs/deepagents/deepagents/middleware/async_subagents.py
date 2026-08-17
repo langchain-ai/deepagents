@@ -45,6 +45,13 @@ class AsyncSubAgent(TypedDict):
     automatically by the SDK via environment variables (`LANGGRAPH_API_KEY`,
     `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`). For self-hosted servers,
     pass custom auth via `headers`.
+
+    !!! note "Async invocation required for local ASGI transport"
+
+        Omitting `url` uses in-process ASGI transport for a local server. This
+        transport is available only through an async parent-agent entrypoint,
+        such as `ainvoke`. The synchronous `invoke` path requires a URL for a
+        reachable Agent Protocol server.
     """
 
     name: str

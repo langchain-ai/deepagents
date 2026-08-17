@@ -8,6 +8,7 @@ import time
 from collections import Counter
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
+from textual.containers import Horizontal
 from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from textual import events
+    from textual.app import ComposeResult
     from textual.widget import Widget
 
 from deepagents_code import theme
@@ -294,8 +296,28 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         return True
 
 
-class InlinePromptOption(Static):
-    """Render a selectable inline-prompt option with a cursor."""
+class InlinePromptOption(Horizontal):
+    """Render a selectable inline-prompt option with a cursor gutter."""
+
+    DEFAULT_CSS = """
+    InlinePromptOption {
+        height: auto;
+    }
+
+    InlinePromptOption > .inline-prompt-option-cursor {
+        width: 2;
+        height: 1;
+    }
+
+    InlinePromptOption > .inline-prompt-option-label {
+        width: 1fr;
+        height: auto;
+    }
+
+    InlinePromptOption.inline-prompt-option-selected > .inline-prompt-option-label {
+        color: $primary;
+    }
+    """
 
     def __init__(
         self,
@@ -303,7 +325,7 @@ class InlinePromptOption(Static):
         index: int,
         *,
         selected: bool = False,
-        selected_class: str | None = None,
+        selected_class: str | None = "inline-prompt-option-selected",
         **kwargs: Any,
     ) -> None:
         """Initialize an option.
@@ -313,15 +335,32 @@ class InlinePromptOption(Static):
             index: Position in its owning prompt's option list.
             selected: Whether to render the option selected initially.
             selected_class: CSS class applied while the option is highlighted.
-            **kwargs: Additional `Static` arguments.
+            **kwargs: Additional `Horizontal` arguments.
         """
         self.option_index = index
         self._cursor_visible = selected
         self._highlighted = selected
         self._text = text
         self._selected_class = selected_class
-        super().__init__(self._render(), **kwargs)
+        self._cursor_widget: Static | None = None
+        super().__init__(**kwargs)
         self._sync_selected_class()
+
+    def compose(self) -> ComposeResult:
+        """Compose the cursor gutter and independently wrapping label.
+
+        Yields:
+            The fixed cursor gutter followed by the wrapping label.
+        """
+        self._cursor_widget = Static(
+            self._cursor_content(),
+            classes="inline-prompt-option-cursor",
+        )
+        yield self._cursor_widget
+        yield Static(
+            Content.from_markup("$text", text=self._text),
+            classes="inline-prompt-option-label",
+        )
 
     @property
     def selected(self) -> bool:
@@ -345,13 +384,19 @@ class InlinePromptOption(Static):
         """
         self._cursor_visible = cursor
         self._highlighted = highlighted
-        self.update(self._render())
+        if self._cursor_widget is not None:
+            self._cursor_widget.update(self._cursor_content())
         self._sync_selected_class()
 
-    def _render(self) -> Content:
+    def _cursor_content(self) -> Content:
         glyphs = get_glyphs()
-        prefix = f"{glyphs.cursor} " if self._cursor_visible else "  "
-        return Content.from_markup("$prefix$text", prefix=prefix, text=self._text)
+        marker = glyphs.cursor if self._cursor_visible else self._unselected_marker
+        return Content(f"{marker} ")
+
+    @property
+    def _unselected_marker(self) -> str:
+        """Marker shown in the cursor gutter when this option is not selected."""
+        return " "
 
     def _sync_selected_class(self) -> None:
         if self._selected_class is None:

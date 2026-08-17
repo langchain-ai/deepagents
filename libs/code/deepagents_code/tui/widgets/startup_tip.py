@@ -9,6 +9,10 @@ from textual.content import Content
 from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
+from deepagents_code.editor import editor_display_name
+
+_TIP_EXTERNAL_EDITOR = "Press ctrl+x to compose prompts in your external editor"
+"""Generic editor tip replaced at construction when an editor is configured."""
 
 _TIP_SHIFT_TAB_WITH_YOLO = "Press Shift+Tab to cycle Manual, Auto, and YOLO modes"
 """Tip used when `startup.yolo_switcher` keeps YOLO in the approval cycle."""
@@ -19,22 +23,25 @@ _TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
-    "Use /offload when your conversation gets long": 2,
+    "Use /offload to summarize older messages and free up the context window": 2,
+    "Use /context to see context window usage and remaining space": 1,
     "Use /copy to copy the latest message": 3,
+    "Use /cost to see a breakdown of estimated spend": 1,
     "Use /tools to list the tools available to the agent": 1,
-    "Use dcode install <name> for optional providers": 1,
     "Use /mcp login <server> to authenticate MCP servers": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Use /effort to change the current model's reasoning effort": 1,
-    "Press ctrl+x to compose prompts in your external editor": 1,
+    _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Use /theme to customize the TUI's colors": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /timestamps to show or hide message timestamp footers": 1,
     "Click a collapsed message or press Ctrl+O to expand it": 1,
+    "Drag the chat input's top border to resize it": 1,
     "Use /agents to browse and switch between your available agents": 2,
+    "Use /auto model to review Auto actions with a faster, cheaper model": 1,
     _TIP_SHIFT_TAB_WITH_YOLO: 2,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
@@ -74,15 +81,18 @@ def _active_tips(*, yolo_switcher_enabled: bool | None = None) -> dict[str, int]
         yolo_switcher_enabled = is_yolo_switcher_enabled()
 
     tips = dict(_TIPS)
-    if yolo_switcher_enabled:
-        return tips
+    editor = editor_display_name()
+    if editor is not None:
+        weight = tips.pop(_TIP_EXTERNAL_EDITOR)
+        tips[f"Press ctrl+x to compose prompts in {editor}"] = weight
 
-    # Replace the YOLO cycle tip with the Manual/Auto-only wording so the
-    # splash never claims Shift+Tab can enter unrestricted mode when policy
-    # has removed that entry from the switcher.
-    weight = tips.pop(_TIP_SHIFT_TAB_WITH_YOLO, None)
-    if weight is not None:
-        tips[_TIP_SHIFT_TAB_WITHOUT_YOLO] = weight
+    if not yolo_switcher_enabled:
+        # Replace the YOLO cycle tip with the Manual/Auto-only wording so the
+        # splash never claims Shift+Tab can enter unrestricted mode when policy
+        # has removed that entry from the switcher.
+        weight = tips.pop(_TIP_SHIFT_TAB_WITH_YOLO, None)
+        if weight is not None:
+            tips[_TIP_SHIFT_TAB_WITHOUT_YOLO] = weight
     return tips
 
 

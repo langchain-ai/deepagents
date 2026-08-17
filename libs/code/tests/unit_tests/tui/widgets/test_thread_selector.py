@@ -4034,6 +4034,37 @@ class TestLoadThreadHistory:
 
         assert app._context_tokens == 8500
 
+    async def test_resume_seeds_cost_for_empty_thread_history(self) -> None:
+        """Checkpoint metadata restores before the empty-transcript return."""
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp(thread_id="tid-1")
+        app._set_session_cost(9.0)
+        app._add_provisional_cost(0.5)
+        app._thread_stats.record_request(
+            "old-model",
+            100,
+            10,
+            cost_usd=9.0,
+        )
+        preloaded = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=8500,
+            model_spec="",
+            session_cost_usd=1.25,
+        )
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=preloaded,
+        )
+
+        assert app._context_tokens == 8500
+        assert app._session_cost_usd == pytest.approx(1.25)
+        assert app._thread_restored_cost_usd == pytest.approx(1.25)
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+        assert app._thread_stats.request_count == 0
+
     async def test_zero_context_tokens_does_not_overwrite_cache(self) -> None:
         """Loading a payload with 0 tokens should not reset an existing cache."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
@@ -4746,6 +4777,37 @@ class TestConvertMessagesToData:
         widget._restore_deferred_state()
         formatted = widget._format_ask_user_output(str(widget._output), is_preview=True)
         assert formatted.content.plain == ASK_USER_FAILED_SUMMARY
+
+    def test_checkpoint_edit_restores_diff(self) -> None:
+        """Checkpointed edit arguments rebuild the diff omitted from graph state."""
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        tool, diff = DeepAgentsApp._convert_messages_to_data(
+            [
+                self._make_ai(
+                    tool_calls=[
+                        {
+                            "id": "tc-edit",
+                            "name": "edit_file",
+                            "args": {
+                                "file_path": "a.py",
+                                "old_string": "old\n",
+                                "new_string": "new\n",
+                            },
+                        }
+                    ]
+                ),
+                self._make_tool("Updated file", tool_call_id="tc-edit"),
+            ]
+        )
+
+        assert tool.tool_diff_superseded is True
+        assert diff.type == MessageType.DIFF
+        assert diff.diff_file_path == "a.py"
+        assert "-old" in diff.content
+        assert "+new" in diff.content
+        widget = diff.to_widget()
+        assert all(getattr(row, "selection_prefix", 2) == 2 for row in widget.compose())
 
     def test_tool_call_error_status(self) -> None:
         """ToolMessage with error status should set ERROR on the tool data."""

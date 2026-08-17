@@ -80,9 +80,17 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auto",
-        description="Switch to Auto approval mode",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
-        hidden_keywords="approval mode classifier automatic auto-approve shift+tab",
+        description="Switch to Auto approval mode or manage its classifier model",
+        # Bare `/auto` still switches mode immediately (the switcher must work
+        # mid-turn). `/auto model` with no further arguments only opens the
+        # classifier picker, so it also bypasses (via IMMEDIATE_UI_ARG_FORMS);
+        # `/auto model <spec>` and `/auto model clear` mutate classifier state
+        # and wait for idle like every other argument form.
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords=(
+            "approval mode classifier automatic auto-approve shift+tab model"
+        ),
+        argument_hint="[model [<spec>|clear]]",
     ),
     SlashCommand(
         name="/manual",
@@ -114,7 +122,19 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/copy",
         description="Copy the latest assistant message to clipboard",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        bypass_tier=BypassTier.QUEUED,
+    ),
+    SlashCommand(
+        name="/context",
+        description="Show current context window usage",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="tokens window usage remaining offload compact",
+    ),
+    SlashCommand(
+        name="/cost",
+        description="Show estimated thread cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="price spend usage tokens dollars usd",
     ),
     SlashCommand(
         name="/force-clear",
@@ -255,6 +275,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="time footer footers date dates",
     ),
     SlashCommand(
+        name="/line-numbers",
+        description="Show or hide line numbers in file diffs",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="diff gutter numbers lines",
+    ),
+    SlashCommand(
         name="/update",
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,
@@ -340,6 +366,22 @@ BYPASS_WHEN_CONNECTING: frozenset[str] = _build_bypass_set(BypassTier.CONNECTING
 
 IMMEDIATE_UI: frozenset[str] = _build_bypass_set(BypassTier.IMMEDIATE_UI)
 """Commands that open modal UI immediately, deferring real work."""
+
+IMMEDIATE_UI_ARG_FORMS: frozenset[str] = frozenset({"/auto model"})
+"""Argument forms of `IMMEDIATE_UI` commands that are still pure selector opens.
+
+The bare-form check in `_can_bypass_queue` (`value == cmd`) parks every
+argument form behind the queue because most of them act directly (e.g.
+`/model <name>` switches models). Entries here are the exceptions: their
+handler routes straight to a modal open and defers all real work (validation,
+mutation) to the dismiss callback, exactly like the bare form. `/auto model`
+with no further arguments qualifies — it only pushes the classifier-model
+picker — while `/auto model <spec>` and `/auto model clear` validate and
+mutate classifier state, so they stay queue-bound. Each entry must be an exact
+lowered command-plus-subcommand string with single-space separators and no
+further arguments; the bypass canonicalizes the submitted value's whitespace
+before comparing against it.
+"""
 
 SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE)
 """Commands whose side effect fires immediately; chat output deferred until idle."""

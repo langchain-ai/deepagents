@@ -18,6 +18,7 @@ from deepagents_code.tui.widgets.ask_user import (
     MISSING_ANSWER_TOAST,
     AskUserMenu,
     AskUserTextArea,
+    _ChoiceOption,
     _QuestionWidget,
 )
 
@@ -210,8 +211,11 @@ class TestAskUserMenu:
 
         async with app.run_test(size=(36, 24)) as pilot:
             await pilot.pause()
-            choice = app.query_one(".ask-user-choice", Static)
-            assert choice.size.height > 1
+            choice = app.query_one(".ask-user-choice", _ChoiceOption)
+            cursor = choice.query_one(".inline-prompt-option-cursor", Static)
+            label = choice.query_one(".inline-prompt-option-label", Static)
+            assert label.size.height > 1
+            assert label.region.x == cursor.region.x + cursor.region.width
 
     async def test_text_question_submits_typed_answer(self) -> None:
         app = _AskUserTestApp([{"question": "What is your name?", "type": "text"}])
@@ -933,14 +937,30 @@ class TestAskUserMenu:
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+J newline" in str(help_text)
 
-    async def test_help_text_shows_editor_hint_for_text_question(self) -> None:
-        """Footer advertises Ctrl+X while the free-text field holds focus."""
+    async def test_help_text_personalizes_editor_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footer names the configured editor while a text field holds focus."""
+        monkeypatch.setenv("VISUAL", "nvim")
         app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
 
         async with app.run_test() as pilot:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             assert isinstance(app.focused, AskUserTextArea)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X edit in nvim" in str(help_text)
+
+    async def test_help_text_uses_generic_editor_hint_without_configuration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+X external editor" in str(help_text)
 
@@ -956,7 +976,7 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X external editor" in str(help_text)
+            assert "Ctrl+X" in str(help_text)
 
     async def test_help_text_omits_editor_hint_for_multiple_choice(self) -> None:
         """Footer omits Ctrl+X when only choices (no free-text field) are shown."""
@@ -1002,7 +1022,7 @@ class TestAskUserMenu:
             assert other_input.display is True
             assert app.focused is other_input
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X external editor" in str(help_text)
+            assert "Ctrl+X" in str(help_text)
 
     async def test_help_text_hides_editor_hint_when_leaving_other(self) -> None:
         """Moving off Other hides its field and retracts the Ctrl+X hint."""
@@ -1109,9 +1129,7 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert app.focused is text_input
-            assert "Ctrl+X external editor" in str(
-                menu.query_one(".ask-user-help").render()
-            )
+            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
 
     async def test_help_text_editor_hint_follows_active_question(self) -> None:
         """Mixed prompts only advertise Ctrl+X for the active free-text field."""
@@ -1145,6 +1163,77 @@ class TestAskUserMenu:
             await pilot.pause()
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+X" not in str(help_text)
+
+    async def test_single_question_hides_number_label(self) -> None:
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            source = menu._question_widgets[0].query_one(Markdown).source
+            assert source == "Name? *(required)*"
+
+    async def test_multiple_questions_show_number_labels(self) -> None:
+        app = _AskUserTestApp(
+            [
+                {"question": "Name?", "type": "text"},
+                {"question": "Color?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            sources = [qw.query_one(Markdown).source for qw in menu._question_widgets]
+            assert sources == [
+                "**1.** Name? *(required)*",
+                "**2.** Color? *(required)*",
+            ]
+
+    async def test_multi_question_menu_marks_active_question_with_border(self) -> None:
+        """Multi-question menus restore the side line on the active question.
+
+        The `ask-user-menu-multi` class on the menu gates the border in CSS
+        (`.ask-user-menu-multi .ask-user-question-active`), so the highlight
+        appears only when there are 2+ questions.
+        """
+        app = _AskUserTestApp(
+            [
+                {"question": "Name?", "type": "text"},
+                {"question": "Color?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert menu.has_class("ask-user-menu-multi")
+
+            active, inactive = menu._question_widgets
+            assert active.has_class("ask-user-question-active")
+            assert not active.has_class("ask-user-question-inactive")
+            assert inactive.has_class("ask-user-question-inactive")
+            assert not inactive.has_class("ask-user-question-active")
+
+            # The border applies only to the active question; the inactive one
+            # carries matching padding instead so the two stay left-aligned.
+            border, _ = active.styles.border_left
+            assert border == "thick"
+            assert active.styles.padding.left != inactive.styles.padding.left
+
+    async def test_single_question_menu_has_no_active_border(self) -> None:
+        """Single-question prompts stay flat: no multi class, no side border."""
+        app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert not menu.has_class("ask-user-menu-multi")
+
+            question = menu._question_widgets[0]
+            assert question.has_class("ask-user-question-active")
+            border, _ = question.styles.border_left
+            assert not border
 
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""

@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: dataset dataset-check lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -56,6 +56,7 @@ stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sand
 	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)/partners
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../acp/ $(HARBOR_LOCAL_DEPS_DIR)/acp/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../partners/quickjs/ $(HARBOR_LOCAL_DEPS_DIR)/partners/quickjs/
 
 run-hello-world: stage-harbor-local-deps ## Run hello-world job (override model with MODEL=<id>)
@@ -109,6 +110,32 @@ model-groups: ## Regenerate MODEL_GROUPS.md from the canonical registry
 
 eval-catalog: ## Regenerate EVAL_CATALOG.md from eval test files
 	uv run python scripts/generate_eval_catalog.py
+
+######################
+# DRBENCH DATASET
+######################
+
+# datasets/drbench-evals commits no task directories. All 100 are generated from
+# upstream's configs at the commit pinned as `UPSTREAM_SHA` in
+# harbor_adapters/drbench/adapter.py, fetched with a sparse checkout that skips the
+# ~69 MiB document corpus (app mode's per-task image serves the documents instead).
+
+dataset: ## Build the DRBench task dataset from the pinned upstream commit
+	uv run python -m harbor_adapters.drbench.main --populate datasets/drbench-evals
+
+dataset-check: ## Verify DRBench pins match upstream and generation is deterministic
+	uv run python -m harbor_adapters.drbench.main --check-labels
+	uv run python -m harbor_adapters.drbench.main --check-subsets
+	@set -eu; \
+	first=$$(mktemp -d); second=$$(mktemp -d); \
+	trap 'rm -rf "$$first" "$$second"' EXIT; \
+	uv run python -m harbor_adapters.drbench.main --populate "$$first" >/dev/null; \
+	uv run python -m harbor_adapters.drbench.main --populate "$$second" >/dev/null; \
+	if diff -r "$$first" "$$second"; then \
+		echo "DRBench generation is deterministic ($$(find "$$first" -type f | wc -l | tr -d ' ') files)"; \
+	else \
+		echo "DRBench generation is NOT deterministic; see the diff above" >&2; exit 1; \
+	fi
 
 ######################
 # LINTING AND FORMATTING

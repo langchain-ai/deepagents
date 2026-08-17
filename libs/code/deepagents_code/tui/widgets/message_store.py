@@ -350,6 +350,9 @@ class MessageData:
 
         Returns:
             The appropriate message widget for this data.
+
+        Raises:
+            ValueError: If mutable message data no longer satisfies its type invariant.
         """
         # Import here to avoid circular imports
         from deepagents_code.tui.widgets.messages import (
@@ -401,8 +404,12 @@ class MessageData:
                 return widget
 
             case MessageType.TOOL_GROUP:
+                detail_rows = self.tool_group_messages
+                if not detail_rows:
+                    msg = "TOOL_GROUP messages must have detail rows"
+                    raise ValueError(msg)
                 widget = LazyToolGroupSummary(
-                    self.tool_group_messages or [],
+                    detail_rows,
                     detail_builder=tool_group_detail_builder,
                     id=self.id,
                 )

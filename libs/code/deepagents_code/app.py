@@ -273,13 +273,6 @@ def _collapse_restored_tool_groups(messages: list[MessageData]) -> list[MessageD
         ):
             group.append(message)
             continue
-        if (
-            message.type == MessageType.DIFF
-            and group
-            and message.diff_tool_name not in _TOOL_GROUP_EXCLUSIONS
-        ):
-            group.append(message)
-            continue
         flush()
         collapsed.append(message)
     flush()
@@ -2999,7 +2992,7 @@ class DeepAgentsApp(App):
     """Vertical scroll speed (reduced from Textual default for finer control)."""
 
     _TRANSCRIPT_PRUNE_IDLE_SECONDS = 0.2
-    """Seconds without hydration before the mounted window is trimmed."""
+    """Seconds without transcript activity before the mounted window is trimmed."""
 
     _TRANSCRIPT_PRUNE_SLICE_SECONDS = 0.001
     """Smallest non-zero delay Textual timers accept between prune slices."""
@@ -8286,15 +8279,15 @@ class DeepAgentsApp(App):
         if hydrated_count == 0 and direction == "above":
             self._history_prefetch_active = False
         if hydrated_count or self._hydration_requests:
-            self.call_after_refresh(self._continue_hydration)
+            self.call_after_refresh(lambda: self._continue_hydration(direction))
 
-    def _continue_hydration(self) -> None:
+    def _continue_hydration(self, direction: Literal["above", "below"] | None) -> None:
         """Continue coalesced or background hydration after layout catches up."""
         if self._hydration_requests:
-            direction = self._hydration_preferred_direction
-            if direction not in self._hydration_requests:
-                direction = next(iter(self._hydration_requests))
-            self._request_hydration(direction)
+            pending_direction = self._hydration_preferred_direction
+            if pending_direction not in self._hydration_requests:
+                pending_direction = next(iter(self._hydration_requests))
+            self._request_hydration(pending_direction)
             return
 
         if self._history_prefetch_active:
@@ -8307,8 +8300,10 @@ class DeepAgentsApp(App):
             self._history_prefetch_active = False
             return
 
-        self._check_hydration_needed()
-        self._check_hydration_below_needed()
+        if direction == "above":
+            self._check_hydration_needed()
+        elif direction == "below":
+            self._check_hydration_below_needed()
 
     def _start_history_prefetch(self) -> None:
         """Warm resumed history toward the soft window without blocking startup."""
@@ -8361,7 +8356,7 @@ class DeepAgentsApp(App):
     async def _mount_hydration_batch(
         self,
         messages_container: Container,
-        entries: list[tuple[Widget, MessageData, Widget | None]],
+        entries: list[tuple[Widget, MessageData, Static | None]],
         *,
         before: Widget | None = None,
         generation: int,
@@ -8376,6 +8371,9 @@ class DeepAgentsApp(App):
 
         Returns:
             Whether the complete batch mounted for the active transcript.
+
+        Raises:
+            asyncio.CancelledError: If mounting or assistant rendering is cancelled.
         """
         nodes = [
             node
@@ -8385,9 +8383,16 @@ class DeepAgentsApp(App):
 
         async def remove_attached_nodes() -> None:
             for node in reversed(nodes):
-                if node.is_attached:
-                    with suppress(Exception):
-                        await node.remove()
+                if not node.is_attached:
+                    continue
+                try:
+                    await node.remove()
+                except Exception:
+                    logger.warning(
+                        "Failed to remove hydrated node %s during rollback",
+                        node.id or type(node).__name__,
+                        exc_info=True,
+                    )
 
         try:
             await self._mount_transcript_nodes(
@@ -8395,6 +8400,9 @@ class DeepAgentsApp(App):
                 nodes,
                 before=before,
             )
+        except asyncio.CancelledError:
+            await remove_attached_nodes()
+            raise
         except Exception:
             logger.warning("Failed to mount hydrated transcript batch", exc_info=True)
             await remove_attached_nodes()
@@ -8411,8 +8419,17 @@ class DeepAgentsApp(App):
             if isinstance(widget, AssistantMessage) and data.content
         ]
         if assistant_updates:
-            results = await asyncio.gather(*assistant_updates, return_exceptions=True)
+            try:
+                results = await asyncio.gather(
+                    *assistant_updates, return_exceptions=True
+                )
+            except asyncio.CancelledError:
+                await remove_attached_nodes()
+                raise
             for error in results:
+                if isinstance(error, asyncio.CancelledError):
+                    await remove_attached_nodes()
+                    raise error
                 if isinstance(error, Exception):
                     logger.warning(
                         "Failed to render hydrated assistant message: %s", error
@@ -8450,25 +8467,12 @@ class DeepAgentsApp(App):
             return 0
 
         old_scroll_y = chat.scroll_y
-        entries: list[tuple[Widget, MessageData, Widget | None]] = []
-
-        # Build from the window edge outward so a construction failure leaves a
-        # contiguous suffix that can still mount safely, then reverse it back to
+        # Build from the window edge outward, then reverse the batch back to
         # chronological DOM order for one mount call.
-        for msg_data in reversed(to_hydrate):
-            try:
-                widget, footer = self._build_message_with_timestamp_footer(msg_data)
-                entries.append((widget, msg_data, footer))
-            except Exception:
-                logger.warning(
-                    "Failed to hydrate message %s above window; stopping to "
-                    "keep the mounted window contiguous",
-                    msg_data.id,
-                    exc_info=True,
-                )
-                self._notify_hydration_failure()
-                break
-
+        entries = [
+            self._build_hydration_entry(msg_data, "above")
+            for msg_data in reversed(to_hydrate)
+        ]
         entries.reverse()
         if not entries or not await self._mount_hydration_batch(
             messages_container,
@@ -8518,20 +8522,9 @@ class DeepAgentsApp(App):
             return 0
 
         old_scroll_y = chat.scroll_y
-        entries: list[tuple[Widget, MessageData, Widget | None]] = []
-        for msg_data in to_hydrate:
-            try:
-                widget, footer = self._build_message_with_timestamp_footer(msg_data)
-                entries.append((widget, msg_data, footer))
-            except Exception:
-                logger.warning(
-                    "Failed to hydrate message %s below window; stopping to "
-                    "keep the mounted window contiguous",
-                    msg_data.id,
-                    exc_info=True,
-                )
-                self._notify_hydration_failure()
-                break
+        entries = [
+            self._build_hydration_entry(msg_data, "below") for msg_data in to_hydrate
+        ]
 
         if not entries or not await self._mount_hydration_batch(
             messages_container,
@@ -17672,6 +17665,39 @@ class DeepAgentsApp(App):
         self._link_message_timestamp_footer(widget, footer)
         return widget, footer
 
+    def _build_hydration_entry(
+        self,
+        data: MessageData,
+        direction: Literal["above", "below"],
+    ) -> tuple[Widget, MessageData, Static | None]:
+        """Build one stored row, substituting a visible placeholder on failure.
+
+        Args:
+            data: Stored row to rebuild.
+            direction: Mounted-window edge receiving the row.
+
+        Returns:
+            Widget, source data, and optional timestamp footer for batch mounting.
+        """
+        try:
+            widget, footer = self._build_message_with_timestamp_footer(data)
+        except Exception:
+            logger.warning(
+                "Failed to hydrate message %s %s window; showing placeholder",
+                data.id,
+                direction,
+                exc_info=True,
+            )
+            self._notify_hydration_failure()
+            widget = ErrorMessage(
+                "This message could not be restored. See the debug log for details.",
+                id=data.id,
+            )
+            footer = self._build_message_timestamp_footer(
+                data, visible=self._message_timestamps_visible
+            )
+        return widget, data, footer
+
     @staticmethod
     def _build_message_timestamp_footer(
         data: MessageData, *, visible: bool
@@ -18003,25 +18029,32 @@ class DeepAgentsApp(App):
         for msg_data in to_prune:
             if generation != self._transcript_generation:
                 return 0
+            footer_id = _message_timestamp_footer_id(msg_data.id)
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
-                footer_id = _message_timestamp_footer_id(msg_data.id)
+            except NoMatches:
+                logger.warning(
+                    "Widget %s missing during pruning; reconciling store window",
+                    msg_data.id,
+                )
                 with suppress(NoMatches):
                     footer = messages_container.query_one(f"#{footer_id}")
                     await footer.remove()
                 if generation != self._transcript_generation:
                     return 0
-                await widget.remove()
-                if generation != self._transcript_generation:
-                    return 0
                 pruned_ids.append(msg_data.id)
-            except NoMatches:
-                # Widget not found -- do NOT mark as pruned to avoid
-                # desyncing the store from the actual DOM state
-                logger.debug(
-                    "Widget %s not found during pruning, skipping",
-                    msg_data.id,
-                )
+                continue
+            if isinstance(widget, LazyToolGroupSummary):
+                widget._snapshot_detail_state()
+            with suppress(NoMatches):
+                footer = messages_container.query_one(f"#{footer_id}")
+                await footer.remove()
+            if generation != self._transcript_generation:
+                return 0
+            await widget.remove()
+            if generation != self._transcript_generation:
+                return 0
+            pruned_ids.append(msg_data.id)
 
         if generation != self._transcript_generation:
             return 0
@@ -18072,23 +18105,32 @@ class DeepAgentsApp(App):
         for msg_data in to_prune:
             if generation != self._transcript_generation:
                 return 0
+            footer_id = _message_timestamp_footer_id(msg_data.id)
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
-                footer_id = _message_timestamp_footer_id(msg_data.id)
+            except NoMatches:
+                logger.warning(
+                    "Widget %s missing during bottom pruning; reconciling store window",
+                    msg_data.id,
+                )
                 with suppress(NoMatches):
                     footer = messages_container.query_one(f"#{footer_id}")
                     await footer.remove()
                 if generation != self._transcript_generation:
                     return 0
-                await widget.remove()
-                if generation != self._transcript_generation:
-                    return 0
                 pruned_ids.append(msg_data.id)
-            except NoMatches:
-                logger.debug(
-                    "Widget %s not found during bottom pruning, skipping",
-                    msg_data.id,
-                )
+                continue
+            if isinstance(widget, LazyToolGroupSummary):
+                widget._snapshot_detail_state()
+            with suppress(NoMatches):
+                footer = messages_container.query_one(f"#{footer_id}")
+                await footer.remove()
+            if generation != self._transcript_generation:
+                return 0
+            await widget.remove()
+            if generation != self._transcript_generation:
+                return 0
+            pruned_ids.append(msg_data.id)
 
         if generation != self._transcript_generation:
             return 0

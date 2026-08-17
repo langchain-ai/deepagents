@@ -7,7 +7,6 @@ import json
 import logging
 import re
 import textwrap
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -4765,7 +4764,7 @@ class LazyToolGroupSummary(Vertical):
         super().__init__(**kwargs)
         self._message_data = list(messages)
         self._detail_builder = detail_builder
-        self._detail_widgets: list[Widget] = []
+        self._detail_widgets: list[tuple[MessageData, Widget]] = []
         self._expanded = False
         self._deferred_expanded = False
         self._transitioning = False
@@ -4813,6 +4812,12 @@ class LazyToolGroupSummary(Vertical):
         if not self._transitioning:
             self.run_worker(self._set_expanded(not self._expanded))
 
+    def _snapshot_detail_state(self) -> None:
+        """Persist mutable child state before detail widgets leave the DOM."""
+        for data, widget in self._detail_widgets:
+            if isinstance(widget, ToolCallMessage):
+                data.tool_expanded = widget._expanded
+
     async def _set_expanded(self, expanded: bool) -> None:
         """Create or discard detail widgets for one explicit toggle."""
         if expanded == self._expanded or self._transitioning:
@@ -4825,15 +4830,17 @@ class LazyToolGroupSummary(Vertical):
         try:
             if expanded:
                 try:
-                    entries = [
-                        self._detail_builder(data)
-                        if self._detail_builder is not None
-                        else (data.to_widget(), None)
-                        for data in self._message_data
-                    ]
+                    entries = []
+                    for data in self._message_data:
+                        widget, footer = (
+                            self._detail_builder(data)
+                            if self._detail_builder is not None
+                            else (data.to_widget(), None)
+                        )
+                        entries.append((data, widget, footer))
                     nodes = [
                         node
-                        for widget, footer in entries
+                        for _data, widget, footer in entries
                         for node in (
                             (widget, footer) if footer is not None else (widget,)
                         )
@@ -4841,19 +4848,39 @@ class LazyToolGroupSummary(Vertical):
                     await details.mount(*nodes)
                 except Exception:
                     logger.warning("Failed to expand lazy tool group", exc_info=True)
-                    with suppress(Exception):
+                    try:
                         await details.remove_children()
+                    except Exception:
+                        logger.warning(
+                            "Failed to clean up lazy tool group expansion",
+                            exc_info=True,
+                        )
+                    self.app.notify(
+                        "Tool details could not be expanded. See the debug log.",
+                        severity="warning",
+                        timeout=6,
+                        markup=False,
+                    )
                     return
-                self._detail_widgets = [widget for widget, _footer in entries]
+                self._detail_widgets = [
+                    (data, widget) for data, widget, _footer in entries
+                ]
                 details.display = True
             else:
-                for data, widget in zip(
-                    self._message_data, self._detail_widgets, strict=True
-                ):
-                    if isinstance(widget, ToolCallMessage):
-                        data.tool_expanded = widget._expanded
+                self._snapshot_detail_state()
                 details.display = False
-                await details.remove_children()
+                try:
+                    await details.remove_children()
+                except Exception:
+                    logger.warning("Failed to collapse lazy tool group", exc_info=True)
+                    details.display = True
+                    self.app.notify(
+                        "Tool details could not be collapsed. See the debug log.",
+                        severity="warning",
+                        timeout=6,
+                        markup=False,
+                    )
+                    return
                 self._detail_widgets = []
 
             self._expanded = expanded

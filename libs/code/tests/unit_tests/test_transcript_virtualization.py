@@ -163,6 +163,26 @@ class TestScrollDrivenHydration:
         assert app._hydration_requests == {"above", "below"}
         assert app._hydration_preferred_direction == "below"
 
+    def test_continuation_rechecks_only_completed_edge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An idle viewport must not enqueue the opposite hydration direction."""
+        app = DeepAgentsApp()
+        checked: list[str] = []
+        monkeypatch.setattr(
+            app, "_check_hydration_needed", lambda: checked.append("above")
+        )
+        monkeypatch.setattr(
+            app, "_check_hydration_below_needed", lambda: checked.append("below")
+        )
+
+        app._continue_hydration("above")
+        assert checked == ["above"]
+
+        checked.clear()
+        app._continue_hydration("below")
+        assert checked == ["below"]
+
     async def test_scroll_up_hydrates_archived_history(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

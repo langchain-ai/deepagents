@@ -1717,6 +1717,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # dispatchable tool node
         self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
 
+    @property
+    def permissions(self) -> list[FilesystemPermission]:
+        """Filesystem permission rules enforced by this middleware's tools.
+
+        The built-in file tools read this list at call time, so assigning it
+        after construction takes effect on the next tool invocation.
+        """
+        return self._permissions
+
+    @permissions.setter
+    def permissions(self, value: list[FilesystemPermission] | None) -> None:
+        self._permissions = list(value or [])
+
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION

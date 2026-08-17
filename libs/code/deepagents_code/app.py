@@ -6513,6 +6513,33 @@ class DeepAgentsApp(App):
             )
             await self._mount_update_failure(exc)
 
+    def _update_splash_version(self, version: str) -> None:
+        """Show the installed version in the splash after an in-session update.
+
+        Call this only once the install is known to be the version a relaunch
+        will actually run: the shadowed-`dcode` paths deliberately leave the
+        old version on the banner, because a stale shim earlier on PATH means
+        relaunching keeps the old binary.
+
+        Repainting the splash is cosmetic, so a missing banner is logged rather
+        than raised — callers emit the authoritative success messaging around
+        this call and must not have it turned into a failure report.
+
+        Args:
+            version: The newly installed `deepagents-code` version.
+        """
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+        except NoMatches:
+            # The banner is composed once and never removed, so a miss here
+            # means it has silently vanished — surface it.
+            logger.warning("Welcome banner not found during splash version sync")
+            return
+        except ScreenStackError:
+            logger.debug("Screen stack empty during splash version sync", exc_info=True)
+            return
+        banner.update_version(version)
+
     async def _perform_app_upgrade(
         self,
         *,
@@ -6609,12 +6636,17 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped update install (debug mode)."),
             )
             return
-        success, output = await perform_upgrade(
+        success, output, installed = await perform_upgrade(
             include_prereleases=include_prereleases,
             target_version=latest,
         )
         if success:
             self._update_available = (False, None)
+            # The install command is unpinned, so the installer may have
+            # resolved a release newer than the one the update check observed
+            # (a release published while the session sat open). Report what
+            # actually landed on disk rather than the stale check result.
+            upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
             # `dcode` from a former `pipx` install). Detect that before
@@ -6627,10 +6659,15 @@ class DeepAgentsApp(App):
             if shadow is None:
                 await self._mount_message(
                     AppMessage(
-                        f"Updated to v{latest}. Quit and relaunch dcode "
+                        f"Updated to v{upgraded_to}. Quit and relaunch dcode "
                         "to use the new version."
                     ),
                 )
+                # After the success line: this method runs inside the caller's
+                # `except Exception -> _mount_update_failure`, so a cosmetic
+                # repaint must not be able to precede (and replace) the
+                # success message with an "/update failed" report.
+                self._update_splash_version(upgraded_to)
             else:
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
@@ -8410,7 +8447,10 @@ class DeepAgentsApp(App):
 
         if not container.query(f"#{_MESSAGE_TOP_SPACER_ID}"):
             top = Static("", id=_MESSAGE_TOP_SPACER_ID, classes=_MESSAGE_SPACER_CLASS)
-            first = container.children[0] if container.children else None
+            first = next(
+                (child for child in container.children if child.parent is container),
+                None,
+            )
             if first is None:
                 await container.mount(top)
             else:
@@ -22381,7 +22421,7 @@ class DeepAgentsApp(App):
                             show_toast=not progress_modal_visible,
                         )
                         return
-                    success, output = await perform_upgrade(
+                    success, output, installed = await perform_upgrade(
                         progress=screen.append_line,
                         log_path=log_path,
                         target_version=payload.latest,
@@ -22409,11 +22449,22 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
+                        # The install command is unpinned, so the installer
+                        # may have resolved a release newer than the one this
+                        # notification advertised (a release published while
+                        # the notice sat open). Report what actually landed on
+                        # disk rather than the stale payload version.
+                        upgraded_to = installed or payload.latest
+                        # After `mark_success`: the modal stays un-dismissable
+                        # until it is marked done, and this worker runs with
+                        # Textual's default `exit_on_error`, so a cosmetic
+                        # repaint must not be able to strand the modal.
                         screen.mark_success()
+                        self._update_splash_version(upgraded_to)
                         if progress_modal_visible:
                             return
                         self.notify(
-                            f"Updated to v{payload.latest}. "
+                            f"Updated to v{upgraded_to}. "
                             "Quit and relaunch dcode to use the new version.",
                             severity="information",
                             timeout=10,

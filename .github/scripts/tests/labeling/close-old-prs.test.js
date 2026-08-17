@@ -7,6 +7,8 @@ const closeOldPrs = require('../../labeling/close-old-prs.js');
 
 const {
   run,
+  applyBypassLabel,
+  clearPendingDeletion,
   closeBody,
   ageInDays,
   COMMENT_MARKER,
@@ -18,6 +20,9 @@ const {
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
 const CLEAR_PENDING_DELETION_YML = path.join(
   REPO_ROOT, '.github/workflows/clear_pending_deletion.yml',
+);
+const KEEP_OPEN_ON_COMMENT_YML = path.join(
+  REPO_ROOT, '.github/workflows/keep_open_on_comment.yml',
 );
 
 // clear_pending_deletion.yml destructures helpers out of close-old-prs.js at
@@ -80,6 +85,183 @@ test('clear_pending_deletion.yml grants the scopes its steps need', () => {
   for (const scope of ['contents: read', 'issues: write', 'pull-requests: write']) {
     assert.match(jobPermissions[1], new RegExp(scope));
   }
+});
+
+// keep_open_on_comment.yml is the comment-driven entry point for the same
+// bypass: it requires applyBypassLabel out of close-old-prs.js, and nothing
+// else connects the two. Same failure shape as clear_pending_deletion.yml —
+// a missing export destructures to undefined and the job dies on every run.
+test('keep_open_on_comment.yml only requires exported symbols', () => {
+  const workflow = fs.readFileSync(KEEP_OPEN_ON_COMMENT_YML, 'utf8');
+  const requires = [...workflow.matchAll(
+    /const \{([^}]*)\} = require\('\.\/\.github\/scripts\/labeling\/close-old-prs\.js'\)/g,
+  )];
+  assert.ok(requires.length > 0, 'expected the workflow to require close-old-prs.js');
+
+  for (const [, destructured] of requires) {
+    const names = destructured
+      .split(',')
+      .map(entry => entry.split(':')[0].trim())
+      .filter(Boolean);
+    assert.ok(names.length > 0, 'expected at least one destructured name');
+    for (const name of names) {
+      assert.ok(
+        Object.hasOwn(closeOldPrs, name),
+        `keep_open_on_comment.yml requires ${name}, which close-old-prs.js does not export`,
+      );
+    }
+  }
+});
+
+// The trigger phrase and the actor gate live only in the workflow's `if:` —
+// there is no JS constant to share, and a workflow expression cannot call one.
+// Drift is invisible at runtime: rename the phrase and keep-open comments
+// silently stop doing anything; loosen the actor gate and any passerby can
+// exempt a PR from cleanup. Pin both. The label name is deliberately absent:
+// the workflow takes it from DEFAULT_BYPASS_LABEL via applyBypassLabel.
+test('keep_open_on_comment.yml gates on the phrase and maintainer association', () => {
+  const workflow = fs.readFileSync(KEEP_OPEN_ON_COMMENT_YML, 'utf8');
+  const condition = workflow.match(/if: >-\n([\s\S]*?)\n {4}runs-on:/);
+  assert.ok(condition, 'expected to find the job-level if: expression');
+
+  assert.match(
+    condition[1],
+    /github\.event\.issue\.pull_request/,
+    'expected the trigger to require a PR conversation comment',
+  );
+  assert.match(
+    condition[1],
+    /contains\(github\.event\.comment\.body, '!keep-open'\)/,
+    'expected the trigger to gate on the keep-open phrase',
+  );
+  assert.match(
+    condition[1],
+    /author_association/,
+    'expected the trigger to gate on the commenter',
+  );
+  for (const association of ['MEMBER', 'OWNER', 'COLLABORATOR']) {
+    assert.match(
+      condition[1],
+      new RegExp(`"${association}"`),
+      `expected the actor gate to include ${association}`,
+    );
+  }
+});
+
+// A job-level permissions block replaces the workflow-level one rather than
+// merging, so every scope the job needs must be listed on the job itself.
+test('keep_open_on_comment.yml grants the scopes its steps need', () => {
+  const workflow = fs.readFileSync(KEEP_OPEN_ON_COMMENT_YML, 'utf8');
+  const jobPermissions = workflow.match(
+    /runs-on: ubuntu-latest\n[\s\S]*?permissions:\n([\s\S]*?)\n\n/,
+  );
+  assert.ok(jobPermissions, 'expected job-level permissions');
+
+  for (const scope of ['contents: read', 'issues: write', 'pull-requests: write']) {
+    assert.match(jobPermissions[1], new RegExp(scope));
+  }
+});
+
+// applyBypassLabel is the workflow's only mutation. These two arms are its
+// whole contract: apply when absent (which emits the `labeled` event that
+// clear_pending_deletion.yml listens for), no-op when present so a maintainer
+// racing the bot does not cause a duplicate event.
+test('applyBypassLabel adds the default bypass label when absent', async () => {
+  const { github, calls } = makeGithub();
+  github.rest.issues.get = async () => ({ data: { labels: [] } });
+
+  const applied = await applyBypassLabel({
+    github, owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+  });
+
+  assert.equal(applied, true);
+  assert.deepEqual(calls.addLabels, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 42,
+    labels: [DEFAULT_BYPASS_LABEL],
+  }]);
+});
+
+test('applyBypassLabel no-ops when the label is already present', async () => {
+  const { github, calls } = makeGithub();
+  github.rest.issues.get = async () => ({
+    data: { labels: [{ name: DEFAULT_BYPASS_LABEL }, { name: 'other' }] },
+  });
+
+  const applied = await applyBypassLabel({
+    github, owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+  });
+
+  assert.equal(applied, false);
+  assert.deepEqual(calls.addLabels, []);
+});
+
+// clearPendingDeletion is the shared "PR is exempt now" cleanup behind both
+// clear_pending_deletion.yml (manual do-not-close) and keep_open_on_comment.yml
+// (whose GITHUB_TOKEN-authored `labeled` event GitHub suppresses, so the
+// cleanup has to run inline). Its contract: remove pending-deletion, tolerate
+// its absence, and always attempt to minimize the stale warning.
+test('clearPendingDeletion removes the label and minimizes the warning', async () => {
+  const { github, calls } = makeGithub({
+    comments: new Map([[42, [{
+      id: 1,
+      body: COMMENT_MARKER,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+    }]]]),
+  });
+  const core = makeCore();
+
+  const removed = await clearPendingDeletion({
+    github, core, owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+  });
+
+  assert.equal(removed, true);
+  assert.deepEqual(calls.removeLabel, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 42,
+    name: DEFAULT_PENDING_DELETION_LABEL,
+  }]);
+  assert.equal(calls.graphql.length, 1);
+  assert.match(calls.graphql[0].query, /minimizeComment/);
+});
+
+// keep_open_on_comment.yml reaches this branch routinely — a !keep-open PR
+// may never have carried pending-deletion. A 404 must not fail the run, and
+// the warning minimization must still happen: the label and the comment are
+// applied separately, so one can exist without the other.
+test('clearPendingDeletion tolerates an absent label and still minimizes', async () => {
+  const { github, calls } = makeGithub({
+    removeLabelErrors: new Map([[42, httpError('gone', 404)]]),
+    comments: new Map([[42, [{
+      id: 1,
+      body: COMMENT_MARKER,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+    }]]]),
+  });
+  const core = makeCore();
+
+  const removed = await clearPendingDeletion({
+    github, core, owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+  });
+
+  assert.equal(removed, false);
+  assert.equal(core.warnings.length, 1);
+  assert.equal(calls.graphql.length, 1);
+});
+
+test('clearPendingDeletion propagates non-404 removal failures', async () => {
+  const { github } = makeGithub({
+    removeLabelErrors: new Map([[42, httpError('forbidden', 403)]]),
+  });
+
+  await assert.rejects(
+    clearPendingDeletion({
+      github, core: makeCore(), owner: 'langchain-ai', repo: 'deepagents', issueNumber: 42,
+    }),
+    /forbidden/,
+  );
 });
 
 // RELEASE_PLEASE_BRANCH_PREFIX is a hardcoded literal, not derived, and the

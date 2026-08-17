@@ -658,7 +658,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                 markup=False,
             )
             pending_failure_version = latest
-            success, output = asyncio.run(
+            success, output, _installed = asyncio.run(
                 perform_upgrade(log_path=log_path, target_version=latest)
             )
         if success:
@@ -4710,7 +4710,7 @@ def cli_main() -> None:
                         highlight=False,
                         markup=False,
                     )
-                    success, output = asyncio.run(
+                    success, output, _installed = asyncio.run(
                         perform_upgrade(
                             log_path=log_path,
                             include_prereleases=include_prereleases,

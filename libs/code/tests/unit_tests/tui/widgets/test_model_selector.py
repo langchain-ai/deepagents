@@ -3121,8 +3121,8 @@ class TestFormatOptionLabel:
         # The dim branch takes precedence over the blocks_start warning color.
         assert DARK_COLORS.warning not in label.markup
 
-    def test_install_required_yields_to_selection_styling(self) -> None:
-        """A selected row skips the install-required dim (CSS owns the highlight)."""
+    def test_selected_row_carries_no_inline_color(self) -> None:
+        """A highlighted row leaves color to CSS so the accent stays readable."""
         from deepagents_code.theme import DARK_COLORS
 
         label = ModelSelectorScreen._format_option_label(
@@ -3135,9 +3135,14 @@ class TestFormatOptionLabel:
                 env_var="BASETEN_API_KEY",
             ),
             install_required=True,
+            status="deprecated",
         )
-        # Not dimmed when selected; the missing-creds warning color applies.
-        assert DARK_COLORS.warning in label.markup
+        # Neither the install-required dim nor a semantic hue may survive the
+        # ($primary bg, $background fg) flip that CSS applies to the row.
+        assert "dim" not in label.markup
+        assert DARK_COLORS.warning not in label.markup
+        assert DARK_COLORS.error not in label.markup
+        assert "(deprecated)" in label.plain
 
     def test_uses_display_name_when_provided(self) -> None:
         """Provider-grouped rows render the profile name, not the full spec."""

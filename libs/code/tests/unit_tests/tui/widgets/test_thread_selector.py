@@ -3314,9 +3314,14 @@ class TestResumeThread:
     def _switch_app() -> DeepAgentsApp:
         from textual.css.query import NoMatches as _NoMatches
 
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
         app._session_state = _mock_session_state("old-thread")
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="existing response")
+        )
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         _app_test_double(app)._clear_messages = AsyncMock()
@@ -3407,6 +3412,36 @@ class TestResumeThread:
         linked = schedule.call_args.args[0]
         assert _get_widget_text(linked) == hint
         assert any(widget is linked for widget in mounted)
+
+    async def test_switch_omits_untouched_previous_thread(self) -> None:
+        """A thread with only the resume command does not get a return hint."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = self._switch_app()
+        app._message_store.clear()
+        app._message_store.append(
+            MessageData(type=MessageType.USER, content="/threads -r")
+        )
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert not any(text.startswith("Previous thread:") for text in contents)
+        schedule.assert_not_called()
+        thread_exists.assert_not_awaited()
 
     async def test_switch_mounts_previous_thread_hint_after_history(self) -> None:
         """The hint lands below the restored transcript, not above it.

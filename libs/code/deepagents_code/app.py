@@ -269,6 +269,11 @@ feedback) are not conversation turns, so they do not get timestamp footers.
 reason.
 """
 
+_SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
+    {MessageType.ASSISTANT, MessageType.TOOL, MessageType.SKILL}
+)
+"""Message types proving a thread contains server-backed output."""
+
 
 def _message_timestamp_footer_id(message_id: str) -> str:
     """Return the DOM id for a message timestamp footer."""
@@ -21218,13 +21223,8 @@ class DeepAgentsApp(App):
         # ever invoking the server, so no checkpoint exists and `-r <thread>`
         # would fail. `ASSISTANT` / `TOOL` / `SKILL` entries only land in the
         # store after a server round-trip, which implies a checkpoint row.
-        checkpoint_signal_types = {
-            MessageType.ASSISTANT,
-            MessageType.TOOL,
-            MessageType.SKILL,
-        }
         previous_thread_has_agent_output = any(
-            msg.type in checkpoint_signal_types
+            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES
             for msg in self._message_store.get_all_messages()
         )
         server_proc = self._server_proc
@@ -25877,6 +25877,10 @@ class DeepAgentsApp(App):
         prev_thread_id = self._lc_thread_id
         prev_session_thread = self._session_state.thread_id
         prev_previous_thread = self._session_state.previous_thread_id
+        previous_thread_has_agent_output = any(
+            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES
+            for msg in self._message_store.get_all_messages()
+        )
         prev_cwd = Path(self._cwd)
 
         cwd_choice = await self._offer_thread_cwd_switch(
@@ -25965,7 +25969,8 @@ class DeepAgentsApp(App):
             # described as sitting under the "Resumed thread" note: that note is
             # only mounted on `_load_thread_history`'s happy path, so an empty
             # or failed load leaves the hint under something else.
-            await self._mount_previous_thread_hint(prev_session_thread)
+            if previous_thread_has_agent_output:
+                await self._mount_previous_thread_hint(prev_session_thread)
 
             # Landing on a new thread re-arms the same-thread toast, so stepping
             # back to a thread and re-selecting it announces itself again.

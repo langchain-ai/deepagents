@@ -420,7 +420,7 @@ stay borderless and flush-left. */
     width: auto;
 }
 
-.ask-user-menu .ask-user-other-input {
+.ask-user-menu .ask-user-other-slot .ask-user-other-input {
     width: 1fr;
     margin: 0;
     padding: 0;
@@ -432,7 +432,7 @@ stay borderless and flush-left. */
 }
 
 /* Beat TextArea DEFAULT_CSS `height: 1fr` while allowing multiline answers. */
-.ask-user-menu AskUserTextArea.ask-user-other-input {
+.ask-user-menu .ask-user-other-slot AskUserTextArea.ask-user-other-input {
     height: auto;
     min-height: 1;
     max-height: 6;

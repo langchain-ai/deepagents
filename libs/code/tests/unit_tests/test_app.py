@@ -33734,6 +33734,38 @@ class TestChatScrollAnchoring:
             assert not chat.is_anchored
 
 
+class TestResumeScrollPosition:
+    """Regression coverage for resumed transcript positioning."""
+
+    async def test_history_load_scrolls_to_bottom_after_layout(self) -> None:
+        """A resumed transcript should open on its newest message."""
+        app = DeepAgentsApp()
+        payload = _ThreadHistoryPayload(
+            messages=[
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"message {index}",
+                    id=f"resume-message-{index}",
+                )
+                for index in range(20)
+            ],
+            context_tokens=0,
+            model_spec="",
+        )
+
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.pause()
+            await app._load_thread_history(
+                thread_id="resume-scroll", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            chat = app.query_one("#chat", _ChatScroll)
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == chat.max_scroll_y
+            assert not chat.is_anchored
+
+
 class TestWelcomeBannerLiveUpdates:
     """The banner starts top-aligned and mirrors live model/cwd changes.
 

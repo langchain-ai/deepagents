@@ -1618,6 +1618,55 @@ class TestDeepAgentPermissionsEndToEnd:
         assert "permission denied" in tool_messages[0].content
         assert "write" in tool_messages[0].content
 
+    # Regression test for https://github.com/langchain-ai/deepagents/issues/5388
+    def test_filesystem_permission_deny_survives_documented_tools_override(self) -> None:
+        """A `FilesystemMiddleware(tools=...)` override must not drop `permissions`.
+
+        The docs tell callers to narrow the built-in filesystem tool set by
+        passing a `FilesystemMiddleware(tools=[...])` instance through
+        `middleware=`. Because an override replaces the factory's default
+        instance (matched by `.name`), the caller's `permissions=` deny rules
+        must still be enforced on the replacement. The write to the denied
+        `/secrets/**` path must be rejected exactly as it is without the
+        tool-set override.
+        """
+        backend = StateBackend()
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/secrets/key.txt", "content": "data"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            backend=backend,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+            # Documented way to restrict the filesystem tool set:
+            # https://docs.langchain.com/oss/python/deepagents/overview#restricting-filesystem-tools
+            middleware=[FilesystemMiddleware(backend=backend, tools=["read_file", "ls", "write_file"])],
+        )
+        result = agent.invoke({"messages": [HumanMessage(content="Write to secrets")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "permission denied" in tool_messages[0].content
+        assert "write" in tool_messages[0].content
+
     def test_filesystem_permission_deny_read_blocks_read_file(self) -> None:
         """FilesystemPermission deny read blocks read_file and returns error message."""
         model = FixedGenericFakeChatModel(

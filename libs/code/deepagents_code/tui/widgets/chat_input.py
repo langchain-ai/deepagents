@@ -31,7 +31,6 @@ from deepagents_code.config import (
 from deepagents_code.input import (
     IMAGE_PLACEHOLDER_PATTERN,
     VIDEO_PLACEHOLDER_PATTERN,
-    looks_like_dropped_payload,
 )
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
@@ -110,10 +109,20 @@ created or deleted mid-session would otherwise stay stale until the next switch.
 A periodic refresh keeps `@` suggestions current; the walk runs off the event
 loop and swaps in atomically, so it never blocks typing."""
 
+_DEFERRED_SPACE_WATCHDOG_SECONDS = 0.25
+"""Deadline for a held synthetic space to be resolved by its posted message.
+
+The gate that holds the space swallows every keystroke behind it, so it needs a
+backstop: a `DeferredSpace` that is never delivered would otherwise wedge the
+input permanently. Comfortably longer than a message round trip, short enough
+that a user who hits it sees a hiccup rather than a dead input.
+"""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
+    from textual.timer import Timer
 
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
@@ -507,7 +516,11 @@ class ChatTextArea(PasteBurstTextArea):
             super().__init__()
 
     class DeferredSpace(Message):
-        """Insert a synthetic space after an already-queued burst payload."""
+        """Posted when a synthetic space must wait for a queued burst payload.
+
+        Relayed through `ChatInput` so it is handled after the `PastedText` /
+        `PastedPaths` message carrying the payload.
+        """
 
         def __init__(self, burst_time: float) -> None:
             """Initialize with the original key-event timestamp.
@@ -537,7 +550,12 @@ class ChatTextArea(PasteBurstTextArea):
         self._skip_history_change_events = 0
         self._completion_active = False
         self._deferred_space_pending = False
+        self._deferred_space_time: float | None = None
+        self._deferred_space_replaying = False
+        self._deferred_space_timer: Timer | None = None
+        self._replaying_key_event: events.Key | None = None
         self._deferred_keys: list[tuple[str, str | None]] = []
+        self._burst_payload_keeps_leading_slash = False
         # Paste-burst and backslash-pending state is initialized by
         # PasteBurstTextArea.__init__.
         # Tracks terminal focus so a click that re-focuses the window only
@@ -884,13 +902,22 @@ class ChatTextArea(PasteBurstTextArea):
         owner = self._chat_input_owner
         return owner is None or owner._collapse_pastes
 
-    async def _dispatch_burst_payload(self, payload: str) -> None:
+    async def _dispatch_burst_payload(self, payload: str) -> bool:
         """Route a flushed burst through dropped-path and large-paste checks.
 
         When parsing fails, the buffered text is inserted unchanged so regular
         typing behavior is preserved.
+
+        Returns:
+            `True` when the payload was handed to the owner as a message and will
+            be applied on a later event-loop turn, `False` when it was inserted
+            synchronously. Callers that must order a following keystroke against
+            the payload only need to wait in the `True` case.
         """
         from deepagents_code.input import parse_pasted_path_payload
+
+        keeps_leading_slash = self._burst_payload_keeps_leading_slash
+        self._burst_payload_keeps_leading_slash = False
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
@@ -909,32 +936,63 @@ class ChatTextArea(PasteBurstTextArea):
             parsed = None
         if parsed is not None:
             self.post_message(self.PastedPaths(payload, parsed.paths))
-            return
+            return True
 
         if self._paste_collapse_enabled() and _should_collapse_chat_paste(payload):
             self.post_message(self.PastedText(payload))
-            return
+            return True
 
+        owner = self._chat_input_owner
+        if keeps_leading_slash and owner is not None:
+            # Consumed by the change handler this insert triggers, suppressing the
+            # mode re-detection that would otherwise strip the restored `/`.
+            owner._stripping_prefix = True
         self.insert(payload)
         # A multi-line payload adds rows the same way `action_insert_newline`
         # does, and needs the same post-refresh scroll for the same reason: the
         # built-in scroll sees stale dimensions and leaves the cursor off screen.
         if "\n" in payload:
             self.call_after_refresh(self.scroll_cursor_visible)
+        return False
 
     def _burst_run_payload_for_dispatch(self, payload: str) -> str:
         """Restore a virtual command prefix when a burst is an absolute path.
 
+        A `/` typed at offset 0 switches the input into command mode and is never
+        inserted, so a dropped absolute path replayed as key events loses its
+        leading separator. Restoring it lets the run be recognised as a path.
+
+        The restore is deliberately narrow, because a payload rewritten here is
+        also what takes the input *out* of command mode
+        (`_on_burst_run_promoted`). Asking `looks_like_dropped_payload` about the
+        `/`-prefixed candidate cannot decide this — that function is a leading-
+        token check, so prepending `/` makes it vacuously true for any text. Three
+        conditions stand in for it instead:
+
+        - The run must start at document offset 0, i.e. it is the text that
+          directly followed the consumed `/` rather than a later burst.
+        - The payload must contain its own separator, so `help` stays a command
+          name while `private/tmp/x` reads as a path tail.
+        - Nothing before that separator may be whitespace, which keeps a command
+          with a path argument (`read src/main.py`) from qualifying.
+
         Returns:
-            The payload with a stripped leading slash restored when applicable.
+            The payload with the consumed leading slash restored, or the payload
+            unchanged when it does not look like the tail of an absolute path.
         """
         owner = self._chat_input_owner
         if owner is None or owner.mode != "command":
             return payload
-        candidate = f"/{payload.lstrip('/')}"
-        if looks_like_dropped_payload(candidate):
-            return candidate
-        return payload
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        if cursor_offset != len(payload) or not self.text.startswith(payload):
+            return payload
+        head, separator, _ = payload.partition("/")
+        if not separator or any(char.isspace() for char in head):
+            return payload
+        # Exactly one `/` was consumed, so exactly one is restored: `lstrip("/")`
+        # would eat a second leading slash and silently drop a character from a
+        # `//host/share` payload.
+        return f"/{payload}"
 
     def _on_burst_run_promoted(
         self, visible_payload: str, dispatch_payload: str
@@ -942,33 +1000,139 @@ class ChatTextArea(PasteBurstTextArea):
         """Leave command mode when promotion recovered a leading path slash."""
         if visible_payload == dispatch_payload:
             return
+        # The payload now leads with the restored `/`, so re-inserting it at
+        # offset 0 would trip mode-prefix detection a second time and strip the
+        # slash again — losing the character for good on the paths that do not
+        # resolve on disk. Flag it so the insert suppresses that detection.
+        self._burst_payload_keeps_leading_slash = True
         owner = self._chat_input_owner
         if owner is not None and owner.mode == "command":
             owner.mode = "normal"
 
-    async def _insert_deferred_space_and_keys(self, burst_time: float) -> None:
-        """Insert a queued synthetic space before replaying later key events."""
+    def _arm_deferred_space(self, space_now: float) -> None:
+        """Hold a synthetic space until a posted burst payload has been applied.
+
+        Args:
+            space_now: Monotonic time when the space key arrived.
+        """
+        self._deferred_space_pending = True
+        self._deferred_space_time = space_now
+        self.post_message(self.DeferredSpace(space_now))
+        # The gate this arms swallows keystrokes, so it must not be able to
+        # outlive the message that clears it. A dropped message (widget closing),
+        # an unmounted owner, or a raising handler would otherwise leave the input
+        # silently dead with no recovery short of restarting the app.
+        self._cancel_deferred_space_timer()
+        self._deferred_space_timer = self.set_timer(
+            _DEFERRED_SPACE_WATCHDOG_SECONDS, self._recover_deferred_space
+        )
+
+    def _cancel_deferred_space_timer(self) -> None:
+        """Stop the deferred-space watchdog if one is scheduled."""
+        if self._deferred_space_timer is None:
+            return
+        self._deferred_space_timer.stop()
+        self._deferred_space_timer = None
+
+    async def _recover_deferred_space(self) -> None:
+        """Resolve a deferral whose `DeferredSpace` message never arrived."""
+        if not self._deferred_space_pending:
+            return
+        logger.warning(
+            "DeferredSpace was never handled; recovering %d held key(s)",
+            len(self._deferred_keys),
+        )
+        await self._resolve_deferred_space()
+
+    def _clear_deferred_space(self) -> None:
+        """Drop all deferred-space state without replaying anything."""
+        self._cancel_deferred_space_timer()
+        self._deferred_space_pending = False
+        self._deferred_space_replaying = False
+        self._deferred_space_time = None
+        self._replaying_key_event = None
+        self._deferred_keys.clear()
+
+    def _reset_paste_burst_state(self) -> None:
+        """Reset burst tracking, including the deferred-space gate.
+
+        A wholesale text swap invalidates any held space and keystrokes: replaying
+        them would insert at a position that no longer means anything, and leaving
+        the gate armed would swallow input against the new text.
+        """
+        self._clear_deferred_space()
+        super()._reset_paste_burst_state()
+
+    def _insert_deferred_space(self, burst_time: float) -> None:
+        """Insert the held space unless the payload already ended with one."""
+        # A dropped-path payload is applied by `_build_path_replacement`, which
+        # already appends its own trailing space. Adding ours would double it.
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        if cursor_offset > 0 and self.text[cursor_offset - 1] == " ":
+            return
         self.insert(" ")
         self._note_printable_burst_keystroke(" ", burst_time)
-        deferred_keys = self._deferred_keys
-        self._deferred_keys = []
-        self._deferred_space_pending = False
 
-        from textual import events as textual_events
+    async def _resolve_deferred_space(self) -> None:
+        """Insert the held space, then replay the keys queued behind it."""
+        if self._deferred_space_replaying:
+            return
+        burst_time = self._deferred_space_time
+        self._cancel_deferred_space_timer()
+        self._deferred_space_replaying = True
+        try:
+            if burst_time is not None:
+                self._insert_deferred_space(burst_time)
+            from textual import events as textual_events
 
-        for key, character in deferred_keys:
-            await self._on_key(textual_events.Key(key, character))
+            # Drained destructively from the front: a key that arrives while a
+            # replayed one is awaiting is appended to this same list by the gate,
+            # so arrival order holds and no key is ever held only in a local that
+            # an exception mid-replay would discard.
+            while self._deferred_keys:
+                key, character = self._deferred_keys.pop(0)
+                replay = textual_events.Key(key, character)
+                self._replaying_key_event = replay
+                try:
+                    await self._on_key(replay)
+                finally:
+                    self._replaying_key_event = None
+        finally:
+            self._deferred_space_replaying = False
+            self._deferred_space_pending = False
+            self._deferred_space_time = None
+            if self._deferred_keys:
+                # Only reachable when a replayed key raised. Report the loss
+                # rather than leaving them to be replayed into a later, unrelated
+                # document position.
+                logger.warning(
+                    "Deferred key replay stopped early; dropping %d held key(s)",
+                    len(self._deferred_keys),
+                )
+                self._deferred_keys.clear()
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
         # A character-less VS Code space may need to wait behind a burst payload
         # message. Keys already present in Textual's FIFO queue would otherwise
         # overtake it, so hold and replay them after the space is inserted.
-        if self._deferred_space_pending:
-            event.prevent_default()
-            event.stop()
-            self._deferred_keys.append((event.key, event.character))
-            return
+        # The identity check lets the key currently being replayed through, while
+        # anything arriving from the terminal during that replay is still held.
+        if self._deferred_space_pending and event is not self._replaying_key_event:
+            printable = event.is_printable and event.character is not None
+            if printable or self._deferred_space_replaying:
+                event.prevent_default()
+                event.stop()
+                self._deferred_keys.append((event.key, event.character))
+                return
+            # Only printable keys are safe to replay. A replayed event is built
+            # here rather than dispatched through the DOM, so it never bubbles to
+            # `ChatInput` (which owns completion navigation for `tab`/`up`/`down`)
+            # and never reaches binding resolution (`alt+backspace`); and a
+            # replayed `enter` would be judged against replay time, past the burst
+            # gap, and submit half the paste. So resolve the deferral now and let
+            # this key take its ordinary path.
+            await self._resolve_deferred_space()
 
         # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. The
         # kitty parser patch in `_textual_patches.py` already neutralizes these
@@ -1001,25 +1165,31 @@ class ChatTextArea(PasteBurstTextArea):
             # This branch bypasses the burst helpers below, so it has to drive
             # them itself: a space inside a replayed paste must reach the buffer
             # (if one is live) or the run tracker (if not), otherwise the
-            # tracker's text diverges from the document and every promotion for
-            # the rest of that paste fails the verification in
-            # `_promote_paste_burst_run`.
+            # tracker's text diverges from the document and the run is discarded,
+            # losing grouping for that stretch of the paste.
             space_now = time.monotonic()
-            if self._paste_burst_buffer:
-                if self._append_recent_paste_burst_text(" ", space_now):
-                    self.post_message(self.Typing())
-                    return
-                await self._flush_paste_burst()
-                # Large-paste and dropped-path dispatch posts a message to the
-                # owner. Queue the space behind that message so its insertion
-                # cannot move the cursor before the payload is handled.
-                self._deferred_space_pending = True
-                self.post_message(self.DeferredSpace(space_now))
+            if self._paste_burst_buffer and self._append_recent_paste_burst_text(
+                " ", space_now
+            ):
+                self.post_message(self.Typing())
+                return
+            # The burst (if any) had gone idle, so this space follows the paste
+            # rather than belonging to it. Flush first, then order the space after
+            # the payload — but only when the payload will be applied by a posted
+            # message. Large-paste and dropped-path dispatch post; everything else
+            # inserted synchronously above, and arming the gate for those would
+            # swallow keystrokes for no reason.
+            if self._paste_burst_buffer and await self._flush_paste_burst():
+                self._arm_deferred_space(space_now)
                 self.post_message(self.Typing())
                 return
             self.insert(" ")
             self._note_printable_burst_keystroke(" ", space_now)
             self.post_message(self.Typing())
+            # The space is in the document, so the run may now qualify — a path
+            # payload can end on a space, and a long single-line paste can cross
+            # the length threshold here.
+            self._check_burst_run_for_promotion()
             return
 
         now = time.monotonic()
@@ -1094,6 +1264,12 @@ class ChatTextArea(PasteBurstTextArea):
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
             # but let event bubble to ChatInput for completion handling
             event.prevent_default()
+            # `space` is the one printable key here, so `_track_burst_run` above
+            # counted it while this branch inserts nothing. Drop the run so the
+            # tracker does not claim a character the document never received —
+            # the same reason as the mode-prefix branch below.
+            if event.is_printable:
+                self._reset_paste_burst_run()
             return
 
         # Plain Enter submits, unless a recent keystroke burst suggests this
@@ -1119,10 +1295,8 @@ class ChatTextArea(PasteBurstTextArea):
 
         await super()._on_key(event)
 
-        # After the key is inserted, promote the rapid run if its shape (dropped
-        # path, for path routing) or size already confirms a paste. Must run
-        # after `super()._on_key` so the current character is already in the
-        # document and `_promote_paste_burst_run` can find it.
+        # Must follow `super()._on_key`: promotion verifies the run against the
+        # document, so the current character has to be in it already.
         self._check_burst_run_for_promotion()
 
     def action_delete_right(self) -> None:
@@ -2359,10 +2533,21 @@ class ChatInput(Vertical):
     async def on_chat_text_area_deferred_space(
         self, event: ChatTextArea.DeferredSpace
     ) -> None:
-        """Insert a synthetic space after the preceding burst payload."""
+        """Insert a synthetic space after the preceding burst payload.
+
+        Handled here rather than on `ChatTextArea` so it runs *after* the payload:
+        a `DeferredSpace` posted to the text area is drained by that widget's own
+        pump, which would process it before `PastedText`/`PastedPaths` reach this
+        one. The text area's own gate is what holds keystrokes in the meantime.
+        """
+        del event  # The timestamp is read from the text area's held state.
         if not self._text_area:
+            # No text area to replay into, but the gate lives on it and is already
+            # unreachable from here, so there is nothing to clear and nothing that
+            # can still swallow input.
+            logger.warning("DeferredSpace arrived with no text area; dropping it")
             return
-        await self._text_area._insert_deferred_space_and_keys(event.burst_time)
+        await self._text_area._resolve_deferred_space()
 
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.

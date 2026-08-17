@@ -199,10 +199,8 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
 
         await super()._on_key(event)
 
-        # After the key is inserted, promote the rapid run if its shape (dropped
-        # path, for media rejection) or size already confirms a paste. Must run
-        # after `super()._on_key` so the current character is already in the
-        # document and `_promote_paste_burst_run` can find it.
+        # Must follow `super()._on_key`: promotion verifies the run against the
+        # document, so the current character has to be in it already.
         self._check_burst_run_for_promotion()
 
     async def _on_paste(self, event: events.Paste) -> None:
@@ -224,11 +222,17 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         # them a second time. The `prevent_default()` above is what stops that
         # walk on the rejection path.
 
-    async def _dispatch_burst_payload(self, payload: str) -> None:
-        """Reject a media file replayed as a key burst, else defer to the base."""
+    async def _dispatch_burst_payload(self, payload: str) -> bool:
+        """Reject a media file replayed as a key burst, else defer to the base.
+
+        Returns:
+            `False` on the rejection path — nothing is inserted, so there is no
+            pending application for a caller to order against — otherwise
+            whatever the base reports.
+        """
         if await self._reject_dropped_media(payload):
-            return
-        await super()._dispatch_burst_payload(payload)
+            return False
+        return await super()._dispatch_burst_payload(payload)
 
     async def _reject_dropped_media(self, text: str) -> bool:
         """Toast and swallow a dropped payload containing an image or video.

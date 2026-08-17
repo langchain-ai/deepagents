@@ -69,9 +69,11 @@ PASTE_BURST_PROMOTE_CHARS = PASTE_THRESHOLD_CHARS
 
 A run this long arriving at burst speed (each char within
 `PASTE_BURST_CHAR_GAP_SECONDS`) is unreachable by human typing, so it is
-promoted into the buffer even without an embedded newline. Matched to the
-collapse threshold so a large single-line key-event paste still collapses into
-a `[Pasted text #N]` placeholder.
+promoted into the buffer even without an embedded newline. Derived from the
+collapse threshold so a large single-line key-event paste reaches
+`[Pasted text #N]` collapsing. The comparison here is `>=` while
+`should_collapse_paste` uses `>`, so a run of exactly this length is promoted and
+then re-inserted verbatim.
 """
 
 PASTE_ENTER_SUPPRESS_WINDOW_SECONDS = 0.12
@@ -180,9 +182,17 @@ class PasteBurstTextArea(TextArea):
         """
         return False
 
-    async def _dispatch_burst_payload(self, payload: str) -> None:
-        """Handle a flushed burst payload. Base behavior inserts it verbatim."""
+    async def _dispatch_burst_payload(self, payload: str) -> bool:
+        """Handle a flushed burst payload. Base behavior inserts it verbatim.
+
+        Returns:
+            `True` when the payload was deferred to a posted message rather than
+            applied to the document here, so a caller that must order a following
+            keystroke after the payload has to wait for that message. The base
+            implementation inserts synchronously and returns `False`.
+        """
         self.insert(payload)
+        return False
 
     def _burst_run_payload_for_dispatch(self, payload: str) -> str:  # noqa: PLR6301  # overridable hook
         """Return the payload represented by a visible rapid-key run.
@@ -284,7 +294,8 @@ class PasteBurstTextArea(TextArea):
         previous `enter` was already suppressed, and the suppression window is
         still open. The window bounds how long a replayed paste's newlines stay
         grouped. Returns `False` immediately in slash-command context (see
-        `_in_slash_command_context`).
+        `_in_slash_command_context`), and an active burst buffer short-circuits to
+        `True` regardless of the window (see below).
 
         The first suppressed `enter` must remain within the character gap. A
         completed single-line burst followed by a deliberate `enter` is
@@ -312,19 +323,24 @@ class PasteBurstTextArea(TextArea):
             return False
         return (now - last_key) <= PASTE_BURST_CHAR_GAP_SECONDS
 
-    async def _flush_paste_burst(self) -> None:
+    async def _flush_paste_burst(self) -> bool:
         """Flush buffered burst text through the payload dispatch hook.
 
         When the buffer is empty this is a no-op, so it is safe to call
         defensively before handling a bracketed paste.
+
+        Returns:
+            Whatever `_dispatch_burst_payload` reported — `True` when the payload
+            will be applied by a posted message rather than synchronously. `False`
+            when there was nothing buffered.
         """
         payload = self._paste_burst_buffer
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
         if not payload:
-            return
-        await self._dispatch_burst_payload(payload)
+            return False
+        return await self._dispatch_burst_payload(payload)
 
     def _promote_paste_burst_run(self, now: float) -> bool:
         """Move an already-inserted rapid run out of the document into the buffer.
@@ -333,8 +349,9 @@ class PasteBurstTextArea(TextArea):
         screen at this point — and hands them to `_start_paste_burst` so the
         eventual flush can apply dropped-path and paste-collapse policy.
 
-        All guards run before any mutation, so a `False` return never leaves a
-        partially-promoted document.
+        No document mutation happens until every guard has passed, so a `False`
+        return never leaves a partially-promoted document. A failed verification
+        does still discard the tracked run, so `False` is not side-effect-free.
 
         Args:
             now: Monotonic timestamp for the current key event.
@@ -343,9 +360,10 @@ class PasteBurstTextArea(TextArea):
             `True` when the run was verified present immediately before the
             cursor and moved into the buffer. `False` when promotion is unsafe:
             an empty run, a non-empty selection (deleting would clobber the
-            user's selected range), or a document that no longer ends with the
-            tracked run — which means an intervening edit desynchronised the
-            tracker. Callers must fall back to handling the key normally.
+            user's selected range), or a document whose text immediately before
+            the cursor is no longer the tracked run — which means an intervening
+            edit desynchronised the tracker. Callers must fall back to handling
+            the key normally.
         """
         payload = self._paste_burst_run_text
         if not payload or not self.selection.is_empty:
@@ -354,15 +372,18 @@ class PasteBurstTextArea(TextArea):
         cursor_offset = self.document.get_index_from_location(cursor)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
         start_offset = cursor_offset - len(payload)
         if start_offset < 0 or self.text[start_offset:cursor_offset] != payload:
-            # The tracker's model of the document is wrong, so every later
-            # promotion in this run would fail the same way. Log it (never the
-            # payload itself, which is user content) and drop the stale run so
-            # tracking restarts cleanly on the next keystroke.
-            logger.debug(
-                "Burst run diverged from document (run=%d chars, start=%d); "
-                "skipping promotion",
+            # An untracked edit desynchronised the tracker, so drop the stale run
+            # and let tracking restart on the next keystroke. Logged at warning
+            # (not debug) so it survives the default INFO level — this is a state
+            # -machine bug, not a user-reachable condition. The message carries
+            # only sizes, never the payload, which is user content.
+            logger.warning(
+                "Burst run diverged from document (run=%d chars, start=%d, "
+                "cursor=%d, doc=%d); skipping promotion",
                 len(payload),
                 start_offset,
+                cursor_offset,
+                len(self.text),
             )
             self._reset_paste_burst_run()
             return False
@@ -404,10 +425,7 @@ class PasteBurstTextArea(TextArea):
         return False
 
     def _track_burst_run(self, event: events.Key, now: float) -> None:
-        """Track a rapid run, arming Enter suppression once it looks like a paste.
-
-        The key stays in the document; see `_note_printable_burst_keystroke`.
-        """
+        """Track a rapid run, arming Enter suppression once it looks like a paste."""
         if event.is_printable and event.character is not None:
             self._note_printable_burst_keystroke(event.character, now)
         elif event.key != "enter":
@@ -419,10 +437,14 @@ class PasteBurstTextArea(TextArea):
         Arming is conditional: the run must reach `PASTE_BURST_MIN_CHARS` and
         must not be a slash command, where Enter always submits.
 
+        Any printable char also un-latches the suppressed-Enter state, so the next
+        Enter must re-qualify through the character gap.
+
         Call this for any character that reaches the document without passing
         through `_track_burst_run` — a caller that inserts text itself and
         returns early must still keep the tracker in sync, or the run text will
-        diverge from the document and every promotion in this paste will fail.
+        diverge from the document and the run is discarded, losing grouping for
+        that stretch of the paste.
 
         Args:
             char: The character being inserted into the document.
@@ -439,13 +461,13 @@ class PasteBurstTextArea(TextArea):
     def _check_burst_run_for_promotion(self) -> None:
         """Promote a rapid run whose shape or size already confirms a paste.
 
-        Called after each printable key has been inserted, so the run is present
-        in the document and `_promote_paste_burst_run` can find it. Two
-        confirmations do not need to wait for a newline:
+        Callers must invoke this only once the current character is in the
+        document, so the run is present and `_promote_paste_burst_run` can find
+        it. Two confirmations do not need to wait for a newline:
 
-        - A dropped-path shape (`/`, `~`, drive letter, `file://`, UNC), which
-          fast typing never produces. Without this, an unquoted single-line drop
-          would never reach path parsing or media rejection.
+        - A dropped-path shape (`/`, `~`, drive letter, `file://`, UNC). Without
+          this, an unquoted single-line drop would never reach path parsing or
+          media rejection.
         - A run past `PASTE_BURST_PROMOTE_CHARS`, which no human reaches at
           burst speed. Without this, a large single-line key-event paste would
           never collapse into a placeholder.
@@ -458,28 +480,51 @@ class PasteBurstTextArea(TextArea):
         `_dispatch_burst_payload` — re-running path parsing, and its filesystem
         probes, once per character.
 
-        Ordinary typing is unaffected: it neither starts with a path shape nor
-        reaches the length threshold within the burst gap.
+        Ordinary typing reaches neither confirmation: to qualify it would have to
+        sustain `PASTE_BURST_MIN_CHARS` keystrokes inside
+        `PASTE_BURST_CHAR_GAP_SECONDS` of each other (~400 WPM) *and* either open
+        with a path shape or run past the length threshold.
         """
         if self._paste_burst_buffer or self._paste_burst_run < PASTE_BURST_MIN_CHARS:
             return
         payload = self._paste_burst_run_text
         dispatch_payload = self._burst_run_payload_for_dispatch(payload)
-        is_path_payload = looks_like_dropped_payload(dispatch_payload)
-        # A virtual slash prefix is restored only for a ChatInput absolute
-        # path. Its visible suffix has its own separator (for example,
-        # `private/tmp/...`), unlike a slash-command name such as `help`.
-        recovered_path_has_separator = dispatch_payload != payload and "/" in payload
-        if (
-            (not self._in_slash_command_context() or recovered_path_has_separator)
-            and is_path_payload
-        ) or len(payload) >= PASTE_BURST_PROMOTE_CHARS:
-            promoted = self._promote_paste_burst_run(
-                self._paste_burst_last_key_time or 0.0
+        # In slash-command context Enter always submits and the text is a command,
+        # not content, so nothing may be hidden — with one exception: a payload the
+        # dispatch hook rewrote is a path whose leading `/` the mode prefix
+        # consumed (see `ChatTextArea._burst_run_payload_for_dispatch`), and that
+        # must reach path handling precisely so it stops being read as a command.
+        if self._in_slash_command_context() and dispatch_payload == payload:
+            return
+        if not (
+            looks_like_dropped_payload(dispatch_payload)
+            or len(payload) >= PASTE_BURST_PROMOTE_CHARS
+        ):
+            return
+        last_key_time = self._paste_burst_last_key_time
+        if last_key_time is None:
+            # Unreachable: the run is at least `PASTE_BURST_MIN_CHARS`, and every
+            # counted keystroke stamps this field. Refuse rather than substitute a
+            # timestamp, which on a monotonic clock would land decades in the past
+            # and make the burst flush per character.
+            logger.warning(
+                "Qualifying burst run (%d chars) has no key timestamp; "
+                "skipping promotion",
+                self._paste_burst_run,
             )
-            if promoted:
-                self._paste_burst_buffer = dispatch_payload
-                self._on_burst_run_promoted(payload, dispatch_payload)
+            return
+        if not self._promote_paste_burst_run(last_key_time):
+            # The shape or length already confirmed a paste, so failing here means
+            # dropped-path routing, media rejection, and collapsing are all
+            # silently skipped for this payload. Worth a breadcrumb.
+            logger.warning(
+                "Confirmed burst paste (%d chars) could not be promoted; "
+                "path routing and collapsing are skipped for it",
+                len(payload),
+            )
+            return
+        self._paste_burst_buffer = dispatch_payload
+        self._on_burst_run_promoted(payload, dispatch_payload)
 
     def _consume_enter_as_burst_newline(self, now: float) -> bool:
         """Insert a newline instead of submitting when inside a paste burst.
@@ -493,16 +538,29 @@ class PasteBurstTextArea(TextArea):
             return False
         # This newline confirms a multi-line key-event paste, so pull the
         # still-visible run into the buffer and keep the newline with it. The
-        # `_paste_burst_buffer` guard mirrors the one at
-        # `_enter_inserts_newline_during_burst`: the shipped `_on_key`s absorb or
-        # flush an active buffer before Enter reaches here, so it is defensive
-        # today, but promoting on top of a live buffer would double-count the run.
-        if not self._paste_burst_buffer and self._promote_paste_burst_run(now):
+        # `_paste_burst_buffer` guard checks the same field as
+        # `_enter_inserts_newline_during_burst` but to the opposite effect: there a
+        # live buffer forces suppression, here it forces the plain-newline
+        # fallback. Both shipped `_on_key`s absorb or flush an active buffer before
+        # Enter reaches here, so a live buffer is unreachable — and it would be
+        # actively wrong, not merely redundant: the newline would land in the
+        # document while the buffered run flushed in *after* it, reordering the
+        # paste. Loud rather than silently wrong if a future caller gets here.
+        if self._paste_burst_buffer:
+            logger.warning(
+                "Enter reached burst-newline handling with a live buffer "
+                "(%d chars); keeping the newline with the buffer",
+                len(self._paste_burst_buffer),
+            )
+            self._append_paste_burst("\n", now)
+        elif self._promote_paste_burst_run(now):
             self._append_paste_burst("\n", now)
         else:
             self.action_insert_newline()
         # Set after promotion: `_promote_paste_burst_run` resets run tracking,
         # which clears `_paste_burst_last_suppressed_enter_time`.
+        # `_paste_burst_window_until` is not cleared by that reset; it is
+        # refreshed here to extend the grouping window.
         self._paste_burst_window_until = now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._paste_burst_last_suppressed_enter_time = now
         return True
@@ -623,9 +681,14 @@ class CollapsingPasteTextArea(PasteBurstTextArea):
         """
         return self._collapse_pastes
 
-    async def _dispatch_burst_payload(self, payload: str) -> None:
-        """Collapse a large flushed burst, otherwise insert it verbatim."""
+    async def _dispatch_burst_payload(self, payload: str) -> bool:
+        """Collapse a large flushed burst, otherwise insert it verbatim.
+
+        Returns:
+            `False`; both branches apply the payload synchronously.
+        """
         self._insert_paste_payload(payload)
+        return False
 
     def _insert_paste_payload(self, payload: str) -> None:
         """Collapse `payload` into a placeholder when large, else insert it."""

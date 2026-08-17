@@ -6514,8 +6514,31 @@ class DeepAgentsApp(App):
             await self._mount_update_failure(exc)
 
     def _update_splash_version(self, version: str) -> None:
-        """Show the installed version in the splash after an in-session update."""
-        self.query_one("#welcome-banner", WelcomeBanner).update_version(version)
+        """Show the installed version in the splash after an in-session update.
+
+        Call this only once the install is known to be the version a relaunch
+        will actually run: the shadowed-`dcode` paths deliberately leave the
+        old version on the banner, because a stale shim earlier on PATH means
+        relaunching keeps the old binary.
+
+        Repainting the splash is cosmetic, so a missing banner is logged rather
+        than raised — callers emit the authoritative success messaging around
+        this call and must not have it turned into a failure report.
+
+        Args:
+            version: The newly installed `deepagents-code` version.
+        """
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+        except NoMatches:
+            # The banner is composed once and never removed, so a miss here
+            # means it has silently vanished — surface it.
+            logger.warning("Welcome banner not found during splash version sync")
+            return
+        except ScreenStackError:
+            logger.debug("Screen stack empty during splash version sync", exc_info=True)
+            return
+        banner.update_version(version)
 
     async def _perform_app_upgrade(
         self,
@@ -6634,13 +6657,17 @@ class DeepAgentsApp(App):
             # successful upgrade into a "/update failed" message.
             shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
             if shadow is None:
-                self._update_splash_version(upgraded_to)
                 await self._mount_message(
                     AppMessage(
                         f"Updated to v{upgraded_to}. Quit and relaunch dcode "
                         "to use the new version."
                     ),
                 )
+                # After the success line: this method runs inside the caller's
+                # `except Exception -> _mount_update_failure`, so a cosmetic
+                # repaint must not be able to precede (and replace) the
+                # success message with an "/update failed" report.
+                self._update_splash_version(upgraded_to)
             else:
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
@@ -22428,8 +22455,12 @@ class DeepAgentsApp(App):
                         # the notice sat open). Report what actually landed on
                         # disk rather than the stale payload version.
                         upgraded_to = installed or payload.latest
-                        self._update_splash_version(upgraded_to)
+                        # After `mark_success`: the modal stays un-dismissable
+                        # until it is marked done, and this worker runs with
+                        # Textual's default `exit_on_error`, so a cosmetic
+                        # repaint must not be able to strand the modal.
                         screen.mark_success()
+                        self._update_splash_version(upgraded_to)
                         if progress_modal_visible:
                             return
                         self.notify(

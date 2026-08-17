@@ -358,11 +358,16 @@ class WelcomeBanner(Static):
             self.update(self._build_banner())
 
     def update_version(self, version: str) -> None:
-        """Show the newly installed version after an in-session update.
+        """Track a new version and re-render when it is displayed.
+
+        The banner then advertises a version installed on disk rather than the
+        one this process is running, until the user relaunches.
 
         Args:
             version: The newly installed `deepagents-code` version.
         """
+        # Tracked even when hidden, so the value stays truthful if the row is
+        # ever re-enabled — matching the other `update_*` methods above.
         self._version = version
         if not self._hide_version:
             self.update(self._build_banner())

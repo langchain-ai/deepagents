@@ -705,10 +705,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             if cutoff == 0:
                 return self._nothing_to_compact(tool_call_id)
 
+            session_id = summarization._get_session_id(runtime.state)
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = summarization._create_summary(to_summarize)
             backend = self._guarded_backend()
-            session_id = summarization._get_session_id(runtime.state)
             file_path = summarization._offload_to_backend(
                 backend, to_summarize, session_id
             )
@@ -743,10 +743,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             if cutoff == 0:
                 return self._nothing_to_compact(tool_call_id)
 
+            session_id = summarization._get_session_id(runtime.state)
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = await summarization._acreate_summary(to_summarize)
             backend = self._guarded_backend()
-            session_id = summarization._get_session_id(runtime.state)
             file_path = await summarization._aoffload_to_backend(
                 backend, to_summarize, session_id
             )

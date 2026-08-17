@@ -102,7 +102,7 @@ Here is a preview showing the head and tail of the result (lines of the form `..
 
 {content_sample}
 """
-"""Legacy `TOO_LARGE_TOOL_MSG` value, served via `__getattr__` until `deepagents==0.9.0`."""
+"""Legacy `TOO_LARGE_TOOL_MSG` value available until `deepagents==0.9.0`."""
 
 _LEGACY_TOO_LARGE_HUMAN_MSG: Final = """Message content too large and was saved to the filesystem at: {file_path}
 
@@ -112,7 +112,7 @@ Here is a preview showing the head and tail of the content:
 
 {content_sample}
 """
-"""Legacy `TOO_LARGE_HUMAN_MSG` value, served via `__getattr__` until `deepagents==0.9.0`."""
+"""Legacy `TOO_LARGE_HUMAN_MSG` value available until `deepagents==0.9.0`."""
 
 _LEGACY_LARGE_RESULT_TEMPLATES: Final = {
     "TOO_LARGE_TOOL_MSG": _LEGACY_TOO_LARGE_TOOL_MSG,

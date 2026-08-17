@@ -130,20 +130,20 @@ def test_real_distribution_skips_self_references() -> None:
             assert pkg_name.lower() != "deepagents-code"
 
 
-def test_missing_packages_are_omitted() -> None:
+def test_incomplete_extras_are_omitted() -> None:
     mock_dist = MagicMock()
     mock_dist.requires = [
         "langchain-anthropic>=1.0.0 ; extra == 'anthropic'",
         "fake-absent-package>=1.0.0 ; extra == 'custom'",
-        "partially-present>=1.0.0 ; extra == 'mixed'",
-        "also-missing>=1.0.0 ; extra == 'mixed'",
+        "aiohttp>=3.14.3 ; extra == 'nvidia'",
+        "langchain-nvidia-ai-endpoints>=1.4.3 ; extra == 'nvidia'",
     ]
 
     def fake_version(name: str) -> str:
         if name == "langchain-anthropic":
             return "1.4.0"
-        if name == "partially-present":
-            return "2.0.0"
+        if name == "aiohttp":
+            return "3.14.3"
         raise PackageNotFoundError(name)
 
     with (
@@ -152,11 +152,34 @@ def test_missing_packages_are_omitted() -> None:
     ):
         extras = get_extras_status()
 
-    # Fully absent extras disappear; partially present extras keep only
-    # the installed packages.
+    assert extras == {"anthropic": [("langchain-anthropic", "1.4.0")]}
+
+
+def test_complete_multi_package_extras_are_kept() -> None:
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "aiohttp>=3.14.3 ; extra == 'nvidia'",
+        "langchain-nvidia-ai-endpoints>=1.4.3 ; extra == 'nvidia'",
+    ]
+
+    def fake_version(name: str) -> str:
+        if name == "aiohttp":
+            return "3.14.3"
+        if name == "langchain-nvidia-ai-endpoints":
+            return "1.4.3"
+        raise PackageNotFoundError(name)
+
+    with (
+        patch("deepagents_code.extras_info.distribution", return_value=mock_dist),
+        patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
+    ):
+        extras = get_extras_status()
+
     assert extras == {
-        "anthropic": [("langchain-anthropic", "1.4.0")],
-        "mixed": [("partially-present", "2.0.0")],
+        "nvidia": [
+            ("aiohttp", "3.14.3"),
+            ("langchain-nvidia-ai-endpoints", "1.4.3"),
+        ],
     }
 
 
@@ -510,7 +533,7 @@ class TestResolveSdkVersion:
             patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.4", "resolved")
+        assert (version, status) == ("1.2.4+editable", "resolved")
 
     def test_resolved_uses_newer_exact_requirement_for_editable_install(
         self, sdk_root: Path
@@ -541,6 +564,43 @@ class TestResolveSdkVersion:
             version_value, status = resolve_sdk_version()
         assert (version_value, status) == ("0.7.0a8+editable", "resolved")
 
+    def test_resolved_marks_editable_sibling_matching_its_pin(
+        self, sdk_root: Path
+    ) -> None:
+        """A workspace SDK level with dcode's pin still reports `+editable`.
+
+        This is the everyday monorepo checkout: nothing about the pin is ahead
+        of the sibling SDK, so no workspace-HEAD inference applies, yet the SDK
+        stamps `lc_versions["deepagents"]` as `0.7.1+editable`. Reporting a bare
+        `0.7.1` here left the two version entries in one trace disagreeing.
+        """
+        cli_path = sdk_root.parent / "code"
+        version_file = sdk_root / "deepagents" / "_version.py"
+        _write_cli_pyproject(cli_path, "deepagents==0.7.1")
+        version_file.write_text('__version__ = "0.7.1"\n', encoding="utf-8")
+        sdk_dist = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+
+        def version(name: str) -> str:
+            return {"deepagents": "0.7.1", "deepagents-code": "0.1.50"}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=version),
+            patch("deepagents_code.extras_info.distributions", return_value=[sdk_dist]),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(True, str(cli_path)),
+            ),
+        ):
+            version_value, status = resolve_sdk_version()
+            report = collect_version_report()
+        assert (version_value, status) == ("0.7.1+editable", "resolved")
+        # The human-facing surfaces render `(editable)` beside the version, so
+        # they keep the unsuffixed string.
+        assert report.display_sdk_version == "0.7.1"
+        assert format_sdk_version_annotation(report) == " (editable)"
+
     def test_resolved_keeps_source_for_unrelated_editable_sdk(
         self, tmp_path: Path, sdk_root: Path
     ) -> None:
@@ -567,7 +627,7 @@ class TestResolveSdkVersion:
             ),
         ):
             version_value, status = resolve_sdk_version()
-        assert (version_value, status) == ("0.6.12", "resolved")
+        assert (version_value, status) == ("0.6.12+editable", "resolved")
 
     def test_resolve_source_path_returns_none_for_unusable_path(self) -> None:
         """Malformed editable paths should not crash version diagnostics."""
@@ -599,7 +659,7 @@ class TestResolveSdkVersion:
             patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     def test_resolved_ignores_egg_info_shadowing_editable_install(
         self, sdk_root: Path
@@ -625,7 +685,7 @@ class TestResolveSdkVersion:
             ),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.4", "resolved")
+        assert (version, status) == ("1.2.4+editable", "resolved")
 
     def test_resolved_ignores_unrelated_editable_checkout(self, tmp_path: Path) -> None:
         """An editable record must not be credited when it does not supply the code.
@@ -751,7 +811,7 @@ class TestResolveSdkVersion:
             patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     @pytest.mark.parametrize("source_version", ["", None, 123])
     def test_resolved_falls_back_to_metadata_when_source_version_unusable(
@@ -768,7 +828,7 @@ class TestResolveSdkVersion:
             patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     def test_resolved_uses_metadata_for_editable_non_file_url(self) -> None:
         """An editable install with a non-`file` source URL prefers metadata."""
@@ -813,7 +873,7 @@ class TestResolveSdkVersion:
             patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     def test_resolved_falls_back_to_metadata_when_version_is_non_literal(
         self, sdk_root: Path
@@ -834,7 +894,7 @@ class TestResolveSdkVersion:
             patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     @pytest.mark.parametrize(
         ("url", "expected"),

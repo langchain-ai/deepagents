@@ -798,6 +798,27 @@ def _display_sdk_version(
     return _with_editable_local_version(version)
 
 
+def _trace_sdk_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> str | None:
+    """Return the SDK version string for LangSmith trace metadata.
+
+    Every editable SDK install gets the `editable` local segment, not just the
+    sibling workspace HEAD case that `_display_sdk_version` marks. A trace
+    carries the version string alone, with no room for the `(editable)`
+    annotation the human-facing surfaces render alongside it, and the SDK stamps
+    `lc_versions["deepagents"]` for any editable install — so suffixing only the
+    workspace HEAD case left the two entries in a single trace disagreeing.
+
+    Returns:
+        The version string, or `None` when it cannot be resolved.
+    """
+    version = _effective_sdk_version(cli, sdk, requirement)
+    if version is None or not sdk.editable:
+        return version
+    return _with_editable_local_version(version)
+
+
 def _sdk_requirement_comparison_version(
     cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
 ) -> str | None:
@@ -951,9 +972,10 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
     """Resolve the diagnostic `deepagents` SDK version.
 
     Compatibility wrapper for callers that only need one SDK version string and
-    lookup status. For sibling monorepo packages whose stable source marker trails
-    dcode's exact SDK pin, the pin identifies the nearest published baseline and
-    an `+editable` local segment identifies the running workspace HEAD.
+    lookup status. Every editable install carries an `+editable` local segment,
+    matching how the SDK stamps `lc_versions["deepagents"]`. For sibling monorepo
+    packages whose stable source marker trails dcode's exact SDK pin, the pin
+    identifies the nearest published baseline the workspace HEAD represents.
 
     Returns:
         `(version, status)`. `version` is the resolved version string when
@@ -964,7 +986,7 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
     if sdk.status != "resolved":
         return None, sdk.status
     requirement = _sdk_requirement_for_cli(cli)
-    return _display_sdk_version(cli, sdk, requirement), "resolved"
+    return _trace_sdk_version(cli, sdk, requirement), "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
@@ -1063,11 +1085,7 @@ def format_known_extras() -> str:
 
 
 ExtrasStatus = dict[str, list[tuple[str, str]]]
-"""Mapping from extra name to `(package, installed_version)` tuples.
-
-Only packages that are actually installed are included. Extras whose
-declared packages are all missing are omitted entirely.
-"""
+"""Mapping from ready extra names to `(package, installed_version)` tuples."""
 
 
 @dataclass(frozen=True)
@@ -1106,13 +1124,13 @@ def _extract_extra_name(marker_str: str) -> str | None:
 def get_extras_status(
     distribution_name: str = "deepagents-code",
 ) -> ExtrasStatus:
-    """Return installed optional dependencies grouped by extra.
+    """Return ready optional dependencies grouped by extra.
 
     Reads `Requires-Dist` metadata from the named distribution, groups the
     entries gated by `extra == "..."` markers under their extra name, and
     resolves each package's installed version via `importlib.metadata`.
-    Packages that are not installed are omitted; extras whose entire
-    package list is absent are dropped.
+    Partially installed extras are omitted so shared transitive dependencies
+    do not make unavailable integrations appear installed.
 
     Composite meta-extras that only bundle other extras (see
     `_COMPOSITE_EXTRAS`) and self-references to the distribution itself
@@ -1122,13 +1140,12 @@ def get_extras_status(
         distribution_name: Name of the installed distribution to inspect.
 
     Returns:
-        Mapping from extra name to a sorted list of `(package, version)`
-            tuples for packages that are currently installed. An empty
-            mapping is returned when the distribution itself is not found.
+        Mapping from ready extra names to sorted `(package, version)` tuples. An
+            empty mapping is returned when the distribution itself is not found.
     """
     result: ExtrasStatus = {}
     for extra in get_optional_dependency_status(distribution_name):
-        if extra.installed:
+        if extra.ready:
             result[extra.name] = list(extra.installed)
     return result
 
@@ -1139,6 +1156,11 @@ def installed_extra_names(
     strict: bool = False,
 ) -> set[str]:
     """Return extras with at least one installed dependency.
+
+    Deliberately looser than `get_extras_status`, which requires every declared
+    package to be present. Callers here rebuild install commands, so a partially
+    installed extra must still be preserved across an upgrade; dropping it would
+    silently uninstall what the user asked for. Do not harmonize the two.
 
     Args:
         distribution_name: Name of the installed distribution to inspect.

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import math
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -13,7 +14,14 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Iterable,
+        Mapping,
+        Sequence,
+    )
     from pathlib import Path
     from typing import Protocol
 
@@ -46,7 +54,35 @@ if TYPE_CHECKING:
 
         def __call__(self, *, approximate: bool = False) -> None: ...
 
+    class _SessionCostCallback(Protocol):
+        """Callback signature for `_on_session_cost`.
 
+        Positional-only: the total is always passed positionally, so a consumer
+        is free to name the parameter for its own domain (a restored checkpoint
+        total, say) rather than matching this one. `thread_id` is keyword-only
+        and may be `""` when the event did not name a thread. `pricing_ok` is
+        `None` when the event did not report pricing health.
+        """
+
+        def __call__(
+            self,
+            total_usd: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+        ) -> None: ...
+
+    class _ProvisionalCostCallback(Protocol):
+        """Callback signature for `_on_provisional_cost`.
+
+        Positional-only for the same reason as `_SessionCostCallback`.
+        """
+
+        def __call__(self, cost_usd: float, /) -> None: ...
+
+
+from deepagents_code import _session_stats
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
     ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
@@ -58,14 +94,6 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
-from deepagents_code._session_stats import (
-    ModelStats as ModelStats,
-    ModelStatsKey as ModelStatsKey,
-    SessionStats as SessionStats,
-    SpinnerStatus as SpinnerStatus,
-    format_token_count as format_token_count,
-    print_usage_table as print_usage_table,
-)
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -79,7 +107,7 @@ from deepagents_code._tool_stream import (
     tool_call_buffer_key,
 )
 from deepagents_code.config import build_stream_config, get_glyphs
-from deepagents_code.file_ops import FileOpTracker
+from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
     dispatch_hook,
     dispatch_hook_fire_and_forget,
@@ -104,6 +132,9 @@ _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+
+_REJECT_REASON_PREFIX = "User rejected the tool call with reason: "
+"""Synthetic framing prepended to a user-typed HITL rejection reason."""
 
 
 def _permission_tool_calls(
@@ -406,9 +437,29 @@ def _reject_tracked_rows(
     """
     rejected = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
     for tool_msg in rejected.values():
-        tool_msg.set_rejected(reason=reason)
-        adapter._sync_tool_widget(tool_msg)
+        # DOM teardown may fail; cleanup must not mask the originating exception.
+        with contextlib.suppress(Exception):
+            tool_msg.set_rejected(reason=reason)
+            adapter._sync_tool_widget(tool_msg)
     return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
+
+
+def _frame_reject_reason(reason: str) -> str:
+    """Frame a user-typed rejection reason for the model.
+
+    Stock HITL uses the supplied message as the *entire* synthetic
+    `ToolMessage`, replacing its canned "user rejected the tool call" wording.
+    A bare reason ("no", "wrong file") therefore reaches the model with no
+    indication of who produced it or why the tool never ran, so the framing is
+    reattached here while the raw text is what the tool row renders.
+
+    Args:
+        reason: Non-empty reason typed into the rejection reason field.
+
+    Returns:
+        The reason prefixed with the synthetic rejection framing.
+    """
+    return f"{_REJECT_REASON_PREFIX}{reason}"
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -609,13 +660,17 @@ class TextualUIAdapter:
 
     def __init__(
         self,
-        mount_message: Callable[..., Awaitable[None]],
+        # Returns whether the widget reached the screen; most callers ignore it,
+        # but the diff path needs it to tell a rendered caveat from one dropped
+        # by a torn-down transcript.
+        mount_message: Callable[..., Awaitable[bool]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool | None]
         | None = None,
         on_switch_to_manual: Callable[[], Awaitable[bool] | bool] | None = None,
-        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
+        set_spinner: Callable[[_session_stats.SpinnerStatus], Awaitable[None]]
+        | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         on_user_visible_output_started: Callable[[], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
@@ -633,6 +688,8 @@ class TextualUIAdapter:
             Callable[[dict[str, Any]], Awaitable[None] | None] | None
         ) = None,
         on_approval_mode_fallback: Callable[[str], None] | None = None,
+        *,
+        show_diff_line_numbers: bool = True,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -692,6 +749,9 @@ class TextualUIAdapter:
         self._on_approval_mode_fallback = on_approval_mode_fallback
         """Callback that synchronizes a fail-closed startup fallback to Manual."""
 
+        self._show_diff_line_numbers = show_diff_line_numbers
+        """Whether file-relative line numbers are shown in diff hunks."""
+
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         """Map of tool call IDs to their message widgets."""
@@ -705,6 +765,27 @@ class TextualUIAdapter:
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
+
+        self._on_session_cost: _SessionCostCallback | None = None
+        """Called with the graph's absolute cumulative thread cost.
+
+        The graph owns the durable total and streams it after each step, so this
+        is the only input the displayed lifetime figure is built from.
+        """
+
+        self._on_provisional_cost: _ProvisionalCostCallback | None = None
+        """Called with a streamed request's estimate for the live display only.
+
+        Keeps the status bar moving during work whose cost the graph has not
+        checkpointed yet — a long subagent run, say — without making the client
+        a second authority: every server total replaces what this accumulated.
+        """
+
+        self._on_usage_update: Callable[[], None] | None = None
+        """Called after streamed request usage changes."""
+
+        self._on_stream_complete: Callable[[], None] | None = None
+        """Called only after the agent stream reaches a clean end."""
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -818,38 +899,38 @@ def _interrupt_owned_tool_rows(
 
     Used by `_interrupt_tool_rows` for a nested (non-main-agent) checkpoint,
     whose pause/resume must touch only the specific tool calls it carries so
-    unrelated outer ``task`` rows keep running. Because a `HITLRequest`'s
+    unrelated outer `task` rows keep running. Because a `HITLRequest`'s
     `ActionRequest` carries no tool-call id, ownership is matched by tool name
-    plus argument value-equality (order-independent ``dict`` comparison). Each
+    plus argument value-equality (order-independent `dict` comparison). Each
     candidate row is claimed at most once, so two identical calls map to two
     distinct rows.
 
     Two caveats follow from matching on args value rather than an id:
 
     - It relies on the human-in-the-loop middleware surfacing the tool call's
-      ``args`` unchanged in the action request (true as of the pinned
-      ``langchain`` middleware). If that ever diverges — normalization, a JSON
-      round-trip, redaction — the match degrades silently to returning fewer
-      rows; ``test_matches_row_by_name_and_args`` guards the current contract.
+        `args` unchanged in the action request (true as of the pinned
+        `langchain` middleware). If that ever diverges — normalization, a JSON
+        round-trip, redaction — the match degrades silently to returning fewer
+        rows; `test_matches_row_by_name_and_args` guards the current contract.
     - A nested action request that happens to share a name and args with a
-      concurrently tracked row (e.g. an identical ``execute`` call at another
-      nesting level) can misattribute that row. This is strictly rarer than
-      pausing every row and self-corrects, since the same helper drives both
-      pause and resume.
+        concurrently tracked row (e.g. an identical `execute` call at another
+        nesting level) can misattribute that row. This is strictly rarer than
+        pausing every row and self-corrects, since the same helper drives both
+        pause and resume.
 
     A nested subagent's own child tool call is not tracked in
-    ``current_tool_messages`` — message-stream tool rows are gated to the main
-    agent (see the ``is_main_agent`` check) — so a purely nested interrupt
+    `current_tool_messages` — message-stream tool rows are gated to the main
+    agent (see the `is_main_agent` check) — so a purely nested interrupt
     normally matches nothing and leaves every outer row untouched, keeping the
-    still-running ``task`` timers monotonic across the checkpoint.
+    still-running `task` timers monotonic across the checkpoint.
 
     Args:
-        action_requests: The interrupt's action requests (``name`` + ``args``).
+        action_requests: The interrupt's action requests (`name` + `args`).
         current_tool_messages: Live map of tool-call id to tracked tool row.
 
     Returns:
-        The subset of tracked rows owned by these action requests, in request
-        order.
+        The subset of tracked rows owned by these action requests, in
+            request order.
     """
     candidates = list(current_tool_messages.values())
     claimed_ids: set[int] = set()
@@ -886,7 +967,7 @@ def _interrupt_tool_rows(
 
     Returns:
         Every tracked row for a main-agent interrupt, otherwise only rows owned
-        by the nested interrupt's action requests.
+            by the nested interrupt's action requests.
     """
     if not namespace:
         return list(current_tool_messages.values())
@@ -933,6 +1014,71 @@ def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  #
     return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
 
 
+def _session_cost_total(data: Any, *, is_main_agent: bool) -> float | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the absolute thread cost carried by a session-cost event.
+
+    Args:
+        data: The `custom` stream payload.
+        is_main_agent: Whether the payload came from the top-level namespace.
+            Only the main agent owns the cost channel, so a nested emit is
+            treated as malformed rather than applied to the displayed total.
+
+    Returns:
+        The finite non-negative total in US dollars, or `None` when the payload
+            is not a well-formed session-cost event from the main agent.
+    """
+    from deepagents_code.cost_tracking import SESSION_COST_EVENT_TYPE
+
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != SESSION_COST_EVENT_TYPE
+    ):
+        return None
+    total = data.get("total")
+    if isinstance(total, bool) or not isinstance(total, int | float):
+        return None
+    total_usd = float(total)
+    if not math.isfinite(total_usd) or total_usd < 0:
+        return None
+    return total_usd
+
+
+def _session_cost_thread_id(data: Any) -> str:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the thread a session-cost event belongs to.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's thread ID, or `""` when the payload omits one. An empty
+            result means the total cannot be attributed, so the client applies
+            it rather than discarding a legitimate update.
+    """
+    if not isinstance(data, dict):
+        return ""
+    thread_id = data.get("thread_id")
+    return thread_id if isinstance(thread_id, str) else ""
+
+
+def _session_cost_pricing_ok(data: Any) -> bool | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return whether the pricing process reported healthy price data.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's `pricing_ok` flag, or `None` when the payload omits it or
+            states a non-boolean. `None` means "unknown", which leaves the
+            client's own view of pricing health untouched rather than
+            overriding it with a guess.
+    """
+    if not isinstance(data, dict):
+        return None
+    pricing_ok = data.get("pricing_ok")
+    return pricing_ok if isinstance(pricing_ok, bool) else None
+
+
 def _require_approval_mode_key(value: str | None) -> str:
     """Return a written Store key for fail-closed startup.
 
@@ -963,6 +1109,48 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
     )
 
 
+async def _finalize_usage_round(
+    stream: AsyncIterator[Any],
+    recorded_requests: dict[str, _session_stats.RecordedRequest],
+) -> AsyncIterator[Any]:
+    """Close streamed usage records when one graph stream pass ends.
+
+    Args:
+        stream: One invocation of the graph's event stream.
+        recorded_requests: Turn ledger shared across resume passes.
+
+    Yields:
+        Each graph event from the wrapped stream.
+    """
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        _session_stats.finalize_recorded_requests(recorded_requests)
+
+
+async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle
+    """Mount a standalone transcript note about a diff that could not be shown.
+
+    A last resort for the cases where no tool row and no diff body survived to
+    carry the message. The transcript is the surface these statements were
+    written for; a log line reaches only a user who already suspects something
+    is wrong and knows to open the Debug Console.
+
+    Guarded because it runs on the turn loop: failing to render a note about a
+    rendering failure must not abort the turn and drop the remaining tools'
+    hooks.
+
+    Args:
+        adapter: The stream adapter holding the mount callback.
+        text: The sentence to display.
+    """
+    try:
+        await adapter._mount_message(AppMessage(text))
+    except Exception:
+        logger.exception("Failed to mount diff note: %s", text)
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -979,8 +1167,8 @@ async def execute_task_textual(
     rubric: str | None = None,
     goal_active: bool = False,
     on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
-    turn_stats: SessionStats | None = None,
-) -> SessionStats:
+    turn_stats: _session_stats.SessionStats | None = None,
+) -> _session_stats.SessionStats:
     """Execute a task with output directed to Textual UI.
 
     This is the Textual-compatible version of execute_task() that uses
@@ -1037,6 +1225,7 @@ async def execute_task_textual(
 
     from deepagents_code.approval_mode import ApprovalMode, awrite_approval_mode
     from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
@@ -1107,8 +1296,9 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
+    recorded_usage_requests: dict[str, _session_stats.RecordedRequest] = {}
     if turn_stats is None:
-        turn_stats = SessionStats()
+        turn_stats = _session_stats.SessionStats()
     start_time = time.monotonic()
 
     # Warn if token display callbacks are only partially wired — all three
@@ -1348,13 +1538,17 @@ async def execute_task_textual(
             if adapter._set_spinner and not adapter._current_tool_messages:
                 await adapter._set_spinner("Thinking")
 
-            async for chunk in agent.astream(
+            stream = agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
                 config=config,
                 context=context,
                 durability="exit",
+            )
+            async for chunk in _finalize_usage_round(
+                stream,
+                recorded_usage_requests,
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
                     logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
@@ -1376,6 +1570,27 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
+                    # The graph owns the cumulative thread cost and streams the
+                    # new absolute total after each step it charges, because the
+                    # channel is schema-private and never reaches the state
+                    # stream. Applying it outright keeps the client a reader.
+                    session_cost_total = _session_cost_total(
+                        data, is_main_agent=is_main_agent
+                    )
+                    if session_cost_total is not None:
+                        if adapter._on_session_cost is not None:
+                            try:
+                                adapter._on_session_cost(
+                                    session_cost_total,
+                                    thread_id=_session_cost_thread_id(data),
+                                    pricing_ok=_session_cost_pricing_ok(data),
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "on_session_cost callback failed", exc_info=True
+                                )
+                        continue
+
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None
@@ -1597,16 +1812,56 @@ async def execute_task_textual(
                             metadata if isinstance(metadata, dict) else None,
                             main_agent=is_main_agent,
                         )
-                    # Skip subagent outputs - only render main agent content in chat
-                    if not is_main_agent:
-                        logger.debug("Skipping subagent message ns=%s", ns_key)
-                        continue
                     logger.debug(
                         "Processing message: type=%s id=%s has_content_blocks=%s",
                         type(message).__name__,
                         getattr(message, "id", None),
                         hasattr(message, "content_blocks"),
                     )
+
+                    # Account cost/tokens before render filters. Subagent
+                    # namespaces and summarization/auto-classifier calls still
+                    # spend money even though their text stays out of the chat.
+                    recorded_usage = None
+                    if getattr(message, "usage_metadata", None):
+                        from deepagents_code.config import settings
+
+                        recorded_usage = _session_stats.record_message_usage(
+                            turn_stats,
+                            message,
+                            fallback_model=settings.model_name or "",
+                            fallback_provider=settings.model_provider or "",
+                            request_metadata=(
+                                metadata if isinstance(metadata, dict) else None
+                            ),
+                            kind=_session_stats.classify_usage_kind(
+                                is_main_agent=is_main_agent,
+                                metadata=(
+                                    metadata if isinstance(metadata, dict) else None
+                                ),
+                            ),
+                            recorded_requests=recorded_usage_requests,
+                        )
+                    if recorded_usage is not None and adapter._on_usage_update:
+                        adapter._on_usage_update()
+                    if recorded_usage is not None and (
+                        recorded_usage.cost_usd is not None
+                        and adapter._on_provisional_cost
+                    ):
+                        # Display-only: the graph checkpoints the same spend
+                        # and streams the authoritative total, which
+                        # supersedes this estimate.
+                        try:
+                            adapter._on_provisional_cost(recorded_usage.cost_usd)
+                        except Exception:
+                            logger.warning(
+                                "on_provisional_cost callback failed", exc_info=True
+                            )
+
+                    # Skip subagent outputs - only render main agent content in chat
+                    if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
+                        continue
 
                     # Filter out summarization model output, but keep UI feedback.
                     # The summarization model streams AIMessage chunks tagged
@@ -1620,44 +1875,19 @@ async def execute_task_textual(
                                 await adapter._set_spinner("Offloading")
                         continue
 
-                    # Extract token usage before filtering hidden model output.
-                    # Usage may be attached to any message chunk, including the
-                    # internal Auto mode classifier response.
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            from deepagents_code.config import settings
-
-                            active_model = settings.model_name or ""
-                            active_provider = settings.model_provider or ""
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model,
-                                    input_toks,
-                                    output_toks,
-                                    active_provider,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
-
                     # The Auto mode authorization classifier is a nested model
                     # call. Its structured JSON is internal policy machinery,
                     # not assistant output for the conversation transcript.
                     if _is_auto_mode_classifier_chunk(metadata):
                         continue
+
+                    # Only a visible top-level model call represents the active
+                    # conversation context. Hidden usage was still recorded above.
+                    if recorded_usage is not None:
+                        captured_input_tokens = max(
+                            captured_input_tokens,
+                            recorded_usage.request_tokens,
+                        )
 
                     # Regular (non-summarization) chunks resumed — summarization
                     # has finished. Mount the notification and reset the spinner.
@@ -1738,6 +1968,12 @@ async def execute_task_textual(
                             completed_compaction_ids.add(compaction_id)
                             await _after_automatic_compact()
                         record = file_op_tracker.complete_with_message(message)
+                        # Computed once, ahead of the four branches below, so a
+                        # caveat cannot depend on which of them this result takes
+                        # — the diff mounts outside all four, so a torn-down row
+                        # used to yield a `DiffMessage` and no explanation.
+                        caveat = record_display_caveat(record)
+                        caveat_shown = False
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
@@ -1757,6 +1993,7 @@ async def execute_task_textual(
                             hook_output = ASK_USER_FAILED_SUMMARY
                         else:
                             hook_output = deferred_hook.tool_output
+                        tool_msg: ToolCallMessage | None = None
                         if tool_id and tool_id in adapter._current_tool_messages:
                             # Pop before the widget calls so the dict drains even
                             # if set_success/set_error raises.
@@ -1785,7 +2022,13 @@ async def execute_task_textual(
                             # the remaining tools' hooks.
                             try:
                                 if tool_status == "success":
-                                    tool_msg.set_success(output_str)
+                                    # One call so the caveat text and the flag
+                                    # that keeps this row out of a group summary
+                                    # cannot be set apart — see
+                                    # `set_success_with_caveat`.
+                                    caveat_shown = tool_msg.set_success_with_caveat(
+                                        caveat, output_str
+                                    )
                                 else:
                                     tool_msg.set_error(output_str or "Error")
                                 adapter._sync_tool_widget(tool_msg)
@@ -1861,7 +2104,8 @@ async def execute_task_textual(
                                 tool_name, tool_id, {}, tool_status, output_str
                             )
 
-                        # Show file operation results - always show diffs in chat
+                        # Show file operation results - always show diffs in
+                        # chat.
                         if record:
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
@@ -1872,14 +2116,108 @@ async def execute_task_textual(
                                     assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
+                            # Hiding the row makes the diff the sole record of
+                            # the edit, so only a diff that can stand in for it
+                            # earns that — `shown` is the only outcome that
+                            # qualifies, for the reasons in `DiffOutcome`. An
+                            # empty body never qualifies either: with nothing to
+                            # show, nothing needs hiding, and a widget asserting
+                            # "no changes" would leave any inaccuracy in the
+                            # read-back as the only surviving account.
+                            replaces_row = (
+                                ToolCallMessage.can_be_superseded(record.tool_name)
+                                and record.status == "success"
+                                and record.diff_outcome == "shown"
+                                and bool(record.diff)
+                            )
                             if record.diff:
-                                await adapter._mount_message(
-                                    DiffMessage(
+                                # Guarded for the same reason as the row update
+                                # above: mounting and highlighting a diff is
+                                # cosmetic, and a failure here must not abort the
+                                # turn and drop the remaining tools' hooks.
+                                try:
+                                    diff_msg = DiffMessage(
                                         record.diff,
                                         record.display_path,
                                         tool_name=record.tool_name,
+                                        before=record.before_content or "",
+                                        after=record.after_content or "",
+                                        stats=record.diff_stats,
+                                        outcome=record.diff_outcome,
+                                        # Skip the caveat only when the row
+                                        # already displays the identical
+                                        # sentence and cannot be folded away.
+                                        # For `edit_file` both are guaranteed
+                                        # on screen — it is excluded from
+                                        # grouping, and a non-`shown` outcome
+                                        # blocks supersession — so without this
+                                        # the same sentence renders twice,
+                                        # adjacent.
+                                        show_caveat=not caveat_shown,
+                                        show_numbers=adapter._show_diff_line_numbers,
                                     )
+                                    mounted = await adapter._mount_message(diff_msg)
+                                    # Read from the widget rather than assuming
+                                    # a non-`shown` outcome put the caveat on
+                                    # screen: it also suppresses its own caveat
+                                    # when told the row has it. Conjoined with
+                                    # the mount result because `renders_caveat`
+                                    # describes how the widget was built, not
+                                    # where it ended up — a transcript torn down
+                                    # mid-stream makes the mount a silent no-op,
+                                    # and crediting it here would skip the
+                                    # fallback below and leave the caveat on no
+                                    # surface at all.
+                                    caveat_shown = caveat_shown or (
+                                        mounted and diff_msg.renders_caveat
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to mount diff for %s",
+                                        record.display_path,
+                                    )
+                                    # The diff was expected and never appeared.
+                                    # Say so on screen — a silently absent diff
+                                    # reads as "nothing changed", and under
+                                    # `shown` there is no caveat to fall back
+                                    # on.
+                                    await _mount_diff_note(
+                                        adapter,
+                                        f"The diff for {record.display_path} "
+                                        "could not be rendered.",
+                                    )
+                                else:
+                                    # Hiding the row is a separate step with its
+                                    # own failure: the diff is already on screen,
+                                    # so reporting "could not be rendered" here
+                                    # would contradict what the user can see.
+                                    # Only the row stayed visible, which is the
+                                    # safe direction and needs no transcript
+                                    # note.
+                                    if tool_msg is not None and replaces_row:
+                                        try:
+                                            tool_msg.mark_superseded_by_diff()
+                                            adapter._sync_tool_widget(tool_msg)
+                                        except Exception:
+                                            logger.exception(
+                                                "Failed to hide superseded row for %s",
+                                                record.display_path,
+                                            )
+                            if caveat and not caveat_shown:
+                                # No row took the caveat (its widget was torn
+                                # down) and no diff mounted to carry it — a
+                                # `delete` with a lost pre-image is the live
+                                # case. Put it in the transcript, which is the
+                                # surface the caveat was written for; a log line
+                                # alone leaves a destructive change looking
+                                # routine to anyone not watching the Debug
+                                # Console.
+                                logger.warning(
+                                    "No surface carried the display caveat for %s: %s",
+                                    record.display_path,
+                                    caveat,
                                 )
+                                await _mount_diff_note(adapter, caveat)
 
                         # Reshow spinner only when all in-flight tools have
                         # completed (avoids premature "Thinking..." when
@@ -2118,6 +2456,7 @@ async def execute_task_textual(
             if interrupt_occurred:
                 any_rejected = False
                 ask_user_cancelled = False
+                dismissed_question_count = 0
                 resume_payload: dict[str, Any] = dict(pending_hook_resumes)
 
                 # Tools mounted above start their spinner immediately, but a
@@ -2290,6 +2629,12 @@ async def execute_task_textual(
                             # Halt the turn on cancel; error branches still
                             # resume so the agent can react to the failure.
                             ask_user_cancelled = True
+                            # Counts questions, not calls, purely so the banner
+                            # below can pick a singular or plural subject — the
+                            # halt reads the flag above, never this. A widget
+                            # dismisses its whole prompt, so every question in a
+                            # cancelled call went with it.
+                            dismissed_question_count += len(questions)
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
                             output = ASK_USER_CANCELLED_SUMMARY
                             _dispatch_tool_error_hook("ask_user")
@@ -2633,7 +2978,8 @@ async def execute_task_textual(
                                 )
                                 reject_decision: RejectDecision = (
                                     RejectDecision(
-                                        type="reject", message=reject_message
+                                        type="reject",
+                                        message=_frame_reject_reason(reject_message),
                                     )
                                     if reject_message
                                     else RejectDecision(type="reject")
@@ -2752,18 +3098,31 @@ async def execute_task_textual(
                                 tool_id,
                             )
 
+                    dismissed_subject = (
+                        "Questions" if dismissed_question_count > 1 else "Question"
+                    )
                     message = (
-                        "Question cancelled. Tell the agent what you'd like instead."
+                        f"{dismissed_subject} dismissed. Tell the agent what you'd "
+                        "like instead."
                         if ask_user_cancelled
                         else "Command rejected. Tell the agent what you'd like instead."
                     )
                     if undelivered:
                         # The user typed answers and they are now gone; saying so
                         # is the only way they learn not to wait for a response.
+                        # Which event destroyed them differs: a dismissal in this
+                        # batch, or — when `pending_ask_user` is empty because it
+                        # resets each stream iteration — a rejection in a later
+                        # iteration discarding an earlier one's answered row.
+                        cause = (
+                            f"{dismissed_subject} dismissed"
+                            if ask_user_cancelled
+                            else "Command rejected"
+                        )
                         message = (
-                            "Question cancelled, so answers to the other "
-                            "question(s) in this batch were not sent. Tell the "
-                            "agent what you'd like instead."
+                            f"{cause}, so answers to the other question(s) in this "
+                            "batch were not sent. Tell the agent what you'd like "
+                            "instead."
                         )
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
@@ -2851,14 +3210,22 @@ async def execute_task_textual(
                     DcodeNotificationKind,
                 )
 
-                await hooks.notify(
-                    DcodeNotificationKind.AGENT_COMPLETED,
-                    "Agent completed",
-                )
+                try:
+                    await hooks.notify(
+                        DcodeNotificationKind.AGENT_COMPLETED,
+                        "Agent completed",
+                    )
+                except ClientHookStopError as exc:
+                    await adapter._mount_message(
+                        AppMessage(f"Operation stopped by hook: {exc}")
+                    )
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
+    except ClientHookStopError:
+        _reject_tracked_rows(adapter)
+        raise
     except (asyncio.CancelledError, KeyboardInterrupt):
         await _handle_interrupt_cleanup(
             adapter=adapter,
@@ -2955,6 +3322,11 @@ async def execute_task_textual(
         captured_input_tokens,
         captured_output_tokens,
     )
+    if adapter._on_stream_complete:
+        try:
+            adapter._on_stream_complete()
+        except Exception:
+            logger.warning("on_stream_complete callback failed", exc_info=True)
     return turn_stats
 
 
@@ -2988,7 +3360,7 @@ async def _handle_interrupt_cleanup(
     assistant_message_by_namespace: dict[tuple, Any] | None = None,
     captured_input_tokens: int,
     captured_output_tokens: int,
-    turn_stats: SessionStats,
+    turn_stats: _session_stats.SessionStats,
     start_time: float,
     recover_interrupted_turn: bool = True,
 ) -> None:

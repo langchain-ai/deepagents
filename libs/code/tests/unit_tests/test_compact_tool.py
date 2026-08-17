@@ -7,13 +7,16 @@ Core compact tool logic tests live in the SDK at
 from __future__ import annotations
 
 import warnings
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.offload_middleware import (
@@ -136,6 +139,95 @@ class TestCLICompactionMiddleware:
         summarization._compute_state_cutoff.return_value = 2
         return summarization
 
+    @pytest.mark.parametrize("is_async", [False, True])
+    @pytest.mark.parametrize("overflow", [False, True])
+    async def test_auto_compaction_runs_precompact_hook(
+        self, overflow: bool, is_async: bool
+    ) -> None:
+        """Every automatic compaction must ask `PreCompact` before summarizing.
+
+        `wrap_model_call` and `awrap_model_call` are separately written parallel
+        implementations, so both are driven here to keep the two from drifting.
+        """
+        from deepagents.middleware.summarization import SummarizationMiddleware
+
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            PreCompactDecision,
+        )
+
+        messages: list[AnyMessage] = [HumanMessage("one"), HumanMessage("two")]
+        summarization = self._summarization()
+        summarization._get_effective_messages.return_value = messages
+        summarization._count_tokens.return_value = 2
+        summarization._truncate_args.return_value = (messages, False)
+        summarization._should_summarize.return_value = not overflow
+        summarization._determine_cutoff_index.return_value = 1
+        wrapper_name = "awrap_model_call" if is_async else "wrap_model_call"
+        if overflow:
+            setattr(
+                summarization,
+                wrapper_name,
+                MethodType(
+                    getattr(SummarizationMiddleware, wrapper_name), summarization
+                ),
+            )
+
+        middleware = CLICompactionMiddleware(summarization)
+        request: ModelRequest[None] = ModelRequest(
+            model=MagicMock(),
+            messages=messages,
+            state={"messages": messages},
+            runtime=Runtime(context=None),
+        )
+        error = ContextOverflowError("too large") if overflow else None
+        handler = (
+            AsyncMock(side_effect=error) if is_async else MagicMock(side_effect=error)
+        )
+        invoke = MagicMock(
+            return_value=PreCompactDecision(
+                event=HookEvent.PRE_COMPACT,
+                continue_processing=False,
+                stop_reason="preserve context",
+            )
+        )
+
+        with (
+            patch(
+                "deepagents_code.offload_middleware._event_enabled", return_value=True
+            ),
+            patch("deepagents_code.offload_middleware._invoke_hook", invoke),
+        ):
+
+            async def run_middleware() -> None:
+                if is_async:
+                    await middleware.awrap_model_call(request, handler)
+                else:
+                    middleware.wrap_model_call(request, handler)
+
+            if overflow:
+                with pytest.raises(ContextOverflowError, match="too large"):
+                    await run_middleware()
+            else:
+                await run_middleware()
+
+        event = invoke.call_args.args[1]
+        assert event.trigger.value == "auto"
+        logical_id = invoke.call_args.kwargs["logical_event_id"]
+        assert logical_id == middleware._auto_compaction_id(request)
+        assert logical_id != middleware._auto_compaction_id(
+            request.override(messages=[*messages, HumanMessage("three")])
+        )
+        invoke.assert_called_once()
+        if is_async:
+            handler.assert_awaited_once()
+            summarization._aoffload_to_backend.assert_not_awaited()
+            summarization._acreate_summary.assert_not_awaited()
+        else:
+            handler.assert_called_once()
+            summarization._offload_to_backend.assert_not_called()
+            summarization._create_summary.assert_not_called()
+
     async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
         """Forced compaction partitions directly even below the proactive gate."""
         summarization = self._summarization()
@@ -182,10 +274,8 @@ class TestCLICompactionMiddleware:
             extra_kwargs={"temperature": 0},
             profile_overrides=None,
         )
-        create_summarization.assert_called_once()
-        assert create_summarization.call_args.args[0] is active_model
-        guarded_backend = create_summarization.call_args.args[1]
-        assert guarded_backend._backend is startup._backend
+        create_summarization.assert_called_once_with(active_model, startup._backend)
+        assert actual._backend._backend is startup._backend
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
@@ -220,10 +310,7 @@ class TestCLICompactionMiddleware:
             profile_overrides={"max_input_tokens": 32_000},
         )
         assert active_model.profile["max_input_tokens"] == 24_000
-        create_summarization.assert_called_once()
-        assert create_summarization.call_args.args[0] is active_model
-        guarded_backend = create_summarization.call_args.args[1]
-        assert guarded_backend._backend is startup._backend
+        create_summarization.assert_called_once_with(active_model, startup._backend)
 
     async def test_force_noops_when_nothing_old_enough(self) -> None:
         """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""
@@ -475,10 +562,10 @@ class TestCLICompactionMiddleware:
         summarization._filter_summary_messages.side_effect = lambda messages: messages
 
         async def sdk_offload(
-            guarded: BackendProtocol, messages: list[AnyMessage]
+            guarded: BackendProtocol, messages: list[AnyMessage], session_id: str
         ) -> str | None:
             return await SummarizationMiddleware._aoffload_to_backend(
-                summarization, guarded, messages
+                summarization, guarded, messages, session_id
             )
 
         summarization._aoffload_to_backend = AsyncMock(side_effect=sdk_offload)
@@ -547,6 +634,7 @@ class TestCLICompactionMiddleware:
 
         sdk = MagicMock()
         sdk._summarization = MagicMock()
+        sdk._summarization.name = "SummarizationMiddleware"
         sdk.system_prompt = "SYSTEM PROMPT"
         backend: Any = object()
         with patch.object(
@@ -556,6 +644,7 @@ class TestCLICompactionMiddleware:
 
         factory.assert_called_once()
         assert isinstance(result, om.CLICompactionMiddleware)
+        assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
         assert result._summarization is sdk._summarization
 

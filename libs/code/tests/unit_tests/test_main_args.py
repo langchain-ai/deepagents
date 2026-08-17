@@ -317,6 +317,101 @@ class TestAutoApproveHeadlessValidation:
         assert exc_info.value.code == 2
         assert "--yolo is only supported in interactive mode" in capsys.readouterr().err
 
+    def test_rejects_auto_classifier_model_with_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Auto is disabled under a sandbox, so its classifier flag is a no-op.
+
+        `create_cli_agent` turns Auto off for a sandboxed run, so accepting the
+        flag would silently ignore a setting that governs action authorization —
+        the same reason the headless form is rejected.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "--sandbox",
+                    "daytona",
+                    "--auto-classifier-model",
+                    "anthropic:claude-haiku-4-5",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        assert "--auto-classifier-model is only supported" in capsys.readouterr().err
+
+    def test_rejects_auto_classifier_model_when_headless(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A headless run has no Auto mode, so its classifier flag is a no-op.
+
+        The mirror of the sandbox case, and the likelier user mistake. Without
+        the `args.non_interactive_message` conjunct in the guard, `dcode -n ...
+        --auto-classifier-model X` silently accepts a setting that governs action
+        authorization and then discards it.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "do something",
+                    "--auto-classifier-model",
+                    "anthropic:claude-haiku-4-5",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--auto-classifier-model is only supported" in err
+        assert "it runs headlessly" in err
+
+    def test_blank_auto_classifier_model_stays_distinct_from_absent(self) -> None:
+        """An explicit blank flag means "inherit" and must not collapse to `None`.
+
+        `parse_args` collapsing `--auto-classifier-model ""` to `None` would make
+        it indistinguishable from an absent flag, so the env var / `config.toml`
+        classifier it was meant to override would silently stay in charge. Blank
+        normalizes to `""`; absence stays `None`.
+        """
+        from deepagents_code.main import parse_args
+
+        for value in ("", "   "):
+            with patch.object(
+                sys, "argv", ["deepagents", "--auto-classifier-model", value]
+            ):
+                assert parse_args().auto_classifier_model == ""
+
+        with patch.object(sys, "argv", ["deepagents"]):
+            assert parse_args().auto_classifier_model is None
+
+        with patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--auto-classifier-model", " anthropic:claude-haiku-4-5 "],
+        ):
+            assert parse_args().auto_classifier_model == "anthropic:claude-haiku-4-5"
+
     def test_accepts_auto_approve_in_interactive_mode(self) -> None:
         """`--auto-approve` must still be honored on an interactive launch.
 
@@ -1829,6 +1924,9 @@ class TestUpdateSubcommand:
         prerelease_before_command: bool = False,
         install_method: str = "uv",
         release_requires_prereleases: bool = False,
+        # Runs in place of the stubbed `perform_upgrade`, for assertions about
+        # state that only holds mid-install.
+        upgrade_side_effect: Callable[..., object] | None = None,
     ) -> tuple[int, MagicMock, MagicMock]:
         """Invoke `cli_main()` with `update`; return exit code + mocks."""
         from deepagents_code._env_vars import DEBUG_UPDATE
@@ -1872,7 +1970,8 @@ class TestUpdateSubcommand:
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", None),
+                side_effect=upgrade_side_effect,
             ) as perform_upgrade_mock,
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -1946,6 +2045,52 @@ class TestUpdateSubcommand:
             log_path="/tmp/deepagents-update.log",
             include_prereleases=None,
             target_version="99.0.0",
+        )
+
+    def test_update_skips_install_while_another_process_holds_lock(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Headless updates must not race another process's install."""
+        from deepagents_code.update_check import update_install_lock
+
+        with update_install_lock() as holding:
+            assert holding is True
+            code, _, perform_upgrade_mock = self._run_update(
+                editable=False,
+                is_update_available_return=(True, "99.0.0"),
+            )
+
+        assert code == 1
+        perform_upgrade_mock.assert_not_awaited()
+        assert "Another dcode session is currently updating" in capsys.readouterr().out
+
+    def test_update_runs_install_while_holding_the_lock(self) -> None:
+        """The install must run inside the lock, not merely after a check.
+
+        Shrinking the `with` block to cover only the boolean check would leave
+        the install unguarded while the deferral test above still passed. The
+        lock is not reentrant, so re-entering from inside `perform_upgrade`
+        proves it is held for the real work.
+        """
+        from deepagents_code.update_check import update_install_lock
+
+        held_during_install: list[bool] = []
+
+        def _record_lock_state(**_kwargs: object) -> tuple[bool, str, None]:
+            with update_install_lock() as holding:
+                held_during_install.append(holding)
+            return True, "", None
+
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            upgrade_side_effect=_record_lock_state,
+        )
+
+        assert code == 0
+        perform_upgrade_mock.assert_awaited_once()
+        assert held_during_install == [False], (
+            "the install ran without holding the update lock"
         )
 
     def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(

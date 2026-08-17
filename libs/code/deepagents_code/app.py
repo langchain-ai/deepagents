@@ -4200,6 +4200,25 @@ class DeepAgentsApp(App):
         every invocation.
         """
 
+        self._reload_task: asyncio.Task[None] | None = None
+        """The in-flight detached `/reload` task, if any (see `_schedule_reload`).
+
+        Tests and shutdown await it; production callers fire-and-forget via the
+        `_log_task_exception` done callback.
+        """
+
+        self._reloading = False
+        """Whether `/reload` is refreshing mutable runtime state.
+
+        Keeps submitted prompts queued for the entire reload, including its
+        pre-restart discovery phases. A server restart only protects the final
+        phase, and allowing a prompt to start before it would let that restart
+        cancel the prompt's worker.
+        """
+
+        self._restart_requested_during_reload = False
+        """Whether an explicit `/restart` still needs a reload-owned respawn."""
+
         self._plugin_fingerprints: dict[str, _PluginFingerprint] | None = None
         """Rolling plugin-fingerprint baseline keyed by plugin id.
 
@@ -10547,6 +10566,13 @@ class DeepAgentsApp(App):
             await self._process_message(value, mode)
             return
 
+        # A second `/reload` must reach `_schedule_reload` immediately so it
+        # can coalesce with the in-flight reload instead of waiting in the
+        # normal queue and starting another destructive refresh afterward.
+        if mode == "command" and normalized == "/reload" and self._reloading:
+            await self._process_message(value, mode)
+            return
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -10567,6 +10593,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or self._shell_running
             or self._modal_command_running()
+            or self._reloading
             or self._connecting
             or self._startup_sequence_running
             or self._server_startup_error is not None
@@ -14456,210 +14483,7 @@ class DeepAgentsApp(App):
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
-
-            # Snapshot pre-reload skill names so the report can show diff.
-            old_skill_names = {s["name"] for s in self._discovered_skills}
-
-            try:
-                changes = settings.reload_from_environment()
-
-                from deepagents_code.model_config import clear_caches
-
-                clear_caches()
-                self._sync_status_model()
-            except (OSError, ValueError):
-                logger.exception("Failed to reload configuration")
-                await self._mount_message(
-                    AppMessage(
-                        "Failed to reload configuration. Check your .env "
-                        "file and environment variables for syntax errors, "
-                        "then try again.",
-                    ),
-                )
-                return
-
-            # Reload user themes from config.toml and re-register with Textual
-            theme_reload_ok = True
-            try:
-                theme.reload_registry()
-                self._register_custom_themes()
-            except Exception:
-                theme_reload_ok = False
-                logger.warning("Failed to reload user themes", exc_info=True)
-
-            # Re-resolve and apply the theme preference so a per-terminal or
-            # global default saved by another session is picked up. This
-            # re-syncs to on-disk config using the same resolution as startup
-            # (env -> [ui.terminal_themes][TERM_PROGRAM] -> [ui].theme ->
-            # default), which intentionally overrides an unsaved in-session
-            # `/theme` choice. Guarded on the registry reload succeeding since
-            # the target theme must be registered before it can be applied.
-            theme_switched_to: str | None = None
-            if theme_reload_ok:
-                try:
-                    new_theme = _load_theme_preference()
-                    if new_theme != self.theme and new_theme in theme.get_registry():
-                        self.theme = new_theme
-                        self.sync_terminal_background()
-                        self.refresh_css(animate=False)
-                        theme_switched_to = new_theme
-                except Exception:
-                    logger.warning(
-                        "Failed to re-apply theme preference on reload",
-                        exc_info=True,
-                    )
-
-            # Re-discover skills so autocomplete reflects any new/removed
-            # skills. Run via the same exclusive-group worker used at
-            # startup so any in-flight startup discovery is cancelled
-            # rather than racing this one, then await its completion so
-            # the report can include the diff.
-            skill_worker = self.run_worker(
-                self._discover_skills(),
-                exclusive=True,
-                group="startup-skill-discovery",
-            )
-            await skill_worker.wait()
-            discovery_ok = skill_worker.result is True
-            new_skill_names = {s["name"] for s in self._discovered_skills}
-            added_skills = sorted(new_skill_names - old_skill_names)
-            removed_skills = sorted(old_skill_names - new_skill_names)
-
-            if changes:
-                report = "Configuration reloaded. Changes:\n" + "\n".join(
-                    f"  - {change}" for change in changes
-                )
-            else:
-                report = "Configuration reloaded. No changes detected."
-            report += "\nModel config caches cleared."
-            if theme_reload_ok:
-                report += "\nTheme registry reloaded."
-                if theme_switched_to is not None:
-                    entry = theme.get_registry().get(theme_switched_to)
-                    label = entry.label if entry is not None else theme_switched_to
-                    report += f"\nSwitched theme to {label}."
-            else:
-                report += (
-                    "\nTheme registry reload failed. Check config.toml for errors."
-                )
-            if not discovery_ok:
-                # Diff is meaningless when discovery failed: prior cache
-                # was preserved, so old vs. new is identical and
-                # `Skills reloaded. No changes detected.` would be a lie.
-                report += (
-                    "\nSkill re-discovery failed; existing /skill: list left as-is."
-                )
-            elif added_skills or removed_skills:
-                skill_lines = []
-                if added_skills:
-                    skill_lines.append(f"  - Added: {', '.join(added_skills)}")
-                if removed_skills:
-                    skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
-                report += "\nSkills updated:\n" + "\n".join(skill_lines)
-
-            # Rediscover plugins and restart the owned server so plugin MCP config
-            # is picked up without a separate slash command.
-            from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
-            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
-
-            try:
-                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
-                    self._discover_plugins_with_fingerprints
-                )
-            except Exception:
-                # User and project hooks still reload when plugin discovery fails.
-                await self._reload_hooks(plugins=())
-                logger.exception("Failed to discover plugins during /reload")
-                report += "\nCouldn't read plugin state; run /reload to be safe."
-            else:
-                # Server-owned events are fixed when the server starts, so refresh
-                # hooks from this same plugin snapshot before any restart.
-                plugins = plugin_result.plugins
-                await self._reload_hooks(plugins=plugins)
-                old_plugin_fingerprints = self._plugin_fingerprints
-                self._plugin_fingerprints = new_plugin_fingerprints
-                discovered_plugin_ids = frozenset(
-                    plugin.plugin_id for plugin in plugins
-                )
-                plugin_count = len(plugins)
-                mcp_configs = plugin_mcp_configs(plugins)
-                mcp_count = sum(
-                    len(servers)
-                    for config in mcp_configs
-                    if isinstance((servers := config.get("mcpServers")), dict)
-                )
-                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
-                hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
-                report += (
-                    f"\nPlugins: {plugin_count} plugin"
-                    f"{'s' if plugin_count != 1 else ''} · "
-                    f"{plugin_skill_count} skill"
-                    f"{'s' if plugin_skill_count != 1 else ''} · "
-                    f"{mcp_count} plugin MCP server"
-                    f"{'s' if mcp_count != 1 else ''} · "
-                    f"{hook_count} hook{'s' if hook_count != 1 else ''}"
-                )
-                if old_plugin_fingerprints is not None:
-                    old_ids = set(old_plugin_fingerprints)
-                    new_ids = set(new_plugin_fingerprints)
-                    added_count = len(new_ids - old_ids)
-                    removed_count = len(old_ids - new_ids)
-                    changed_count = sum(
-                        self._plugin_fingerprint_changed(
-                            old_plugin_fingerprints[plugin_id],
-                            new_plugin_fingerprints[plugin_id],
-                        )
-                        for plugin_id in old_ids & new_ids
-                    )
-                    change_parts = []
-                    for count, label in (
-                        (added_count, "added"),
-                        (removed_count, "removed"),
-                        (changed_count, "changed"),
-                    ):
-                        if count:
-                            noun = "plugin" if count == 1 else "plugins"
-                            change_parts.append(f"{count} {noun} {label}")
-                    if change_parts:
-                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
-                    else:
-                        report += "\nPlugin changes: no changes detected."
-                    # Reads each added plugin's MCP config from disk; keep it
-                    # off the UI thread like the discovery scan above.
-                    login_labels = await asyncio.to_thread(
-                        self._plugin_login_labels,
-                        plugins,
-                        new_ids - old_ids,
-                    )
-                    for label in login_labels:
-                        report += f"\nSign in to {label} via `/mcp`."
-                if plugin_result.warnings:
-                    report += (
-                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
-                        "during load."
-                    )
-
-                restarted = False
-                if self._server_proc is not None and self._server_kwargs is not None:
-                    if self._agent_running and self._agent_worker:
-                        self._cancel_worker(self._agent_worker)
-                        # Via `_set_agent_running` so the quiescence event is
-                        # released with the flag; a bare assignment leaves
-                        # `_agent_quiescent` cleared.
-                        self._set_agent_running(False)
-                    else:
-                        self._discard_queue()
-                    restarted = await self._restart_server_manual()
-                    if restarted:
-                        self._session_plugin_ids = discovered_plugin_ids
-                        report += "\nAgent server restarted for plugin MCP."
-                    else:
-                        report += (
-                            "\nAgent server was not restarted; plugin MCP may be stale."
-                        )
-
-            await self._mount_message(AppMessage(report))
-            await self._maybe_start_deferred_server_from_default()
+            self._schedule_reload()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
@@ -14968,6 +14792,313 @@ class DeepAgentsApp(App):
                 "and is saved as UTF-8.",
             )
         return content
+
+    def _schedule_reload(self) -> asyncio.Task[None]:
+        """Run `/reload` off the Textual message pump.
+
+        The reload body awaits workers and `asyncio.to_thread` calls (config,
+        theme, skill, plugin, and hook refreshes, plus a possible server
+        restart), so awaiting it inline in `_handle_command` blocks key events
+        from reaching the chat input for its whole duration. Detaching lets
+        the pump keep routing keys while `_reloading` queues submissions for
+        the entire refresh, before and during any server restart.
+
+        `_schedule_off_message_pump` is deliberately not used: its single
+        global slot is for modal-opening continuations, `/reload` opens no
+        modal, and the "answer the pending prompt first" rejection that slot
+        can produce would be a lie here.
+
+        Returns:
+            The reload task, so tests can await completion.
+        """
+        reload_task = self._reload_task
+        if self._reloading and reload_task is not None and not reload_task.done():
+            self.notify("Reload already in progress.", severity="information")
+            return reload_task
+
+        # Set the guard before scheduling: `create_task` does not run the
+        # coroutine inline, so otherwise a prompt or second reload can enter
+        # in the gap before `_run_reload` starts.
+        self._reloading = True
+        task = asyncio.create_task(self._run_reload_sequence(), name="reload")
+        task.add_done_callback(_log_task_exception)
+        task.add_done_callback(self._finish_reload)
+        self._reload_task = task
+        return task
+
+    def _finish_reload(self, task: asyncio.Task[None]) -> None:
+        """Release the reload guard and resume prompts queued during reload.
+
+        Args:
+            task: The completed reload task.
+        """
+        if task is not self._reload_task:
+            return
+        self._reloading = False
+        if (
+            self._pending_messages
+            and not self._agent_running
+            and self._agent is not None
+        ):
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._process_next_from_queue()),
+            )
+
+    async def _run_reload_sequence(self) -> None:
+        """Run reload work, then honor restart requests it did not satisfy.
+
+        Raises:
+            asyncio.CancelledError: If app teardown cancels the active reload.
+        """
+        try:
+            await self._run_reload()
+        except asyncio.CancelledError:
+            self._restart_requested_during_reload = False
+            raise
+
+        if self._exiting:
+            self._restart_requested_during_reload = False
+            return
+        while self._restart_requested_during_reload:
+            self._restart_requested_during_reload = False
+            await self._run_restart_command(preserve_queue=True)
+
+    async def _run_reload(self) -> None:
+        """Refresh config, themes, skills, plugins, and hooks, then report.
+
+        Runs detached from the message pump (scheduled by `_schedule_reload`),
+        so it mounts its own failure message — the `_handle_command`
+        `try/except` no longer wraps it.
+        """
+        from deepagents_code.config import settings
+
+        try:
+            # Snapshot pre-reload skill names so the report can show diff.
+            old_skill_names = {s["name"] for s in self._discovered_skills}
+
+            try:
+                changes = settings.reload_from_environment()
+
+                from deepagents_code.model_config import clear_caches
+
+                clear_caches()
+                self._sync_status_model()
+            except (OSError, ValueError):
+                logger.exception("Failed to reload configuration")
+                await self._mount_message(
+                    AppMessage(
+                        "Failed to reload configuration. Check your .env "
+                        "file and environment variables for syntax errors, "
+                        "then try again.",
+                    ),
+                )
+                return
+
+            # Reload user themes from config.toml and re-register with Textual
+            theme_reload_ok = True
+            try:
+                theme.reload_registry()
+                self._register_custom_themes()
+            except Exception:
+                theme_reload_ok = False
+                logger.warning("Failed to reload user themes", exc_info=True)
+
+            # Re-resolve and apply the theme preference so a per-terminal or
+            # global default saved by another session is picked up. This
+            # re-syncs to on-disk config using the same resolution as startup
+            # (env -> [ui.terminal_themes][TERM_PROGRAM] -> [ui].theme ->
+            # default), which intentionally overrides an unsaved in-session
+            # `/theme` choice. Guarded on the registry reload succeeding since
+            # the target theme must be registered before it can be applied.
+            theme_switched_to: str | None = None
+            if theme_reload_ok:
+                try:
+                    new_theme = _load_theme_preference()
+                    if new_theme != self.theme and new_theme in theme.get_registry():
+                        self.theme = new_theme
+                        self.sync_terminal_background()
+                        self.refresh_css(animate=False)
+                        theme_switched_to = new_theme
+                except Exception:
+                    logger.warning(
+                        "Failed to re-apply theme preference on reload",
+                        exc_info=True,
+                    )
+
+            # Re-discover skills so autocomplete reflects any new/removed
+            # skills. Run via the same exclusive-group worker used at
+            # startup so any in-flight startup discovery is cancelled
+            # rather than racing this one, then await its completion so
+            # the report can include the diff.
+            skill_worker = self.run_worker(
+                self._discover_skills(),
+                exclusive=True,
+                group="startup-skill-discovery",
+            )
+            await skill_worker.wait()
+            discovery_ok = skill_worker.result is True
+            new_skill_names = {s["name"] for s in self._discovered_skills}
+            added_skills = sorted(new_skill_names - old_skill_names)
+            removed_skills = sorted(old_skill_names - new_skill_names)
+
+            if changes:
+                report = "Configuration reloaded. Changes:\n" + "\n".join(
+                    f"  - {change}" for change in changes
+                )
+            else:
+                report = "Configuration reloaded. No changes detected."
+            report += "\nModel config caches cleared."
+            if theme_reload_ok:
+                report += "\nTheme registry reloaded."
+                if theme_switched_to is not None:
+                    entry = theme.get_registry().get(theme_switched_to)
+                    label = entry.label if entry is not None else theme_switched_to
+                    report += f"\nSwitched theme to {label}."
+            else:
+                report += (
+                    "\nTheme registry reload failed. Check config.toml for errors."
+                )
+            if not discovery_ok:
+                # Diff is meaningless when discovery failed: prior cache
+                # was preserved, so old vs. new is identical and
+                # `Skills reloaded. No changes detected.` would be a lie.
+                report += (
+                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                )
+            elif added_skills or removed_skills:
+                skill_lines = []
+                if added_skills:
+                    skill_lines.append(f"  - Added: {', '.join(added_skills)}")
+                if removed_skills:
+                    skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
+                report += "\nSkills updated:\n" + "\n".join(skill_lines)
+
+            # Rediscover plugins and restart the owned server so plugin MCP config
+            # is picked up without a separate slash command.
+            from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
+            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+
+            try:
+                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
+                    self._discover_plugins_with_fingerprints
+                )
+            except Exception:
+                # User and project hooks still reload when plugin discovery fails.
+                await self._reload_hooks(plugins=())
+                logger.exception("Failed to discover plugins during /reload")
+                report += "\nCouldn't read plugin state; run /reload to be safe."
+            else:
+                # Server-owned events are fixed when the server starts, so refresh
+                # hooks from this same plugin snapshot before any restart.
+                plugins = plugin_result.plugins
+                await self._reload_hooks(plugins=plugins)
+                old_plugin_fingerprints = self._plugin_fingerprints
+                self._plugin_fingerprints = new_plugin_fingerprints
+                discovered_plugin_ids = frozenset(
+                    plugin.plugin_id for plugin in plugins
+                )
+                plugin_count = len(plugins)
+                mcp_configs = plugin_mcp_configs(plugins)
+                mcp_count = sum(
+                    len(servers)
+                    for config in mcp_configs
+                    if isinstance((servers := config.get("mcpServers")), dict)
+                )
+                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
+                hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
+                report += (
+                    f"\nPlugins: {plugin_count} plugin"
+                    f"{'s' if plugin_count != 1 else ''} · "
+                    f"{plugin_skill_count} skill"
+                    f"{'s' if plugin_skill_count != 1 else ''} · "
+                    f"{mcp_count} plugin MCP server"
+                    f"{'s' if mcp_count != 1 else ''} · "
+                    f"{hook_count} hook{'s' if hook_count != 1 else ''}"
+                )
+                if old_plugin_fingerprints is not None:
+                    old_ids = set(old_plugin_fingerprints)
+                    new_ids = set(new_plugin_fingerprints)
+                    added_count = len(new_ids - old_ids)
+                    removed_count = len(old_ids - new_ids)
+                    changed_count = sum(
+                        self._plugin_fingerprint_changed(
+                            old_plugin_fingerprints[plugin_id],
+                            new_plugin_fingerprints[plugin_id],
+                        )
+                        for plugin_id in old_ids & new_ids
+                    )
+                    change_parts = []
+                    for count, label in (
+                        (added_count, "added"),
+                        (removed_count, "removed"),
+                        (changed_count, "changed"),
+                    ):
+                        if count:
+                            noun = "plugin" if count == 1 else "plugins"
+                            change_parts.append(f"{count} {noun} {label}")
+                    if change_parts:
+                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
+                    else:
+                        report += "\nPlugin changes: no changes detected."
+                    # Reads each added plugin's MCP config from disk; keep it
+                    # off the UI thread like the discovery scan above.
+                    login_labels = await asyncio.to_thread(
+                        self._plugin_login_labels,
+                        plugins,
+                        new_ids - old_ids,
+                    )
+                    for label in login_labels:
+                        report += f"\nSign in to {label} via `/mcp`."
+                if plugin_result.warnings:
+                    report += (
+                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
+                        "during load."
+                    )
+
+                restarted = False
+                if self._server_proc is not None and self._server_kwargs is not None:
+                    if self._agent_running and self._agent_worker:
+                        # `/reload` runs detached, so submissions can queue
+                        # while discovery is in progress. `_cancel_worker()`
+                        # clears the queue, but these messages belong to the
+                        # reload rather than the cancelled agent turn.
+                        preserved = list(self._pending_messages)
+                        self._cancel_worker(self._agent_worker)
+                        # Via `_set_agent_running` so the quiescence event is
+                        # released with the flag; a bare assignment leaves
+                        # `_agent_quiescent` cleared.
+                        self._set_agent_running(False)
+                    else:
+                        # `/reload` now runs detached, so the user may have
+                        # submitted messages that queued while the reload was
+                        # busy. The restart's `_discard_queue()` would silently
+                        # drop them; snapshot and restore them instead. Only the
+                        # idle path reaches `_discard_queue()` directly; the
+                        # running-agent path snapshots before its cancellation.
+                        preserved = list(self._pending_messages)
+                        self._discard_queue()
+                    try:
+                        restarted = await self._restart_server_manual()
+                    finally:
+                        self._restart_requested_during_reload = False
+                        if preserved:
+                            self._pending_messages.extendleft(reversed(preserved))
+                            self._sync_status_queued()
+                    if restarted:
+                        self._session_plugin_ids = discovered_plugin_ids
+                        report += "\nAgent server restarted for plugin MCP."
+                    else:
+                        report += (
+                            "\nAgent server was not restarted; plugin MCP may be stale."
+                        )
+
+            await self._mount_message(AppMessage(report))
+            await self._maybe_start_deferred_server_from_default()
+        except Exception:
+            logger.exception("Detached /reload failed unexpectedly")
+            await self._mount_message(
+                ErrorMessage("Reload failed unexpectedly. Check the debug log."),
+            )
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
@@ -16566,6 +16697,7 @@ class DeepAgentsApp(App):
             or not self._pending_messages
             or self._exit
             or self._exiting
+            or self._reloading
             or self._connecting
         ):
             return
@@ -16598,6 +16730,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or self._shell_running
             or self._modal_command_running()
+            or self._reloading
         )
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
@@ -18924,6 +19057,13 @@ class DeepAgentsApp(App):
         restart_task = self._restart_respawn_task
         if restart_task is not None and not restart_task.done():
             restart_tasks.add(restart_task)
+        # `/reload` runs in a detached task and may itself respawn the owned
+        # server. Treat it like other restart-capable work: cancel and settle
+        # it before stopping the server so it cannot rebuild the agent after
+        # teardown begins.
+        reload_task = self._reload_task
+        if reload_task is not None and not reload_task.done():
+            restart_tasks.add(reload_task)
         should_wait_for_restart = bool(restart_tasks)
         # Already cancelled above; awaited in the bounded teardown phase below so
         # a continuation's cancellation handler (which may be killing a `uv`
@@ -24489,16 +24629,39 @@ class DeepAgentsApp(App):
         server subprocess. Used as a recovery escape hatch when the
         server wedges.
 
-        Cancels any in-flight agent work and drops the queued message
-        backlog before respawning. The streaming HTTP connection to the
-        dying subprocess would otherwise raise into the Textual reactor
+        A direct restart cancels in-flight agent work and drops the queued
+        message backlog before respawning. The streaming HTTP connection to
+        the dying subprocess would otherwise raise into the Textual reactor
         after the new server advertises ready, leaving the UI wedged.
 
         Args:
             command: Raw command string for echoing back to chat.
         """
-        await self._mount_message(UserMessage(command))
+        # Snapshot active reload state before mounting the command echo, which
+        # yields to the reload task. Recording the intent first lets that task
+        # consume or honor it even if it finishes while the message is mounted.
+        reload_task = self._reload_task
+        defer_restart = (
+            self._reloading and reload_task is not None and not reload_task.done()
+        )
+        if defer_restart:
+            self._restart_requested_during_reload = True
 
+        await self._mount_message(UserMessage(command))
+        if defer_restart:
+            await self._mount_message(
+                AppMessage("Reload already in progress; server restart requested.")
+            )
+            return
+
+        await self._run_restart_command()
+
+    async def _run_restart_command(self, *, preserve_queue: bool = False) -> None:
+        """Validate and schedule a restart without echoing another command.
+
+        Args:
+            preserve_queue: Keep prompts submitted during an active reload.
+        """
         # A duplicate `/restart` bypasses the normal input queue while the
         # first detached respawn is still connecting. Reject it before the
         # destructive setup below so prompts queued during that respawn are
@@ -24516,15 +24679,18 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
-        # discards the queued backlog too — those messages would otherwise
-        # fire against the freshly respawned agent silently. This restart *is*
-        # the reconnect, so suppress the dropped-reconnect warning: the respawn
-        # below reloads every on-disk MCP token regardless.
+        # Sever in-flight work bound to the dying subprocess. A direct restart
+        # drops the queued backlog, but a restart requested during `/reload`
+        # preserves prompts that the reload guard already accepted for later.
+        preserved = None
         if self._agent_running and self._agent_worker:
+            preserved = list(self._pending_messages) if preserve_queue else None
             self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
-        else:
+        elif not preserve_queue:
             self._discard_queue()
+        if preserved is not None:
+            self._pending_messages.extendleft(reversed(preserved))
+            self._sync_status_queued()
 
         if not await self._reload_configuration_for_restart():
             return

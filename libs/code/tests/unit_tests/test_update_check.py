@@ -2964,7 +2964,9 @@ class TestUpdateLogs:
         assert output == "brew not found on PATH."
         run_mock.assert_not_awaited()
 
-    async def test_perform_upgrade_reports_installed_version_from_disk(self) -> None:
+    async def test_perform_upgrade_reports_installed_version_from_disk(
+        self, cache_file
+    ) -> None:
         """An unpinned install reports what landed, not the earlier check.
 
         The update check observes `latest` before the install runs, and the
@@ -2973,6 +2975,13 @@ class TestUpdateLogs:
         from the post-install readback so the UI never congratulates the user
         on the stale checked version.
         """
+        # Seed an empty pin set so the targeted-constraint lookup resolves from
+        # cache instead of fetching PyPI — the readback path under test is the
+        # unpinned one.
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
+            encoding="utf-8",
+        )
         with (
             patch("deepagents_code.update_check.__version__", "1.0.0"),
             patch(
@@ -3007,9 +3016,15 @@ class TestUpdateLogs:
         assert installed == "1.2.0"
 
     async def test_perform_upgrade_falls_back_to_target_when_readback_fails(
-        self,
+        self, cache_file
     ) -> None:
         """An indeterminate readback leaves the checked version as the answer."""
+        # Seed an empty pin set so the targeted-constraint lookup resolves from
+        # cache instead of fetching PyPI.
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
+            encoding="utf-8",
+        )
         with (
             patch("deepagents_code.update_check.__version__", "1.0.0"),
             patch(
@@ -3094,8 +3109,16 @@ class TestUpdateLogs:
         assert installed == "1.1.0"
         readback_mock.assert_not_called()
 
-    async def test_perform_upgrade_failed_install_reports_no_version(self) -> None:
+    async def test_perform_upgrade_failed_install_reports_no_version(
+        self, cache_file
+    ) -> None:
         """A failed install must not report a version it did not install."""
+        # Seed an empty pin set so the targeted-constraint lookup resolves from
+        # cache instead of fetching PyPI.
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
+            encoding="utf-8",
+        )
         with (
             patch("deepagents_code.update_check.__version__", "1.0.0"),
             patch(

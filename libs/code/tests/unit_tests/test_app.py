@@ -6169,7 +6169,7 @@ class TestAskUserLifecycle:
         widget = MagicMock(spec=UserMessage)
         widget.id = "msg-1"
 
-        with patch.object(app, "_schedule_message_height_measurement") as measure:
+        with patch.object(app, "_schedule_message_height_measurements") as measure:
             app.on_user_message_expansion_changed(
                 UserMessage.ExpansionChanged(widget, expanded=True)
             )
@@ -6177,7 +6177,7 @@ class TestAskUserLifecycle:
         app._message_store.update_message.assert_called_once_with(
             "msg-1", user_expanded=True
         )
-        measure.assert_called_once_with("msg-1")
+        measure.assert_called_once_with(["msg-1"])
 
     async def test_long_user_message_submit_toasts(self) -> None:
         """Submitting a >threshold message posts an information toast."""
@@ -10084,12 +10084,12 @@ class TestGoalCommand:
 
         with (
             patch.object(app._message_store, "update_message") as update,
-            patch.object(app, "_schedule_message_height_measurement") as measure,
+            patch.object(app, "_schedule_message_height_measurements") as measure,
         ):
             app.on_rubric_result_message_expansion_changed(event)
 
         update.assert_called_once_with("rubric-1", rubric_expanded=True)
-        measure.assert_called_once_with("rubric-1")
+        measure.assert_called_once_with(["rubric-1"])
 
     async def test_goal_command_proposes_pending_rubric(self) -> None:
         """`/goal <objective>` should draft criteria for widget review."""

@@ -6747,12 +6747,12 @@ class DeepAgentsApp(App):
         from deepagents_code._env_vars import DEBUG_UPDATE
         from deepagents_code.update_check import (
             _PRERELEASE_UNSUPPORTED_MESSAGE,
+            create_update_log_file,
             detect_shadowed_dcode_safe,
-            format_dependency_changes,
             format_installed_age_suffix,
+            format_log_follow_command,
             format_release_age_parenthetical,
             format_shadowed_dcode_warning,
-            parse_dependency_changes,
             perform_upgrade,
             prerelease_upgrade_supported,
             upgrade_command,
@@ -6786,7 +6786,21 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped update install (debug mode)."),
             )
             return
+        # Mount the log hint *before* awaiting the upgrade: the whole point of
+        # replacing the post-upgrade dependency summary with a log pointer is
+        # that the user can follow the install while it streams. Creating the
+        # file eagerly (rather than just naming it) keeps that hint honest even
+        # when `perform_upgrade` refuses before spawning an installer. Run it
+        # off the event loop — it globs and unlinks in the cache dir — and
+        # tolerate a `None` so a log-path failure can't turn an otherwise fine
+        # upgrade into an "/update failed" report.
+        log_path = await asyncio.to_thread(create_update_log_file)
+        if log_path is not None:
+            await self._mount_message(
+                AppMessage(f"Update log: {format_log_follow_command(log_path)}"),
+            )
         success, output, installed = await perform_upgrade(
+            log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
         )
@@ -6822,28 +6836,22 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
-            # The upgrade re-resolves the whole environment, so surface any
-            # dependency bumps that rode along with the dcode release.
-            dep_changes = [
-                change
-                for change in parse_dependency_changes(output)
-                if change.name != "deepagents-code"
-            ]
-            if dep_changes:
-                await self._mount_message(
-                    AppMessage(
-                        "Dependencies updated:\n"
-                        f"{format_dependency_changes(dep_changes)}",
-                    ),
-                )
         else:
             cmd = upgrade_command(
                 include_prereleases=upgrade_include_prereleases,
                 version=pin_upgrade_version,
             )
             detail = f": {output[:200]}" if output else ""
+            # Repeat the log path here rather than relying on the hint above:
+            # a failed resolution streams hundreds of lines through the TUI in
+            # between, so by now that hint has scrolled away — and `detail` is
+            # truncated, making the full log the only complete record. Matches
+            # the sibling install-failure branches, which all end in `Log:`.
+            log_line = f"\nLog: {log_path}" if log_path is not None else ""
             await self._mount_message(
-                AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
+                AppMessage(
+                    f"Auto-update failed{detail}{log_line}\nRun manually: {cmd}",
+                ),
             )
 
     async def _refresh_dependencies(

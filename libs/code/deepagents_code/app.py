@@ -14680,10 +14680,15 @@ class DeepAgentsApp(App):
                     if restart_result.restarted:
                         self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
-                        report += "\n" + _format_mcp_server_changes(
-                            old_mcp_server_info,
-                            restart_result.mcp_server_info,
-                        )
+                        if self._mcp_preload_kwargs is None:
+                            # MCP is disabled (`--no-mcp`), so both snapshots are
+                            # `None` by construction — "no changes", not unknown.
+                            report += "\nMCP server changes: no changes detected."
+                        else:
+                            report += "\n" + _format_mcp_server_changes(
+                                old_mcp_server_info,
+                                restart_result.mcp_server_info,
+                            )
                     else:
                         report += (
                             "\nAgent server was not restarted; plugin MCP may be stale."

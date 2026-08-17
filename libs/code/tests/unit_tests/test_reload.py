@@ -2131,7 +2131,7 @@ class TestReloadPluginsViaReload:
         expected_ids: frozenset[str],
     ) -> None:
         """A failed restart leaves the prior server's plugin status intact."""
-        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
         plugin = MagicMock(plugin_id="new@tools")
@@ -2147,13 +2147,13 @@ class TestReloadPluginsViaReload:
             async def _fake_discover() -> bool:  # noqa: RUF029
                 return True
 
-            async def _fake_restart() -> bool:  # noqa: RUF029
+            async def _fake_restart() -> _ServerRespawnResult:  # noqa: RUF029
                 order.append("restart")
-                return restarted
+                return _ServerRespawnResult(restarted=restarted)
 
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
             monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
-            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+            monkeypatch.setattr(app, "_restart_server_manual_result", _fake_restart)
             monkeypatch.setattr(app, "_discard_queue", lambda: None)
             monkeypatch.setattr(
                 "deepagents_code.plugins.discover_plugins",
@@ -2169,3 +2169,47 @@ class TestReloadPluginsViaReload:
 
             assert app._session_plugin_ids == expected_ids
             assert order == ["hooks", "restart"]
+
+    async def test_reload_reports_no_mcp_changes_when_mcp_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `--no-mcp` session reports no MCP changes, not unavailable metadata."""
+        from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plugin = MagicMock(plugin_id="new@tools")
+        # `mcp_preload_kwargs` defaults to None, matching a `--no-mcp` session.
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_plugin_ids = frozenset({"old@tools"})
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            async def _fake_restart() -> _ServerRespawnResult:  # noqa: RUF029
+                # Both snapshots are None when MCP is disabled.
+                return _ServerRespawnResult(restarted=True, mcp_server_info=None)
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_restart_server_manual_result", _fake_restart)
+            monkeypatch.setattr(app, "_discard_queue", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=(plugin,)),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "MCP server changes: no changes detected." in text
+            assert "couldn't be determined" not in text

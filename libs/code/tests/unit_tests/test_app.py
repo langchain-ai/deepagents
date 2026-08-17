@@ -33103,7 +33103,146 @@ class TestFormatMcpServerChanges:
 
         assert _format_mcp_server_changes(servers, servers) == (
             "MCP server changes: no changes detected "
-            "(1 server(s) still need attention; use /mcp)."
+            "(still needs attention: notion; use /mcp)."
+        )
+
+    def test_qualifies_no_changes_for_a_server_awaiting_login(self) -> None:
+        """The attention qualifier covers logins, not just hard errors."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="unauthenticated",
+                error="sign in required",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no changes detected "
+            "(still needs attention: notion; use /mcp)."
+        )
+
+    def test_qualifies_no_changes_for_an_unrepaired_config_error(self) -> None:
+        """A `/reload` run to check a config fix must not read as success."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no changes detected "
+            "(still needs attention: <config:mcp.json>; use /mcp)."
+        )
+
+    def test_names_still_broken_servers_alongside_real_changes(self) -> None:
+        """A successful load must not present a still-broken server as fine."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        broken = MCPServerInfo(
+            name="github",
+            transport="stdio",
+            status="error",
+            error="handshake failed",
+        )
+        previous = [MCPServerInfo(name="notion", transport="stdio"), broken]
+        current = [*previous, MCPServerInfo(name="slack", transport="stdio")]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Loaded: slack\n"
+            "  - Still needs attention: github (use /mcp)"
+        )
+
+    def test_reports_a_new_unavailable_server_alongside_a_successful_load(
+        self,
+    ) -> None:
+        """The server needing action must not vanish because another loaded."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            *previous,
+            MCPServerInfo(name="slack", transport="stdio"),
+            MCPServerInfo(
+                name="github",
+                transport="stdio",
+                status="unauthenticated",
+                error="sign in required",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Loaded: slack\n"
+            "  - Unavailable: github (unauthenticated) (use /mcp for details)"
+        )
+
+    def test_reports_a_transport_change_under_an_unchanged_name(self) -> None:
+        """Editing a server's transport and reloading is not "no changes"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [MCPServerInfo(name="notion", transport="http")]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Reconfigured: notion (stdio → http)"
+        )
+
+    def test_reports_a_tool_count_change_under_an_unchanged_name(self) -> None:
+        """A server whose tool set changed is a change worth reporting."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        def _tools(count: int) -> tuple[MCPToolInfo, ...]:
+            return tuple(
+                MCPToolInfo(name=f"t{i}", description="d") for i in range(count)
+            )
+
+        previous = [MCPServerInfo(name="notion", transport="stdio", tools=_tools(1))]
+        current = [MCPServerInfo(name="notion", transport="stdio", tools=_tools(3))]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Reconfigured: notion (1 → 3 tools)"
+        )
+
+    def test_missing_baseline_does_not_call_a_broken_server_loaded(self) -> None:
+        """A named server must be usable to count as loaded here too."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        current = [
+            MCPServerInfo(name="slack", transport="stdio"),
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(None, current) == (
+            "MCP server changes couldn't be determined (no baseline metadata); "
+            "currently loaded: slack; unavailable: notion (error); "
+            "config errors: <config:mcp.json>."
+        )
+
+    def test_names_the_refresh_failure_when_one_is_known(self) -> None:
+        """The cause identifies the offending server; it should not stay in the log."""
+        assert _format_mcp_server_changes([], None, "RuntimeError: bad config") == (
+            "MCP server changes couldn't be determined (RuntimeError: bad config); "
+            "use /mcp to check."
         )
 
 
@@ -33319,8 +33458,12 @@ class TestRespawnServer:
             await pilot.pause()
 
             proc = await self._prepare(app)
-            # `--no-mcp`: `main` leaves the preload kwargs unset entirely.
+            # `--no-mcp`: `main` leaves the preload kwargs unset entirely and
+            # records the flag itself in the server kwargs. Both are required —
+            # absent kwargs alone are only a proxy, and `disabled` drives an
+            # unconditional all-clear in the `/reload` report.
             app._mcp_preload_kwargs = None
+            app._server_kwargs = {"no_mcp": True}
 
             called = False
 
@@ -33373,8 +33516,113 @@ class TestRespawnServer:
             assert result.restarted is True
             assert result.mcp_status == "unavailable"
             assert result.mcp_server_info is None
-            # The genuine failure still warns.
+            # The genuine failure still warns, at warning severity and naming
+            # the cause — the message is the user's only pointer to what broke.
             assert len(notes) == 1
+            assert notes[0][1]["severity"] == "warning"
+            assert "RuntimeError: boom" in notes[0][0][0]
+            assert result.mcp_error == "RuntimeError: boom"
+
+    async def test_absent_preload_kwargs_without_no_mcp_is_not_an_all_clear(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing kwargs are a proxy for `--no-mcp`; the flag is the fact.
+
+        `disabled` drives an unconditional "no servers were loaded" in the
+        `/reload` report, so inferring it from the proxy alone would let an
+        MCP-enabled session fabricate a clean bill of health.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+            app._mcp_preload_kwargs = None
+            app._server_kwargs = {"no_mcp": False}
+
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "unavailable"
+
+    async def test_preload_returning_none_is_not_reported_as_fresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`fresh` must track the returned value, not merely a lack of raising.
+
+        The preload is typed `list[...] | None`, so keying off the `else:` of
+        the `try` would pair `fresh` with `None` and break the contract that
+        `/reload` relies on to tell a real diff from an unknown one.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+
+            async def _preload(**_: Any) -> None:  # noqa: RUF029
+                return None
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "unavailable"
+            assert result.mcp_server_info is None
+
+    async def test_failed_preload_keeps_the_last_known_mcp_snapshot_in_the_ui(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed refresh must not blank the status bar and `/mcp` viewer.
+
+        `ServerReady` recomputes the MCP counters and the viewer from its
+        payload, so posting `None` after a failure renders "No MCP servers
+        configured" — an all-clear — at the moment the app knows least, and the
+        report line sends the user to exactly that screen.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        known = MCPServerInfo(
+            name="notion",
+            transport="stdio",
+            status="error",
+            error="handshake failed",
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+            app._mcp_server_info = [known]
+
+            async def _preload(**_: Any) -> list[Any]:  # noqa: RUF029
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            monkeypatch.setattr(app, "notify", lambda *_a, **_k: None)
+            posted: list[Any] = []
+            monkeypatch.setattr(app, "post_message", posted.append)
+
+            result = await app._restart_server_manual_result()
+
+            ready = [m for m in posted if isinstance(m, app.ServerReady)]
+            assert len(ready) == 1
+            assert ready[0].mcp_server_info == [known]
+            # The result itself stays indeterminate, so `/reload` reports an
+            # unknown rather than diffing the stale snapshot against itself.
+            assert result.mcp_server_info is None
+            assert result.mcp_status == "unavailable"
 
     async def test_subprocess_failure_posts_server_start_failed(
         self, monkeypatch: pytest.MonkeyPatch

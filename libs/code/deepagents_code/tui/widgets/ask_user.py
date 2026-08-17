@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
-from textual.containers import Container, Vertical
+from textual.containers import Container, Horizontal, Vertical
 from textual.content import Content
 from textual.message import Message
 from textual.widgets import Markdown, Static, TextArea
@@ -96,10 +96,38 @@ class AskUserTextArea(InlinePromptTextArea):
     }
     """
 
+    BINDINGS: ClassVar[list[BindingType]] = [
+        *InlinePromptTextArea.BINDINGS,
+        Binding("escape", "uncheck_other", show=False, priority=True),
+    ]
+
     class Submitted(InlinePromptTextArea.Submitted):
         """Posted when the user presses Enter to submit an ask-user answer."""
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Bind Escape only while this field owns a checked custom option.
+
+        Returns:
+            Whether the action is available, or `None` to let it bubble.
+        """
+        if action == "uncheck_other":
+            question = self._find_question_widget()
+            return question is not None and question.can_uncheck_other_input(self)
+        return super().check_action(action, parameters)
+
+    def action_uncheck_other(self) -> None:
+        """Deselect this field's custom multi-select option, when applicable."""
+        question = self._find_question_widget()
+        if question is not None:
+            question.uncheck_other_input(self)
+
     async def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            question = self._find_question_widget()
+            if question is not None and question.uncheck_other_input(self):
+                event.prevent_default()
+                event.stop()
+                return
         if event.key in {"up", "down"}:
             cursor_location = self.cursor_location
             at_top = self.get_cursor_up_location() == cursor_location
@@ -257,8 +285,18 @@ class AskUserMenu(Container):
             )
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
-        parts.append("Esc to cancel")
+        parts.append(
+            "Esc to deselect" if self._can_deselect_focused_other() else "Esc to cancel"
+        )
         return f" {glyphs.bullet} ".join(parts)
+
+    def _can_deselect_focused_other(self) -> bool:
+        """Return whether Escape will deselect the currently focused custom option."""
+        focused = self.app.focused
+        if not isinstance(focused, AskUserTextArea):
+            return False
+        question = focused._find_question_widget()
+        return question is not None and question.can_uncheck_other_input(focused)
 
     def _show_editor_hint(self) -> bool:
         """Whether `ctrl+x` would currently open one of this menu's text areas.
@@ -398,6 +436,12 @@ class AskUserMenu(Container):
             self._set_active_question(self._current_question - 1)
 
     def action_cancel(self) -> None:  # noqa: D102
+        if self._can_deselect_focused_other():
+            focused = self.app.focused
+            if isinstance(focused, AskUserTextArea):
+                question = focused._find_question_widget()
+                if question is not None and question.uncheck_other_input(focused):
+                    return
         if self._completion.resolve({"type": "cancelled"}):
             self.post_message(self.Cancelled())
 
@@ -487,6 +531,7 @@ class _MultiSelectOption(_ChoiceOption):
         # Must precede `super().__init__()`: `compose` runs during mount and
         # reads `self._checked` for the initial box glyph.
         self._checked = False
+        self._checked_label: str | None = None
         self._label_widget: Static | None = None
         super().__init__(text, index, selected=selected, **kwargs)
 
@@ -526,15 +571,38 @@ class _MultiSelectOption(_ChoiceOption):
         self._checked = checked
         if self._label_widget is not None:
             self._label_widget.update(self._label_content())
+            # A custom Other label shrinks to only its checkbox while checked.
+            # Reflow the parent so its adjacent text field reclaims the old
+            # placeholder's width.
+            self.refresh(layout=True)
+
+    def set_checked_label(self, label: str) -> None:
+        """Use `label` in place of this option's text while it is checked.
+
+        Args:
+            label: Checked-state label. An empty label leaves only the checkbox,
+                allowing an adjacent custom-answer field to take its place.
+        """
+        self._checked_label = label
+        if self._checked and self._label_widget is not None:
+            self._label_widget.update(self._label_content())
+            self.refresh(layout=True)
 
     def _label_content(self) -> Content:
         glyphs = get_glyphs()
         box = glyphs.checkbox_checked if self._checked else glyphs.checkbox_empty
-        return Content.from_markup("$box $text", box=box, text=self._text)
+        label = (
+            self._checked_label
+            if self._checked and self._checked_label is not None
+            else self._text
+        )
+        if not label:
+            return Content.from_markup("$box", box=box)
+        return Content.from_markup("$box $text", box=box, text=label)
 
 
-class _OtherSlot(Vertical):
-    """One multi-select Other checkbox paired with its free-text field."""
+class _OtherSlot(Horizontal):
+    """One multi-select Other checkbox paired with its inline text field."""
 
     DEFAULT_CSS = """
     _OtherSlot {
@@ -752,6 +820,8 @@ class _QuestionWidget(Vertical):
         text_input = AskUserTextArea(classes="ask-user-other-input")
         text_input.display = False
         slot = _OtherSlot(option, text_input)
+        option.set_checked_label("")
+        option.add_class("ask-user-inline-other-choice")
         self._choice_widgets.append(option)
         entry = _MultiSelectOtherEntry(option, text_input, slot)
         self._other_entries.append(entry)
@@ -913,6 +983,43 @@ class _QuestionWidget(Vertical):
         if self._other_input and self._other_input.has_focus:
             return 0
         return None
+
+    def uncheck_other_input(self, text_input: AskUserTextArea) -> bool:
+        """Uncheck the custom multi-select option that owns `text_input`.
+
+        This is the Escape shortcut for a focused custom answer. It returns
+        focus to the checkbox so a second Escape can still cancel the prompt.
+
+        Args:
+            text_input: Focused custom-answer field requesting deselection.
+
+        Returns:
+            `True` when a checked custom option was deselected, otherwise
+            `False`.
+        """
+        if self._q_type != "multi_select":
+            return False
+        if not self.can_uncheck_other_input(text_input):
+            return False
+        for entry_index, entry in enumerate(self._other_entries):
+            if entry.text_input is text_input:
+                self._selected_choice = len(self._choices) + entry_index
+                self.action_toggle_choice()
+                # Focusing the checkbox posts a blur event, but that arrives on
+                # the next message-loop turn. Refresh now so the Esc hint never
+                # lags behind the newly deselected state.
+                menu = self._find_menu()
+                if menu is not None:
+                    menu._update_help()
+                return True
+        return False
+
+    def can_uncheck_other_input(self, text_input: AskUserTextArea) -> bool:
+        """Return whether `text_input` belongs to a checked custom option."""
+        return self._q_type == "multi_select" and any(
+            entry.text_input is text_input and entry.option.checked
+            for entry in self._other_entries
+        )
 
     def action_move_up(self) -> None:
         """Move the highlight cursor up in the choice list."""

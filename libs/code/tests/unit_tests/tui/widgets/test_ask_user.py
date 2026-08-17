@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.widgets import Markdown, Static
 
 import deepagents_code
@@ -26,6 +27,7 @@ from deepagents_code.tui.widgets.ask_user import (
     AskUserTextArea,
     _ChoiceOption,
     _MultiSelectOption,
+    _OtherSlot,
     _QuestionWidget,
 )
 
@@ -157,6 +159,44 @@ class TestAskUserTextAreaBindings:
 
 
 class TestAskUserMenu:
+    async def test_multi_select_other_uses_an_inline_text_field(self) -> None:
+        """A checked Other keeps its custom-answer field beside the checkbox."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick a color",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            slot = menu.query_one(".ask-user-other-slot", _OtherSlot)
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+
+            assert isinstance(slot, Horizontal)
+
+            await pilot.press("down", "space")
+            await pilot.pause()
+
+            other_option = list(menu.query(_MultiSelectOption))[1]
+            assert other_option.has_class("ask-user-inline-other-choice")
+            assert other_input.parent is slot
+            assert other_input.display is True
+            assert other_option._label_widget is not None
+            assert str(other_option._label_widget.render()) == (
+                get_glyphs().checkbox_checked
+            )
+            assert other_input.region.y == other_option.region.y
+            assert other_input.region.x == (
+                other_option.region.x + other_option.region.width
+            )
+            assert other_option.region.width < len(OTHER_CHOICE_LABEL)
+            assert other_input.region.height == 1
+
     def test_find_menu_logs_when_hierarchy_is_missing(
         self,
         caplog,
@@ -409,6 +449,70 @@ class TestAskUserMenu:
 
             assert future.done()
             assert future.result() == {"type": "cancelled"}
+
+    async def test_escape_in_custom_multi_select_answer_unchecks_option(self) -> None:
+        """Escape deselects the focused custom option before it cancels the prompt."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick a color",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down", "space")
+            await pilot.pause()
+
+            question = menu.query_one(_QuestionWidget)
+            entry = question._other_entries[0]
+            assert entry.option.checked
+            assert entry.text_input.has_focus
+            assert "Esc to deselect" in str(menu.query_one(".ask-user-help").render())
+
+            await pilot.press("escape")
+
+            assert not future.done()
+            assert not entry.option.checked
+            assert entry.text_input.display is False
+            assert question.has_focus
+            assert "Esc to cancel" in str(menu.query_one(".ask-user-help").render())
+
+    async def test_custom_multi_select_answer_grows_for_newlines(self) -> None:
+        """A custom answer expands after Shift+Enter instead of scrolling one row."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick a color",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            await pilot.pause()
+            await pilot.press("down", "space")
+            await pilot.pause()
+
+            entry = menu.query_one(_QuestionWidget)._other_entries[0]
+            assert entry.text_input.region.height == 1
+
+            await pilot.press("shift+enter")
+            await pilot.pause()
+
+            assert entry.text_input.text == "\n"
+            assert entry.text_input.region.height == 2
 
     async def test_multiple_choice_submits_without_text_input(self) -> None:
         app = _AskUserTestApp(

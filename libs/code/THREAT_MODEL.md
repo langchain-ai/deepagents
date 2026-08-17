@@ -463,6 +463,7 @@
 | Async subagent config | DF22                  | None direct   | TOML parse; type validation in `load_async_subagents`                      | User           | URL and headers for remote subagents are user-controlled; no URL validation                 |
 | MCP subprocess env    | DF24                  | T10           | Dict type check only (`_validate_server_config`)                           | User           | No key/value filtering; arbitrary env vars forwarded to subprocess                           |
 | Offloaded history     | DF25                  | None direct   | Thread ID is UUID7 (no path injection); backend handles storage            | Shared         | Raw conversation content written to sandbox filesystem                                       |
+| Python extensions     | DF10                  | T9            | User-scoped sources are trusted by installation; project `.deepagents/extensions/` loads only after a persisted or prompted per-directory trust decision (or `--trust-project-extensions`); per-extension error isolation | User | Extension code runs in-process with full user privileges, and extension-registered tools are not added to the HITL interrupt map |
 
 ---
 

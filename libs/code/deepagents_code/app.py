@@ -1010,6 +1010,7 @@ if TYPE_CHECKING:
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
+    from deepagents_code.extensions import ExtensionLoadResult
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
     from deepagents_code.hooks.models.domain import (
@@ -4466,6 +4467,14 @@ class DeepAgentsApp(App):
         every invocation.
         """
 
+        self._extensions: ExtensionLoadResult | None = None
+        """Extensions loaded in the app process (populated by a startup worker).
+
+        The server process loads its own copy for middleware and tools; this one
+        exists so extension-registered slash commands and `/extensions`
+        provenance are available in the client.
+        """
+
         self._reload_task: asyncio.Task[None] | None = None
         """The in-flight detached `/reload` task, if any (see `_schedule_reload`).
 
@@ -4678,14 +4687,18 @@ class DeepAgentsApp(App):
         self._chat_input.set_cursor_style(style=self._cursor_style)
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
-        # Apply any skill commands discovered before the widget was mounted
-        if self._discovered_skills:
+        # Apply any skill or extension commands discovered before the widget was
+        # mounted
+        if self._discovered_skills or self._extensions is not None:
             from deepagents_code.command_registry import (
+                build_extension_commands,
                 build_skill_commands,
                 get_slash_commands,
             )
 
             cmds = build_skill_commands(self._discovered_skills)
+            if self._extensions is not None:
+                cmds += build_extension_commands(self._extensions.registry)
             merged = list(get_slash_commands()) + cmds
             self._chat_input.update_slash_commands(merged)
 
@@ -5044,6 +5057,13 @@ class DeepAgentsApp(App):
             self._discover_startup_skills(),
             exclusive=True,
             group="startup-skill-discovery",
+        )
+
+        # Extensions execute local Python, so they load off the first-frame path.
+        self.run_worker(
+            self._discover_extensions(),
+            exclusive=True,
+            group="startup-extension-discovery",
         )
 
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
@@ -5563,6 +5583,168 @@ class DeepAgentsApp(App):
                     len(skills),
                 )
         return True
+
+    async def _discover_extensions(self) -> None:
+        """Load extensions in the app process and publish their commands.
+
+        Runs as a startup worker rather than on the launch path: an extension is
+        arbitrary Python and may import heavy dependencies, which must not delay
+        the first frame. Failures are already isolated per extension, so this
+        only surfaces a summary notification.
+        """
+        from deepagents_code.command_registry import (
+            build_extension_commands,
+            build_skill_commands,
+            get_slash_commands,
+        )
+        from deepagents_code.extensions import load_extensions
+        from deepagents_code.extensions.runtime import INTERACTIVE_MODE
+
+        server_kwargs = self._server_kwargs or {}
+        cwd = Path(self._cwd)
+        project_root = self._project_root_path() or cwd
+        result = await load_extensions(
+            cwd=cwd,
+            mode=INTERACTIVE_MODE,
+            project_root=project_root,
+            project_trust_granted=bool(
+                server_kwargs.get("trust_project_extensions", False)
+            ),
+        )
+        self._extensions = result
+        if result.errors:
+            self.notify(
+                f"{len(result.errors)} extension(s) failed to load; run "
+                "/extensions for details.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+        extension_commands = build_extension_commands(result.registry)
+        if extension_commands and self._chat_input:
+            merged = [
+                *get_slash_commands(),
+                *build_skill_commands(self._discovered_skills),
+                *extension_commands,
+            ]
+            self._chat_input.update_slash_commands(merged)
+
+    def _project_root_path(self) -> Path | None:
+        """Return the project root governing project-scoped resources.
+
+        Returns:
+            The enclosing project root, or `None` when it cannot be resolved.
+        """
+        from deepagents_code.project_utils import ProjectContext
+
+        try:
+            context = ProjectContext.from_user_cwd(Path(self._cwd))
+        except OSError:
+            logger.warning("Could not resolve project root", exc_info=True)
+            return None
+        return context.project_root or context.user_cwd
+
+    def _is_extension_command(self, cmd: str) -> bool:
+        """Return whether a command name belongs to a loaded extension.
+
+        Args:
+            cmd: Lowercased command text, including the leading slash.
+
+        Returns:
+            `True` when an extension registered a command with that name.
+        """
+        if self._extensions is None:
+            return False
+        name = cmd[1:].split(maxsplit=1)[0] if len(cmd) > 1 else ""
+        return bool(name) and self._extensions.registry.find_command(name) is not None
+
+    async def _run_extension_command(self, command: str) -> None:
+        """Run an extension-registered slash command.
+
+        Args:
+            command: Full command text as typed, including the leading slash.
+        """
+        import inspect
+
+        from deepagents_code.extensions.models import CommandContext
+        from deepagents_code.extensions.runtime import INTERACTIVE_MODE
+
+        await self._mount_message(UserMessage(command))
+        name, _, args = command[1:].strip().partition(" ")
+        registered = (
+            self._extensions.registry.find_command(name.lower())
+            if self._extensions is not None
+            else None
+        )
+        if registered is None:
+            await self._mount_message(AppMessage(f"Unknown command: {command}"))
+            return
+
+        ctx = CommandContext(
+            args=args.strip(),
+            cwd=Path(self._cwd),
+            mode=INTERACTIVE_MODE,
+        )
+        try:
+            output = registered.unit(ctx)
+            if inspect.isawaitable(output):
+                output = await output
+        # A failing extension command must not take down the app.
+        except Exception as exc:
+            logger.exception("Extension command %r failed", name)
+            await self._mount_message(
+                ErrorMessage(f"/{name} failed: {type(exc).__name__}: {exc}")
+            )
+            return
+        if output:
+            await self._mount_message(AppMessage(str(output)))
+
+    async def _handle_extensions_command(self, command: str) -> None:
+        """Show loaded extensions, their units, and their provenance.
+
+        Args:
+            command: Full command text as typed.
+        """
+        await self._mount_message(UserMessage(command))
+        result = self._extensions
+        if result is None:
+            await self._mount_message(
+                AppMessage("Extensions are still loading; try again in a moment.")
+            )
+            return
+
+        lines = [
+            _markdown_table(
+                ["Extension", "Scope", "Units"],
+                [
+                    (
+                        loaded.source.label,
+                        str(loaded.source.scope),
+                        ", ".join(
+                            part
+                            for part in (
+                                f"{len(loaded.middleware)} middleware"
+                                if loaded.middleware
+                                else "",
+                                f"{len(loaded.tools)} tools" if loaded.tools else "",
+                                f"/{', /'.join(loaded.commands)}"
+                                if loaded.commands
+                                else "",
+                            )
+                            if part
+                        )
+                        or "none",
+                    )
+                    for loaded in result.loaded
+                ],
+            )
+            if result.loaded
+            else "No extensions loaded."
+        ]
+        lines.extend(
+            f"- Failed: {_escape_markdown(message)}" for message in result.errors
+        )
+        await self._mount_message(AppMessage("\n\n".join(lines), markdown=True))
 
     async def _discover_startup_skills(self) -> bool:
         """Discover skills and record plugins loaded by initial startup.
@@ -14758,6 +14940,10 @@ class DeepAgentsApp(App):
             self._schedule_reload()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
+        elif cmd == "/extensions":
+            await self._handle_extensions_command(command)
+        elif self._is_extension_command(cmd):
+            await self._run_extension_command(command)
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
         elif cmd == "/debug":
             self._open_debug_console()
@@ -19454,8 +19640,19 @@ class DeepAgentsApp(App):
         if has_client_session_hooks:
             session_end_payload = None
 
+        # Extension teardown is deterministic: hooks registered via
+        # `ExtensionAPI.on_shutdown` run once, in load order, during the same
+        # deferred teardown as the other session-scoped resources.
+        extension_registry = (
+            self._extensions.registry if self._extensions is not None else None
+        )
+        should_shut_down_extensions = extension_registry is not None and bool(
+            extension_registry.shutdown_hooks
+        )
+
         if (
-            should_wait_for_agent
+            should_shut_down_extensions
+            or should_wait_for_agent
             or should_wait_for_restart
             or should_wait_for_modal_commands
             or should_drain_hooks
@@ -19521,6 +19718,14 @@ class DeepAgentsApp(App):
                             )
 
                     session_end_task = asyncio.ensure_future(_dispatch_session_end())
+                extension_shutdown_task: asyncio.Task[None] | None = None
+                if extension_registry is not None and should_shut_down_extensions:
+                    from deepagents_code.extensions import shutdown_extensions
+
+                    extension_shutdown_task = asyncio.ensure_future(
+                        shutdown_extensions(extension_registry)
+                    )
+
                 client_session_end_task: asyncio.Task[None] | None = None
                 if has_client_session_hooks:
                     from deepagents_code.hooks.models.domain import SessionEndCause
@@ -19774,6 +19979,14 @@ class DeepAgentsApp(App):
                         except BaseException:
                             logger.debug(
                                 "SessionEnd await interrupted during teardown",
+                                exc_info=True,
+                            )
+                    if extension_shutdown_task is not None:
+                        try:
+                            await extension_shutdown_task
+                        except BaseException:
+                            logger.debug(
+                                "Extension shutdown interrupted during teardown",
                                 exc_info=True,
                             )
                     logger.debug(

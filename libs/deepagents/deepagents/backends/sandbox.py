@@ -144,31 +144,24 @@ try:
     else:
         matches = []
         # os.walk includes hidden directories; matching rules still exclude leading-dot
-        # basenames unless the pattern is explicit (no DOTMATCH).
+        # basenames unless the pattern is explicit (no DOTMATCH). Regular files only,
+        # mirroring FilesystemBackend.glob's is_file() filter; also drops broken symlinks.
         for dirpath, dirnames, filenames in os.walk('.'):
-            for is_dir, names in ((True, dirnames), (False, filenames)):
-                for name in names:
-                    full = name if dirpath == '.' else os.path.join(dirpath, name)
-                    rel = full.replace(chr(92), '/')
-                    if rel.startswith('./'):
-                        rel = rel[2:]
-                    if not _include_match(rel, pattern):
-                        continue
-                    candidate = os.path.realpath(full)
-                    if candidate != real_root and not candidate.startswith(real_root + os.sep):
-                        continue
-                    try:
-                        st = os.stat(candidate)
-                    except OSError:
-                        continue
-                    matches.append({{
-                        'path': rel,
-                        'size': st.st_size,
-                        'mtime': st.st_mtime,
-                        'is_dir': is_dir,
-                    }})
-        for item in sorted(matches, key=lambda row: row['path']):
-            print(json.dumps(item))
+            for name in filenames:
+                full = name if dirpath == '.' else os.path.join(dirpath, name)
+                rel = full.replace(chr(92), '/')
+                if rel.startswith('./'):
+                    rel = rel[2:]
+                if not _include_match(rel, pattern):
+                    continue
+                candidate = os.path.realpath(full)
+                if candidate != real_root and not candidate.startswith(real_root + os.sep):
+                    continue
+                if not os.path.isfile(candidate):
+                    continue
+                matches.append(rel)
+        for item in sorted(matches):
+            print(json.dumps({{'path': item, 'is_dir': False}}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'path_not_found'}}))
 except NotADirectoryError:
@@ -842,6 +835,25 @@ def _build_glob_cmd(pattern: str, search_path: str) -> str:
     return _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
 
 
+def _absolutize_glob_path(search_path: str, rel_path: str) -> str:
+    """Join a search-root-relative glob match onto its search root.
+
+    The remote script reports paths relative to the search root, but `glob`'s
+    tool contract is absolute paths, and `_check_fs_permission` only matches
+    absolute patterns — a relative path silently bypasses every `deny` rule.
+
+    Args:
+        search_path: Absolute search root the script was run against.
+        rel_path: Path as reported by the script, relative unless already rooted.
+
+    Returns:
+        Absolute path for the match.
+    """
+    if rel_path.startswith("/"):
+        return rel_path
+    return f"{search_path.rstrip('/')}/{rel_path}"
+
+
 def _parse_glob_output(output: str, search_path: str) -> GlobResult:
     output = output.strip()
     if not output:
@@ -856,7 +868,7 @@ def _parse_glob_output(output: str, search_path: str) -> GlobResult:
         if isinstance(data, dict) and "error" in data:
             error = data["error"]
             continue
-        file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
+        file_infos.append({"path": _absolutize_glob_path(search_path, data["path"]), "is_dir": data["is_dir"]})
     if error is not None:
         return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
     return GlobResult(matches=file_infos)

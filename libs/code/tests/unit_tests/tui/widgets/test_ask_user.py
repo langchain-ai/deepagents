@@ -905,6 +905,36 @@ class TestAskUserMenu:
             # custom is filled; it must not contribute to the answer.
             assert len(list(menu.query(_MultiSelectOption))) >= 4
 
+    async def test_multi_select_other_pruning_removes_empty_slot(self) -> None:
+        """Clearing Other text removes its spare slot and wrapper."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+            await pilot.pause()
+
+            first_entry = question._other_entries[0]
+            first_entry.option.set_checked(True)
+            for custom_text in ("teal", "cyan"):
+                first_entry.text_input.text = custom_text
+                question.sync_other_slots()
+                await pilot.pause()
+                assert len(list(menu.query(".ask-user-other-slot"))) == 2
+
+                first_entry.text_input.text = ""
+                question.sync_other_slots()
+                await pilot.pause()
+                assert len(list(menu.query(".ask-user-other-slot"))) == 1
+
     async def test_multi_select_other_requires_text_when_checked(self) -> None:
         app = _AskUserTestApp(
             [

@@ -817,8 +817,7 @@ class _QuestionWidget(Vertical):
         entry = self._other_entries.pop()
         if entry.option in self._choice_widgets:
             self._choice_widgets.remove(entry.option)
-        entry.option.remove()
-        entry.text_input.remove()
+        entry.slot.remove()
         if self._selected_choice >= len(self._choice_widgets):
             self._selected_choice = max(0, len(self._choice_widgets) - 1)
             self._update_choice_selection(focus_other_input=False)

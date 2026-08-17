@@ -941,6 +941,31 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["purple"]}
 
+    async def test_typing_on_highlighted_multi_select_other_activates_it(self) -> None:
+        """The first typed character toggles and populates a highlighted Other row."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("p")
+            await pilot.pause()
+
+            other_entry = menu._question_widgets[0]._other_entries[0]
+            assert other_entry.option.checked
+            assert other_entry.text_input.has_focus
+            assert other_entry.text_input.text == "p"
+
     async def test_multi_select_multiple_others_grow_and_join(self) -> None:
         """Filling one Other reveals an Add-another slot for more custom values."""
         app = _AskUserTestApp(

@@ -1100,6 +1100,31 @@ class _QuestionWidget(Vertical):
         widget = self._multi_select_widgets[index]
         widget.set_checked(not widget.checked)
 
+    async def _on_key(self, event: events.Key) -> None:
+        """Start a highlighted custom answer when its first character is typed.
+
+        A multi-select Other row is normally a checkbox, so it needs Space to
+        reveal its adjacent text field. Treating the first printable character
+        as that toggle makes the row behave like a focused text field without
+        changing Space's established checkbox behavior.
+        """
+        if (
+            event.is_printable
+            and event.character is not None
+            and event.key != "space"
+            and self._q_type == "multi_select"
+        ):
+            other_index = self._selected_choice - len(self._choices)
+            if 0 <= other_index < len(self._other_entries):
+                entry = self._other_entries[other_index]
+                if not entry.option.checked:
+                    self.action_toggle_choice()
+                    entry.text_input.insert(event.character)
+                    event.prevent_default()
+                    event.stop()
+                    return
+        await super()._on_key(event)
+
     def action_select_or_submit(self) -> None:
         """Confirm the current answer, or open the Other input.
 

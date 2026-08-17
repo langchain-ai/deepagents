@@ -9,7 +9,7 @@ import sys
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from langchain.agents.middleware import TodoListMiddleware
@@ -386,6 +386,80 @@ class TestGeneralPurposeSubagentProfileWiring:
 
 class TestPromptCachingWiring:
     """Tests for provider-specific prompt caching middleware wiring."""
+
+    def test_anthropic_cache_ttl_applies_to_main_and_all_subagents(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        explicit_cache = MagicMock()
+        gp_cache = MagicMock()
+        main_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch(
+                "deepagents.middleware._prompt_caching.AnthropicPromptCachingMiddleware",
+                side_effect=[explicit_cache, gp_cache, main_cache],
+            ) as mock_anthropic,
+            patch(
+                "deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware",
+                return_value=None,
+            ),
+            patch(
+                "deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware",
+                return_value=None,
+            ),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(
+                model=model,
+                anthropic_cache_ttl="1h",
+                subagents=[
+                    {
+                        "name": "worker",
+                        "description": "Does work.",
+                        "system_prompt": "Help with tasks.",
+                    }
+                ],
+            )
+
+        assert result == "compiled-agent"
+        assert mock_anthropic.call_args_list == [
+            call(ttl="1h", unsupported_model_behavior="ignore"),
+            call(ttl="1h", unsupported_model_behavior="ignore"),
+            call(ttl="1h", unsupported_model_behavior="ignore"),
+        ]
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        worker = next(spec for spec in subagents if spec["name"] == "worker")
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert explicit_cache in worker["middleware"]
+        assert gp_cache in general_purpose["middleware"]
+        assert main_cache in mock_create.call_args.kwargs["middleware"]
+
+    def test_anthropic_cache_ttl_none_preserves_middleware_default(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching.AnthropicPromptCachingMiddleware") as mock_anthropic,
+            patch(
+                "deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware",
+                return_value=None,
+            ),
+            patch(
+                "deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware",
+                return_value=None,
+            ),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(model=model, anthropic_cache_ttl=None)
+
+        assert mock_anthropic.call_args_list == [
+            call(unsupported_model_behavior="ignore"),
+            call(unsupported_model_behavior="ignore"),
+        ]
 
     def test_main_and_general_purpose_agents_get_bedrock_prompt_caching(self) -> None:
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))

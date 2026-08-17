@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## Unreleased
+
+### Features
+
+- Added configurable Anthropic prompt-cache TTL support for main agents and subagents.
+
 ## [0.7.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.5...deepagents==0.7.6) (2026-08-13)
 
 ### Bug Fixes

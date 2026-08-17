@@ -2,12 +2,14 @@
 
 import logging
 from importlib import import_module
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
 logger = logging.getLogger(__name__)
+
+AnthropicCacheTtl = Literal["5m", "1h"]
 
 
 def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
@@ -38,9 +40,20 @@ def _create_fireworks_prompt_caching_middleware() -> AgentMiddleware[Any, Any, A
     return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
 
 
-def append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any, Any]]) -> None:
+def append_prompt_caching_middleware(
+    middleware: list[AgentMiddleware[Any, Any, Any]],
+    *,
+    anthropic_cache_ttl: AnthropicCacheTtl | None = None,
+) -> None:
     """Append provider-specific prompt caching middleware."""
-    middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if anthropic_cache_ttl is None:
+        anthropic_middleware = AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")
+    else:
+        anthropic_middleware = AnthropicPromptCachingMiddleware(
+            ttl=anthropic_cache_ttl,
+            unsupported_model_behavior="ignore",
+        )
+    middleware.append(anthropic_middleware)
     bedrock_middleware = _create_bedrock_prompt_caching_middleware()
     if bedrock_middleware is not None:
         middleware.append(bedrock_middleware)

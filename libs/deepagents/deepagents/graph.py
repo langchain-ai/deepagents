@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast
+from typing import Annotated, Any, Literal, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -285,6 +285,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    anthropic_cache_ttl: Literal["5m", "1h"] | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
@@ -560,6 +561,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        anthropic_cache_ttl: Prompt-cache lifetime for Anthropic models. `None`
+            preserves the middleware's default (`"5m"`). Applied to the main
+            agent and all subagents.
 
     Returns:
         A configured deep agent.
@@ -681,7 +685,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
 
-            append_prompt_caching_middleware(subagent_middleware)
+            append_prompt_caching_middleware(
+                subagent_middleware,
+                anthropic_cache_ttl=anthropic_cache_ttl,
+            )
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -764,7 +771,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
-        append_prompt_caching_middleware(gp_middleware)
+        append_prompt_caching_middleware(
+            gp_middleware,
+            anthropic_cache_ttl=anthropic_cache_ttl,
+        )
         _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -857,7 +867,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
-    append_prompt_caching_middleware(deepagent_middleware)
+    append_prompt_caching_middleware(
+        deepagent_middleware,
+        anthropic_cache_ttl=anthropic_cache_ttl,
+    )
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
         # request model is Anthropic, making it safe to enable unconditionally.

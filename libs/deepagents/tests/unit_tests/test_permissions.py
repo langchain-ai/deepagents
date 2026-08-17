@@ -1598,6 +1598,75 @@ class TestGeneralPurposeSubagentPermissionInheritance:
         assert _filesystem_permissions_for(agent, "general-purpose") == override_perms
 
 
+class TestPermissionsSurviveFilesystemToolsOverride:
+    """Regression tests for https://github.com/langchain-ai/deepagents/issues/5388.
+
+    Overriding the filesystem tool set the documented way --
+    `middleware=[FilesystemMiddleware(tools=[...])]` -- must not drop the
+    `permissions=` rules `create_deep_agent` configured. The override replaces
+    the factory's default `FilesystemMiddleware` by `.name`, so the factory must
+    re-attach the rules onto the surviving instance.
+    """
+
+    def test_main_agent_permissions_survive_tools_override(self):
+        perms = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        backend = _make_backend()
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            permissions=perms,
+            middleware=[FilesystemMiddleware(backend=backend, tools=["read_file", "ls", "write_file"])],
+        )
+
+        assert _filesystem_permissions_for(agent) == perms
+
+    def test_gp_subagent_permissions_survive_tools_override(self):
+        perms = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        backend = _make_backend()
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            permissions=perms,
+            middleware=[FilesystemMiddleware(backend=backend, tools=["read_file", "ls", "write_file"])],
+        )
+
+        assert _filesystem_permissions_for(agent, "general-purpose") == perms
+
+    def test_declarative_subagent_permissions_survive_tools_override(self):
+        parent_perms = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        backend = _make_backend()
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            permissions=parent_perms,
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "does work",
+                    "system_prompt": "work",
+                    "middleware": [FilesystemMiddleware(backend=backend, tools=["read_file", "ls", "write_file"])],
+                }
+            ],
+        )
+
+        # Inherits the parent's rules onto the overridden instance.
+        assert _filesystem_permissions_for(agent, "worker") == parent_perms
+
+    def test_explicit_middleware_permissions_are_not_clobbered(self):
+        """A caller instance carrying its own rules wins over the factory's."""
+        parent_perms = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        own_perms = [FilesystemPermission(operations=["read"], paths=["/private/**"], mode="deny")]
+        backend = _make_backend()
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            permissions=parent_perms,
+            middleware=[FilesystemMiddleware(backend=backend, tools=["read_file", "ls", "write_file"], _permissions=own_perms)],
+        )
+
+        assert _filesystem_permissions_for(agent) == own_perms
+
+
 class TestGlobResultPermissionFiltering:
     """`deny` rules must survive the glob result path.
 

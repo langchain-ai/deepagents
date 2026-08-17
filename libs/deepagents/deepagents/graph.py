@@ -238,6 +238,27 @@ def _apply_custom_middleware(
     return result
 
 
+def _attach_filesystem_permissions(
+    stack: list[AgentMiddleware[Any, Any, Any]],
+    permissions: list[FilesystemPermission] | None,
+) -> None:
+    """Re-attach factory-configured permissions onto `FilesystemMiddleware`.
+
+    A caller-supplied `FilesystemMiddleware` replaces the factory's default in
+    place, dropping the `permissions=` rules the factory configured. The
+    built-in file tools read `permissions` at call time, so we restore them
+    here, after the merge, on whichever instance ended up in the final stack.
+
+    We only attach when the instance has no permissions, so this repairs the
+    silent drop without clobbering an explicit override.
+    """
+    if not permissions:
+        return
+    for middleware_instance in stack:
+        if isinstance(middleware_instance, FilesystemMiddleware) and not middleware_instance.permissions:
+            middleware_instance.permissions = permissions
+
+
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
@@ -739,6 +760,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
+            _attach_filesystem_permissions(subagent_middleware, subagent_permissions)
             _verify_excluded_middleware_coverage(
                 _subagent_profile,
                 _subagent_matched_classes,
@@ -827,6 +849,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
+        _attach_filesystem_permissions(gp_middleware, permissions)
         # Tool exclusion runs last so excluded tool names are stripped after all
         # tool-injecting middleware has run.
         if _profile.excluded_tools:
@@ -941,6 +964,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     private_state_keys = private_state_field_names(*state_schemas)
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys
+    _attach_filesystem_permissions(deepagent_middleware, permissions)
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

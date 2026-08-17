@@ -33009,10 +33009,93 @@ class TestRespawnServer:
 
             caller = asyncio.current_task()
             await app._handle_command("/reload")
+            assert app._reload_task is not None
+            await app._reload_task
 
             proc.restart.assert_awaited_once()
             assert caller not in app._server_restart_tasks
             assert not app._server_restart_tasks
+
+    async def test_reload_preserves_queue_across_idle_server_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Messages submitted during a detached `/reload` survive the restart.
+
+        `/reload` runs off the message pump, so a prompt submitted mid-reload
+        queues (the app is busy with the server restart). The idle restart path
+        discards the queue before respawning; without preservation that prompt
+        would vanish.
+        """
+        from deepagents_code import theme
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            proc = await self._prepare(app)
+            app._plugin_fingerprints = {}
+
+            gate = asyncio.Event()
+            gate_waiting = asyncio.Event()
+
+            async def restart_manual() -> bool:
+                gate_waiting.set()
+                # The real respawn marks the app connecting for its duration,
+                # which is what queues mid-reload submissions; reproduce that
+                # busy state here since the mocked restart skips it.
+                app._connecting = True
+                try:
+                    await gate.wait()
+                    await app._restart_server_process(proc)
+                finally:
+                    app._connecting = False
+                return True
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(theme, "reload_registry", lambda: None)
+            monkeypatch.setattr(app, "_register_custom_themes", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.app._load_theme_preference", lambda: app.theme
+            )
+            monkeypatch.setattr(app, "_discover_skills", AsyncMock(return_value=True))
+            monkeypatch.setattr(
+                app,
+                "_discover_plugins_with_fingerprints",
+                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", restart_manual)
+            monkeypatch.setattr(
+                app,
+                "_maybe_start_deferred_server_from_default",
+                AsyncMock(return_value=False),
+            )
+            handled: list[str] = []
+
+            async def record(text: str) -> None:  # noqa: RUF029
+                handled.append(text)
+
+            monkeypatch.setattr(app, "_handle_user_message", record)
+
+            await app._handle_command("/reload")
+            assert app._reload_task is not None
+            # Wait until the reload reaches the gated restart so the submission
+            # below queues against a busy app rather than racing the discard.
+            await gate_waiting.wait()
+            await app._submit_input("typed during reload", "normal")
+            assert len(app._pending_messages) == 1
+
+            gate.set()
+            await app._reload_task
+            # The preserved message drains via call_after_refresh; run the
+            # scheduled callback before asserting on it.
+            await pilot.pause()
+            await asyncio.sleep(0)
+
+            assert not app._pending_messages
+            assert handled == ["typed during reload"]
 
     async def test_pending_mcp_reconnect_does_not_leave_restart_registration(
         self, monkeypatch: pytest.MonkeyPatch

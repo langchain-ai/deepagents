@@ -920,7 +920,7 @@ class TestReloadInputResponsiveness:
     async def test_keeps_chat_input_responsive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Typing should render while the reload continuation is still running."""
+        """Typing should render while the detached reload task is still running."""
         from deepagents_code.app import DeepAgentsApp
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -934,14 +934,14 @@ class TestReloadInputResponsiveness:
             started = asyncio.Event()
             release = asyncio.Event()
 
-            async def _blocked_reload(_command: str) -> None:
+            async def _blocked_reload() -> None:
                 started.set()
                 await release.wait()
 
-            monkeypatch.setattr(app, "_handle_command", _blocked_reload)
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
 
             chat_input.mode = "command"
-            chat_input._submit_value("reload")
+            chat_input._submit_value("/reload")
             await started.wait()
 
             await pilot.press("h", "i")
@@ -949,9 +949,7 @@ class TestReloadInputResponsiveness:
             typed = chat_input.value
 
             release.set()
-            task = app._modal_command_tasks.get("reload")
-            if task is not None:
-                await task
+            await pilot.pause()
 
             assert typed == "hi"
 
@@ -1011,6 +1009,8 @@ reasoning_effort_levels = ["{level}"]
 
                 write_config("new")
                 await app._handle_command("/reload")
+                if app._reload_task is not None:
+                    await app._reload_task
 
                 assert app._chat_input._argument_hint_overrides["effort"] == (
                     "[new|clear]"
@@ -1072,6 +1072,8 @@ class TestReloadSkillReport:
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -1194,6 +1196,8 @@ class TestReloadThemeReapply:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -1898,6 +1902,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -1948,6 +1954,8 @@ class TestReloadPluginsViaReload:
             app._plugin_fingerprints = old
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2151,6 +2159,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
@@ -2209,6 +2219,8 @@ class TestReloadPluginsViaReload:
             )
 
             await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
             await pilot.pause()
 
             assert app._session_plugin_ids == expected_ids

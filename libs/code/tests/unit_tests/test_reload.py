@@ -2289,3 +2289,42 @@ class TestReloadPluginsViaReload:
 
             assert app._session_plugin_ids == expected_ids
             assert order == ["hooks", "restart"]
+
+    async def test_preserves_messages_queued_before_cancelling_for_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reload retains prompts queued while its active turn is cancelled."""
+        from deepagents_code.app import DeepAgentsApp, QueuedMessage
+        from deepagents_code.plugins.models import PluginDiscoveryResult
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            app._agent_worker = MagicMock()
+            app._set_agent_running(True)
+            app._pending_messages.append(QueuedMessage("follow up", "normal"))
+
+            async def _fake_discover() -> bool:  # noqa: RUF029
+                return True
+
+            async def _fake_restart() -> bool:  # noqa: RUF029
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+            monkeypatch.setattr(app, "_cancel_worker", app._discard_queue)
+            monkeypatch.setattr(
+                "deepagents_code.plugins.discover_plugins",
+                lambda: PluginDiscoveryResult(plugins=()),
+            )
+            monkeypatch.setattr(
+                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
+                lambda _plugins: (),
+            )
+
+            await app._run_reload()
+
+            assert [message.text for message in app._pending_messages] == ["follow up"]

@@ -15023,20 +15023,23 @@ class DeepAgentsApp(App):
                 restarted = False
                 if self._server_proc is not None and self._server_kwargs is not None:
                     if self._agent_running and self._agent_worker:
+                        # `/reload` runs detached, so submissions can queue
+                        # while discovery is in progress. `_cancel_worker()`
+                        # clears the queue, but these messages belong to the
+                        # reload rather than the cancelled agent turn.
+                        preserved = list(self._pending_messages)
                         self._cancel_worker(self._agent_worker)
                         # Via `_set_agent_running` so the quiescence event is
                         # released with the flag; a bare assignment leaves
                         # `_agent_quiescent` cleared.
                         self._set_agent_running(False)
-                        preserved: list[QueuedMessage] = []
                     else:
                         # `/reload` now runs detached, so the user may have
                         # submitted messages that queued while the reload was
                         # busy. The restart's `_discard_queue()` would silently
                         # drop them; snapshot and restore them instead. Only the
-                        # idle path preserves: the running-agent path above
-                        # cancels a turn and intentionally drops its backlog so
-                        # nothing fires against the respawned agent.
+                        # idle path reaches `_discard_queue()` directly; the
+                        # running-agent path snapshots before its cancellation.
                         preserved = list(self._pending_messages)
                         self._discard_queue()
                     restarted = await self._restart_server_manual()

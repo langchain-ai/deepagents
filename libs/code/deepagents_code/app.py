@@ -19019,6 +19019,13 @@ class DeepAgentsApp(App):
         restart_task = self._restart_respawn_task
         if restart_task is not None and not restart_task.done():
             restart_tasks.add(restart_task)
+        # `/reload` runs in a detached task and may itself respawn the owned
+        # server. Treat it like other restart-capable work: cancel and settle
+        # it before stopping the server so it cannot rebuild the agent after
+        # teardown begins.
+        reload_task = self._reload_task
+        if reload_task is not None and not reload_task.done():
+            restart_tasks.add(reload_task)
         should_wait_for_restart = bool(restart_tasks)
         # Already cancelled above; awaited in the bounded teardown phase below so
         # a continuation's cancellation handler (which may be killing a `uv`
@@ -24593,6 +24600,20 @@ class DeepAgentsApp(App):
             command: Raw command string for echoing back to chat.
         """
         await self._mount_message(UserMessage(command))
+
+        # `/reload` can restart the owned server after refreshing plugins.
+        # `/restart` normally bypasses every busy state, but starting a second
+        # respawn here would race that reload and could leave the final agent
+        # bound to stale plugin state. The active reload already includes the
+        # restart, so coalesce this request with it.
+        if self._reloading:
+            await self._mount_message(
+                AppMessage(
+                    "Reload already in progress; the agent server will restart "
+                    "when it finishes."
+                )
+            )
+            return
 
         # A duplicate `/restart` bypasses the normal input queue while the
         # first detached respawn is still connecting. Reject it before the

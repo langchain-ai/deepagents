@@ -1017,6 +1017,40 @@ class TestReloadInputResponsiveness:
             await first
             assert app._reloading is False
 
+    @pytest.mark.timeout(15)
+    async def test_coalesces_restart_with_active_reload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` does not race the restart already planned by `/reload`."""
+        from deepagents_code.app import AppMessage, DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def _blocked_reload() -> None:
+                started.set()
+                await release.wait()
+
+            restart = AsyncMock(return_value=True)
+            monkeypatch.setattr(app, "_run_reload", _blocked_reload)
+            monkeypatch.setattr(app, "_restart_server_manual", restart)
+
+            task = app._schedule_reload()
+            await started.wait()
+            await app._handle_command("/restart")
+
+            restart.assert_not_awaited()
+            assert any(
+                "Reload already in progress" in str(message._content)
+                for message in app.query(AppMessage)
+            )
+
+            release.set()
+            await task
+
 
 class TestReloadModelProfileHints:
     """`/reload` should refresh profile-derived command hints."""

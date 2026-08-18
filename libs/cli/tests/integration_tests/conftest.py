@@ -15,9 +15,7 @@ def langsmith_client() -> Generator[Client | None, None, None]:
     It creates a single client instance and ensures it's flushed after
     each test.
     """
-    langsmith_api_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
-        "LANGCHAIN_API_KEY"
-    )
+    langsmith_api_key = os.environ.get("LANGSMITH_API_KEY")
 
     if langsmith_api_key:
         client = get_tracing_context()["client"] or Client()

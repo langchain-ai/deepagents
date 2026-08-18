@@ -64,10 +64,10 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 Optional:
 
 ```
-LANGCHAIN_TRACING_V2=true
+LANGSMITH_TRACING=true
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
-LANGCHAIN_API_KEY=your_langsmith_api_key_here
-LANGCHAIN_PROJECT=text2sql-deepagent
+LANGSMITH_API_KEY=your_langsmith_api_key_here
+LANGSMITH_PROJECT=text2sql-deepagent
 ```
 
 ## Usage
@@ -230,10 +230,10 @@ text-to-sql-agent/
 3. Add these variables to your `.env` file:
 
 ```
-LANGCHAIN_TRACING_V2=true
+LANGSMITH_TRACING=true
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
-LANGCHAIN_API_KEY=your_langsmith_api_key_here
-LANGCHAIN_PROJECT=text2sql-deepagent
+LANGSMITH_API_KEY=your_langsmith_api_key_here
+LANGSMITH_PROJECT=text2sql-deepagent
 ```
 
 ### What You'll See

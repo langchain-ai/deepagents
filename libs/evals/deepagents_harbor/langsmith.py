@@ -36,8 +36,8 @@ from langsmith.utils import LangSmithError, LangSmithNotFoundError
 LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
 """Base URL for LangSmith API requests, overridable via `LANGSMITH_ENDPOINT`."""
 
-_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
-"""Environment variables checked (in priority order) when resolving an API key."""
+_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY",)
+"""Environment variables checked when resolving an API key."""
 
 _FEEDBACK_MAX_WORKERS = 8
 """Upper bound on concurrent trial-feedback workers in `add_feedback`."""
@@ -59,8 +59,8 @@ class _RegistryClient(Protocol):
 def resolve_langsmith_api_key() -> tuple[str, str] | None:
     """Resolve the LangSmith API key from environment variables.
 
-    Checks, in order: `LANGSMITH_API_KEY`, `LANGCHAIN_API_KEY`. Returns a
-    `(value, env_var_name)` tuple for the first non-empty value, or `None`.
+    Returns a `(value, env_var_name)` tuple when `LANGSMITH_API_KEY` is non-empty,
+    or `None`.
     """
     for var in _API_KEY_ENV_VARS:
         value = os.getenv(var)
@@ -106,7 +106,7 @@ def _headers() -> dict[str, str]:
     """
     result = resolve_langsmith_api_key()
     if not result:
-        msg = "No LangSmith API key found. Set one of: LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
+        msg = "No LangSmith API key found. Set LANGSMITH_API_KEY."
         raise ValueError(msg)
     return {"x-api-key": result[0]}
 

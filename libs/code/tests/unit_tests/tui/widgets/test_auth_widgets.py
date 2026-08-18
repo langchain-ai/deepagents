@@ -736,7 +736,6 @@ api_key_url = "javascript:alert(1)"
         for var in (
             "LANGSMITH_API_KEY",
             "LANGSMITH_TRACING",
-            "LANGCHAIN_TRACING_V2",
             "LANGSMITH_PROJECT",
             "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
             "DEEPAGENTS_CODE_LANGSMITH_TRACING",
@@ -959,24 +958,11 @@ api_key_url = "javascript:alert(1)"
             screen.on_radio_set_changed(RadioSet.Changed(region_set, stray))
             assert screen._region == Region.EU  # unchanged, not degraded to us
 
-    async def test_langsmith_env_notice_via_alternate_var(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The precedence notice also fires for a lone LANGCHAIN_ENDPOINT."""
-        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
-        monkeypatch.setenv("LANGCHAIN_ENDPOINT", "https://from-alt-env.example.com")
-        app = _AuthHostApp()
-        async with app.run_test() as pilot:
-            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
-            await pilot.pause()
-            assert app.screen.query("#auth-prompt-endpoint-env-notice")
-
     async def test_langsmith_no_env_endpoint_hides_precedence_notice(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With no env endpoint the notice is absent (no spurious warning)."""
         monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
-        monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("langsmith", "LANGSMITH_API_KEY")
@@ -1460,7 +1446,6 @@ api_key_url = "javascript:alert(1)"
             "LANGSMITH_API_KEY",
             "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
             "LANGSMITH_ENDPOINT",
-            "LANGCHAIN_ENDPOINT",
         ):
             monkeypatch.delenv(var, raising=False)
         app = _AuthHostApp()

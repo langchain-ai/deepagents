@@ -277,15 +277,12 @@ class _LangSmithProvider(SandboxProvider):
         if sandbox_key:
             logger.debug("Using LangSmith API key from LANGSMITH_SANDBOX_API_KEY")
         self._api_key: str | None = (
-            api_key
-            or sandbox_key
-            or resolve_env_var("LANGSMITH_API_KEY")
-            or resolve_env_var("LANGCHAIN_API_KEY")
+            api_key or sandbox_key or resolve_env_var("LANGSMITH_API_KEY")
         )
         if not self._api_key:
             msg = (
                 "No LangSmith sandbox API key found. Set "
-                "LANGSMITH_API_KEY, LANGCHAIN_API_KEY, or LANGSMITH_SANDBOX_API_KEY "
+                "LANGSMITH_API_KEY or LANGSMITH_SANDBOX_API_KEY "
                 "(or the DEEPAGENTS_CODE_-prefixed equivalents)."
             )
             raise ValueError(msg)

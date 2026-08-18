@@ -32,7 +32,7 @@
 4. `FilesystemBackend` without `virtual_mode=True` provides no path restriction; this is documented and expected for local dev use cases. The default (`virtual_mode=None`) is deprecated and will change to `True` in v0.5.0.
 5. Users who require isolation for untrusted workloads are expected to extend `BaseSandbox` or use container/VM-level sandboxing — the library does not provide OS-level process isolation.
 6. Memory and skill files are user-controlled artifacts loaded from user-specified paths; the library does not provide or vouch for their content.
-7. `AsyncSubAgentMiddleware` connects to user-configured remote LangGraph server URLs. Authentication relies on environment variables (`LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY`) read by the LangGraph SDK — the library does not manage authentication credentials.
+7. `AsyncSubAgentMiddleware` connects to user-configured remote LangGraph server URLs. Authentication relies on environment variables (`LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY`) read by the LangGraph SDK — the library does not manage authentication credentials.
 8. When the `openai:` model prefix is used via `resolve_model`, the OpenAI Responses API is used by default, which retains conversation data on OpenAI servers unless the user explicitly opts out.
 
 ---

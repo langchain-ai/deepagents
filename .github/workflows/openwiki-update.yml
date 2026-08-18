@@ -33,8 +33,8 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENWIKI_MODEL_ID: gpt-5.6-terra
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGCHAIN_PROJECT: openwiki
-          LANGCHAIN_TRACING_V2: "true"
+          LANGSMITH_PROJECT: openwiki
+          LANGSMITH_TRACING: "true"
 
       - name: Create OpenWiki update pull request
         env:

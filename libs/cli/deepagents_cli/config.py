@@ -10,7 +10,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 _PROJECT_DOTENV_BLOCKED_ENV_KEYS = (
     "LANGSMITH_ENDPOINT",
-    "LANGCHAIN_ENDPOINT",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",

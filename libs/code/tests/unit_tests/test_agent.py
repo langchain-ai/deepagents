@@ -2730,13 +2730,10 @@ class TestCreateCliAgentProjectContext:
 
         original_done = config_mod._bootstrap_state.done
         original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
-        # Simulate a completed bootstrap: the caller had their own LANGSMITH key
-        # (since overridden in-process) and never set a LANGCHAIN key.
+        # Simulate a completed bootstrap after an in-process key override.
         monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_agent_override")
-        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc_agent_override")
         config_mod._bootstrap_state.original_tracing_api_keys = {
-            "LANGSMITH_API_KEY": "lsv2_user_original",
-            "LANGCHAIN_API_KEY": None,
+            "LANGSMITH_API_KEY": "lsv2_user_original"
         }
         # Guard the seeded snapshot against an incidental bootstrap run.
         config_mod._bootstrap_state.done = True
@@ -2748,8 +2745,6 @@ class TestCreateCliAgentProjectContext:
             env = mock_shell.call_args.kwargs["env"]
             # The caller's own key is restored, not the agent's override.
             assert env["LANGSMITH_API_KEY"] == "lsv2_user_original"
-            # A key the caller never set is dropped, not leaked.
-            assert "LANGCHAIN_API_KEY" not in env
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys

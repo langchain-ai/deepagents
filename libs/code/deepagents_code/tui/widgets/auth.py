@@ -721,9 +721,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     def _refresh_endpoint_env_notice(self) -> None:
         """Recompute the LangSmith endpoint-precedence notice from the environment.
 
-        Surface when an environment endpoint is set: at startup an existing
-        `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT` takes precedence over the
-        stored region, so without this note the radio could show one region
+        Surface when `LANGSMITH_ENDPOINT` is set: at startup it takes precedence
+        over the stored region, so without this note the radio could show one region
         while traces route somewhere else. (The note fires on presence, not on
         divergence — it may show even when the env value matches the stored
         region.) Saving here applies the selection (the save path replaces the
@@ -733,13 +732,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         add or remove one of those variables and the recompose must reflect it.
         """
         self._endpoint_env_notice: str | None = None
-        if self._is_langsmith and any(
-            os.environ.get(var) for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
-        ):
+        if self._is_langsmith and os.environ.get("LANGSMITH_ENDPOINT"):
             self._endpoint_env_notice = (
-                "An endpoint is set in your environment "
-                "(LANGSMITH_ENDPOINT/LANGCHAIN_ENDPOINT) and takes precedence at "
-                "startup; saving a region here applies your selection instead."
+                "LANGSMITH_ENDPOINT is set in your environment and takes precedence "
+                "at startup; saving a region here applies your selection instead."
             )
 
     def compose(self) -> ComposeResult:

@@ -19,19 +19,9 @@ def _transport(handler: Handler) -> httpx.MockTransport:
 
 def test_from_env_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
-    monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
     with pytest.raises(SystemExit) as excinfo:
         ApiClient.from_env()
     assert excinfo.value.code != 0
-
-
-def test_from_env_prefers_langsmith_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_a")
-    monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_pt_b")
-    client = ApiClient.from_env(
-        transport=_transport(lambda _request: httpx.Response(200, json={}))
-    )
-    assert client.api_key == "lsv2_pt_a"
 
 
 def test_client_ignores_environment_proxy_config(
@@ -57,7 +47,6 @@ def test_endpoint_resolution_env_override(monkeypatch: pytest.MonkeyPatch) -> No
 def test_endpoint_defaults_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
-    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
     client = ApiClient.from_env(
         transport=_transport(lambda _request: httpx.Response(200, json={}))
     )

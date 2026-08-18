@@ -1,7 +1,7 @@
 """Prefixed environment variable resolution for the deploy CLI.
 
-Reads `LANGSMITH_*` / `LANGCHAIN_*` env vars (and any other canonical name
-the deploy pipeline needs) with a `DEEPAGENTS_CLI_` prefix override.
+Reads canonical environment variables used by the deploy pipeline with a
+`DEEPAGENTS_CLI_` prefix override.
 """
 
 from __future__ import annotations

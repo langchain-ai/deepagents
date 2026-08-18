@@ -42,8 +42,8 @@ class AsyncSubAgent(TypedDict):
     self-hosted servers.
 
     Authentication for LangGraph Platform / LangSmith Deployment is handled
-    automatically by the SDK via environment variables (`LANGGRAPH_API_KEY`,
-    `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`). For self-hosted servers,
+    automatically by the SDK via environment variables (`LANGGRAPH_API_KEY` or
+    `LANGSMITH_API_KEY`). For self-hosted servers,
     pass custom auth via `headers`.
 
     !!! note "Async invocation required for local ASGI transport"

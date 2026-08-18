@@ -2,10 +2,9 @@
 
 Thin wrapper around `httpx.Client` that:
 
-- Resolves auth from `LANGSMITH_API_KEY` (preferred) or `LANGCHAIN_API_KEY`
-  and sends it as `X-Api-Key`.
-- Resolves the endpoint from `LANGSMITH_ENDPOINT` / `LANGCHAIN_ENDPOINT`,
-  defaulting to `https://api.smith.langchain.com`.
+- Resolves auth from `LANGSMITH_API_KEY` and sends it as `X-Api-Key`.
+- Resolves the endpoint from `LANGSMITH_ENDPOINT`, defaulting to
+  `https://api.smith.langchain.com`.
 - Parses 4xx responses into `ApiError` with the platform's `ErrorResponse`
   shape (`type`/`code`/`detail`/`status`).
 - Retries 5xx responses once with a short backoff before raising.
@@ -53,14 +52,11 @@ def _normalize_endpoint(endpoint: str) -> str:
     endpoint = endpoint.strip().rstrip("/")
     parsed = urlsplit(endpoint)
     if parsed.scheme != "https" or not parsed.netloc:
-        msg = "Error: LANGSMITH_ENDPOINT / LANGCHAIN_ENDPOINT must be an HTTPS URL.\n"
+        msg = "Error: LANGSMITH_ENDPOINT must be an HTTPS URL.\n"
         sys.stderr.write(msg)
         raise SystemExit(1)
     if parsed.username or parsed.password:
-        msg = (
-            "Error: LANGSMITH_ENDPOINT / LANGCHAIN_ENDPOINT must not include "
-            "userinfo.\n"
-        )
+        msg = "Error: LANGSMITH_ENDPOINT must not include userinfo.\n"
         sys.stderr.write(msg)
         raise SystemExit(1)
     return endpoint
@@ -93,7 +89,7 @@ class ApiClient:
         *,
         transport: httpx.BaseTransport | None = None,
     ) -> ApiClient:
-        """Build a client from `LANGSMITH_*` / `LANGCHAIN_*` env vars.
+        """Build a client from canonical `LANGSMITH_*` environment variables.
 
         Endpoint resolution is env var > `_DEFAULT_ENDPOINT`. Project-local
         deploy state is intentionally ignored because it can be repository
@@ -101,21 +97,13 @@ class ApiClient:
 
         Exits non-zero with a friendly message if the API key is missing.
         """
-        api_key = (
-            os.environ.get("LANGSMITH_API_KEY")
-            or os.environ.get("LANGCHAIN_API_KEY")
-            or ""
-        ).strip()
+        api_key = os.environ.get("LANGSMITH_API_KEY", "").strip()
         if not api_key:
             sys.stderr.write(
                 "Error: set LANGSMITH_API_KEY in your .env or environment.\n"
             )
             raise SystemExit(1)
-        endpoint = (
-            os.environ.get("LANGSMITH_ENDPOINT")
-            or os.environ.get("LANGCHAIN_ENDPOINT")
-            or _DEFAULT_ENDPOINT
-        )
+        endpoint = os.environ.get("LANGSMITH_ENDPOINT") or _DEFAULT_ENDPOINT
         endpoint = _normalize_endpoint(endpoint)
         return cls(endpoint=endpoint, api_key=api_key, transport=transport)
 

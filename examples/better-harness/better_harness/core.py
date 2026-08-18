@@ -776,7 +776,6 @@ def write_trace_payloads(split_dir: Path, refs: list[str]) -> None:
 
     endpoint = (
         os.environ.get("LANGSMITH_ENDPOINT")
-        or os.environ.get("LANGCHAIN_ENDPOINT")
         or "https://api.smith.langchain.com"
     ).rstrip("/")
     traces_dir = split_dir / "traces" / "langsmith"

@@ -131,18 +131,13 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for key in (
         "LANGSMITH_API_KEY",
-        "LANGCHAIN_API_KEY",
         "LANGSMITH_TRACING",
-        "LANGCHAIN_TRACING_V2",
         "LANGSMITH_ENDPOINT",
-        "LANGCHAIN_ENDPOINT",
         "LANGSMITH_PROJECT",
         "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
         "DEEPAGENTS_CODE_LANGSMITH_REDACT",
         "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
-        "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
         "DEEPAGENTS_CODE_LANGSMITH_TRACING",
-        "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2",
     ):
         monkeypatch.delenv(key, raising=False)
 

@@ -24,6 +24,17 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
 """Maximum raw video payload size accepted by `read_file` frame extraction."""
 
+TRUNCATION_MARKER_TEMPLATE: Final = "... [{omitted_lines} lines truncated] ..."
+"""Marker standing in for lines dropped from the middle of a head/tail preview.
+
+Shared by `_message_eviction._create_content_preview` and the capture wrapper
+in `backends.sandbox` so both emit identical marker text.
+
+Never scan preview text for this marker to detect truncation: output can
+contain a literal marker line. Producers report marker presence out of band
+instead (see `ExecuteOffloadResult.preview_has_truncation_marker`).
+"""
+
 FileType = Literal["text", "image", "audio", "video", "file"]
 """Classification of a file by extension."""
 

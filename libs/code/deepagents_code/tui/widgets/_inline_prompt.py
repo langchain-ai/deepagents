@@ -222,17 +222,11 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         # them a second time. The `prevent_default()` above is what stops that
         # walk on the rejection path.
 
-    async def _dispatch_burst_payload(self, payload: str) -> bool:
-        """Reject a media file replayed as a key burst, else defer to the base.
-
-        Returns:
-            `False` on the rejection path — nothing is inserted, so there is no
-            pending application for a caller to order against — otherwise
-            whatever the base reports.
-        """
+    async def _dispatch_burst_payload(self, payload: str) -> None:
+        """Reject a media file replayed as a key burst, else defer to the base."""
         if await self._reject_dropped_media(payload):
-            return False
-        return await super()._dispatch_burst_payload(payload)
+            return
+        await super()._dispatch_burst_payload(payload)
 
     async def _reject_dropped_media(self, text: str) -> bool:
         """Toast and swallow a dropped payload containing an image or video.

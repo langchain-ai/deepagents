@@ -154,13 +154,13 @@ class PasteBurstTextArea(TextArea):
 
     def _init_paste_burst_state(self) -> None:
         """Reset all paste-burst tracking fields to their initial values."""
-        # Buffer high-frequency key bursts from terminals that emulate paste via
-        # rapid key events instead of dispatching a paste event.
+        # Holds burst text only after promotion. A rapid run stays in the
+        # document until something confirms it is a paste.
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._paste_burst_timer = None
-        # Counts consecutive rapid keystrokes so a paste-like stream can be
-        # detected even when it doesn't begin with a quote.
+        # Counts consecutive rapid keystrokes so a paste replayed as key events
+        # can be recognized without a bracketed paste event.
         self._paste_burst_run = 0
         self._paste_burst_run_text = ""
         self._paste_burst_last_key_time = None
@@ -219,17 +219,15 @@ class PasteBurstTextArea(TextArea):
         """
         return False
 
-    async def _dispatch_burst_payload(self, payload: str) -> bool:
+    async def _dispatch_burst_payload(self, payload: str) -> None:
         """Handle a flushed burst payload. Base behavior inserts it verbatim.
 
-        Returns:
-            `True` when the payload was deferred to a posted message rather than
-            applied to the document here, so a caller that must order a following
-            keystroke after the payload has to wait for that message. The base
-            implementation inserts synchronously and returns `False`.
+        Implementations must apply the payload before returning. A payload
+        applied later — from a posted message or a scheduled callback — is
+        ordered behind any key event already waiting in this widget's queue, so
+        the next keystroke would be inserted ahead of the paste.
         """
         self.insert(payload)
-        return False
 
     def _burst_run_payload_for_dispatch(self, payload: str) -> str:  # noqa: PLR6301  # overridable hook
         """Return the payload represented by a visible rapid-key run.
@@ -360,24 +358,21 @@ class PasteBurstTextArea(TextArea):
             return False
         return (now - last_key) <= PASTE_BURST_CHAR_GAP_SECONDS
 
-    async def _flush_paste_burst(self) -> bool:
+    async def _flush_paste_burst(self) -> None:
         """Flush buffered burst text through the payload dispatch hook.
 
         When the buffer is empty this is a no-op, so it is safe to call
-        defensively before handling a bracketed paste.
-
-        Returns:
-            Whatever `_dispatch_burst_payload` reported — `True` when the payload
-            will be applied by a posted message rather than synchronously. `False`
-            when there was nothing buffered.
+        defensively before handling a bracketed paste. The payload is applied
+        before this returns, so a caller may go on to handle the current key
+        knowing it lands after the paste.
         """
         payload = self._paste_burst_buffer
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
         if not payload:
-            return False
-        return await self._dispatch_burst_payload(payload)
+            return
+        await self._dispatch_burst_payload(payload)
 
     def _promote_paste_burst_run(self, now: float) -> bool:
         """Move an already-inserted rapid run out of the document into the buffer.
@@ -399,7 +394,7 @@ class PasteBurstTextArea(TextArea):
             an empty run, a non-empty selection (deleting would clobber the
             user's selected range), or a document whose text immediately before
             the cursor is no longer the tracked run — which means an intervening
-            edit desynchronised the tracker. Callers must fall back to handling
+            edit desynchronized the tracker. Callers must fall back to handling
             the key normally.
         """
         payload = self._paste_burst_run_text
@@ -409,7 +404,7 @@ class PasteBurstTextArea(TextArea):
         cursor_offset = self.document.get_index_from_location(cursor)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
         start_offset = cursor_offset - len(payload)
         if start_offset < 0 or self.text[start_offset:cursor_offset] != payload:
-            # An untracked edit desynchronised the tracker, so drop the stale run
+            # An untracked edit desynchronized the tracker, so drop the stale run
             # and let tracking restart on the next keystroke. Logged at warning
             # (not debug) so it survives the default INFO level — this is a state
             # -machine bug, not a user-reachable condition. The message carries
@@ -445,7 +440,9 @@ class PasteBurstTextArea(TextArea):
         Returns:
             `True` when the key was buffered and the caller should stop handling
             it; `False` when there is no active burst (or it was just flushed)
-            and the caller should continue normal key handling.
+            and the caller should continue normal key handling. A flush applies
+            its payload before returning, so handling the key afterwards orders
+            it after the paste.
         """
         if not self._paste_burst_buffer:
             return False
@@ -505,9 +502,9 @@ class PasteBurstTextArea(TextArea):
         - A dropped-path shape (`/`, `~`, drive letter, `file://`, UNC). Without
           this, an unquoted single-line drop would never reach path parsing or
           media rejection.
-        - A run past `PASTE_BURST_PROMOTE_CHARS`, which no human reaches at
-          burst speed. Without this, a large single-line key-event paste would
-          never collapse into a placeholder.
+        - A run that reaches `PASTE_BURST_PROMOTE_CHARS`, a length no human
+          reaches at burst speed. Without this, a large single-line key-event
+          paste would never collapse into a placeholder.
 
         Neither case flushes here. The paste is still streaming, so the run is
         only a prefix of the payload; once promoted, the remaining characters
@@ -718,14 +715,9 @@ class CollapsingPasteTextArea(PasteBurstTextArea):
         """
         return self._collapse_pastes
 
-    async def _dispatch_burst_payload(self, payload: str) -> bool:
-        """Collapse a large flushed burst, otherwise insert it verbatim.
-
-        Returns:
-            `False`; both branches apply the payload synchronously.
-        """
+    async def _dispatch_burst_payload(self, payload: str) -> None:
+        """Collapse a large flushed burst, otherwise insert it verbatim."""
         self._insert_paste_payload(payload)
-        return False
 
     def _insert_paste_payload(self, payload: str) -> None:
         """Collapse `payload` into a placeholder when large, else insert it."""

@@ -20,10 +20,12 @@ from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
+    _checkpoint_command,
     _get_context,
     _is_anthropic_model,
     _is_fireworks_model,
     _is_openai_model,
+    _ResolvedModelRequest,
 )
 
 
@@ -69,7 +71,12 @@ def _checkpoint_update(
     assert isinstance(result, ExtendedModelResponse)
     assert result.command is not None
     assert isinstance(result.command.update, dict)
-    return result.command.update
+    update = dict(result.command.update)
+    timestamp = update.pop("_last_model_request_at")
+    assert isinstance(timestamp, str)
+    cache_model_spec = update.pop("_last_cache_model_spec")
+    assert isinstance(cache_model_spec, str)
+    return update
 
 
 def _make_model_result(
@@ -101,6 +108,86 @@ _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 
 class TestCheckpointPersistence:
     """Tests for private resume-state checkpoint updates."""
+
+    def test_records_request_start_only_after_success(self) -> None:
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+        request = _make_request(_make_model("gpt-5.6"))
+
+        with patch(
+            "deepagents_code.configurable_model._utc_now_iso",
+            return_value="2026-08-11T12:30:00+00:00",
+        ):
+            result = middleware.wrap_model_call(
+                request,
+                lambda _request: _make_response(),
+            )
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        update = result.command.update
+        assert isinstance(update, dict)
+        assert update["_last_model_request_at"] == "2026-08-11T12:30:00+00:00"
+        assert update["_last_cache_model_spec"] == "openai:gpt-5.6"
+
+    def test_timestamp_is_captured_before_the_model_call(self) -> None:
+        """Cache age must be measured from when the prefix was written.
+
+        Stamping after `handler()` returns would make a twenty-minute turn
+        look twenty minutes fresher than it is, under-warning on exactly the
+        long, expensive turns this feature targets.
+        """
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+        request = _make_request(_make_model("gpt-5.6"))
+        clock = iter(
+            ["2026-08-11T12:30:00+00:00", "2026-08-11T12:50:00+00:00"],
+        )
+
+        def slow_handler(_request: ModelRequest) -> ModelResponse[Any]:
+            # Consumes the second reading, as a real elapsed call would.
+            next(clock)
+            return _make_response()
+
+        with patch(
+            "deepagents_code.configurable_model._utc_now_iso",
+            side_effect=lambda: next(clock),
+        ):
+            result = middleware.wrap_model_call(request, slow_handler)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        update = result.command.update
+        assert isinstance(update, dict)
+        assert update["_last_model_request_at"] == "2026-08-11T12:30:00+00:00"
+
+    def test_timestamp_is_omitted_when_the_model_spec_is_unknown(self) -> None:
+        """Timing and identity are one fact and must be written together.
+
+        A timestamp without a spec reads back as a permanent "model changed",
+        warning on every send with copy naming a change that never happened.
+        """
+        resolved = _ResolvedModelRequest(
+            _make_request(_make_model("gpt-5.6")),
+            None,
+            model_params_known=True,
+        )
+
+        command = _checkpoint_command(resolved, "2026-08-11T12:30:00+00:00")
+
+        update = command.update
+        assert isinstance(update, dict)
+        assert "_last_model_request_at" not in update
+        assert "_last_cache_model_spec" not in update
+
+    def test_failed_call_does_not_return_checkpoint_update(self) -> None:
+        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+        request = _make_request(_make_model("gpt-5.6"))
+
+        def fail(_request: ModelRequest) -> ModelResponse[Any]:
+            msg = "provider failed"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match="provider failed"):
+            middleware.wrap_model_call(request, fail)
 
     def test_can_disable_model_state_persistence(self) -> None:
         middleware = ConfigurableModelMiddleware(persist_model_state=False)
@@ -420,10 +507,32 @@ class TestModelSwap:
 
         assert captured[0].model is original
         assert captured[0].model_settings == {}
+        # `_model_params` is deliberately absent rather than `None`: the
+        # override never reached `_build_overrides`, so the params in effect
+        # are unknown and the checkpoint's previous value must stand. Writing
+        # `None` here would clear it while the app still holds its override,
+        # pinning the cold-cache identity check to a permanent false
+        # "model changed".
         assert _checkpoint_update(result) == {
             "_model_spec": "anthropic:claude-sonnet-4-6",
-            "_model_params": None,
         }
+
+    def test_failed_override_records_original_as_cache_identity(self) -> None:
+        """The cache model spec tracks the model that served the call."""
+        from deepagents_code.model_config import ModelConfigError
+
+        original = _make_model("claude-sonnet-4-6")
+        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        request = _make_request(original, context=CLIContext(model="unknown:bad-model"))
+
+        with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
+            result = _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        update = result.command.update
+        assert isinstance(update, dict)
+        assert update["_last_cache_model_spec"] == "anthropic:claude-sonnet-4-6"
 
     def test_successful_swap_records_resolved_model_spec(self) -> None:
         original = _make_model("claude-sonnet-4-6")

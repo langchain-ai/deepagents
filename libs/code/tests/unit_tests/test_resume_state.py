@@ -36,6 +36,18 @@ class TestResumeState:
         """ResumeState declares the `_model_params` channel."""
         assert "_model_params" in ResumeState.__annotations__
 
+    def test_last_model_request_timestamp_is_private(self) -> None:
+        """Cache timing must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_model_request_at"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
+    def test_last_cache_model_spec_is_private(self) -> None:
+        """Cache identity must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_cache_model_spec"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
     def test_sticky_rubric_field_is_private(self):
         """Persistent TUI rubrics must not leak through the public schema."""
         # `_sticky_rubric` is inherited from `GoalRubricChannels`, so resolve the

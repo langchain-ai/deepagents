@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents._models import (  # noqa: PLC2701
@@ -488,10 +489,17 @@ def _apply_overrides(
                 "continuing with current model",
                 model,
             )
+            # `model_params_known=False` deliberately: the override never
+            # reached `_build_overrides`, so which params are in effect is
+            # exactly what this path does not know. Writing the default `None`
+            # instead would clear the checkpoint's params while the app still
+            # holds its override, and the cold-cache identity check would then
+            # compare a populated map against `None` on every send -- a
+            # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
-                model_params_known=True,
+                model_params_known=False,
             )
 
     updated = _build_overrides(
@@ -548,10 +556,17 @@ async def _apply_overrides_async(
                 "continuing with current model",
                 model,
             )
+            # `model_params_known=False` deliberately: the override never
+            # reached `_build_overrides`, so which params are in effect is
+            # exactly what this path does not know. Writing the default `None`
+            # instead would clear the checkpoint's params while the app still
+            # holds its override, and the cold-cache identity check would then
+            # compare a populated map against `None` on every send -- a
+            # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
-                model_params_known=True,
+                model_params_known=False,
             )
 
     updated = _build_overrides(
@@ -566,19 +581,49 @@ async def _apply_overrides_async(
     )
 
 
-def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
+def _utc_now_iso() -> str:
+    """Return the current UTC time in checkpoint-safe ISO format."""
+    return datetime.now(UTC).isoformat()
+
+
+def _checkpoint_command(
+    resolved: _ResolvedModelRequest,
+    request_started_at: str,
+) -> Command[Any]:
     """Build the private resume-state update for a completed model call.
 
+    Args:
+        resolved: The request as actually sent, after override resolution.
+        request_started_at: UTC ISO timestamp captured before the model call.
+            It only reaches a checkpoint because this runs after `handler()`
+            returned, which is what makes it a successful-call marker.
+
     Returns:
-        Command with private checkpoint updates, or `None` when nothing is known.
+        Command carrying cache timing and effective model metadata.
     """
     update: dict[str, Any] = {}
+    # Use the resolved spec, not `_apply_overrides`'s `ctx.model`: when an
+    # override fails with `ModelConfigError`, `_apply_overrides` falls back to
+    # the original model while `ctx.model` still names the rejected override.
+    #
+    # The timestamp is written only alongside a known spec. The two are one
+    # fact -- when the cache was warmed, and for which model -- and a
+    # timestamp without an identity would read back as a permanent "model
+    # changed", warning on every send with copy that names a change that never
+    # happened.
     if resolved.model_spec:
+        update["_last_model_request_at"] = request_started_at
+        update["_last_cache_model_spec"] = resolved.model_spec
         update["_model_spec"] = resolved.model_spec
+    else:
+        # The previous turn's timestamp stays in place, so the next cold-cache
+        # age is computed against an older request than the one just made.
+        logger.debug(
+            "Not recording prompt-cache state: no model spec could be derived from %s",
+            type(resolved.request.model).__name__,
+        )
     if resolved.model_params_known:
         update["_model_params"] = resolved.model_params
-    if not update:
-        return None
     return Command(update=update)
 
 
@@ -644,10 +689,11 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         resolved = _apply_overrides(
             request, openai_prompt_cache_key=self._openai_prompt_cache_key
         )
+        request_started_at = _utc_now_iso()
         response = handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
-        if command is None:
+        if not self._persist_model_state:
             return response
+        command = _checkpoint_command(resolved, request_started_at)
         return ExtendedModelResponse(model_response=response, command=command)
 
     async def awrap_model_call(
@@ -664,8 +710,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         resolved = await _apply_overrides_async(
             request, openai_prompt_cache_key=self._openai_prompt_cache_key
         )
+        request_started_at = _utc_now_iso()
         response = await handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
-        if command is None:
+        if not self._persist_model_state:
             return response
+        command = _checkpoint_command(resolved, request_started_at)
         return ExtendedModelResponse(model_response=response, command=command)

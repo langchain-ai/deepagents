@@ -117,6 +117,9 @@ Zero or negative disables the suggestion.
 SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
 """Default warning threshold in USD; zero or negative disables the warning."""
 
+COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT = 0.50
+"""Default incremental re-warm cost that triggers a cold-cache warning."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -1552,6 +1555,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.cold_cache_min_delta_usd",
+        group="Warnings",
+        summary=(
+            "Warn before a cold prompt-cache turn whose estimated extra cost "
+            "reaches this amount (0 disables)."
+        ),
+        kind=OptionKind.FLOAT,
+        default=COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
+        toml_keys=("warnings", "cold_cache_min_delta_usd"),
+    ),
+    ConfigOption(
         key="warnings.session_cost_threshold_usd",
         group="Warnings",
         summary=(
@@ -1786,6 +1800,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL_PRESENCE,
         default=False,
         env_var=_env_vars.DEBUG_UPDATE,
+    ),
+    ConfigOption(
+        key="debug.cold_cache",
+        group="Debug",
+        summary=(
+            "Force the cold prompt-cache warning modal on every interactive "
+            "send, overriding suppression."
+        ),
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_COLD_CACHE,
     ),
     ConfigOption(
         key="debug.mcp_project_trust",

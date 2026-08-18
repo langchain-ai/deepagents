@@ -8,6 +8,8 @@ version = "0.1.57"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
+authors = [{ name = "LangChain" }]
+maintainers = [{ name = "LangChain" }]
 requires-python = ">=3.11,<4.0"
 keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
@@ -26,20 +28,20 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.6",
+    "deepagents==0.7.7",
     "langchain>=1.3.15,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
     # Client-server architecture
     "langgraph-sdk>=0.4.2,<1.0.0",
     "langgraph-cli[inmem]>=0.4.31,<1.0.0",
-    "langgraph-runtime-inmem>=0.32.4,<1.0.0",
+    "langgraph-runtime-inmem>=0.32.5,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.5.6,<2.0.0",
-    "langchain-google-genai>=4.3.3,<5.0.0",
-    "langchain-openai>=1.5.0,<2.0.0",
+    "langchain-google-genai>=4.3.4,<5.0.0",
+    "langchain-openai>=1.5.1,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
 
     # UI/Terminal
@@ -54,7 +56,7 @@ dependencies = [
     "markdownify>=1.2.3,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.10.18",
+    "langsmith[sandbox]>=0.11.0",
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
@@ -105,11 +107,11 @@ dependencies = [
 # Model providers
 anthropic = ["langchain-anthropic>=1.5.6,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.3,<1.0.0"]
-bedrock = ["langchain-aws>=1.7.0,<2.0.0"]
+bedrock = ["langchain-aws>=1.7.2,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.5.2,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.3.3,<5.0.0"]
+google-genai = ["langchain-google-genai>=4.3.4,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.0,<2.0.0"]
@@ -121,8 +123,8 @@ nvidia = [
     "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.5.0,<2.0.0"]
-openrouter = ["langchain-openrouter>=0.2.7,<2.0.0"]
+openai = ["langchain-openai>=1.5.1,<2.0.0"]
+openrouter = ["langchain-openrouter>=0.2.8,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.4.0,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
 vertex = ["langchain-google-vertexai>=3.2.4,<4.0.0"]
@@ -152,8 +154,8 @@ deepagents-code = "deepagents_code:cli_main"
 dcode = "deepagents_code:cli_main"
 
 [project.urls]
-Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
-Documentation = "https://reference.langchain.com/python/deepagents/"
+Homepage = "https://www.langchain.com/dcode"
+Documentation = "https://docs.langchain.com/oss/deepagents/code/overview"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md"

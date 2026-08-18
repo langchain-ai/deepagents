@@ -25,6 +25,7 @@ from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
 )
+from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.client.non_interactive import (
     _MAX_HITL_ITERATIONS,
@@ -2177,6 +2178,56 @@ class TestMaxTurns:
                     max_turns=3,
                 )
         assert agent.astream.call_count == 3  # 1 initial + 2 HITL resumes = 3 turns
+
+    async def test_tags_every_resume_round_but_not_the_initial_run(self) -> None:
+        """Headless resumes carry the resume marker; the turn's first run does not.
+
+        The tag is what lets LangSmith fold a headless approval turn's sibling
+        root runs back together, and long auto-approval CI runs are where that
+        matters most. Also pins that the base config is never tagged in place --
+        reassigning instead of deriving would leak the marker onto the next
+        turn's initial run.
+        """
+        agent = _make_looping_agent()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_adapter.validate_python.side_effect = lambda v: v
+            with pytest.raises(HITLIterationLimitError):
+                await _run_agent_loop(
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=3,
+                )
+
+        configs = [call.kwargs["config"] for call in agent.astream.call_args_list]
+        assert len(configs) == 3
+        assert RESUME_TRACE_TAG not in configs[0].get("tags", [])
+        for resume_config in configs[1:]:
+            assert RESUME_TRACE_TAG in resume_config["tags"]
+            assert resume_config["configurable"] == config["configurable"]
+        assert "tags" not in config
 
     async def test_limit_hit_returns_exit_code_124(self) -> None:
         """run_non_interactive returns 124 when --max-turns is exhausted.

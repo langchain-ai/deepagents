@@ -242,6 +242,10 @@ class _ChatInputResizeTestApp(App[None]):
         yield ChatInput(id="chat-input")
 
 
+class _DispatchError(RuntimeError):
+    """Stand-in for a burst dispatch that raises (media decode, notify, ...)."""
+
+
 class _RecordingApp(App[None]):
     """App that records ChatInput.Submitted events for assertion."""
 
@@ -569,20 +573,90 @@ class TestChatInputResize:
             assert text_area.size.height == 1
             assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
-    async def test_double_click_from_a_partial_manual_height_expands(self) -> None:
-        """A part-way manual height still expands rather than collapsing.
+    async def test_double_click_from_a_partial_manual_height_collapses(self) -> None:
+        """A part-way manual height collapses rather than expanding.
 
-        The toggle keys off "already at the maximum", so a drag of a row or two
-        -- including the incidental jitter of a real double-click -- cannot
-        invert what the next double-click means.
+        Deliberate: the gesture keys off whether a manual height is what pins
+        the composer, not off whether it reached the maximum, so one
+        double-click undoes any drag the user can see.
         """
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
+            text_area.insert("one\ntwo\nthree")
             box.set_manual_height(5)
             await pilot.pause()
+            assert text_area.size.height == 5
+
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height is None
+            assert text_area.size.height == 3
+            # Genuinely automatic again, not a height that happens to equal the
+            # draft: auto growth is back in charge and a further toggle expands.
+            assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+            assert box._requested_height == _EXPANDED_HEIGHT
+
+    async def test_double_click_expands_a_manual_height_hidden_by_the_draft(
+        self,
+    ) -> None:
+        """A drag floored by the draft expands instead of collapsing.
+
+        Dragging a tall draft smaller stores a request the content floor then
+        refuses to render, so the composer never moves. Collapsing that request
+        would not move it either, leaving the user with two dead gestures in a
+        row -- so this case expands.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            text_area.insert("one\ntwo\nthree\nfour\nfive\nsix")
+            await pilot.pause()
+            assert text_area.size.height == 6
+
+            # Drag downward to shrink; the floor keeps all six rows visible.
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(5, 3))
+            await pilot.mouse_up(handle, offset=(5, 3))
+            await pilot.pause()
+            assert box._requested_height == 3
+            assert text_area.size.height == 6
+
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height == _EXPANDED_HEIGHT
+            assert text_area.size.height == _EXPANDED_HEIGHT
+
+    async def test_double_click_expands_after_a_one_row_drag_jitter(self) -> None:
+        """A single row of travel during a press still leaves "expand" next.
+
+        `on_mouse_move` only suppresses sub-cell jitter, so drifting a whole row
+        and back within one press does establish a manual height. It renders no
+        differently from automatic sizing, so the double-click that follows must
+        still expand.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(5, 1))
+            await pilot.hover(handle, offset=(5, 0))
+            await pilot.mouse_up(handle, offset=(5, 0))
+            await pilot.pause()
+            assert box._requested_height == 1
+            assert text_area.size.height == 1
 
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
@@ -595,7 +669,8 @@ class TestChatInputResize:
 
         A double-click only registers when both presses land on the same cell,
         which is exactly when the pointer drifts away and back, emitting a
-        zero-delta move mid-gesture.
+        zero-delta move mid-gesture. Storing a height there would pin the
+        composer and stop it growing as the user keeps typing.
         """
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
@@ -2435,8 +2510,8 @@ class TestModePrefixStripping:
             # Non-trigger characters are never consumed.
             assert chat.handle_mode_prefix_keystroke("a") is False
 
-    async def test_redundant_typed_slash_keystroke_stays_command_mode(self) -> None:
-        """A redundant `/` at the command prompt is consumed as a mode selector."""
+    async def test_second_typed_slash_stays_in_command_text(self) -> None:
+        """A second `/` is retained so key-event path pastes keep both slashes."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2450,7 +2525,7 @@ class TestModePrefixStripping:
             await pilot.press("/")
             await _pause_for_strip(pilot)
             assert chat.mode == "command"
-            assert chat._text_area.text == ""
+            assert chat._text_area.text == "/"
 
     async def test_typed_bang_keystroke_skips_strip_round_trip(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3821,6 +3896,36 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
 
+    async def test_key_burst_absolute_path_preserves_leading_slash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rapid absolute path recovers the slash consumed by command mode."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 1.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        img_path = tmp_path / "absolute-burst.png"
+        from PIL import Image
+
+        Image.new("RGB", (3, 3), color="navy").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            for char in str(img_path):
+                await chat._text_area._on_key(events.Key(char, char))
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
+            await pilot.pause(0.35)
+
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
     async def test_submit_absolute_path_without_paste_event_attaches_image(
         self, tmp_path
     ) -> None:
@@ -5139,7 +5244,7 @@ class TestPasteBurstEnterSuppression:
     async def test_rapid_burst_with_newline_does_not_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A fast keystroke run followed by enter inserts a newline."""
+        """A fast keystroke run stays visible and enter inserts a newline."""
         # Widen the burst gap so wall-clock delays between pilot.press calls on
         # slow CI runners still register as a single rapid burst.
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
@@ -5155,6 +5260,9 @@ class TestPasteBurstEnterSuppression:
 
             for char in "hello":
                 await pilot.press(char)
+            assert ta.text == "hello"
+            assert ta._paste_burst_buffer == ""
+
             await pilot.press("enter")
             await pilot.press("w")
             await pilot.pause(0.15)
@@ -5200,6 +5308,8 @@ class TestPasteBurstEnterSuppression:
 
             ta.text = "abc"
             now = chat_input_module.time.monotonic()
+            ta._paste_burst_run = paste_textarea_module.PASTE_BURST_MIN_CHARS
+            ta._paste_burst_run_text = "abc"
             ta._paste_burst_last_key_time = (
                 now - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS - 0.01
             )
@@ -5295,6 +5405,949 @@ class TestPasteBurstEnterSuppression:
             await pilot.pause()
 
             assert len(app.submitted) == 1
+
+    async def test_late_enter_after_qualifying_run_still_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A qualifying run does not swallow deliberate enter after going idle."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            # A qualifying run, but the last keystroke landed 50 ms ago —
+            # outside the 30 ms char gap, still inside the 120 ms window.
+            ta._paste_burst_run = paste_textarea_module.PASTE_BURST_MIN_CHARS
+            ta._paste_burst_run_text = "abc"
+            ta._paste_burst_last_key_time = now - 0.05
+            ta._paste_burst_window_until = now + 0.12
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "abc"
+
+
+class TestPasteBurstPromotion:
+    """Promotion of a visible rapid run into the hidden paste buffer.
+
+    Rapid typing stays in the document until something confirms a paste: an
+    embedded newline, a dropped-path shape, or a length no human reaches at
+    burst speed. These tests drive the real `_on_key` path, since the chat
+    input's key handling interleaves several branches ahead of the burst
+    helpers.
+    """
+
+    async def test_multiline_key_event_paste_collapses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A multi-line key-event paste is promoted and collapsed."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "alpha\n" + "beta gamma delta\n" * 3
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                event = (
+                    events.Key("enter", None)
+                    if char == "\n"
+                    else events.Key(char, char)
+                )
+                await ta._on_key(event)
+            await pilot.pause(0.35)
+
+            assert "[Pasted text #1" in ta.text
+            assert chat._pasted_contents[1].content == payload
+            assert len(app.submitted) == 0
+
+    async def test_key_event_paste_preserves_backslash_before_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A burst newline takes priority over the backslash+Enter fallback."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("backslash", "\\"))
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "abc\\\n"
+            assert len(app.submitted) == 0
+
+    async def test_large_single_line_key_event_paste_collapses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A long single-line key-event paste collapses without any newline.
+
+        `should_collapse_paste` triggers on length as well as line count, so a
+        newline must not be required to reach collapse handling.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "y" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await ta._on_key(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert "[Pasted text #1]" in ta.text
+            assert payload not in ta.text
+            assert chat._pasted_contents[1].content == payload
+
+    async def test_rapid_slash_command_is_not_promoted_as_a_dropped_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key-event `/help` burst must retain command submission semantics."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/help":
+                await pilot.press(char)
+
+            assert chat.mode == "command"
+            assert ta.text == "help"
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/help"
+            assert app.submitted[0].mode == "command"
+
+    @pytest.mark.parametrize("payload", ["hello world", '"hello world"'])
+    async def test_ordinary_rapid_typing_is_never_promoted(
+        self, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        """A short rapid run, including quoted text, stays fully visible."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await pilot.press(char)
+
+            # Asserted before any pause: the flush timer would restore the text
+            # and hide the very regression this covers. Typing must be visible
+            # *while* typing, not once it stops.
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.pause(0.15)
+
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+    async def test_promotion_falls_back_when_selection_is_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A selection at Enter blocks promotion; the newline is inserted plainly.
+
+        Promoting would delete the user's selected range rather than the run.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "abc":
+                await pilot.press(char)
+            ta.selection = Selection((0, 0), (0, 3))
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert ta._paste_burst_buffer == ""
+            assert "abc" in ta.text
+            assert len(app.submitted) == 0
+
+    async def test_promotion_falls_back_when_run_diverges_from_document(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run that no longer sits before the cursor is dropped, not deleted.
+
+        Moving the cursor mid-run (e.g. a mouse click, which is not a key
+        event) desynchronises the tracker. Promoting on a stale run would
+        delete whatever text now happens to precede the cursor.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "XXXX"
+            for char in "abc":
+                await pilot.press(char)
+            # Relocate the cursor without a key event, so the run survives but
+            # no longer describes the characters before the cursor.
+            ta.selection = Selection((0, 2), (0, 2))
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert ta._paste_burst_buffer == ""
+            # Every character survives; only a newline was added at the cursor.
+            assert ta.text.replace("\n", "") == "abcXXXX"
+            assert ta.text.count("\n") == 1
+            # The diverged run is dropped so it cannot be re-promoted later.
+            assert ta._paste_burst_run_text == ""
+
+    async def test_vscode_space_workaround_keeps_run_in_sync(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A CSI-u space is tracked, so a burst containing one still promotes.
+
+        VS Code sends space as a key with no character; the workaround inserts
+        it directly and returns before the burst helpers, so it must feed the
+        tracker itself or the run text diverges from the document.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "ab":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("space", None))
+            for char in "cd":
+                await ta._on_key(events.Key(char, char))
+
+            assert ta.text == "ab cd"
+            assert ta._paste_burst_run_text == "ab cd"
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            # Promotion succeeded, so the run moved into the buffer rather than
+            # failing verification and falling back to a plain newline.
+            assert ta.text == ""
+            assert ta._paste_burst_buffer == "ab cd\n"
+            assert len(app.submitted) == 0
+
+    async def test_vscode_space_workaround_flushes_stale_buffer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delayed CSI-u space starts normal input after a completed burst."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("abc", stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta._paste_burst_buffer == ""
+            assert ta.text == "abc "
+            assert ta._paste_burst_run_text == " "
+
+    async def test_vscode_space_follows_queued_stale_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale burst's queued placeholder is inserted before its space."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            payload = "x" * 900
+            ta._start_paste_burst(payload, stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1] "
+            assert chat._pasted_contents[1].content == payload
+            assert ta._paste_burst_run_text == " "
+
+    async def test_vscode_space_stays_ahead_of_already_queued_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key queued behind the space must not overtake it."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("abc", stale_time)
+
+            ta.post_message(events.Key("space", None))
+            ta.post_message(events.Key("x", "x"))
+            await pilot.pause()
+
+            assert ta.text == "abc x"
+            assert ta._paste_burst_run_text == " x"
+
+    async def test_vscode_space_is_absorbed_into_a_live_burst(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A CSI-u space mid-paste joins the buffer instead of flushing it.
+
+        This is the common case for a VS Code key-event paste. Without it, every
+        space would flush the paste mid-stream into separate fragments.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            # Promote via a newline so the buffer is live and fresh.
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("enter", None))
+            assert ta._paste_burst_buffer == "abc\n"
+
+            await ta._on_key(events.Key("space", None))
+
+            # Absorbed into the hidden buffer, not inserted into the document.
+            assert ta._paste_burst_buffer == "abc\n "
+            assert ta.text == ""
+
+            await pilot.pause(0.35)
+            assert ta.text == "abc\n "
+
+    async def test_printable_key_lands_after_a_flushed_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key that breaks a stale burst is inserted after the payload.
+
+        The payload is applied while handling this key, so it cannot be overtaken.
+        Applying it by a posted message instead put the character first, splitting
+        a paste that arrived across a slow terminal read boundary.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            payload = "x" * 900
+            ta._start_paste_burst(payload, stale_time)
+
+            await ta._on_key(events.Key("y", "y"))
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1]y"
+            assert chat._pasted_contents[1].content == payload
+
+    async def test_backspace_after_a_flushed_payload_leaves_earlier_text_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backspace breaking a stale burst edits the payload, not the text before it.
+
+        The payload lands first, so the deletion applies to it. Applying the
+        payload later deleted a character the user typed before the paste.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.focus()
+            ta.insert("ab")
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("x" * 900, stale_time)
+
+            # Pressed through the app so the backspace binding actually resolves.
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # The placeholder is deleted as one token, so only the paste is undone.
+            assert ta.text == "ab"
+
+    async def test_bracketed_paste_stays_ahead_of_a_queued_key(self) -> None:
+        """A key queued behind a bracketed paste must not overtake it."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            payload = "z" * 900
+            ta.post_message(events.Paste(payload))
+            ta.post_message(events.Key("q", "q"))
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1]q"
+            assert chat._pasted_contents[1].content == payload
+
+    async def test_run_of_exactly_the_promote_threshold_is_reinserted_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run of exactly `PASTE_BURST_PROMOTE_CHARS` promotes but does not collapse.
+
+        Promotion uses `>=` while `should_collapse_paste` uses `>`, so this length
+        is hidden and then restored unchanged. Pinned because the two comparisons
+        must keep agreeing that no character is lost between them.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.05
+        )
+        length = paste_textarea_module.PASTE_BURST_PROMOTE_CHARS
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for _ in range(length):
+                await ta._on_key(events.Key("a", "a"))
+
+            # Confirmed by length alone, so the run is hidden before it flushes.
+            assert ta._paste_burst_buffer == "a" * length
+            assert ta.text == ""
+
+            await pilot.pause(0.2)
+
+            assert ta.text == "a" * length
+            assert chat._pasted_contents == {}
+
+    async def test_burst_state_reset_clears_the_restored_slash_flag(self) -> None:
+        """A discarded payload must not leave its slash flag set.
+
+        The flag suppresses one mode re-detection. Surviving the payload it
+        describes would spend that suppression on an unrelated later burst.
+        """
+        app = _RecordingApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta._burst_payload_keeps_leading_slash = True
+            ta._start_paste_burst("/private/tmp", chat_input_module.time.monotonic())
+
+            ta.clear_text()
+
+            assert ta._paste_burst_buffer == ""
+            assert ta._burst_payload_keeps_leading_slash is False
+
+    async def test_keys_queued_behind_a_flushed_payload_keep_their_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Printable keys already in the queue land after the payload, in order."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("x" * 900, stale_time)
+
+            # The space flushes the stale payload; the rest of the paste is
+            # already queued behind it.
+            ta.post_message(events.Key("space", None))
+            for char in "world":
+                ta.post_message(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert len(app.submitted) == 0
+            assert ta.text == "[Pasted text #1] world"
+
+    async def test_dropped_path_replacement_is_not_double_spaced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The held space is dropped when the payload already ended with one."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        img_path = tmp_path / "spaced.png"
+        from PIL import Image
+
+        Image.new("RGB", (3, 3), color="teal").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst(str(img_path), stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "[image 1] "
+
+    async def test_verbatim_payload_ending_in_space_keeps_the_typed_space(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flushed payload that merely ends in a space must not eat the next one.
+
+        The double-space guard applies only to the trailing space that
+        `_build_path_replacement` appends. A payload inserted verbatim supplies
+        no such space, so the user's own keystroke has to survive — checking the
+        document instead would silently swallow one space of, say, a pasted
+        indent.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("hello ", stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "hello  "
+
+    async def test_failed_dispatch_reinserts_the_payload_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising dispatch must not destroy the buffered paste.
+
+        Promotion has already deleted the run from the document and the flush
+        clears the buffer before dispatching, so without the guard the text
+        exists nowhere — not on screen, not in the buffer, not in undo.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            async def _boom(payload: str) -> None:  # noqa: ARG001, RUF029
+                raise _DispatchError
+
+            monkeypatch.setattr(ta, "_dispatch_burst_payload", _boom)
+
+            ta._start_paste_burst("important paste", chat_input_module.time.monotonic())
+
+            with pytest.raises(_DispatchError):
+                await ta._flush_paste_burst()
+            await pilot.pause()
+
+            assert ta.text == "important paste"
+            assert ta._paste_burst_buffer == ""
+
+    async def test_flushed_run_is_not_re_promoted_by_a_later_enter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second Enter after a flush must not re-promote the same run.
+
+        Promotion hands the run's characters to the buffer, which flushes them
+        back into the document. If the run tracker still claimed them, a second
+        Enter inside the window would find them sitting before the cursor,
+        delete them, and re-dispatch text the user had already committed.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            await ta._on_key(events.Key("enter", None))
+            for char in "abc":
+                await ta._on_key(events.Key(char, char))
+            # Let the burst flush its payload back into the document.
+            await pilot.pause(0.35)
+            assert ta.text == "abc\nabc"
+            assert ta._paste_burst_buffer == ""
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            # A newline was added; the trailing "abc" was not swallowed.
+            assert ta.text == "abc\nabc\n"
+
+    async def test_consumed_mode_prefix_resets_the_run(self) -> None:
+        """A mode trigger is counted but never inserted, so it clears the run."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await ta._on_key(events.Key("!", "!"))
+            await pilot.pause()
+
+            assert ta._paste_burst_run_text == ""
+
+    async def test_rapid_typing_in_command_mode_stays_visible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fast typing after a `/` is not mistaken for a dropped path.
+
+        The slash-recovery hook prepends `/` before asking whether the payload
+        looks like a path, so a guard phrased as a question about the `/`-prefixed
+        candidate is vacuously true for any text. If that is the only guard, every
+        rapid run in command mode is hidden and the input silently leaves command
+        mode mid-command.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/git":
+                await pilot.press(char)
+            for char in "add":
+                await pilot.press(char)
+            await pilot.pause(0.35)
+
+            assert ta.text == "gitadd"
+            assert chat.mode == "command"
+            assert ta._paste_burst_buffer == ""
+
+    async def test_rapid_slash_command_with_path_argument_is_not_promoted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A command whose argument is a path keeps its command semantics.
+
+        The payload contains a separator, so a separator-only test would treat
+        `read src/main.py` as the tail of an absolute path — injecting a `/` and
+        dropping out of command mode. Whitespace before the separator rules it out.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            # Driven through `_on_key` rather than `pilot.press` so slash-command
+            # completion cannot rewrite the text out from under the assertion.
+            for char in "/read src/main.py":
+                key = "space" if char == " " else char
+                await ta._on_key(events.Key(key, char))
+            await pilot.pause(0.35)
+
+            # Still a command, and nothing was hidden or slash-prefixed. (The
+            # space itself is swallowed by the open completion popup, so the exact
+            # text is not asserted here.)
+            assert chat.mode == "command"
+            assert ta._paste_burst_buffer == ""
+            assert not ta.text.startswith("/")
+            assert ta.text.endswith("src/main.py")
+
+    async def test_rapid_absolute_path_that_does_not_exist_keeps_its_slash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recovered slash survives the insert that follows a failed parse.
+
+        Only an existing path takes the dropped-path branch. Everything else
+        falls through to a plain insert at offset 0, which trips mode-prefix
+        detection a second time — stripping the recovered slash again and losing
+        the character for good.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        missing = tmp_path / "no-such-file.txt"
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in str(missing):
+                await ta._on_key(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert ta.text == str(missing)
+            assert chat.mode == "normal"
+            assert chat.value == str(missing)
+
+    async def test_rapid_double_slash_path_keeps_both_leading_slashes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key-event UNC-style path does not lose its second slash to mode handling.
+
+        The second slash is text rather than another mode trigger.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "//host/share"
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await ta._on_key(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert ta.text == payload
+            assert chat.value == payload
+
+    async def test_run_just_below_the_promote_threshold_stays_visible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Length-based promotion brackets exactly at `PASTE_BURST_PROMOTE_CHARS`."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "z" * (paste_textarea_module.PASTE_BURST_PROMOTE_CHARS - 1)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await ta._on_key(events.Key(char, char))
+
+            # Before the pause: waiting for the flush timer would restore the
+            # text and mask a run that had wrongly been promoted.
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.pause(0.35)
+
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
+    async def test_run_resets_at_human_typing_speed(self) -> None:
+        """Real inter-key gaps keep the run at one, so nothing ever qualifies.
+
+        Every other test here widens the char gap so each keystroke counts as
+        burst speed. That is the right worst case for visibility, but it never
+        exercises the reset — and if the reset regressed, a slowly typed long
+        paragraph would vanish into a placeholder.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            typed = ""
+            for char in "abcde":
+                await ta._on_key(events.Key(char, char))
+                typed += char
+                # Checked after every keystroke rather than only at the end: the
+                # inter-key sleep is shorter than the flush delay, so a promoted
+                # run would be hidden right here and restored before the final
+                # assertion could see it.
+                assert ta.text == typed
+                await asyncio.sleep(
+                    paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS + 0.01
+                )
+            await pilot.pause()
+
+            assert ta.text == "abcde"
+            assert ta._paste_burst_run == 1
+
+    async def test_completion_space_resets_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A space swallowed for completion is counted but never inserted.
+
+        `space` is the one printable key the completion-navigation branch
+        intercepts, so without a reset the tracker claims a character the
+        document never received and later promotions fail verification.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "ab":
+                await ta._on_key(events.Key(char, char))
+            ta._completion_active = True
+            await ta._on_key(events.Key("space", " "))
+            await pilot.pause()
+
+            assert ta.text == "ab"
+            assert ta._paste_burst_run_text == ""
 
 
 class TestPasteCollapseHelpers:
@@ -5760,9 +6813,9 @@ class TestPasteCollapseIntegration:
     ) -> None:
         """A real Paste event over the threshold collapses to a placeholder.
 
-        Exercises the production path (`_on_paste` -> `PastedText` message ->
-        `on_chat_text_area_pasted_text`) rather than `handle_external_paste`,
-        and asserts the collapse toast fires on that path too.
+        Exercises the production path (`_on_paste` -> `apply_paste_payload`)
+        rather than `handle_external_paste`, and asserts the collapse toast fires
+        on that path too.
         """
         big_text = "z" * 900
         app = _RecordingApp()

@@ -16,10 +16,11 @@ wrong-typed TOML value is logged and falls back to the next layer rather than
 raising, so a bad config never blocks startup.
 
 Structured, user-defined config is *not* a flat scalar option and is parsed by
-dedicated typed loaders elsewhere. The manifest references `[threads].columns`
-and `[warnings].suppress` as `STRUCTURED` options for discovery; other tables
-such as `[models.providers.*]` and `[themes.*]` are handled entirely by their
-own loaders and the manifest does not enumerate them at all.
+dedicated typed loaders elsewhere; the manifest references those tables as
+`STRUCTURED` options for discovery only. Tables that can carry credentials —
+`[async_subagents]` headers, `[models.providers]` auth/`params`, and
+`[sandboxes.providers]` settings — are additionally flagged `redacted`, so
+`dcode config` reports their source and presence but never prints the table.
 
 Import discipline: the module top level stays stdlib + `_env_vars` only (both
 light) so it is safe to import from `config.py` at class-definition time without
@@ -138,8 +139,9 @@ class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
-    `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
-    `_coerce_env`/`_coerce_toml`. `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
+    `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
+    `STR`, and `NON_EMPTY_STR`) are coerced inline by `_coerce_env`/`_coerce_toml`.
+    `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
@@ -153,14 +155,25 @@ class OptionKind(Enum):
     """Recognized truthy (`1`/`true`/`yes`/`on`) or falsy (`0`/`false`/`no`/`off`)
     tokens; an unrecognized value is logged and skipped to the next layer."""
 
+    BOOL_MODE_DEFAULT = "bool_mode_default"
+    """Same token handling as `BOOL`, but with no static default: when no env or
+    TOML value applies, `resolve_scalar` derives the default from debug or
+    experimental mode. Declaring a `default` is rejected at construction."""
+
     BOOL_PRESENCE = "bool_presence"
     """Any non-empty env value enables the flag (e.g. debug injectors)."""
 
     INT = "int"
 
+    NON_NEGATIVE_INT = "non_negative_int"
+    """An integer count that must be zero or greater."""
+
     FLOAT = "float"
 
     STR = "str"
+
+    NON_EMPTY_STR = "non_empty_str"
+    """A string stripped of surrounding whitespace; blank values are unset."""
 
     LOG_LEVEL_DELEGATE = "log_level"
     """Validates log levels and resolves the default from debug mode."""
@@ -189,10 +202,13 @@ class OptionKind(Enum):
 
 _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.BOOL: "bool",
+    OptionKind.BOOL_MODE_DEFAULT: "bool",
     OptionKind.BOOL_PRESENCE: "bool",
     OptionKind.INT: "int",
+    OptionKind.NON_NEGATIVE_INT: "int (>= 0)",
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
+    OptionKind.NON_EMPTY_STR: "non-empty str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
@@ -213,12 +229,16 @@ if _KIND_TYPE_LABEL.keys() != set(OptionKind):
 # Python types accepted for a `ConfigOption.default` of each scalar kind,
 # enforced by `ConfigOption.__post_init__`. Delegate kinds accept their parser's
 # output shape and are validated by those parsers, so they are omitted here.
+# `BOOL_MODE_DEFAULT` is omitted for the opposite reason: it must not declare a
+# default at all, so there is no value here to type-check.
 _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.BOOL: (bool,),
     OptionKind.BOOL_PRESENCE: (bool,),
     OptionKind.INT: (int,),
+    OptionKind.NON_NEGATIVE_INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.NON_EMPTY_STR: (str,),
     OptionKind.CURSOR_STYLE_DELEGATE: (str,),
     OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
@@ -336,7 +356,10 @@ class ConfigOption:
                 f"strings, got {self.fallback_env_vars!r}"
             )
             raise TypeError(msg)
-        if self.empty_env_is_false and self.kind is not OptionKind.BOOL:
+        if self.empty_env_is_false and self.kind not in {
+            OptionKind.BOOL,
+            OptionKind.BOOL_MODE_DEFAULT,
+        }:
             msg = f"{self.key}: empty_env_is_false requires a bool option kind"
             raise TypeError(msg)
 
@@ -354,21 +377,37 @@ class ConfigOption:
         if self.kind is OptionKind.STRUCTURED:
             msg = f"{self.key}: STRUCTURED options must not declare a default"
             raise TypeError(msg)
+        if self.kind is OptionKind.BOOL_MODE_DEFAULT:
+            # `resolve_scalar` computes this kind's default from debug/experimental
+            # mode and returns before reading `default`, so a declared value would
+            # be dead -- yet `dcode config` still renders it, advertising a default
+            # that contradicts the real one.
+            msg = (
+                f"{self.key}: BOOL_MODE_DEFAULT options must not declare a "
+                "default; the default follows debug/experimental mode"
+            )
+            raise TypeError(msg)
         if self.invert_toml_bool:
             self._validate_invert_toml_bool()
         expected = _KIND_DEFAULT_TYPES.get(self.kind)
         if expected is None:
             # Delegate kinds validate their own (immutable) default shapes.
             return
-        # `bool` is an `int` subclass; an INT/FLOAT default must not be a bool.
+        # `bool` is an `int` subclass; integer/float defaults must not be bools.
         if not isinstance(default, expected) or (
-            self.kind in {OptionKind.INT, OptionKind.FLOAT}
+            self.kind in {OptionKind.INT, OptionKind.NON_NEGATIVE_INT, OptionKind.FLOAT}
             and isinstance(default, bool)
         ):
             msg = (
                 f"{self.key}: default {default!r} is not valid for kind "
                 f"{self.kind.value}"
             )
+            raise TypeError(msg)
+        if self.kind is OptionKind.NON_NEGATIVE_INT and default < 0:
+            msg = f"{self.key}: default {default!r} must be >= 0"
+            raise TypeError(msg)
+        if self.kind is OptionKind.NON_EMPTY_STR and not default.strip():
+            msg = f"{self.key}: default must not be blank"
             raise TypeError(msg)
 
     def _validate_invert_toml_bool(self) -> None:
@@ -377,7 +416,11 @@ class ConfigOption:
         Raises:
             TypeError: When the marker is used without a boolean TOML source.
         """
-        if self.kind not in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
+        if self.kind not in {
+            OptionKind.BOOL,
+            OptionKind.BOOL_MODE_DEFAULT,
+            OptionKind.BOOL_PRESENCE,
+        }:
             msg = f"{self.key}: invert_toml_bool requires a boolean option kind"
             raise TypeError(msg)
         if self.toml_keys is None:
@@ -438,15 +481,36 @@ def load_config_toml() -> dict[str, Any]:
         return {}
 
 
+_warned_non_table_paths: set[tuple[str, ...]] = set()
+
+
 def _toml_lookup(data: dict[str, Any], keys: tuple[str, ...]) -> tuple[bool, Any]:
     """Navigate nested `keys` in `data`.
+
+    A traversal that stops because an intermediate node is not a table (say
+    `ui = "dark"` shadowing the whole `[ui]` table) is logged, because it
+    silently defaults *every* option under that table and the value the user
+    edited is nowhere in the output. The warning is emitted once per path per
+    process: `config` resolves the full manifest in one pass, so logging per
+    option would print the same line ~100 times for a single typo.
 
     Returns:
         `(found, value)`, where `found` is `False` if any key was missing.
     """
     node: Any = data
-    for key in keys:
-        if not isinstance(node, dict) or key not in node:
+    for index, key in enumerate(keys):
+        if not isinstance(node, dict):
+            path = keys[:index]
+            if path not in _warned_non_table_paths:
+                _warned_non_table_paths.add(path)
+                logger.warning(
+                    "Ignoring config.toml [%s]; expected a table, got %s — every "
+                    "option under it falls back to its default",
+                    ".".join(path),
+                    type(node).__name__,
+                )
+            return False, None
+        if key not in node:
             return False, None
         node = node[key]
     return True, node
@@ -459,7 +523,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         The typed value, or `_INVALID` when the raw value cannot be coerced.
     """
     kind = option.kind
-    if kind is OptionKind.BOOL:
+    if kind in {OptionKind.BOOL, OptionKind.BOOL_MODE_DEFAULT}:
         classified = classify_env_bool(raw)
         if classified is None:
             # Unrecognized boolean token: log and fall through like every other
@@ -473,6 +537,12 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         return bool(raw)
     if kind is OptionKind.STR:
         return raw
+    if kind is OptionKind.NON_EMPTY_STR:
+        value = raw.strip()
+        if value:
+            return value
+        logger.warning("Ignoring %s=%r (expected non-empty string)", name, raw)
+        return _INVALID
     if kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._debug import LOG_LEVELS
 
@@ -488,6 +558,16 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         except ValueError:
             logger.warning("Ignoring %s=%r (expected int)", name, raw)
             return _INVALID
+    if kind is OptionKind.NON_NEGATIVE_INT:
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
+            return _INVALID
+        if value >= 0:
+            return value
+        logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
+        return _INVALID
     if kind is OptionKind.FLOAT:
         try:
             return float(raw.strip())
@@ -557,11 +637,18 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
     kind = option.kind
     label = option.toml_path or option.key
 
-    if kind in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
+    if kind in {
+        OptionKind.BOOL,
+        OptionKind.BOOL_MODE_DEFAULT,
+        OptionKind.BOOL_PRESENCE,
+    }:
         if isinstance(raw, bool):
             return not raw if option.invert_toml_bool else raw
     elif kind is OptionKind.INT:
         if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw
+    elif kind is OptionKind.NON_NEGATIVE_INT:
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
             return raw
     elif kind is OptionKind.FLOAT:
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
@@ -569,6 +656,9 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
     elif kind is OptionKind.STR:
         if isinstance(raw, str):
             return raw
+    elif kind is OptionKind.NON_EMPTY_STR:
+        if isinstance(raw, str) and (value := raw.strip()):
+            return value
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
         if isinstance(raw, list):
             from deepagents_code.config import _parse_extra_skills_dirs
@@ -684,17 +774,19 @@ def resolve_scalar(
 
     Resolution order is: the prefixed primary `env_var`, then each
     `fallback_env_vars` name in declaration order, then `config.toml`, then the
-    typed `default`.
+    typed `default` -- or, for `BOOL_MODE_DEFAULT`, a default derived from debug
+    or experimental mode rather than from `option.default`.
 
     Returns:
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
-        so the next layer (or the typed default) applies. An empty env value is
-        normally treated as unset (mirroring `resolve_env_var`), so it falls
-        through to the next env var, then `config.toml`/`default`, rather than
-        counting as set. Options declaring `empty_env_is_false` instead resolve
-        an explicitly present empty value to `False`. Theme resolution
+        so the next layer (or the typed default) applies. An empty or
+        whitespace-only env value is treated as unset, so it falls through to
+        the next env var, then `config.toml`/`default`, rather than counting as
+        set; this is deliberately stricter than `resolve_env_var`, which keeps a
+        whitespace-only value. Options declaring `empty_env_is_false` instead
+        resolve an empty *or* whitespace-only value to `False`. Theme resolution
         (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
@@ -707,18 +799,38 @@ def resolve_scalar(
         if option.env_var:
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
-        # An empty string normally counts as unset, matching `resolve_env_var`,
-        # so it is skipped and the loop continues to the next name. Options
-        # with an explicitly documented empty-value opt-out declare
+        # A blank (empty or whitespace-only) value normally counts as unset, so
+        # it is skipped and the loop continues to the next name. This is
+        # stricter than `resolve_env_var`, which keeps a whitespace-only value.
+        # Options with an explicitly documented empty-value opt-out declare
         # `empty_env_is_false`. Names are tried in order, so the primary
         # `env_var` wins over any fallback.
         for name in names:
             raw = os.environ.get(name)
             if raw is None:
                 continue
-            if not raw:
+            if not raw.strip():
                 if option.empty_env_is_false:
+                    # Documented opt-out: an empty value means "off". Logged
+                    # because a whitespace-only value reads as unset to the user
+                    # while it actively forces `False` over their config.toml.
+                    logger.debug(
+                        "%s is blank (%r); resolving %s to False",
+                        name,
+                        raw,
+                        option.key,
+                    )
                     return False, f"env ({name})"
+                if raw:
+                    # Empty is a normal "unset" idiom, but whitespace-only is
+                    # almost always an accident (`export X="$UNSET "`), and
+                    # discarding it silently was the one unlogged rejection path
+                    # in this resolver.
+                    logger.warning(
+                        "Ignoring %s=%r (whitespace-only; treated as unset)",
+                        name,
+                        raw,
+                    )
                 continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
@@ -730,6 +842,11 @@ def resolve_scalar(
             value = _coerce_toml(option, raw)
             if value is not _INVALID:
                 return value, "config.toml"
+
+    if option.kind is OptionKind.BOOL_MODE_DEFAULT:
+        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
+
+        return is_env_truthy(DEBUG) or is_env_truthy(EXPERIMENTAL), "default"
 
     if option.kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._env_vars import DEBUG, is_env_truthy
@@ -873,6 +990,72 @@ def resolve_auto_classifier_timeout(
     """
     value, _ = resolve_auto_classifier_timeout_with_source(toml_data=toml_data)
     return value
+
+
+def blank_auto_classifier_env_name() -> str | None:
+    """Return the env var blanking the Auto classifier model, if any.
+
+    A present-but-blank `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` means "inherit
+    the main agent model" and deliberately outranks `config.toml`, unlike every
+    other option, where `resolve_scalar` treats a blank env value as unset. That
+    veto is why this cannot go through `resolve_scalar`.
+
+    Returns:
+        The name of the blank env var, or `None` when no env var is set or the
+            highest-precedence one carries a usable value.
+    """
+    option = get_option("models.auto_classifier")
+    if option is None:
+        return None
+    from deepagents_code.model_config import resolved_env_var_name
+
+    names: list[str] = []
+    if option.env_var:
+        names.append(resolved_env_var_name(option.env_var))
+    names.extend(option.fallback_env_vars)
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        # The first *set* name decides; a blank fallback must not veto a usable
+        # primary.
+        return name if not raw.strip() else None
+    return None
+
+
+def resolve_auto_classifier_model_with_source(
+    *, toml_data: dict[str, Any] | None = None
+) -> tuple[str | None, str]:
+    """Resolve the effective Auto classifier model spec and its source.
+
+    Shares the blank-env veto with
+    `config.resolve_auto_classifier_model_with_problem` so `dcode config` cannot
+    report a classifier the runtime does not use. `None` means the classifier
+    inherits the main agent model.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        `(spec, source)`. `source` credits the layer that decided the outcome,
+            including the env var whose blank value forced the inherit, so the
+            source never points at a value the runtime ignored.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("models.auto_classifier")
+    if option is None:
+        return None, "default"
+
+    blank_env = blank_auto_classifier_env_name()
+    if blank_env is not None:
+        return None, f"env ({blank_env})"
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if isinstance(value, str) and value.strip():
+        return value.strip(), source
+    # A blank or wrong-typed `config.toml` entry reverts to the main agent model;
+    # keep the source so the surface still shows where the ignored value lives.
+    return None, source
 
 
 def _is_valid_recursion_limit(value: object) -> bool:
@@ -1146,6 +1329,54 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "cursor_style"),
     ),
     ConfigOption(
+        key="display.cursor_blink",
+        group="Display",
+        summary=(
+            "Blink the chat input cursor (tmux needs 'focus-events on' to hide "
+            "it in unfocused panes)."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.CURSOR_BLINK,
+        toml_keys=("ui", "cursor_blink"),
+        empty_env_is_false=True,
+    ),
+    ConfigOption(
+        key="display.terminal_progress",
+        group="Display",
+        summary="Report agent activity as terminal taskbar/dock/tab progress.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.TERMINAL_PROGRESS,
+        toml_keys=("ui", "terminal_progress"),
+        empty_env_is_false=True,
+    ),
+    ConfigOption(
+        key="display.show_message_timestamps",
+        group="Display",
+        summary="Show the timestamp footer under each chat message.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_MESSAGE_TIMESTAMPS,
+        toml_keys=("ui", "show_message_timestamps"),
+    ),
+    ConfigOption(
+        key="display.themes",
+        group="Display",
+        summary=(
+            "User-defined themes and built-in theme overrides, keyed by theme name."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("themes",),
+    ),
+    ConfigOption(
+        key="display.terminal_themes",
+        group="Display",
+        summary="Per-`TERM_PROGRAM` default theme, written by the theme picker.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("ui", "terminal_themes"),
+    ),
+    ConfigOption(
         key="display.show_header",
         group="Display",
         summary="Show Textual's native header bar at the top of the TUI.",
@@ -1325,6 +1556,86 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.AUTO_CLASSIFIER_TIMEOUT,
         toml_keys=("models", "auto_classifier_timeout"),
     ),
+    ConfigOption(
+        key="models.providers",
+        group="Models",
+        summary=(
+            "Custom chat-model providers. A `class_path` entry is imported at "
+            "model creation, so its module runs with your privileges."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("models", "providers"),
+        # A provider table's `params` are forwarded verbatim to the constructor
+        # and can carry credentials, so the value is never printed — `config`
+        # reports source and presence only.
+        redacted=True,
+    ),
+    ConfigOption(
+        key="retries.max_retries",
+        group="Models",
+        summary=(
+            "Default provider retry count; override per provider with "
+            "`[retries.<provider>]`."
+        ),
+        kind=OptionKind.NON_NEGATIVE_INT,
+        toml_keys=("retries", "max_retries"),
+    ),
+    # --- Agents ---------------------------------------------------------
+    ConfigOption(
+        key="agents.default",
+        group="Agents",
+        summary=(
+            "Sticky default agent; used when neither `--agent` nor `-r <thread>` "
+            "is given, and ignored if it names an agent that no longer exists."
+        ),
+        kind=OptionKind.NON_EMPTY_STR,
+        toml_keys=("agents", "default"),
+    ),
+    ConfigOption(
+        key="agents.recent",
+        group="Agents",
+        summary=(
+            "Last switched-to agent, written by the app; the fallback behind "
+            "`agents.default`."
+        ),
+        kind=OptionKind.NON_EMPTY_STR,
+        toml_keys=("agents", "recent"),
+    ),
+    ConfigOption(
+        key="agents.async_subagents",
+        group="Agents",
+        summary="Remote LangGraph deployments exposed to the agent as subagents.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("async_subagents",),
+        # A subagent `headers` table can carry `Authorization` tokens, so the
+        # value is never printed — `config` reports source and presence only.
+        redacted=True,
+    ),
+    # --- Sandboxes ------------------------------------------------------
+    ConfigOption(
+        key="sandboxes.default",
+        group="Sandboxes",
+        summary=(
+            "Sandbox backend used by a bare `--sandbox` (passed with no value); "
+            "omitting the flag entirely runs unsandboxed."
+        ),
+        kind=OptionKind.STR,
+        toml_keys=("sandboxes", "default"),
+    ),
+    ConfigOption(
+        key="sandboxes.providers",
+        group="Sandboxes",
+        summary=(
+            "Custom sandbox backends. A `class_path` entry is imported at "
+            "sandbox creation, so its module runs with your privileges."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("sandboxes", "providers"),
+        # A provider table's `params` are forwarded verbatim to the constructor
+        # and can carry credentials, so the value is never printed — `config`
+        # reports source and presence only.
+        redacted=True,
+    ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(
         key="tracing.langsmith_project",
@@ -1430,6 +1741,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.EXPERIMENTAL,
+    ),
+    ConfigOption(
+        key="features.resume_term_program",
+        group="Tools",
+        summary=(
+            "Include launch-time TERM_PROGRAM in resume hints; defaults on in "
+            "experimental or debug mode."
+        ),
+        kind=OptionKind.BOOL_MODE_DEFAULT,
+        env_var=_env_vars.RESUME_TERM_PROGRAM,
+        empty_env_is_false=True,
+        toml_keys=("features", "resume_term_program"),
     ),
     ConfigOption(
         key="events.external_socket",

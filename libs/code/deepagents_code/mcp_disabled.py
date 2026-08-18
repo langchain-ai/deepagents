@@ -144,13 +144,15 @@ def get_disabled_servers(*, config_path: Path | None = None) -> set[str]:
     is_default = config_path is None
     if config_path is None:
         config_path = _DEFAULT_CONFIG_PATH
+    # The managed deny set must apply even when the user config is corrupt —
+    # otherwise a broken user TOML would silently re-enable admin-denied servers.
+    managed = _managed_disabled_servers() if is_default else set()
     try:
         data = _load_config(config_path)
     except _ConfigLoadError:
-        return set()
+        return managed
     disabled = _disabled_entries(data)
-    if is_default:
-        disabled.update(_managed_disabled_servers())
+    disabled.update(managed)
     return disabled
 
 

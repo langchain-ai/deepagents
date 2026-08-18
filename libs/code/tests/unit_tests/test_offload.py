@@ -309,7 +309,7 @@ class TestOffloadSuccess:
             )
 
     async def test_offload_shows_feedback_message(self) -> None:
-        """Should display feedback with conversation turns and token change."""
+        """Should report message and turn counts for offloaded and kept slices."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -336,6 +336,10 @@ class TestOffloadSuccess:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
+            # Cutoff 4 against a prior cutoff of 0 over `_make_dict_messages(10)`,
+            # which alternates human/ai from index 0: 4 offloaded (humans at 0 and
+            # 2 -> 2 turns), 6 kept of the 10 before-messages (humans at 4, 6 and
+            # 8 -> 3 turns).
             assert any(
                 "Offloaded 4 older messages (2 conversation turns)"
                 in str(widget._content)
@@ -347,7 +351,7 @@ class TestOffloadSuccess:
             )
 
     async def test_kept_turns_ignore_tools_and_internal_messages(self) -> None:
-        """Kept turns should count user prompts, not provider message envelopes."""
+        """Turn counts should skip AI/tool rows and internal humans on both sides."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -416,8 +420,8 @@ class TestOffloadSuccess:
         """Offloaded turns apply the same internal filter as kept turns.
 
         Goal-state notices and `[SYSTEM]`-prefixed humans accumulate over a long
-        thread, so they are likelier to sit *below* the cutoff than above it. Both
-        `is_internal_message` criteria are exercised here.
+        thread, so they are likelier to fall in the offloaded slice than the kept
+        one. Both `is_internal_message` criteria are exercised here.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -468,6 +472,104 @@ class TestOffloadSuccess:
             assert any(
                 "Offloaded 4 older messages (1 conversation turn)"
                 in str(widget._content)
+                for widget in messages
+            )
+
+    async def test_singular_kept_message_and_zero_offloaded_turns(self) -> None:
+        """Kept singular and zero-turn plural render correctly.
+
+        A cutoff that leaves exactly one message covers `messages_kept == 1`, and
+        an offloaded slice of pure AI/tool traffic covers `turns_offloaded == 0` --
+        the plural-zero branch, which no other test renders.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = [
+                {"type": "ai", "content": "", "id": "old-tool-call"},
+                {
+                    "type": "tool",
+                    "content": "Old result",
+                    "id": "old-tool",
+                    "tool_call_id": "old-call",
+                },
+                {"type": "ai", "content": "Old answer", "id": "old-ai"},
+                {"type": "human", "content": "Kept prompt", "id": "kept-human"},
+            ]
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(3)
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            messages = app.query(AppMessage)
+            # Three offloaded rows, none of them a human turn.
+            assert any(
+                "Offloaded 3 older messages (0 conversation turns)"
+                in str(widget._content)
+                for widget in messages
+            )
+            # Exactly one kept message, which is a human turn: both singulars.
+            assert any(
+                "1 message (1 conversation turn) kept" in str(widget._content)
+                for widget in messages
+            )
+
+    async def test_zero_kept_turns_when_cutoff_reaches_end(self) -> None:
+        """A cutoff past the last human renders `0 conversation turns` kept."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = [
+                {"type": "human", "content": "Old prompt", "id": "old-human"},
+                {"type": "ai", "content": "Old answer", "id": "old-ai"},
+                {"type": "ai", "content": "Trailing", "id": "trailing-ai"},
+            ]
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(2)
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            messages = app.query(AppMessage)
+            assert any(
+                "1 message (0 conversation turns) kept" in str(widget._content)
                 for widget in messages
             )
 
@@ -655,8 +757,9 @@ class TestOffloadEdgeCases:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            # Anchored on the closing paren: "1 older message" alone is a prefix of
-            # "1 older messages", so it would pass with the plural hardcoded.
+            # Anchored on both parens: each singular is a prefix of its plural, so
+            # "(" rules out "1 older messages" and ")" rules out "1 conversation
+            # turns". An unanchored substring would pass against hardcoded plurals.
             assert any(
                 "Offloaded 1 older message (1 conversation turn)" in str(w._content)
                 for w in msgs
@@ -699,8 +802,21 @@ class TestReOffload:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            # Offloaded count is the new cutoff of seven minus a prior cutoff of five.
-            assert any("Offloaded 2 older messages" in str(w._content) for w in msgs)
+            # Offloaded count is the new cutoff of seven minus a prior cutoff of
+            # five. The turn parenthetical is asserted too: `_make_dict_messages`
+            # puts humans on even indices, so the offloaded slice [5:7] holds
+            # exactly one. Dropping `prior_cutoff` (slicing [:7]) would report
+            # four, so this is the only assertion that pins the slice *start*.
+            assert any(
+                "Offloaded 2 older messages (1 conversation turn)" in str(w._content)
+                for w in msgs
+            )
+            # Kept: 15 before-messages minus the cutoff of seven, with humans at
+            # indices 8, 10, 12 and 14.
+            assert any(
+                "8 messages (4 conversation turns) kept" in str(w._content)
+                for w in msgs
+            )
 
     async def test_reoffload_noop_restores_prior_summary(self) -> None:
         """A summary-only re-offload restores the prior summarization event."""

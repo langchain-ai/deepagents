@@ -15672,15 +15672,9 @@ class DeepAgentsApp(App):
             tokens_after = count_tokens_approximately(
                 _effective_conversation(before_messages, new_event)
             )
-            # Message counts are likewise derived purely from the absolute
-            # cutoffs, so those same machinery artifacts are never mistaken for
-            # kept conversation.
-            # Message and turn counts are derived purely from the absolute cutoffs
-            # into the ORIGINAL pre-seed `before_messages`, never from the post-run
-            # `new_state["messages"]`. The compact tool's own machinery (the seeded
-            # tool call, its result, and the trailing model turn) lands at/after
-            # `new_cutoff` in the post-run list, so slicing that list instead would
-            # count those artifacts as kept conversation.
+            # Message and turn counts are likewise derived purely from the
+            # absolute cutoffs, so those same machinery artifacts are never
+            # mistaken for kept conversation.
             messages_offloaded = max(0, new_cutoff - prior_cutoff)
             messages_kept = max(0, len(before_messages) - new_cutoff)
             turns_offloaded = sum(
@@ -22452,8 +22446,6 @@ class DeepAgentsApp(App):
             turns = store.turn_count
             message_label = "message" if total == 1 else "messages"
             turn_label = "turn" if turns == 1 else "turns"
-            if total == 0:
-                return "0 messages (0 rendered), 0 turns"
             return (
                 f"{total} {message_label} "
                 f"({store.visible_count} rendered), {turns} {turn_label}"

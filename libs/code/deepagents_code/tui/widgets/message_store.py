@@ -653,14 +653,15 @@ class MessageStore:
 
         Counts `USER` and `SKILL` rows. A `/skill` invocation mounts a `SKILL` row
         *instead of* a `USER` row, so each skill turn contributes exactly one;
-        agent-authored rows (`ASSISTANT`, `TOOL`, `APP`, ...) are excluded.
+        everything else (`ASSISTANT`, `TOOL`, `APP`, `ERROR`, ...) is excluded.
 
-        This counts rendered rows, not server turns, so -- like `USER` itself (see
-        `_SERVER_OUTPUT_MESSAGE_TYPES`) -- it includes local-only flows such as
-        `!shell` and most slash commands, which mount a `UserMessage` without ever
-        invoking the server. It is therefore a broader population than the
-        "conversation turns" the offload report derives from graph state, which
-        counts only non-internal `HumanMessage`s the model actually saw.
+        This counts stored transcript rows, not server turns: it spans the whole
+        store rather than the rendered window (`visible_count`), and it includes
+        local-only flows such as `!shell` and most slash commands, which mount a
+        `UserMessage` without ever invoking the server. It is therefore a broader
+        population than the "conversation turns" the offload report derives from
+        graph state, which counts only non-internal `HumanMessage`s the model
+        actually saw. Do not converge the two -- they answer different questions.
         """
         return sum(
             message.type in {MessageType.USER, MessageType.SKILL}

@@ -1878,6 +1878,31 @@ class TestDebugConsoleToggle:
             snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["Messages"] == "5 messages (5 rendered), 2 turns"
 
+    async def test_build_snapshot_renders_singular_labels(self) -> None:
+        """A lone user row renders both nouns singular."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            app._message_store.append(
+                MessageData(type=MessageType.USER, content="hello")
+            )
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "1 message (1 rendered), 1 turn"
+
+    async def test_build_snapshot_pluralizes_each_noun_independently(self) -> None:
+        """Plural messages with a single turn keep `turns` tied to the turn count."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            for message in (
+                MessageData(type=MessageType.USER, content="user"),
+                MessageData(type=MessageType.ASSISTANT, content="assistant"),
+                MessageData(type=MessageType.TOOL, content="tool", tool_name="t"),
+            ):
+                app._message_store.append(message)
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "3 messages (3 rendered), 1 turn"
+
     async def test_build_snapshot_message_count_reports_rendered_window(self) -> None:
         """A virtualized thread reports its full count, not the mounted window."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -1933,7 +1958,8 @@ class TestDebugConsoleToggle:
             screen._poll_snapshot()
             await pilot.pause()
             before_value = _snapshot_dict(screen._snapshot)["Messages"]
-            before_total = app._message_store.total_count
+            # Pins the precondition the literal expectation below depends on.
+            assert app._message_store.total_count == 1
 
             app._message_store.append(
                 MessageData(type=MessageType.USER, content="live-snapshot-marker")
@@ -1941,14 +1967,11 @@ class TestDebugConsoleToggle:
             screen._poll_snapshot()
             await pilot.pause()
 
-            after_total = before_total + 1
-            turns = app._message_store.turn_count
-            message_label = "message" if after_total == 1 else "messages"
-            turn_label = "turn" if turns == 1 else "turns"
-            expected = (
-                f"{after_total} {message_label} "
-                f"({app._message_store.visible_count} rendered), {turns} {turn_label}"
-            )
+            # Spelled out rather than recomputed with the production ternaries:
+            # a mirrored formula agrees with itself even when it is wrong. The
+            # appended row is the only user turn among two messages, so this also
+            # pins the mixed-plurality case ("messages" alongside "turn").
+            expected = "2 messages (2 rendered), 1 turn"
             after_value = _snapshot_dict(screen._snapshot)["Messages"]
             assert after_value != before_value
             assert after_value == expected

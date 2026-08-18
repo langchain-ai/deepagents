@@ -692,6 +692,9 @@ class TestChatInputResize:
 
             short_screen = 12
             await pilot.resize_terminal(80, short_screen)
+            # Textual queues the Resize handler and its resulting layout work.
+            # Wait for that second pass before reading the applied composer size.
+            await pilot.pause()
 
             assert text_area.size.height == (
                 short_screen - _CHAT_INPUT_RESERVED_SCREEN_ROWS
@@ -701,6 +704,7 @@ class TestChatInputResize:
             assert box._requested_height == _EXPANDED_HEIGHT
 
             await pilot.resize_terminal(80, _RESIZE_SCREEN_HEIGHT)
+            await pilot.pause()
 
             assert text_area.size.height == _EXPANDED_HEIGHT
 

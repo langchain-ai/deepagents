@@ -1,5 +1,6 @@
-"""Public types for the dcode Python extensions API."""
+"""Public contract for dcode Python extensions."""
 
+from deepagents_code.extensions.api import ExtensionAPI
 from deepagents_code.extensions.models import (
     ExtensionError,
     ExtensionFile,
@@ -11,6 +12,7 @@ from deepagents_code.extensions.models import (
 from deepagents_code.extensions.registry import ExtensionRegistry
 
 __all__ = [
+    "ExtensionAPI",
     "ExtensionError",
     "ExtensionFile",
     "ExtensionRegistry",

@@ -167,6 +167,16 @@ jobs:
           escaped=$(printf '%s' "$latest" | sed 's/[.+]/\\&/g')
           sed -i -E "s/\"genai-prices>=[0-9]+(\\.[0-9]+)*([a-z0-9.+-]*)/\"genai-prices>=$escaped/" libs/code/pyproject.toml
 
+          # Re-lock so the lockfile's recorded `requires-dist` specifier for
+          # genai-prices is rewritten to the floor just written above. The
+          # earlier `uv lock --upgrade-package` ran against the *old* floor, so
+          # it leaves the stale `>=<old>` specifier embedded in `uv.lock`, and
+          # `check_lockfiles` (`uv lock --check`) then fails the bump PR for an
+          # out-of-sync lockfile. A plain `uv lock` re-resolves only what the
+          # manifest change requires: the pin stays at $latest (already the
+          # newest the range permits) and only the specifier line moves.
+          uv lock --directory libs/code --python 3.12
+
           # Staleness is the pin moving or the floor lagging the pin, not
           # files changing: `uv lock` can touch unrelated lines (a lock
           # revision bump, a re-resolved transitive), and a "bump

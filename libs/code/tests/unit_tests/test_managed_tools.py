@@ -755,11 +755,16 @@ async def test_ensure_ripgrep_reports_missing_artifact_on_404(
         raise err
 
     monkeypatch.setattr(managed_tools, "_download_to", _boom)
-    with (
-        mock.patch("shutil.which", return_value=None),
-        pytest.raises(ManagedToolUnavailableError) as exc_info,
-    ):
-        await managed_tools.ensure_ripgrep()
+    try:
+        with (
+            mock.patch("shutil.which", return_value=None),
+            pytest.raises(ManagedToolUnavailableError) as exc_info,
+        ):
+            await managed_tools.ensure_ripgrep()
+    finally:
+        # HTTPError wraps a file-like response; close it so its temp-file
+        # deallocator doesn't emit a ResourceWarning at GC time.
+        err.close()
     assert exc_info.value.reason == "artifact_not_found"
     assert "linux/x86_64" in exc_info.value.message
 
@@ -811,8 +816,13 @@ async def test_ensure_ripgrep_returns_none_on_http_download_failure(
         raise err
 
     monkeypatch.setattr(managed_tools, "_download_to", _boom)
-    with mock.patch("shutil.which", return_value=None):
-        assert await managed_tools.ensure_ripgrep() is None
+    try:
+        with mock.patch("shutil.which", return_value=None):
+            assert await managed_tools.ensure_ripgrep() is None
+    finally:
+        # HTTPError wraps a file-like response; close it so its temp-file
+        # deallocator doesn't emit a ResourceWarning at GC time.
+        err.close()
 
 
 async def test_ensure_ripgrep_preserves_stale_on_download_failure(

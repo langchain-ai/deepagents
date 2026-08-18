@@ -98,6 +98,30 @@ def test_manifest_covers_every_deepagents_env_var() -> None:
     )
 
 
+def test_manifest_describes_extension_settings() -> None:
+    """Extension scalars and the structured path list stay discoverable."""
+    enabled = get_option("extensions.enabled")
+    paths = get_option("extensions.paths")
+    trust = get_option("extensions.trust")
+
+    assert enabled is not None
+    assert enabled.kind is OptionKind.BOOL
+    assert enabled.default is True
+    assert enabled.env_var == _env_vars.EXTENSIONS
+    assert enabled.toml_keys == ("extensions", "enabled")
+
+    assert paths is not None
+    assert paths.kind is OptionKind.STRUCTURED
+    assert paths.toml_keys == ("extensions", "paths")
+    assert _env_vars.EXTENSIONS_PATHS in NON_OPTION_ENV_VARS
+
+    assert trust is not None
+    assert trust.kind is OptionKind.STR
+    assert trust.default == "ask"
+    assert trust.env_var == _env_vars.EXTENSIONS_TRUST
+    assert trust.toml_keys == ("extensions", "trust")
+
+
 def test_manifest_covers_every_provider_credential() -> None:
     """Every provider in `PROVIDER_API_KEY_ENV` must have a credential option."""
     manifest_env_vars = {opt.env_var for opt in get_config_options() if opt.env_var}

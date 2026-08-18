@@ -57,6 +57,26 @@ def test_managed_config_path_is_fixed_by_platform(
     assert managed_config_path(platform=platform, environ=environ) == expected
 
 
+def test_managed_config_path_windows_ignores_process_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redefined `%ProgramData%` must not redirect the managed-config lookup.
+
+    An unprivileged user can set `ProgramData` in their own shell; if the app
+    trusted it, the admin policy file could be replaced or silently dropped.
+    Production (no injected environ) resolves via the registry or the
+    hardcoded default — never the process environment.
+    """
+    from deepagents_code.configuration import paths
+
+    monkeypatch.setattr(paths, "_program_data_from_registry", lambda: None)
+    monkeypatch.setenv("ProgramData", "C:/attacker/fake")
+    monkeypatch.setenv("PROGRAMDATA", "C:/attacker/fake")
+    assert managed_config_path(platform="win32") == Path(
+        "C:/ProgramData/dcode/managed_config.toml"
+    )
+
+
 def test_toml_provider_distinguishes_missing_corrupt_and_empty(
     tmp_path: Path,
 ) -> None:

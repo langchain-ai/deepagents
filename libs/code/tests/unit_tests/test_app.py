@@ -116,6 +116,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
     QueuedUserMessage,
     RubricResultMessage,
     SummarizationMessage,
@@ -6187,7 +6188,7 @@ class TestAskUserLifecycle:
         widget = MagicMock(spec=UserMessage)
         widget.id = "msg-1"
 
-        with patch.object(app, "_schedule_message_height_measurement") as measure:
+        with patch.object(app, "_schedule_message_height_measurements") as measure:
             app.on_user_message_expansion_changed(
                 UserMessage.ExpansionChanged(widget, expanded=True)
             )
@@ -6195,7 +6196,7 @@ class TestAskUserLifecycle:
         app._message_store.update_message.assert_called_once_with(
             "msg-1", user_expanded=True
         )
-        measure.assert_called_once_with("msg-1")
+        measure.assert_called_once_with(["msg-1"])
 
     async def test_long_user_message_submit_toasts(self) -> None:
         """Submitting a >threshold message posts an information toast."""
@@ -10234,12 +10235,12 @@ class TestGoalCommand:
 
         with (
             patch.object(app._message_store, "update_message") as update,
-            patch.object(app, "_schedule_message_height_measurement") as measure,
+            patch.object(app, "_schedule_message_height_measurements") as measure,
         ):
             app.on_rubric_result_message_expansion_changed(event)
 
         update.assert_called_once_with("rubric-1", rubric_expanded=True)
-        measure.assert_called_once_with("rubric-1")
+        measure.assert_called_once_with(["rubric-1"])
 
     async def test_goal_command_proposes_pending_rubric(self) -> None:
         """`/goal <objective>` should draft criteria for widget review."""
@@ -14746,6 +14747,14 @@ class TestMessageTimestampFooters:
         config.write_text("[ui]\nshow_message_timestamps = true\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         app = DeepAgentsApp()
+        tool = MessageData(
+            type=MessageType.TOOL,
+            content="",
+            id="hist-tool",
+            timestamp=1_704_110_405.0,
+            tool_name="read_file",
+            tool_status=ToolStatus.SUCCESS,
+        )
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -14756,6 +14765,13 @@ class TestMessageTimestampFooters:
                         content="restored",
                         id="hist-msg",
                         timestamp=1_704_110_405.0,
+                    ),
+                    MessageData(
+                        type=MessageType.TOOL_GROUP,
+                        content="",
+                        id="hist-tool-group",
+                        timestamp=tool.timestamp,
+                        tool_group_messages=[tool],
                     ),
                     # Excluded types never receive a footer, even on restore.
                     MessageData(
@@ -14780,6 +14796,17 @@ class TestMessageTimestampFooters:
             children = list(messages.children)
             anchor = app.query_one("#hist-msg", UserMessage)
             assert children[children.index(anchor) + 1] is footer
+            # Lazy tool details also build linked footers when expanded.
+            summary = app.query_one(LazyToolGroupSummary)
+            await summary._set_expanded(True)
+            tool_footer = summary.query_one("#hist-tool-timestamp-footer", Static)
+            assert tool_footer.display
+            assert (
+                tool_footer
+                in summary.query_one(
+                    "#hist-tool", ToolCallMessage
+                )._visibility_accessories
+            )
             # Excluded-type messages get no footer, even on restore.
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
@@ -15095,7 +15122,7 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
-            await app._hydrate_messages_above()
+            await app._hydrate_messages("above")
             await pilot.pause()
 
             footer = app.query_one("#hist-0-timestamp-footer", Static)
@@ -15160,7 +15187,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._prune_messages("below", messages)
             await pilot.pause()
 
             assert app._message_store.has_messages_below
@@ -15186,10 +15213,10 @@ class TestMessageTimestampFooters:
             for message_id in ["tail-3", "tail-4", "tail-new"]:
                 assert app.query_one(f"#{message_id}", UserMessage)
 
-    async def test_hydrate_below_stops_at_first_failure(
+    async def test_hydrate_below_replaces_unbuildable_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A mid-batch mount failure must not desync the store from the DOM."""
+        """A poisoned row must not block the remaining contiguous history."""
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
@@ -15200,12 +15227,12 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._prune_messages("below", messages)
             await pilot.pause()
             assert app._message_store.has_messages_below
 
-            # Make the SECOND hidden row fail to build; hydration must stop
-            # there so the mounted block stays contiguous with the window.
+            # Make the second hidden row fail to build. It should become a visible
+            # placeholder while the rows after it continue hydrating in order.
             _start, end = app._message_store.get_visible_range()
             hidden = app._message_store.get_all_messages()[end:]
             assert len(hidden) >= 2
@@ -15217,7 +15244,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(failing, "to_widget", _boom)
 
-            await app._hydrate_messages_below()
+            await app._hydrate_messages("below")
             await pilot.pause()
 
             # The store's visible range must match exactly the mounted rows:
@@ -15229,7 +15256,112 @@ class TestMessageTimestampFooters:
                 child.id for child in messages.children if child.id in all_ids
             }
             assert mounted_ids == visible_ids
-            assert failing.id not in visible_ids
+            assert failing.id in visible_ids
+            assert app.query_one(f"#{failing.id}", ErrorMessage)
+
+    async def test_cancelled_assistant_hydration_rolls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cancelled content render must not leave a batch mounted as hydrated."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        data = MessageData(
+            type=MessageType.ASSISTANT,
+            content="restored",
+            id="cancelled-assistant",
+        )
+        widget = data.to_widget()
+        assert isinstance(widget, AssistantMessage)
+
+        async def cancel_render(_content: str) -> None:
+            await asyncio.sleep(0)
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(widget, "set_content", cancel_render)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            with pytest.raises(asyncio.CancelledError):
+                await app._mount_hydration_batch(
+                    messages,
+                    [(widget, data, None)],
+                    generation=app._transcript_generation,
+                )
+            await pilot.pause()
+
+            assert not widget.is_attached
+
+    async def test_pruning_reconciles_a_missing_boundary_widget(self) -> None:
+        """A missing DOM row must not permanently block bounded pruning."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for index in range(3):
+                await app._mount_message(
+                    UserMessage(f"m{index}", id=f"missing-{index}")
+                )
+            await pilot.pause()
+
+            app._message_store.WINDOW_SIZE = 1
+            await app.query_one("#missing-0", UserMessage).remove()
+            await pilot.pause()
+
+            assert await app._prune_messages("above") == 2
+            assert [data.id for data in app._message_store.get_visible_messages()] == [
+                "missing-2"
+            ]
+
+    async def test_pruning_preserves_expanded_lazy_tool_detail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Virtualizing an expanded group must retain its inner output state."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        tool = MessageData(
+            type=MessageType.TOOL,
+            content="",
+            id="lazy-inner-tool",
+            tool_name="read_file",
+            tool_status=ToolStatus.SUCCESS,
+            tool_output="output\n" * 500,
+        )
+        group = MessageData(
+            type=MessageType.TOOL_GROUP,
+            content="",
+            id="lazy-group",
+            tool_group_messages=[tool],
+        )
+        app = DeepAgentsApp()
+        monkeypatch.setattr(app, "_schedule_transcript_prune", lambda *_args: None)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            summary, footer = app._build_message_with_timestamp_footer(group)
+            assert isinstance(summary, LazyToolGroupSummary)
+            app._message_store.append(group)
+            await app._mount_before_queued(messages, summary)
+            if footer is not None:
+                await app._mount_before_queued(messages, footer)
+            await app._mount_message(UserMessage("tail", id="lazy-tail"))
+            await summary._set_expanded(True)
+            await pilot.pause()
+
+            inner = summary.query_one("#lazy-inner-tool", ToolCallMessage)
+            inner.toggle_output()
+            assert inner._expanded is True
+
+            app._message_store.WINDOW_SIZE = 1
+            assert await app._prune_messages("above") == 1
+            assert tool.tool_expanded is True
+
+            assert await app._hydrate_messages("above", count=1) == 1
+            await pilot.pause()
+            restored = app.query_one("#lazy-group", LazyToolGroupSummary)
+            await restored._set_expanded(True)
+            restored_inner = restored.query_one("#lazy-inner-tool", ToolCallMessage)
+            assert restored_inner._expanded is True
 
     async def test_tool_state_sync_updates_store_and_protection(self) -> None:
         """Mutable tool widget state should be canonical in MessageStore."""

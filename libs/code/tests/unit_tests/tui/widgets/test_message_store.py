@@ -23,6 +23,7 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
     RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
@@ -162,6 +163,42 @@ class TestMessageData:
         assert restored._deferred_status == ToolStatus.SUCCESS
         assert restored._deferred_output == "File contents here"
         assert restored._deferred_expanded is True
+
+    async def test_lazy_tool_group_mounts_details_only_when_expanded(self) -> None:
+        """Collapsed restored groups keep their tool widget trees out of the DOM."""
+        data = MessageData(
+            type=MessageType.TOOL_GROUP,
+            content="",
+            tool_group_messages=[
+                MessageData(
+                    type=MessageType.TOOL,
+                    content="",
+                    tool_name="read_file",
+                    tool_status=ToolStatus.SUCCESS,
+                    tool_output="contents",
+                ),
+                MessageData(
+                    type=MessageType.TOOL,
+                    content="",
+                    tool_name="grep",
+                    tool_status=ToolStatus.SUCCESS,
+                    tool_output="match",
+                ),
+            ],
+        )
+        restored = data.to_widget()
+        assert isinstance(restored, LazyToolGroupSummary)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert not restored.query(ToolCallMessage)
+            await restored._set_expanded(True)
+            assert len(restored.query(ToolCallMessage)) == 2
+            await restored._set_expanded(False)
+            assert not restored.query(ToolCallMessage)
 
     def test_tool_diff_superseded_roundtrip(self) -> None:
         """Test that a diff-superseded tool stays hidden after virtualization."""
@@ -824,25 +861,30 @@ class TestMessageStore:
         with pytest.raises(ValueError, match="Cannot update unknown or protected"):
             store.update_message("protected-1", nonexistent_field="value")
 
-    def test_should_hydrate_above(self):
-        """Test hydration trigger based on scroll position."""
+    def test_should_hydrate_above_uses_top_spacer_boundary(self):
+        """Hydration starts before the viewport reaches the mounted window."""
         store = MessageStore()
-
-        for i in range(10):
+        for i in range(30):
             store.append(MessageData(type=MessageType.USER, content=f"msg{i}"))
 
-        # No messages above - shouldn't hydrate
-        assert not store.should_hydrate_above(scroll_position=0, viewport_height=100)
+        assert not store.should_hydrate_above(
+            scroll_position=0,
+            viewport_height=10,
+            top_spacer_bottom=0,
+        )
 
-        # Simulate pruned messages
-        store._visible_start = 5
-        assert store.has_messages_above
-
-        # Near top - should hydrate
-        assert store.should_hydrate_above(scroll_position=50, viewport_height=100)
-
-        # Far from top - shouldn't hydrate
-        assert not store.should_hydrate_above(scroll_position=500, viewport_height=100)
+        store._visible_start = 20
+        top_spacer_bottom = store.range_height(0, store._visible_start)
+        assert store.should_hydrate_above(
+            scroll_position=top_spacer_bottom + 70,
+            viewport_height=10,
+            top_spacer_bottom=top_spacer_bottom,
+        )
+        assert not store.should_hydrate_above(
+            scroll_position=top_spacer_bottom + 90,
+            viewport_height=10,
+            top_spacer_bottom=top_spacer_bottom,
+        )
 
     def test_should_prune_below(self):
         """Test prune-below trigger based on scroll position and distance."""
@@ -874,12 +916,12 @@ class TestMessageStore:
     def test_should_hydrate_below_uses_bottom_spacer_top(self):
         """Hydration should start near mounted rows, not virtual transcript end."""
         store = MessageStore()
-        for i in range(100):
+        for i in range(400):
             store.append(
                 MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
             )
-        store._visible_start = 20
-        store._visible_end = 30
+        store._visible_start = 200
+        store._visible_end = 300
 
         bottom_spacer_top = store.range_height(0, store.get_visible_range()[1])
         assert store.should_hydrate_below(
@@ -888,7 +930,7 @@ class TestMessageStore:
             bottom_spacer_top=bottom_spacer_top,
         )
         assert not store.should_hydrate_below(
-            scroll_position=bottom_spacer_top - 400,
+            scroll_position=bottom_spacer_top - 1000,
             viewport_height=100,
             bottom_spacer_top=bottom_spacer_top,
         )

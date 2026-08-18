@@ -4941,10 +4941,11 @@ class TestConvertMessagesToData:
         result = DeepAgentsApp._convert_messages_to_data(msgs)
 
         assert len(result) == 1
-        assert result[0].type == MessageType.TOOL
-        assert result[0].tool_name == "read_file"
-        assert result[0].tool_status == ToolStatus.SUCCESS
-        assert result[0].tool_output == "file contents"
+        assert result[0].type == MessageType.TOOL_GROUP
+        tool = result[0].tool_group_messages[0]
+        assert tool.tool_name == "read_file"
+        assert tool.tool_status == ToolStatus.SUCCESS
+        assert tool.tool_output == "file contents"
 
     def test_reloaded_ask_user_row_keeps_its_questions(self) -> None:
         """A reloaded `ask_user` row needs its questions to render answers.
@@ -5042,7 +5043,7 @@ class TestConvertMessagesToData:
 
     def test_mixed_message_sequence(self) -> None:
         """Full conversation with mixed message types should convert correctly."""
-        from deepagents_code.tui.widgets.message_store import MessageType, ToolStatus
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         msgs = [
             self._make_human("What files are here?"),
@@ -5059,8 +5060,7 @@ class TestConvertMessagesToData:
         assert result[0].type == MessageType.USER
         assert result[1].type == MessageType.ASSISTANT
         assert result[1].content == "Let me check."
-        assert result[2].type == MessageType.TOOL
-        assert result[2].tool_status == ToolStatus.SUCCESS
+        assert result[2].type == MessageType.TOOL_GROUP
         assert result[3].type == MessageType.ASSISTANT
         assert result[3].content == "I found 2 files."
 

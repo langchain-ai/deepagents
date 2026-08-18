@@ -603,7 +603,12 @@ class ContainedSelect(Select[str]):
         )
 
     def _setup_options_renderables(self) -> None:
-        """Populate the custom overlay when options change."""
+        """Populate the custom overlay when options change.
+
+        Deliberately overrides Textual's private `Select._setup_options_renderables`
+        so options land in `ContainedSelectOverlay` instead of the stock overlay;
+        verified against Textual 8.2.8. Re-verify on every Textual bump.
+        """
         options = [
             Option(Text(self.prompt, style="dim"))
             if value == self.NULL
@@ -622,7 +627,12 @@ class ContainedSelect(Select[str]):
         option_list.add_options(options)
 
     def _watch_value(self, value: str | NoSelection) -> None:
-        """Update the current value while using the custom overlay widget."""
+        """Update the current value while using the custom overlay widget.
+
+        Deliberately overrides Textual's private `Select._watch_value` to drive
+        the custom overlay; verified against Textual 8.2.8. Re-verify on every
+        Textual bump.
+        """
         self._value = value
         try:
             select_current = self.query_one(SelectCurrent)

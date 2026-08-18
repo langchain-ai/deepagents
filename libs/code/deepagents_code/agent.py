@@ -1377,6 +1377,21 @@ _FS_TOOL_USAGE_INSTRUCTIONS: tuple[tuple[FsToolName, str], ...] = (
 )
 """dcode filesystem-tool preferences included in the generated prompt."""
 
+_WEB_SEARCH_TOOL_GUIDANCE = (
+    "\n\n### Web Search Tool Usage\n\n"
+    "When you use the web_search tool:\n\n"
+    "1. The tool will return search results with titles, URLs, and content excerpts\n"
+    "2. You MUST read and process these results, then respond naturally to the user\n"
+    "3. NEVER show raw JSON or tool results directly to the user\n"
+    "4. Synthesize the information from multiple sources into a coherent answer\n"
+    "5. Cite your sources by mentioning page titles or URLs when relevant\n"
+    "6. If the search doesn't find what you need, explain what you found and ask "
+    "clarifying questions\n\n"
+    "The user only sees your text responses - not tool results. Always provide a "
+    "complete, natural language answer after using web_search."
+)
+"""Usage guidance included only when the Tavily-backed tool is available."""
+
 
 def _build_fs_tool_prompt_guidance(fs_tools: list[FsToolName] | None) -> str:
     """Build dcode prompt guidance for the enabled filesystem tools.
@@ -1530,6 +1545,7 @@ def get_system_prompt(
         unsupported_modalities=settings.model_unsupported_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
+    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if settings.has_tavily else ""
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -1583,6 +1599,7 @@ def get_system_prompt(
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
         .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
+        .replace("{web_search_tool_guidance}", web_search_tool_guidance)
     )
 
     # Detect unreplaced placeholders (defense-in-depth for template typos)

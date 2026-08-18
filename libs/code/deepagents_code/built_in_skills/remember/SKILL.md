@@ -1,6 +1,6 @@
 ---
 name: remember
-description: "Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (AGENTS.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings."
+description: "Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (MEMORY.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings."
 license: MIT
 compatibility: designed for deepagents-code
 ---
@@ -28,14 +28,16 @@ Scan the conversation for:
 
 For each best practice or learning, choose the right destination:
 
-### -> Memory (AGENTS.md) for preferences and guidelines
+### -> Memory (MEMORY.md) for preferences and guidelines
 Use memory when the knowledge is:
 - A preference or guideline (not a multi-step process)
 - Something to always keep in mind
 - A simple rule or pattern
 
-**Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
-**Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
+**Global** (`~/.deepagents/<agent>/MEMORY.md`): Universal preferences across all projects
+**Project** (`.deepagents/MEMORY.md`): Project-specific conventions and decisions
+
+Files named `AGENTS.md` are user-authored instructions and must remain unchanged.
 
 ### -> Skill for reusable workflows and methodologies
 **Create a skill when** we developed:

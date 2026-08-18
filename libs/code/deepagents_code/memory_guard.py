@@ -78,6 +78,12 @@ _DELETE_REJECTION_MESSAGE = (
 )
 """Error returned when a delete would remove a managed memory block."""
 
+_READ_ONLY_REJECTION_MESSAGE = (
+    "The instruction file {path} is user-owned and read-only during agent "
+    "execution. Store durable learnings in the dedicated MEMORY.md file instead."
+)
+"""Error returned before a tool mutates a read-only instruction source."""
+
 
 class _RestoreOutcome(Enum):
     """Result of attempting to restore a managed block after a tool call."""
@@ -93,9 +99,10 @@ class _RestoreOutcome(Enum):
 
 
 class ManagedMemoryGuardMiddleware(AgentMiddleware):
-    """Revert agent edits to the managed onboarding-name memory block.
+    """Protect read-only instructions and managed memory blocks from edits.
 
-    Guards the managed onboarding-name block in a fixed set of memory files. A
+    Rejects mutations of configured read-only files before tools run. It also
+    guards the managed onboarding-name block in a fixed set of memory files. A
     `write_file`/`edit_file` that leaves the managed block untouched passes
     through; one that alters or drops it has the block restored (other edits
     kept) and returns an error. A `delete` targeting a guarded file (or a parent
@@ -104,13 +111,21 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
     itself fails, an error is still returned so the failure is never silent.
     """
 
-    def __init__(self, guarded_paths: Iterable[str | Path]) -> None:
+    def __init__(
+        self,
+        guarded_paths: Iterable[str | Path],
+        *,
+        read_only_paths: Iterable[str | Path] = (),
+    ) -> None:
         """Initialize the guard with the memory files to protect.
 
         Args:
             guarded_paths: Paths whose managed onboarding-name block must be
                 protected from agent edits. Resolved to absolute form for
                 matching; unresolvable entries are skipped.
+            read_only_paths: User-owned instruction files that agent tools must
+                not write, edit, or delete. Deleting a parent directory that
+                contains one of these files is also rejected.
         """
         super().__init__()
         requested = list(guarded_paths)
@@ -132,6 +147,79 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
                 "managed memory-block protection is disabled",
                 requested,
             )
+        self._read_only = self._resolve_paths(read_only_paths, kind="read-only")
+
+    @staticmethod
+    def _resolve_paths(paths: Iterable[str | Path], *, kind: str) -> frozenset[Path]:
+        """Resolve configured paths for exact tool-target matching.
+
+        Args:
+            paths: Paths to resolve.
+            kind: Human-readable path category for diagnostics.
+
+        Returns:
+            Successfully resolved absolute paths.
+        """
+        requested = list(paths)
+        resolved: set[Path] = set()
+        for raw in requested:
+            try:
+                resolved.add(Path(raw).expanduser().resolve())
+            except (OSError, RuntimeError, ValueError):
+                logger.warning(
+                    "Could not resolve %s memory path %r", kind, raw, exc_info=True
+                )
+        if requested and not resolved:
+            logger.error(
+                "ManagedMemoryGuardMiddleware resolved no %s paths from %r",
+                kind,
+                requested,
+            )
+        return frozenset(resolved)
+
+    def _read_only_path(self, request: ToolCallRequest) -> Path | None:
+        """Return the protected instruction path targeted by a mutation.
+
+        Returns:
+            The matching read-only path, or `None` for unrelated calls.
+        """
+        tool_name = request.tool_call["name"]
+        if tool_name not in _GUARDED_TOOLS:
+            return None
+        args = request.tool_call.get("args") or {}
+        file_path = args.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            return None
+        try:
+            target = Path(file_path).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            logger.warning(
+                "Could not resolve target path %r for %s",
+                file_path,
+                tool_name,
+                exc_info=True,
+            )
+            return None
+        if tool_name == "delete":
+            return next(
+                (path for path in self._read_only if path.is_relative_to(target)),
+                None,
+            )
+        return target if target in self._read_only else None
+
+    @staticmethod
+    def _read_only_error(request: ToolCallRequest, path: Path) -> ToolMessage:
+        """Build an error result for a blocked instruction mutation.
+
+        Returns:
+            Tool error explaining the writable-memory boundary.
+        """
+        return ToolMessage(
+            content=_READ_ONLY_REJECTION_MESSAGE.format(path=path),
+            tool_call_id=request.tool_call["id"],
+            name=request.tool_call["name"],
+            status="error",
+        )
 
     def _guarded_path(self, request: ToolCallRequest) -> Path | None:
         """Return the resolved guarded path targeted by the call, if any.
@@ -428,6 +516,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             The tool result, or an error `ToolMessage` when the managed block
                 was altered.
         """
+        read_only_path = self._read_only_path(request)
+        if read_only_path is not None:
+            return self._read_only_error(request, read_only_path)
         path = self._guarded_path(request)
         if path is None:
             return handler(request)
@@ -455,6 +546,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             The tool result, or an error `ToolMessage` when the managed block
                 was altered.
         """
+        read_only_path = await asyncio.to_thread(self._read_only_path, request)
+        if read_only_path is not None:
+            return self._read_only_error(request, read_only_path)
         path = await asyncio.to_thread(self._guarded_path, request)
         if path is None:
             return await handler(request)

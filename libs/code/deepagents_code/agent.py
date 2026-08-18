@@ -23,6 +23,7 @@ from deepagents.middleware import (
     MemoryMiddleware,
     SkillsMiddleware,  # noqa: F401
 )
+from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -144,6 +145,61 @@ _MEMORY_READONLY_SYSTEM_PROMPT = (
     "echo or save it.\n"
     "</memory_guidelines>\n"
 )
+
+_WRITABLE_MEMORY_PATH_SENTINEL = "__DEEPAGENTS_WRITABLE_MEMORY_PATH__"
+
+_MEMORY_WRITABLE_OWNERSHIP_PROMPT = (
+    "<memory_ownership>\n"
+    "Files named `AGENTS.md` are user-authored instructions and are read-only "
+    "during agent execution. Persist long-term memory only in these writable "
+    f"destinations:\n{_WRITABLE_MEMORY_PATH_SENTINEL}\nUse `write_file` to create "
+    "a destination when needed and `edit_file` for later updates. Never write "
+    "memory to an `AGENTS.md` source.\n"
+    "</memory_ownership>\n\n"
+)
+
+_MEMORY_WRITABLE_SYSTEM_PROMPT = (
+    _MEMORY_WRITABLE_OWNERSHIP_PROMPT
+    + MEMORY_SYSTEM_PROMPT.replace(
+        "don't just fix the immediate issue, update your instructions",
+        "don't just fix the immediate issue, update your writable memory",
+    )
+)
+
+_MEMORY_READONLY_OWNERSHIP_PROMPT = (
+    "<memory_ownership>\n"
+    "Files named `AGENTS.md` are user-authored instructions and are read-only "
+    "during agent execution. Dedicated writable memory destinations are:\n"
+    f"{_WRITABLE_MEMORY_PATH_SENTINEL}\nAutomatic memory saving is disabled, so "
+    "only update those dedicated files when the user explicitly asks you to "
+    "remember something.\n"
+    "</memory_ownership>\n\n" + _MEMORY_READONLY_SYSTEM_PROMPT
+)
+
+
+def _memory_system_prompt(memory_paths: Sequence[Path], *, auto_save: bool) -> str:
+    """Build memory guidance with one explicit writable destination.
+
+    Args:
+        memory_paths: Dedicated files for agent-authored long-term memory. The
+            first path is user-scoped; an optional second path is project-scoped.
+        auto_save: Whether to encourage proactive memory updates.
+
+    Returns:
+        A `MemoryMiddleware` prompt that separates read-only instructions from
+        writable memory.
+    """
+    template = (
+        _MEMORY_WRITABLE_SYSTEM_PROMPT
+        if auto_save
+        else _MEMORY_READONLY_OWNERSHIP_PROMPT
+    )
+    destinations = [f"- User memory: `{memory_paths[0]}`"]
+    if len(memory_paths) > 1:
+        destinations.append(f"- Project memory: `{memory_paths[1]}`")
+    escaped_destinations = "\n".join(destinations).replace("{", "{{").replace("}", "}}")
+    return template.replace(_WRITABLE_MEMORY_PATH_SENTINEL, escaped_destinations)
+
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
@@ -2289,7 +2345,8 @@ def create_cli_agent(
             `enable_ask_user=False`.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         memory_auto_save: When `True` (default), the memory prompt tells the
-            agent to proactively persist learnings to the `AGENTS.md` sources.
+            agent to proactively persist learnings to its dedicated `MEMORY.md`
+            file. Loaded `AGENTS.md` instruction sources remain read-only.
 
             When `False`, memory is still loaded into context but the read-only
             prompt is used instead, so the agent does not auto-save; explicit
@@ -2372,6 +2429,8 @@ def create_cli_agent(
             non-`None` `sandbox`, when `settings.interpreter_ptc` contains
             unknown tool names, or when `interpreter_ptc="all"` is used
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
+        RuntimeError: If memory is enabled but its dedicated path could not be
+            initialized.
     """
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
@@ -2386,7 +2445,8 @@ def create_cli_agent(
         else (project_context.user_cwd if project_context is not None else None)
     )
 
-    # Setup agent directory for persistent memory (if enabled)
+    # Setup agent directory for persistent instructions and memory (if enabled)
+    memory_paths: list[Path] = []
     if enable_memory or enable_skills:
         agent_dir = settings.ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
@@ -2394,6 +2454,10 @@ def create_cli_agent(
             # Create empty file for user customizations
             # Base instructions are loaded fresh from get_system_prompt()
             agent_md.touch()
+        if enable_memory:
+            user_memory_path = agent_dir / "MEMORY.md"
+            user_memory_path.touch(exist_ok=True)
+            memory_paths.append(user_memory_path)
 
     # Skills directories (if enabled)
     skills_dir = None
@@ -2451,6 +2515,25 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
+    instruction_paths: list[Path] = []
+    if enable_memory:
+        project_agent_md_paths = (
+            project_context.project_agent_md_paths()
+            if project_context is not None
+            else settings.get_project_agent_md_path()
+        )
+        instruction_paths = [
+            settings.get_user_agent_md_path(assistant_id),
+            *project_agent_md_paths,
+        ]
+        project_root = (
+            project_context.project_root
+            if project_context is not None
+            else settings.project_root
+        )
+        if project_root is not None:
+            memory_paths.append(Path(project_root) / ".deepagents" / "MEMORY.md")
+
     def _subagent_cli_middleware(
         *,
         has_explicit_model: bool,
@@ -2487,16 +2570,15 @@ def create_cli_agent(
                 mcp_tools=mcp_tools,
             )
         )
-        # Subagents share the on-disk filesystem backend and can edit the user
-        # AGENTS.md, so they get the same managed onboarding-name block guard as
-        # the main agent. Gated on memory because the block only exists when
-        # memory is enabled.
+        # Subagents share the on-disk filesystem backend, so they must observe
+        # the same read-only instruction boundary as the main agent.
         if enable_memory:
             from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
 
             middleware.append(
                 ManagedMemoryGuardMiddleware(
-                    [settings.get_user_agent_md_path(assistant_id)]
+                    [settings.get_user_agent_md_path(assistant_id)],
+                    read_only_paths=instruction_paths,
                 )
             )
         return middleware
@@ -2599,38 +2681,30 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
-        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
-        project_agent_md_paths = (
-            project_context.project_agent_md_paths()
-            if project_context is not None
-            else settings.get_project_agent_md_path()
-        )
-        memory_sources.extend(str(p) for p in project_agent_md_paths)
+        if not memory_paths:  # pragma: no cover - established during setup
+            msg = "Memory paths were not initialized"
+            raise RuntimeError(msg)
+        memory_sources = [str(path) for path in instruction_paths]
+        memory_sources.extend(str(path) for path in memory_paths)
 
-        # Loading memory stays on either way; a read-only prompt drops the
-        # "proactively persist learnings" guidance when auto-save is disabled.
-        if memory_auto_save:
-            memory_middleware = MemoryMiddleware(
-                backend=FilesystemBackend(virtual_mode=False),
-                sources=memory_sources,
-            )
-        else:
-            memory_middleware = MemoryMiddleware(
-                backend=FilesystemBackend(virtual_mode=False),
-                sources=memory_sources,
-                system_prompt=_MEMORY_READONLY_SYSTEM_PROMPT,
-            )
+        memory_middleware = MemoryMiddleware(
+            backend=FilesystemBackend(virtual_mode=False),
+            sources=memory_sources,
+            system_prompt=_memory_system_prompt(
+                memory_paths, auto_save=memory_auto_save
+            ),
+        )
         agent_middleware.append(memory_middleware)
 
-        # Protect the machine-managed onboarding-name block in the user
-        # AGENTS.md from being rewritten by agent file edits. The block's
-        # markers are HTML comments stripped before injection, so the model
-        # can't see the boundary and would otherwise clobber it.
+        # Enforce instruction ownership below the prompt layer. The existing
+        # managed-block protection remains for compatibility with callers that
+        # use this middleware without the full read-only source list.
         from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
 
         agent_middleware.append(
             ManagedMemoryGuardMiddleware(
-                [settings.get_user_agent_md_path(assistant_id)]
+                [settings.get_user_agent_md_path(assistant_id)],
+                read_only_paths=instruction_paths,
             )
         )
 

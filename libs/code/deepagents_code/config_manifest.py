@@ -1414,7 +1414,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="memory.auto_save",
         group="Tools",
         summary=(
-            "Let the agent proactively save learnings to memory (AGENTS.md); "
+            "Let the agent proactively save learnings to MEMORY.md files; "
             "disable to keep loading memory but stop auto-saving."
         ),
         kind=OptionKind.BOOL,

@@ -27,7 +27,6 @@ from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
 from deepagents_code.agent import (
     _AGENT_DIR_MARKER,
-    _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
     AsyncApprovalHITLMiddleware,
     _add_interrupt_on,
@@ -41,6 +40,7 @@ from deepagents_code.agent import (
     _format_web_search_description,
     _format_write_file_description,
     _interrupt_predicate,
+    _memory_system_prompt,
     _reserved_agent_dir_names,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
@@ -2262,10 +2262,12 @@ class TestCreateCliAgentMemorySources:
         sources = captured[0]
         # User AGENTS.md is always first
         assert sources[0] == str(agent_dir / "AGENTS.md")
-        # Both project paths follow
+        # Both project paths follow, then the dedicated writable memory file.
         assert sources[1] == str(project_inner)
         assert sources[2] == str(project_root)
-        assert len(sources) == 3
+        assert sources[3] == str(agent_dir / "MEMORY.md")
+        assert sources[4] == str(tmp_path / ".deepagents" / "MEMORY.md")
+        assert len(sources) == 5
 
     def test_empty_project_paths_no_extra_sources(self, tmp_path: Path) -> None:
         """Empty project path list should not add extra memory sources."""
@@ -2326,8 +2328,12 @@ class TestCreateCliAgentMemorySources:
 
         assert len(captured) == 1
         sources = captured[0]
-        # Only user AGENTS.md, no project paths
-        assert sources == [str(agent_dir / "AGENTS.md")]
+        # User instructions remain loaded, followed by writable memory.
+        assert sources == [
+            str(agent_dir / "AGENTS.md"),
+            str(agent_dir / "MEMORY.md"),
+        ]
+        assert (agent_dir / "MEMORY.md").exists()
 
 
 class TestCreateCliAgentMemoryAutoSave:
@@ -2399,26 +2405,46 @@ class TestCreateCliAgentMemoryAutoSave:
         assert len(captured) == 1
         return captured[0]
 
-    def test_auto_save_on_uses_default_prompt(self, tmp_path: Path) -> None:
-        """Default (auto-save on) leaves the middleware's default prompt in place."""
+    def test_auto_save_on_targets_dedicated_memory(self, tmp_path: Path) -> None:
+        """Auto-save guidance names MEMORY.md and makes AGENTS.md read-only."""
         system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=True)
-        # No override passed -> MemoryMiddleware keeps its default persistence prompt.
-        assert system_prompt == "__unset__"
+        assert isinstance(system_prompt, str)
+        assert str(tmp_path / "agent" / "MEMORY.md") in system_prompt
+        assert "Files named `AGENTS.md`" in system_prompt
+        assert "only in these writable destinations" in system_prompt
+        assert "Automatic memory saving is disabled" not in system_prompt
 
     def test_auto_save_off_uses_readonly_prompt(self, tmp_path: Path) -> None:
         """Auto-save off swaps in the Code-owned read-only prompt."""
         system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=False)
-        assert system_prompt is _MEMORY_READONLY_SYSTEM_PROMPT
-
-        formatted = _MEMORY_READONLY_SYSTEM_PROMPT.format(
-            agent_memory="(No memory loaded)"
-        )
+        assert isinstance(system_prompt, str)
+        formatted = system_prompt.format(agent_memory="(No memory loaded)")
         assert "<agent_memory>" in formatted
+        assert str(tmp_path / "agent" / "MEMORY.md") in formatted
+        assert "Files named `AGENTS.md`" in formatted
         assert "**Trust and verification:**" in formatted
         assert "**Learning from feedback:**" not in formatted
         assert "**When to update memories:**" not in formatted
         assert "**Automatic memory saving is disabled:**" in formatted
         assert "Never store API keys, access tokens, passwords" in formatted
+
+    def test_prompt_builder_replaces_only_memory_path(self, tmp_path: Path) -> None:
+        """A path containing braces cannot interfere with memory formatting."""
+        prompt = _memory_system_prompt(
+            [
+                tmp_path / "agent-{one}" / "MEMORY.md",
+                tmp_path / "project-{two}" / ".deepagents" / "MEMORY.md",
+            ],
+            auto_save=True,
+        )
+
+        formatted = prompt.format(agent_memory="saved context")
+
+        assert "agent-{one}" in formatted
+        assert "project-{two}" in formatted
+        assert "User memory:" in formatted
+        assert "Project memory:" in formatted
+        assert "saved context" in formatted
 
 
 class TestCreateCliAgentProjectContext:
@@ -2580,7 +2606,12 @@ class TestCreateCliAgentProjectContext:
         assert len(captured_sources) == 1
         sources = captured_sources[0]
         assert sources[0] == str(agent_dir / "AGENTS.md")
-        assert sources[1:] == [str(deepagents_md), str(root_md)]
+        assert sources[1:] == [
+            str(deepagents_md),
+            str(root_md),
+            str(agent_dir / "MEMORY.md"),
+            str(project_root / ".deepagents" / "MEMORY.md"),
+        ]
 
     @staticmethod
     def _build_shell_agent(

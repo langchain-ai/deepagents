@@ -169,6 +169,75 @@ def test_unguarded_file_passes_through(tmp_path) -> None:
     assert other.read_text(encoding="utf-8") == "rewritten\n"
 
 
+@pytest.mark.parametrize("tool_name", ["write_file", "edit_file"])
+def test_read_only_instruction_write_is_rejected_before_tool(
+    tmp_path, tool_name: str
+) -> None:
+    """Agent tools cannot mutate a user-owned instruction source."""
+    instruction = tmp_path / "project" / "AGENTS.md"
+    instruction.parent.mkdir(parents=True)
+    instruction.write_text("Always run tests.\n", encoding="utf-8")
+    middleware = ManagedMemoryGuardMiddleware([], read_only_paths=[instruction])
+    called = False
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal called
+        called = True
+        instruction.write_text("rewritten\n", encoding="utf-8")
+        return _success(tool_name)
+
+    result = middleware.wrap_tool_call(
+        _request(tool_name, str(instruction), content="rewritten\n"), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "read-only" in str(result.content)
+    assert called is False
+    assert instruction.read_text(encoding="utf-8") == "Always run tests.\n"
+
+
+def test_read_only_instruction_blocks_parent_delete(tmp_path) -> None:
+    """Deleting a directory cannot bypass an instruction-file boundary."""
+    instruction = tmp_path / "project" / "AGENTS.md"
+    instruction.parent.mkdir(parents=True)
+    instruction.write_text("Keep me.\n", encoding="utf-8")
+    middleware = ManagedMemoryGuardMiddleware([], read_only_paths=[instruction])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        pytest.fail("delete handler must not run")
+
+    result = middleware.wrap_tool_call(
+        _request("delete", str(instruction.parent)), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert instruction.exists()
+
+
+def test_dedicated_memory_file_remains_writable(tmp_path) -> None:
+    """The ownership guard does not block the dedicated MEMORY.md target."""
+    instruction = tmp_path / "agent" / "AGENTS.md"
+    memory = tmp_path / "agent" / "MEMORY.md"
+    instruction.parent.mkdir(parents=True)
+    instruction.write_text("Instructions\n", encoding="utf-8")
+    memory.write_text("Old memory\n", encoding="utf-8")
+    middleware = ManagedMemoryGuardMiddleware([], read_only_paths=[instruction])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        memory.write_text("New memory\n", encoding="utf-8")
+        return _success()
+
+    result = middleware.wrap_tool_call(
+        _request("edit_file", str(memory), content="New memory\n"), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "success"
+    assert memory.read_text(encoding="utf-8") == "New memory\n"
+
+
 def test_non_write_tool_passes_through(tmp_path) -> None:
     """Read-only tools targeting the guarded file are never intercepted."""
     path = tmp_path / "agent" / "AGENTS.md"

@@ -18,7 +18,7 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from deepagents_code.tui.widgets.loading import Spinner
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence, Set as AbstractSet
+    from collections.abc import Awaitable, Callable, Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
     from textual.events import Key
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.plugins.models import PluginMarketplace
     from deepagents_code.tui.modals.plugin_manager.models import (
+        PluginClosePhase,
         PluginManagerView,
         _MarketplaceRow,
         _PluginRow,
@@ -57,6 +58,7 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _plugin_options,
 )
 from deepagents_code.tui.modals.plugin_manager.models import (
+    PluginManagerResult,
     PluginTab,
     _ManagerState,
 )
@@ -69,17 +71,30 @@ from deepagents_code.tui.modals.plugin_manager.tabs import (
 
 logger = logging.getLogger(__name__)  # noqa: RUF067  # module-level logger
 
+_CONNECTION_REFRESH_ERROR = (  # noqa: RUF067  # module-level constant
+    "Could not refresh MCP connection status. Reopen /plugins."
+)
+"""Banner for a failed connection refresh, cleared when a later one succeeds."""
 
-class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
+# Bounds the close check so a stalled plugin scan cannot leave the manager
+# mounted with its keys locked out. Deliberately shorter than the app's modal
+# watchdog: nothing here waits on the user, only on a filesystem snapshot.
+_CLOSE_CHECK_TIMEOUT_SECONDS = 30.0  # noqa: RUF067  # module-level constant
+
+
+class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    When plugin state changed while the manager was open, a reload prompt is
-    shown after this screen closes offering to apply the changes via `/reload`;
-    an unchanged close shows nothing.
+    Closing runs the optional `check_reload_required` callback while this screen
+    stays mounted. Changed plugin state transitions in place to a reload prompt
+    and dismisses with `"reload"` or `"later"`; a failed or timed-out check
+    dismisses with `"check_failed"`; unchanged state, or no callback at all,
+    dismisses with `None` and shows nothing.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
+        Binding("enter", "reload_plugins", "Reload", show=False, priority=True),
         # Separate from tab/shift+tab so check_action can release arrows to a
         # non-empty Input for caret movement while keeping Tab as tab cycling.
         Binding(
@@ -115,8 +130,10 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self,
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
+        mcp_connecting: bool = False,
         loaded_plugin_ids: AbstractSet[str] | None = None,
         on_auto_update_enabled: Callable[[], None] | None = None,
+        check_reload_required: Callable[[], Awaitable[bool | None]] | None = None,
     ) -> None:
         """Initialize the plugin manager.
 
@@ -124,18 +141,27 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             mcp_server_info: Live MCP server metadata from the running session,
                 used to show connection status for plugins that declare MCP
                 servers.
+            mcp_connecting: Whether MCP connection status is still loading.
             loaded_plugin_ids: Plugin ids loaded into the current session.
                 Plugins whose enabled state differs from this set (enabled but
                 not loaded, or disabled but still loaded) are shown as pending
                 reload.
             on_auto_update_enabled: Called after auto-update is enabled.
+            check_reload_required: Awaited on close to decide whether plugin
+                state changed since the manager opened. `True` shows the inline
+                reload prompt, `False` closes silently, and `None` means the
+                check failed. When omitted, the manager closes without
+                prompting.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
         self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
+        self._mcp_connecting = mcp_connecting
         self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
         self._on_auto_update_enabled = on_auto_update_enabled
+        self._check_reload_required = check_reload_required
+        self._close_phase: PluginClosePhase = "browsing"
         self._state = _ManagerState((), (), (), ())
         self._status: str | None = None
         self._error: str | None = None
@@ -147,6 +173,20 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._search_query = ""
         self._auto_update_enabled = False
         self._auto_update_source = "default"
+        # State loads run in worker threads. Keep their snapshots and view
+        # updates ordered so an older connecting snapshot cannot overwrite a
+        # later settled connection snapshot.
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_tasks: set[asyncio.Task[None]] = set()
+        """Strong references to in-flight fire-and-forget refresh tasks."""
+
+        self._dismissed = False
+        """Whether the screen has been unmounted.
+
+        Textual leaves `is_mounted` `True` and `is_attached` `False` after a
+        dismiss, and `is_attached` is also `False` before the first mount, so
+        neither flag distinguishes a dismissed screen from a fresh one.
+        """
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -203,8 +243,14 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._status = None
             self._refresh_view()
 
+    def on_unmount(self) -> None:
+        """Stop accepting deferred refreshes once the screen is torn down."""
+        self._dismissed = True
+
     def on_resize(self) -> None:
         """Refit width-sized dividers when the modal resizes."""
+        if self._close_phase != "browsing":
+            return
         marketplace_divider_visible = (
             self._mode == "list"
             and self._tab == "marketplaces"
@@ -229,7 +275,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         Args:
             tab: Tab to show.
         """
-        if self._mode == "add_marketplace":
+        if self._close_phase != "browsing" or self._mode == "add_marketplace":
             return
         if self._details_mode_active():
             self._mode = "list"
@@ -397,6 +443,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         }
 
     def _refresh_view(self) -> None:
+        # _show_close_state hides the browsing chrome one way; repainting it
+        # here would restore the tabs and option list underneath the reload
+        # prompt while its key bindings are still active.
+        if self._close_phase != "browsing":
+            return
         title = self.query_one("#plugin-manager-title", Static)
         tabs = self.query_one("#plugin-manager-tabs", Horizontal)
         divider = self.query_one("#plugin-manager-divider", Rule)
@@ -547,29 +598,123 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             return _confirm_marketplace_removal_options(self._selected_marketplace)
         return [Option("Back to plugin list", id="details-back")]
 
-    async def _refresh_state(self) -> None:
-        # A mutating action (install/toggle/uninstall/marketplace change) reloads
-        # state and shows a fresh list, so a leftover query would hide results.
-        # Details round-trips use `_refresh_view` instead and keep the query.
-        self._search_query = ""
-        self._state = await asyncio.to_thread(
-            _load_manager_state,
-            self._mcp_server_info,
-            loaded_plugin_ids=self._loaded_plugin_ids,
+    def update_connection_state(
+        self,
+        mcp_server_info: Sequence[MCPServerInfo],
+        *,
+        mcp_connecting: bool,
+    ) -> None:
+        """Update the live MCP connection snapshot and re-render.
+
+        The constructor only receives a snapshot of the app's connection
+        state, so a manager opened while a connection is still settling would
+        otherwise keep `mcp_connecting=True` forever — suppressing, for
+        session-loaded plugins that declare MCP servers, both the "connected"
+        indicator and a legitimate "run /reload" hint until the modal is
+        closed and reopened. The app calls this whenever a connection attempt
+        settles — `ServerReady` or a startup failure, including reconnects —
+        so the open manager reflects the final connection state.
+
+        Args:
+            mcp_server_info: Settled MCP server metadata from the session.
+            mcp_connecting: Whether MCP connection status is still loading.
+                While `True`, per-plugin MCP status is omitted entirely rather
+                than rendered as disconnected.
+        """
+        if self._dismissed:
+            # The app resolves its handle synchronously but this refresh is
+            # deferred, so a dismiss landing in between would otherwise leave
+            # `_refresh_view` querying a torn-down DOM.
+            return
+        self._mcp_server_info = mcp_server_info
+        self._mcp_connecting = mcp_connecting
+        task = asyncio.create_task(self._refresh_state(clear_search=False))
+        # `asyncio` keeps only a weak reference to a running task, so hold a
+        # strong one until it completes or the refresh can vanish mid-flight.
+        self._refresh_tasks.add(task)
+        task.add_done_callback(self._refresh_tasks.discard)
+        task.add_done_callback(self._settle_refresh_result)
+
+    def _settle_refresh_result(self, task: asyncio.Task[None]) -> None:
+        """Report a failed connection-state refresh instead of dropping it.
+
+        Logging alone would leave the manager showing the pre-settle snapshot
+        with no on-screen signal — indistinguishable from the stale state this
+        refresh exists to clear. Route through `_error` like every other
+        failure path in this screen, and retire that banner once a later
+        refresh succeeds.
+
+        Only this callback's own message is cleared: a reconnect must not wipe
+        a marketplace or install error the user still needs to read.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if not self.is_attached:
+            # Unmounted mid-refresh: a failure here means the DOM is gone, not
+            # that the plugin state is unreadable — and there is nothing left
+            # to render a message into either way.
+            if exc is not None:
+                logger.warning(
+                    "Plugin manager connection refresh failed after unmount",
+                    exc_info=exc,
+                )
+            return
+        if exc is None:
+            if self._error == _CONNECTION_REFRESH_ERROR:
+                self._error = None
+                self._refresh_view()
+            return
+        logger.warning(
+            "Failed to refresh plugin manager connection state",
+            exc_info=exc,
         )
-        self._auto_update_enabled, self._auto_update_source = await asyncio.to_thread(
-            plugin_auto_update_setting
-        )
-        if self._selected_plugin is not None:
-            refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
-            if refreshed is None:
-                refreshed = self._find_available_plugin(self._selected_plugin.plugin_id)
-            self._selected_plugin = refreshed
-        if self._selected_marketplace is not None:
-            self._selected_marketplace = self._find_marketplace(
-                self._selected_marketplace.name
-            )
+        self._error = _CONNECTION_REFRESH_ERROR
         self._refresh_view()
+
+    async def _refresh_state(self, *, clear_search: bool = True) -> None:
+        """Load and apply plugin state without allowing refreshes to overlap.
+
+        Args:
+            clear_search: Whether this refresh follows a plugin mutation that
+                should show the complete, newly loaded list.
+        """
+        async with self._refresh_lock:
+            # A mutating action (install/toggle/uninstall/marketplace change)
+            # reloads state and shows a fresh list, so a leftover query would
+            # hide results. Connection updates do not change plugin data and
+            # must retain the user's active filter.
+            if clear_search:
+                self._search_query = ""
+
+            # Take the snapshot only after acquiring the lock. A settled
+            # connection update queued behind the initial load therefore uses
+            # the current state rather than re-applying the connecting one.
+            mcp_server_info = tuple(self._mcp_server_info)
+            mcp_connecting = self._mcp_connecting
+            loaded_plugin_ids = self._loaded_plugin_ids
+            self._state = await asyncio.to_thread(
+                _load_manager_state,
+                mcp_server_info,
+                mcp_connecting=mcp_connecting,
+                loaded_plugin_ids=loaded_plugin_ids,
+            )
+            (
+                self._auto_update_enabled,
+                self._auto_update_source,
+            ) = await asyncio.to_thread(plugin_auto_update_setting)
+            if self._selected_plugin is not None:
+                refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
+                if refreshed is None:
+                    refreshed = self._find_available_plugin(
+                        self._selected_plugin.plugin_id
+                    )
+                self._selected_plugin = refreshed
+            if self._selected_marketplace is not None:
+                self._selected_marketplace = self._find_marketplace(
+                    self._selected_marketplace.name
+                )
+            self._refresh_view()
 
     def check_action(
         self,
@@ -592,6 +737,13 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             `False` to step a binding aside so the focused widget receives the
                 key; `True` to allow the action.
         """
+        if self._close_phase != "browsing":
+            prompting = self._close_phase == "reload_prompt"
+            if action == "reload_plugins":
+                return prompting
+            return action == "cancel" and prompting
+        if action == "reload_plugins":
+            return False
         if action in {"arrow_previous_tab", "arrow_next_tab"}:
             focused = self.focused
             return not (isinstance(focused, Input) and bool(focused.value))
@@ -611,7 +763,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         paints empty with a caret flash (and so `select_on_focus` cannot leave
         the inserted text selected for the next keypress).
         """
-        if not self._search_available():
+        if self._close_phase != "browsing" or not self._search_available():
             return
 
         search_input = self.query_one("#plugin-manager-search", Input)
@@ -638,9 +790,106 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         """
         self._select_tab(event.tab)
 
+    def _show_close_state(self, title: str, body: str, help_text: str) -> None:
+        """Switch the modal to a one-way terminal close state.
+
+        Hides the browsing chrome and repaints the title, status and help lines.
+        There is no path back to the list; `_refresh_view` is gated on the close
+        phase so nothing restores what this hides.
+
+        Args:
+            title: Replacement modal title.
+            body: Status text shown in place of the plugin list.
+            help_text: Key hints; an empty string hides the help line.
+        """
+        self.add_class("plugin-close-state")
+        self.query_one("#plugin-manager-title", Static).update(title)
+        self.query_one("#plugin-manager-tabs", Horizontal).display = False
+        self.query_one("#plugin-manager-divider", Rule).display = False
+        status = self.query_one("#plugin-manager-status", Static)
+        status.update(body)
+        status.display = True
+        self.query_one("#plugin-manager-error", Static).display = False
+        self.query_one("#plugin-manager-search", Input).display = False
+        self.query_one("#plugin-manager-options", OptionList).display = False
+        self.query_one("#plugin-marketplace-source", Input).display = False
+        help_widget = self.query_one("#plugin-manager-help", Static)
+        help_widget.update(help_text)
+        help_widget.display = bool(help_text)
+
+    async def _close_or_prompt(self) -> None:
+        """Run the close check, then dismiss or switch to the reload prompt.
+
+        Runs as a worker so the manager stays painted while the check is in
+        flight. Every path out either dismisses or leaves the reload prompt
+        showing, because the `checking` phase locks out the keys that would
+        otherwise close the modal.
+
+        Raises:
+            CancelledError: Re-raised after releasing the key lock so a
+                cancelled worker cannot strand the manager.
+        """
+        check_reload_required = self._check_reload_required
+        if check_reload_required is None:
+            # Unreachable via action_cancel, which dismisses before starting
+            # this worker; kept so the call below is unconditionally safe.
+            self.dismiss(None)
+            return
+        try:
+            try:
+                reload_required = await asyncio.wait_for(
+                    check_reload_required(), _CLOSE_CHECK_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                logger.warning("Plugin state check timed out before manager close")
+                self.dismiss("check_failed")
+                return
+            except Exception:
+                logger.exception("Plugin state check raised before manager close")
+                self.dismiss("check_failed")
+                return
+            if reload_required is None:
+                self.dismiss("check_failed")
+            elif reload_required:
+                # Enter the prompt phase only once the repaint has succeeded, so
+                # a failed paint cannot leave the prompt bindings live over a
+                # half-updated manager.
+                self._show_close_state(
+                    "Reload plugins?",
+                    "Reload to apply changes to plugin skills and MCP tools.",
+                    "Enter to reload, Esc for later",
+                )
+                self._close_phase = "reload_prompt"
+            else:
+                self.dismiss(None)
+        except asyncio.CancelledError:
+            # Release the key lock so a cancelled worker cannot strand the
+            # manager in a phase that ignores Escape.
+            self._close_phase = "browsing"
+            raise
+        except Exception:
+            # The worker runs with exit_on_error=False, so an unhandled repaint
+            # or dismiss failure would otherwise be swallowed and latch the
+            # modal shut. Fall back to the deferred-reload reminder instead.
+            logger.exception("Failed to finish plugin manager close")
+            self.dismiss("later")
+
+    def action_reload_plugins(self) -> None:
+        """Apply pending plugin changes from the inline reload prompt."""
+        if self._close_phase == "reload_prompt":
+            self.dismiss("reload")
+
     def action_cancel(self) -> None:
-        """Clear a query, leave a prompt or details, or close the manager."""
-        if self._adding_marketplace:
+        """Clear a query, back out of a view, answer the reload prompt, or close.
+
+        Answering the reload prompt dismisses the manager with `"later"`; the
+        final branch only *starts* the close check, so the screen may stay
+        mounted afterwards.
+        """
+        if self._adding_marketplace or self._close_phase == "checking":
+            return
+        if self._close_phase == "reload_prompt":
+            self.dismiss("later")
             return
         search_input = self.query_one("#plugin-manager-search", Input)
         if search_input.has_focus:
@@ -669,7 +918,22 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._error = None
             self._refresh_view()
             return
-        self.dismiss(None)
+        if self._check_reload_required is None:
+            self.dismiss(None)
+            return
+        # Keep the manager painted as-is while the check runs; only repaint
+        # when the result is a reload prompt so an unchanged close shows no
+        # intermediate state. The `checking` phase also locks out keys and
+        # option-row activation for the duration (see `check_action`, `on_key`,
+        # `on_option_list_option_selected`) so nothing mutates plugin state
+        # after the snapshot is taken.
+        self._close_phase = "checking"
+        self.run_worker(
+            self._close_or_prompt(),
+            exclusive=True,
+            group="plugin-manager-close",
+            exit_on_error=False,
+        )
 
     def action_focus_search(self) -> None:
         """Focus the plugin filter when it is visible."""
@@ -749,6 +1013,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self, event: OptionList.OptionSelected
     ) -> None:
         """Handle row activation."""
+        # Closing snapshots persisted state asynchronously. Ignore OptionList
+        # messages that arrive during that interval so a row cannot open a
+        # details view and mutate plugin state after the snapshot completes.
+        if self._close_phase != "browsing":
+            return
         option_id = event.option.id
         if option_id is None or option_id == "empty":
             return

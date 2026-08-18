@@ -1,16 +1,21 @@
-# Clear `needs-response` after an author reply recorded by needs_response.yml.
+# Clear `waiting-on-author` after an author reply recorded by waiting_on_author.yml.
 #
 # `workflow_run` executes this definition from the default branch and receives
 # a write-capable token for fork-origin events. The artifact is untrusted input:
-# this workflow uses it only as an opaque response ID, then fetches the comment
-# or review and the current item directly from GitHub before removing a label.
+# this workflow uses it only as an event-kind selector plus an ID pair that the
+# GitHub API cross-validates (a review ID that does not belong to the given PR
+# number 404s), then fetches the comment or review and the current item directly
+# from GitHub and re-verifies authorship before removing a label.
 # It never checks out or executes contributor-controlled code.
 
-name: Clear Needs Response After Author Reply
+name: Clear Waiting On Author After Author Reply
 
 on:
   workflow_run:
-    workflows: ["Needs Response"]
+    # `workflow_run` consumers always run from the default branch, so runs of
+    # the producer that were in flight when this rename merged still report the
+    # old name. Drop "Needs Response" once no such run can be pending.
+    workflows: ["Waiting On Author", "Needs Response"]
     types: [completed]
 
 permissions:
@@ -54,6 +59,7 @@ jobs:
               fs.readFileSync('response/author-response.json', 'utf8'),
             );
             const { owner, repo } = context.repo;
+            const waitingOnAuthorLabel = 'waiting-on-author';
 
             function numberFromUrl(url, resource) {
               const match = new URL(url).pathname.match(
@@ -124,7 +130,7 @@ jobs:
 
             if (
               item.state !== 'open' ||
-              !item.labels.some((label) => label.name === 'needs-response') ||
+              !item.labels.some((label) => label.name === waitingOnAuthorLabel) ||
               item.user.type === 'Bot' ||
               responseData.user.type === 'Bot' ||
               responseData.user.login !== item.user.login
@@ -142,25 +148,26 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
+            // Mirrors findLatestLabelEvent in waiting_on_author.yml; keep in step.
             const latestLabelEvent = events
               .filter(
                 (event) =>
                   event.event === 'labeled' &&
-                  event.label?.name === 'needs-response' &&
+                  event.label?.name === waitingOnAuthorLabel &&
                   event.created_at,
               )
               .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
 
             if (!latestLabelEvent) {
               core.warning(
-                `No needs-response label event found for #${issueNumber}; leaving it intact.`,
+                `No ${waitingOnAuthorLabel} label event found for #${issueNumber}; leaving it intact.`,
               );
               return;
             }
 
             if (Date.parse(responseTime) <= Date.parse(latestLabelEvent.created_at)) {
               console.log(
-                `Response on #${issueNumber} predates its current needs-response label.`,
+                `Response on #${issueNumber} predates its current ${waitingOnAuthorLabel} label.`,
               );
               return;
             }
@@ -170,12 +177,12 @@ jobs:
                 owner,
                 repo,
                 issue_number: issueNumber,
-                name: 'needs-response',
+                name: waitingOnAuthorLabel,
               });
             } catch (error) {
               if (error.status !== 404) throw error;
-              console.log(`needs-response was already absent from #${issueNumber}.`);
+              console.log(`${waitingOnAuthorLabel} was already absent from #${issueNumber}.`);
               return;
             }
 
-            console.log(`Removed needs-response from #${issueNumber}.`);
+            console.log(`Removed ${waitingOnAuthorLabel} from #${issueNumber}.`);

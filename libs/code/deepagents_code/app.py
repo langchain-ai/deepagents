@@ -1027,7 +1027,10 @@ if TYPE_CHECKING:
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
-    from deepagents_code.tui.modals.plugin_manager.models import PluginManagerResult
+    from deepagents_code.tui.modals.plugin_manager.models import (
+        PluginManagerAction,
+        PluginManagerResult,
+    )
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -23406,16 +23409,15 @@ class DeepAgentsApp(App):
             current_enabled_ids, current_fingerprints = await asyncio.to_thread(
                 self._snapshot_plugin_state
             )
-        except Exception:
-            logger.exception("Failed to check plugin state before manager close")
-            return None
-
-        return (
-            current_enabled_ids != enabled_plugin_ids
-            or self._plugin_fingerprints_changed(
-                plugin_fingerprints, current_fingerprints
+            return (
+                current_enabled_ids != enabled_plugin_ids
+                or self._plugin_fingerprints_changed(
+                    plugin_fingerprints, current_fingerprints
+                )
             )
-        )
+        except Exception:
+            logger.exception("Failed to snapshot plugin state while closing manager")
+            return None
 
     async def _show_plugin_manager(self) -> None:
         """Open the interactive plugin manager."""
@@ -23424,6 +23426,10 @@ class DeepAgentsApp(App):
         try:
             baseline = await asyncio.to_thread(self._snapshot_plugin_state)
         except Exception:
+            # Still open the manager without a baseline. `check_changes` then
+            # returns None, which the manager reports as "check_failed" and we
+            # surface as _PLUGIN_RELOAD_CHECK_FAILED rather than the pending
+            # reload reminder.
             logger.exception("Failed to snapshot plugin state before opening manager")
             baseline = None
         else:
@@ -23438,13 +23444,18 @@ class DeepAgentsApp(App):
                 enabled_plugin_ids, plugin_fingerprints
             )
 
-        async def handle_close(result: PluginManagerResult) -> None:
-            if result == "reload":
+        async def handle_close(action: PluginManagerAction) -> None:
+            if action == "reload":
                 await self._submit_input("/reload", "command")
-            elif result == "later":
+            elif action == "later":
                 await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
-            elif result == "check_failed":
+            elif action == "check_failed":
                 await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
+            else:
+                # Static exhaustiveness guard: a new `PluginManagerAction`
+                # variant trips the type checker here instead of closing the
+                # manager with no visible outcome.
+                assert_never(action)
 
         def on_close(result: PluginManagerResult) -> None:
             if result is None:

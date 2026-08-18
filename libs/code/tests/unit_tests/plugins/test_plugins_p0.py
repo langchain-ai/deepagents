@@ -951,7 +951,7 @@ async def test_plugin_manager_blocks_option_selection_while_checking_close_state
 
         await pilot.press("escape")
         await started.wait()
-        assert screen._checking_changes is True
+        assert screen._close_phase == "checking"
 
         # Enter normally opens the selected plugin's details, from which it can
         # be installed. It must be ignored while the close snapshot is pending.

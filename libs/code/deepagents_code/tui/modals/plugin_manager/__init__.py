@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.plugins.models import PluginMarketplace
     from deepagents_code.tui.modals.plugin_manager.models import (
+        PluginClosePhase,
         PluginManagerView,
         _MarketplaceRow,
         _PluginRow,
@@ -70,12 +71,20 @@ from deepagents_code.tui.modals.plugin_manager.tabs import (
 
 logger = logging.getLogger(__name__)  # noqa: RUF067  # module-level logger
 
+# Bounds the close check so a stalled plugin scan cannot leave the manager
+# mounted with its keys locked out. Deliberately shorter than the app's modal
+# watchdog: nothing here waits on the user, only on a filesystem snapshot.
+_CLOSE_CHECK_TIMEOUT_SECONDS = 30.0  # noqa: RUF067  # module-level constant
+
 
 class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
 
-    When plugin state changed while the manager was open, the screen transitions
-    directly to a reload prompt before closing; an unchanged close shows nothing.
+    Closing runs the optional `check_reload_required` callback while this screen
+    stays mounted. Changed plugin state transitions in place to a reload prompt
+    and dismisses with `"reload"` or `"later"`; a failed or timed-out check
+    dismisses with `"check_failed"`; unchanged state, or no callback at all,
+    dismisses with `None` and shows nothing.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -131,7 +140,11 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
                 not loaded, or disabled but still loaded) are shown as pending
                 reload.
             on_auto_update_enabled: Called after auto-update is enabled.
-            check_reload_required: Checks whether manager changes require a reload.
+            check_reload_required: Awaited on close to decide whether plugin
+                state changed since the manager opened. `True` shows the inline
+                reload prompt, `False` closes silently, and `None` means the
+                check failed. When omitted, the manager closes without
+                prompting.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
@@ -140,8 +153,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
         self._on_auto_update_enabled = on_auto_update_enabled
         self._check_reload_required = check_reload_required
-        self._checking_changes = False
-        self._reload_prompt = False
+        self._close_phase: PluginClosePhase = "browsing"
         self._state = _ManagerState((), (), (), ())
         self._status: str | None = None
         self._error: str | None = None
@@ -211,6 +223,8 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
 
     def on_resize(self) -> None:
         """Refit width-sized dividers when the modal resizes."""
+        if self._close_phase != "browsing":
+            return
         marketplace_divider_visible = (
             self._mode == "list"
             and self._tab == "marketplaces"
@@ -235,11 +249,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         Args:
             tab: Tab to show.
         """
-        if (
-            self._checking_changes
-            or self._reload_prompt
-            or self._mode == "add_marketplace"
-        ):
+        if self._close_phase != "browsing" or self._mode == "add_marketplace":
             return
         if self._details_mode_active():
             self._mode = "list"
@@ -407,6 +417,11 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         }
 
     def _refresh_view(self) -> None:
+        # _show_close_state hides the browsing chrome one way; repainting it
+        # here would restore the tabs and option list underneath the reload
+        # prompt while its key bindings are still active.
+        if self._close_phase != "browsing":
+            return
         title = self.query_one("#plugin-manager-title", Static)
         tabs = self.query_one("#plugin-manager-tabs", Horizontal)
         divider = self.query_one("#plugin-manager-divider", Rule)
@@ -602,10 +617,11 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             `False` to step a binding aside so the focused widget receives the
                 key; `True` to allow the action.
         """
-        if self._checking_changes or self._reload_prompt:
+        if self._close_phase != "browsing":
+            prompting = self._close_phase == "reload_prompt"
             if action == "reload_plugins":
-                return self._reload_prompt
-            return action == "cancel" and self._reload_prompt
+                return prompting
+            return action == "cancel" and prompting
         if action == "reload_plugins":
             return False
         if action in {"arrow_previous_tab", "arrow_next_tab"}:
@@ -627,11 +643,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         paints empty with a caret flash (and so `select_on_focus` cannot leave
         the inserted text selected for the next keypress).
         """
-        if (
-            self._checking_changes
-            or self._reload_prompt
-            or not self._search_available()
-        ):
+        if self._close_phase != "browsing" or not self._search_available():
             return
 
         search_input = self.query_one("#plugin-manager-search", Input)
@@ -659,7 +671,17 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._select_tab(event.tab)
 
     def _show_close_state(self, title: str, body: str, help_text: str) -> None:
-        """Replace manager content with the reload confirmation."""
+        """Switch the modal to a one-way terminal close state.
+
+        Hides the browsing chrome and repaints the title, status and help lines.
+        There is no path back to the list; `_refresh_view` is gated on the close
+        phase so nothing restores what this hides.
+
+        Args:
+            title: Replacement modal title.
+            body: Status text shown in place of the plugin list.
+            help_text: Key hints; an empty string hides the help line.
+        """
         self.add_class("plugin-close-state")
         self.query_one("#plugin-manager-title", Static).update(title)
         self.query_one("#plugin-manager-tabs", Horizontal).display = False
@@ -676,40 +698,77 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         help_widget.display = bool(help_text)
 
     async def _close_or_prompt(self) -> None:
-        """Check persisted plugin state while keeping the modal mounted."""
+        """Run the close check, then dismiss or switch to the reload prompt.
+
+        Runs as a worker so the manager stays painted while the check is in
+        flight. Every path out either dismisses or leaves the reload prompt
+        showing, because the `checking` phase locks out the keys that would
+        otherwise close the modal.
+
+        Raises:
+            CancelledError: Re-raised after releasing the key lock so a
+                cancelled worker cannot strand the manager.
+        """
         check_reload_required = self._check_reload_required
         if check_reload_required is None:
+            # Unreachable via action_cancel, which dismisses before starting
+            # this worker; kept so the call below is unconditionally safe.
             self.dismiss(None)
             return
         try:
-            reload_required = await check_reload_required()
+            try:
+                reload_required = await asyncio.wait_for(
+                    check_reload_required(), _CLOSE_CHECK_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                logger.warning("Plugin state check timed out before manager close")
+                self.dismiss("check_failed")
+                return
+            except Exception:
+                logger.exception("Plugin state check raised before manager close")
+                self.dismiss("check_failed")
+                return
+            if reload_required is None:
+                self.dismiss("check_failed")
+            elif reload_required:
+                # Enter the prompt phase only once the repaint has succeeded, so
+                # a failed paint cannot leave the prompt bindings live over a
+                # half-updated manager.
+                self._show_close_state(
+                    "Reload plugins?",
+                    "Reload to apply changes to plugin skills and MCP tools.",
+                    "Enter to reload, Esc for later",
+                )
+                self._close_phase = "reload_prompt"
+            else:
+                self.dismiss(None)
+        except asyncio.CancelledError:
+            # Release the key lock so a cancelled worker cannot strand the
+            # manager in a phase that ignores Escape.
+            self._close_phase = "browsing"
+            raise
         except Exception:
-            logger.exception("Failed to check plugin state before manager close")
-            self.dismiss("check_failed")
-            return
-        self._checking_changes = False
-        if reload_required is None:
-            self.dismiss("check_failed")
-        elif reload_required:
-            self._reload_prompt = True
-            self._show_close_state(
-                "Reload plugins?",
-                "Reload to apply changes to plugin skills and MCP tools.",
-                "Enter to reload, Esc for later",
-            )
-        else:
-            self.dismiss(None)
+            # The worker runs with exit_on_error=False, so an unhandled repaint
+            # or dismiss failure would otherwise be swallowed and latch the
+            # modal shut. Fall back to the deferred-reload reminder instead.
+            logger.exception("Failed to finish plugin manager close")
+            self.dismiss("later")
 
     def action_reload_plugins(self) -> None:
         """Apply pending plugin changes from the inline reload prompt."""
-        if self._reload_prompt:
+        if self._close_phase == "reload_prompt":
             self.dismiss("reload")
 
     def action_cancel(self) -> None:
-        """Clear a query, leave a prompt or details, or close the manager."""
-        if self._adding_marketplace or self._checking_changes:
+        """Clear a query, back out of a view, answer the reload prompt, or close.
+
+        Answering the reload prompt dismisses the manager with `"later"`; the
+        final branch only *starts* the close check, so the screen may stay
+        mounted afterwards.
+        """
+        if self._adding_marketplace or self._close_phase == "checking":
             return
-        if self._reload_prompt:
+        if self._close_phase == "reload_prompt":
             self.dismiss("later")
             return
         search_input = self.query_one("#plugin-manager-search", Input)
@@ -744,12 +803,16 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             return
         # Keep the manager painted as-is while the check runs; only repaint
         # when the result is a reload prompt so an unchanged close shows no
-        # intermediate state.
-        self._checking_changes = True
+        # intermediate state. The `checking` phase also locks out keys and
+        # option-row activation for the duration (see `check_action`, `on_key`,
+        # `on_option_list_option_selected`) so nothing mutates plugin state
+        # after the snapshot is taken.
+        self._close_phase = "checking"
         self.run_worker(
             self._close_or_prompt(),
             exclusive=True,
             group="plugin-manager-close",
+            exit_on_error=False,
         )
 
     def action_focus_search(self) -> None:
@@ -833,7 +896,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         # Closing snapshots persisted state asynchronously. Ignore OptionList
         # messages that arrive during that interval so a row cannot open a
         # details view and mutate plugin state after the snapshot completes.
-        if self._checking_changes or self._reload_prompt:
+        if self._close_phase != "browsing":
             return
         option_id = event.option.id
         if option_id is None or option_id == "empty":

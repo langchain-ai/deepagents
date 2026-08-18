@@ -332,13 +332,13 @@ class _AssistantMessageApp(App[None]):
     """Minimal app that mounts an AssistantMessage for runtime tests."""
 
     def compose(self) -> ComposeResult:
-        widget = AssistantMessage()
+        widget = AssistantMessage("hello")
         widget.id = "assistant"
         yield widget
 
 
 class TestAssistantMessageLinkPointer:
-    """Tests for the pointer cursor shown when hovering markdown links."""
+    """Tests for pointer shapes over assistant-message content."""
 
     @staticmethod
     def _move_event(
@@ -346,9 +346,8 @@ class TestAssistantMessageLinkPointer:
     ) -> SimpleNamespace:
         """Build a minimal mouse-move-like event exposing the hovered style.
 
-        The handlers only read `event.style.link` and `event.style.meta`, so a
-        namespace is enough; the assertions run against the real `Markdown`
-        widget mounted by `_AssistantMessageApp`.
+        A namespace is enough because the handlers only read `event.style.link`
+        and `event.style.meta`; assertions use a real mounted `Markdown` widget.
         """
         return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
 
@@ -373,17 +372,27 @@ class TestAssistantMessageLinkPointer:
             assert msg._markdown.styles.pointer == "pointer"
 
     async def test_hovering_text_sets_text_pointer(self) -> None:
-        """Plain markdown text keeps the text pointer."""
+        """A cell carrying Textual's selection offset uses the text pointer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+
+            msg.on_mouse_move(self._move_event(meta={"offset": (0, 0)}))  # ty: ignore
+
+            assert msg._markdown is not None
+            assert msg._markdown.styles.pointer == "text"
+
+    async def test_hovering_blank_space_sets_default_pointer(self) -> None:
+        """A cell without rendered text uses the default pointer."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
 
             msg.on_mouse_move(self._move_event())  # ty: ignore
 
             assert msg._markdown is not None
-            assert msg._markdown.styles.pointer == "text"
+            assert msg._markdown.styles.pointer == "default"
 
     async def test_leave_resets_pointer(self) -> None:
-        """Leaving the message resets the pointer to text after a link hover."""
+        """Leaving the message resets the pointer after a link hover."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
@@ -391,7 +400,23 @@ class TestAssistantMessageLinkPointer:
             msg.on_leave()
 
             assert msg._markdown is not None
+            assert msg._markdown.styles.pointer == "default"
+
+    async def test_real_hover_limits_text_pointer_to_rendered_cells(self) -> None:
+        """Real mouse routing distinguishes message text from trailing blank space."""
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await msg.write_initial_content()
+            await pilot.pause()
+
+            assert msg._markdown is not None
+            assert msg._markdown.styles.pointer == "default"
+
+            await pilot.hover("#assistant-content", offset=(0, 0))
             assert msg._markdown.styles.pointer == "text"
+
+            await pilot.hover("#assistant-content", offset=(20, 0))
+            assert msg._markdown.styles.pointer == "default"
 
     async def test_markdown_open_links_is_disabled(self) -> None:
         """The app handles Markdown links so it can show URL-opened toasts."""

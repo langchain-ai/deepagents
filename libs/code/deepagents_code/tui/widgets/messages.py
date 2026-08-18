@@ -128,6 +128,12 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
     return colors.primary
 
 
+def _event_targets_selectable_text(event: MouseMove) -> bool:
+    """Return whether the hovered cell contains selectable rendered text."""
+    meta = getattr(event.style, "meta", None)
+    return isinstance(meta, dict) and "offset" in meta
+
+
 @dataclass(frozen=True, slots=True)
 class FormattedOutput:
     """Result of formatting tool output for display."""
@@ -1198,7 +1204,6 @@ class AssistantMessage(Vertical):
     AssistantMessage Markdown {
         padding: 0;
         margin: 0;
-        pointer: text;
     }
 
     /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
@@ -1258,21 +1263,21 @@ class AssistantMessage(Vertical):
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over markdown links, text cursor elsewhere.
-
-        The pointer is set on the inner `Markdown` widget because it carries a
-        non-default (`text`) pointer in CSS, so the screen resolves its shape
-        before reaching this container.
-        """
-        if self._markdown is not None:
-            self._markdown.styles.pointer = (
-                "pointer" if event_targets_link(event) else "text"
-            )
+        """Match the pointer shape to links, selectable text, or blank space."""
+        if self._markdown is None:
+            return
+        if event_targets_link(event):
+            pointer = "pointer"
+        elif _event_targets_selectable_text(event):
+            pointer = "text"
+        else:
+            pointer = "default"
+        self._markdown.styles.pointer = pointer
 
     def on_leave(self) -> None:
         """Reset the markdown pointer shape when the mouse leaves the message."""
         if self._markdown is not None:
-            self._markdown.styles.pointer = "text"
+            self._markdown.styles.pointer = "default"
 
     async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         """Open Markdown links with the same toast feedback as style links."""

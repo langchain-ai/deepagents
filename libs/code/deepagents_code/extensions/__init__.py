@@ -10,14 +10,22 @@ from deepagents_code.extensions.models import (
     UnitScope,
 )
 from deepagents_code.extensions.registry import ExtensionRegistry
+from deepagents_code.extensions.settings import (
+    ExtensionSettings,
+    TrustPolicy,
+    load_extension_settings,
+)
 
 __all__ = [
     "ExtensionAPI",
     "ExtensionError",
     "ExtensionFile",
     "ExtensionRegistry",
+    "ExtensionSettings",
     "LoadedExtension",
     "SourceInfo",
+    "TrustPolicy",
     "UnitOrigin",
     "UnitScope",
+    "load_extension_settings",
 ]

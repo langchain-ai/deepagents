@@ -216,6 +216,15 @@ real PyPI release.
 Any non-empty value enables the flag (including `"0"` or `"false"`).
 """
 
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading local Python extensions."""
+
+EXTENSIONS_PATHS = "DEEPAGENTS_CODE_EXTENSIONS_PATHS"
+"""Platform-separated extension files or directories added to discovery."""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default project extension trust policy: `ask`, `always`, or `never`."""
+
 DISABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"
 """Comma-separated project MCP server names to always reject by name.
 

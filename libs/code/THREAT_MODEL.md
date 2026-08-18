@@ -28,6 +28,7 @@
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
 - Skill management (`skills/commands.py`)
+- Python extension loading (`extensions/`)
 
 ### Out of Scope
 
@@ -50,6 +51,7 @@
 6. The LangGraph dev server subprocess binds to `127.0.0.1` by default (`client/launch/server.py:_DEFAULT_HOST`) and is ephemeral — started and stopped per CLI session.
 7. `DA_SERVER_*` environment variables are readable only by the CLI process and its child server subprocess (OS process isolation assumption).
 8. Users who set `class_path` in `config.toml` accept the same trust model as `pyproject.toml` build scripts — they control their own machine.
+9. User extension paths are trusted as user configuration. Project extensions execute only after explicit, configured, or persisted trust.
 
 ---
 

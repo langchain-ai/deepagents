@@ -463,6 +463,15 @@ version), skips auto-updating to break out of an otherwise endless
 upgrade/restart loop. Set and read internally across `os.execv`.
 """
 
+RESUME_TERM_PROGRAM = "DEEPAGENTS_CODE_RESUME_TERM_PROGRAM"
+"""Include launch-time `TERM_PROGRAM` in teardown resume commands.
+
+Disabled by default and enabled by default in experimental or debug mode. An
+explicit boolean (`1`/`true`/`yes`/`on`, or `0`/`false`/`no`/`off`) overrides
+that mode-dependent default, as does an empty value, which reads as false. Also
+settable as `[features].resume_term_program` in config.toml.
+"""
+
 RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
 """Select how ripgrep is provisioned: `managed` (default) or `system`.
 

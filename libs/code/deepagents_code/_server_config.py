@@ -389,6 +389,9 @@ class ServerConfig:
     """Tri-state trust flag for project-scoped MCP servers: `True`/`False`/`None`
     (prompt user)."""
 
+    trust_project_extensions: bool = False
+    """Whether the project's Python extensions may execute for this run."""
+
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
 
@@ -507,6 +510,7 @@ class ServerConfig:
                 if self.trust_project_mcp is not None
                 else None
             ),
+            "TRUST_PROJECT_EXTENSIONS": str(self.trust_project_extensions).lower(),
         }
 
     @classmethod
@@ -557,6 +561,7 @@ class ServerConfig:
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
             no_mcp=_read_env_bool("NO_MCP"),
             trust_project_mcp=_read_env_optional_bool("TRUST_PROJECT_MCP"),
+            trust_project_extensions=_read_env_bool("TRUST_PROJECT_EXTENSIONS"),
         )
 
     # ------------------------------------------------------------------
@@ -593,6 +598,7 @@ class ServerConfig:
         no_mcp: bool,
         trust_project_mcp: bool | None,
         interactive: bool,
+        trust_project_extensions: bool = False,
     ) -> ServerConfig:
         """Build a `ServerConfig` from parsed CLI arguments.
 
@@ -637,6 +643,7 @@ class ServerConfig:
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
             interactive: Whether the agent is interactive.
+            trust_project_extensions: Allow project extension execution.
 
         Returns:
             A fully resolved `ServerConfig`.
@@ -684,6 +691,7 @@ class ServerConfig:
             mcp_config_path=normalized_mcp,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
         )
 
 

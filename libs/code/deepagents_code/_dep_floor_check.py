@@ -10,7 +10,7 @@ editable `direct_url.json` record and skip the check entirely, so end
 users pay no startup cost here.
 
 Interactive launches on a terminal stop on a blocking pre-TUI prompt
-(continue / mute / abort); headless launches, subcommands, and interactive
+(refresh / continue / mute / abort); headless launches, subcommands, and interactive
 launches whose stdin is piped get a single stderr warning per launch instead,
 since they have no answerable prompt and must never block. A dismissed
 (muted) mismatch is remembered per checkout as a fingerprint of the offending
@@ -25,7 +25,8 @@ import json
 import logging
 import os
 import shlex
-import subprocess  # noqa: S404  # only `list2cmdline` string quoting, never executed
+import shutil
+import subprocess  # noqa: S404  # fixed-argv environment refresh and Windows quoting
 import sys
 import tempfile
 import threading
@@ -39,6 +40,8 @@ from deepagents_code.config import _is_editable_install
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from rich.console import Console
 
     from deepagents_code.main import _TrustPromptOutcome
 
@@ -259,17 +262,177 @@ def _checkout_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _is_editable_dist(dist_name: str, path: Path) -> bool:
+    """Check whether an installed distribution is an editable install of `path`.
+
+    Reads the distribution's own PEP 610 `direct_url.json` rather than the
+    directory's existence: most `[tool.uv.sources]` entries back optional
+    extras, so a source directory that merely exists in a full monorepo
+    checkout must not be reinstalled as an editable over an environment that
+    deliberately tracks the released wheel.
+
+    Args:
+        dist_name: Distribution name as passed to `importlib.metadata`.
+        path: The source checkout the `[tool.uv.sources]` entry points at.
+
+    Returns:
+        `True` when the distribution is installed editable with a `file://`
+        URL resolving to `path`; `False` for wheel installs, missing
+        distributions, and unreadable or mismatched metadata.
+    """
+    try:
+        raw = importlib.metadata.distribution(dist_name).read_text("direct_url.json")
+        if not raw:
+            return False
+        data = json.loads(raw)
+    except (
+        importlib.metadata.PackageNotFoundError,
+        json.JSONDecodeError,
+        TypeError,
+    ):
+        return False
+    if not isinstance(data, dict):
+        return False
+    dir_info = data.get("dir_info")
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return False
+    url = data.get("url", "")
+    if not isinstance(url, str) or not url.startswith("file://"):
+        return False
+    from deepagents_code.extras_info import _file_url_to_path
+
+    recorded = _file_url_to_path(url)
+    # `_file_url_to_path` preserves the `netloc` host, so UNC installs such as
+    # `file://server/share/repo` compare equal to the same UNC checkout here;
+    # parsing only `urlparse(url).path` would drop the server and omit the
+    # editable from the refresh, replacing it with a PyPI wheel.
+    return recorded is not None and recorded.resolve() == path
+
+
+def _workspace_editable_paths() -> list[Path]:
+    """List the workspace sources this environment actually installed editable.
+
+    Reads the checkout's own `[tool.uv.sources]`, then keeps only the entries
+    whose distribution is currently installed as an editable pointing at that
+    same path. Directory existence alone is not enough: partner packages
+    (`langchain-daytona`, `langchain-modal`, ...) are optional extras whose
+    checkouts always exist in a full monorepo clone, and re-passing them as
+    `-e` would replace their released wheels with editables and pull in their
+    transitive dependencies.
+
+    Returns:
+        Absolute paths of `editable = true` path sources whose distribution is
+        installed editable from that path, in `pyproject.toml` declaration
+        order. Empty when the checkout's `pyproject.toml` cannot be read or no
+        source qualifies.
+    """
+    pyproject = _checkout_root() / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        sources = data["tool"]["uv"]["sources"]
+    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+        logger.debug(
+            "Could not read workspace sources from the source checkout",
+            exc_info=True,
+        )
+        return []
+    if not isinstance(sources, dict):
+        return []
+    checkout = _checkout_root()
+    paths: list[Path] = []
+    for dist_name, source in sources.items():
+        if not isinstance(source, dict):
+            continue
+        if source.get("editable") is not True or not isinstance(
+            source.get("path"), str
+        ):
+            continue
+        path = (checkout / source["path"]).resolve()
+        if path.is_dir() and _is_editable_dist(dist_name, path):
+            paths.append(path)
+    return paths
+
+
+def _refresh_args(uv_path: str) -> list[str]:
+    """Build the fixed argv used to refresh this editable environment.
+
+    Args:
+        uv_path: Absolute path to the resolved `uv` binary. Bare names are
+            never used: on Windows `subprocess` searches the current working
+            directory before `%PATH%`, so a planted `uv.exe` at the project
+            root would execute instead of the legitimate binary.
+
+    Returns:
+        Arguments for the user-approved `uv pip install` process.
+    """
+    checkout = _checkout_root()
+    args = [
+        uv_path,
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "-e",
+        str(checkout),
+    ]
+    for path in _workspace_editable_paths():
+        args.extend(["-e", str(path)])
+    args.append("--upgrade")
+    return args
+
+
 def refresh_command() -> str:
     """Return the shell command that refreshes this editable environment.
 
-    Shared by the stderr warning and the interactive prompt so the two
-    channels cannot drift apart.
+    Workspace sibling editables are included explicitly because resolving only
+    `libs/code` would let `--upgrade` replace them with PyPI wheels. The
+    warning and interactive refresh share this argv so they cannot drift.
     """
-    return (
-        "uv pip install --python "
-        f"{_quote_arg(sys.executable)} -e {_quote_arg(str(_checkout_root()))} "
-        "--upgrade"
-    )
+    uv_path = shutil.which("uv")
+    if uv_path is None:
+        return "uv pip install --python <python> -e <checkout> --upgrade"
+    return " ".join(_quote_arg(arg) for arg in _refresh_args(uv_path))
+
+
+def _refresh_environment(console: Console) -> bool:
+    """Refresh the active environment after the user explicitly requests it.
+
+    Args:
+        console: Console used for progress and failure messages.
+
+    Returns:
+        `True` when `uv` exits successfully, otherwise `False`.
+    """
+    uv_path = shutil.which("uv")
+    if uv_path is None:
+        console.print(
+            "[yellow]Environment refresh failed: `uv` not found on PATH.[/yellow]",
+            highlight=False,
+        )
+        return False
+    console.print("[dim]Refreshing environment...[/dim]", highlight=False)
+    try:
+        result = subprocess.run(  # noqa: S603  # fixed uv argv, never a shell command
+            _refresh_args(uv_path),
+            check=False,
+            shell=False,
+        )
+    except OSError as exc:
+        from rich.markup import escape
+
+        console.print(
+            f"[yellow]Environment refresh failed: {escape(str(exc))}[/yellow]",
+            highlight=False,
+        )
+        return False
+    if result.returncode != 0:
+        console.print(
+            "[yellow]Environment refresh failed with exit code "
+            f"{result.returncode}; choose another action or try again.[/yellow]",
+            highlight=False,
+        )
+        return False
+    return True
 
 
 def _collect_violations() -> list[_FloorViolation]:
@@ -516,7 +679,7 @@ def warn_if_editable_deps_stale() -> None:
 
 
 def prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
-    """Block on a continue/mute/abort prompt when an interactive launch is stale.
+    """Block on a refresh/continue/mute/abort prompt for a stale interactive launch.
 
     Prompts only when violations exist and the exact mismatch was not muted
     for this checkout. The prompt itself is implemented in `main` next to the
@@ -544,6 +707,7 @@ def _prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
     from rich.console import Console
 
     from deepagents_code.main import (
+        _restart_current_process,
         _TrustAction,
         _TrustPromptOutcome,
         prompt_for_dep_floor_mismatch,
@@ -552,36 +716,65 @@ def _prompt_if_editable_deps_stale() -> _TrustPromptOutcome | None:
     violations = _collect_violations()
     if not violations:
         return None
-    fingerprint = _mismatch_fingerprint(violations)
-    if is_dep_floor_mismatch_muted(fingerprint):
+    if is_dep_floor_mismatch_muted(_mismatch_fingerprint(violations)):
         return None
 
     console = Console(stderr=True)
-    action = prompt_for_dep_floor_mismatch(console, violations)
-    if action in {_TrustPromptOutcome.INTERRUPTED, _TrustPromptOutcome.CANCELLED}:
-        return action
-    if action is _TrustAction.REMEMBER:
-        if mute_dep_floor_mismatch(fingerprint):
+    while True:
+        fingerprint = _mismatch_fingerprint(violations)
+        action = prompt_for_dep_floor_mismatch(console, violations)
+        if action in {
+            _TrustPromptOutcome.INTERRUPTED,
+            _TrustPromptOutcome.CANCELLED,
+        }:
+            return action
+        if action is _TrustAction.REFRESH:
+            if not _refresh_environment(console):
+                continue
+            violations = _collect_violations()
+            if violations:
+                continue
             console.print(
-                "[dim]Muted until the dependency mismatch changes.[/dim]",
+                "[dim]Environment refreshed; relaunching.[/dim]",
+                highlight=False,
+            )
+            # Re-exec rather than continuing in-process: dependencies imported
+            # before this prompt (`rich`, `python-dotenv`, ...) keep their
+            # stale module objects in memory even after `uv` swaps the dists
+            # on disk, so only a fresh interpreter runs the refreshed code.
+            # The relaunched process re-runs this check, finds no violations
+            # (the precondition for reaching here), and never re-prompts — a
+            # refresh that silently no-ops fails the re-check above instead,
+            # so this cannot loop. `OSError` from a failed exec propagates to
+            # the best-effort boundary in `prompt_if_editable_deps_stale`,
+            # which continues this (stale but user-approved) launch.
+            _restart_current_process()
+            return None  # unreachable; exec failure raises, per its contract
+        if action is _TrustAction.REMEMBER:
+            if mute_dep_floor_mismatch(fingerprint):
+                console.print(
+                    "[dim]Muted until the dependency mismatch changes.[/dim]",
+                    highlight=False,
+                )
+            else:
+                console.print(
+                    "[yellow]The dismissal could not be saved; you will be asked "
+                    "again next launch.[/yellow]",
+                    highlight=False,
+                )
+        elif action is _TrustAction.ALLOW_ONCE:
+            console.print(
+                "[dim]Continuing this session; you will be asked again next "
+                "launch.[/dim]",
                 highlight=False,
             )
         else:
-            console.print(
-                "[yellow]The dismissal could not be saved; you will be asked "
-                "again next launch.[/yellow]",
-                highlight=False,
+            # `abort_on_deny` should have collapsed a refusal into `CANCELLED`
+            # already, so `DENY` (or any future outcome) only lands here if that
+            # mapping regresses. Refuse rather than continuing: matching "continue"
+            # by default is what previously turned "Abort launch" into a launch.
+            logger.debug(
+                "Unexpected dependency floor prompt outcome %r; aborting", action
             )
-    elif action is _TrustAction.ALLOW_ONCE:
-        console.print(
-            "[dim]Continuing this session; you will be asked again next launch.[/dim]",
-            highlight=False,
-        )
-    else:
-        # `abort_on_deny` should have collapsed a refusal into `CANCELLED`
-        # already, so `DENY` (or any future outcome) only lands here if that
-        # mapping regresses. Refuse rather than continuing: matching "continue"
-        # by default is what previously turned "Abort launch" into a launch.
-        logger.debug("Unexpected dependency floor prompt outcome %r; aborting", action)
-        return _TrustPromptOutcome.CANCELLED
-    return None
+            return _TrustPromptOutcome.CANCELLED
+        return None

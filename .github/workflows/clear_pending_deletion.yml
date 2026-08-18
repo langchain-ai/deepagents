@@ -1,5 +1,8 @@
 # Remove the "pending-deletion" label as soon as a PR gains "do-not-close",
 # and minimize the stale auto-close warning comment that was posted with it.
+# Only hand-applied labels reach this workflow: GitHub suppresses the
+# `labeled` event when the label was applied by the default GITHUB_TOKEN, so
+# keep_open_on_comment.yml runs the same cleanup inline instead.
 #
 # .github/scripts/labeling/close-old-prs.js already strips the label when it
 # notices a bypassed PR, but that script runs on a daily schedule; this
@@ -88,13 +91,14 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
 
-            // Take the label name from the script rather than repeating the
-            // literal, so the removal below cannot drift from what the daily
-            // sweep applies. The `if:` expression above still hardcodes both
-            // names because workflow expressions cannot reference JS; a test in
-            // close-old-prs.test.js pins those literals to these constants.
+            // The label name comes from the script's constant rather than
+            // repeating the literal, so the removal cannot drift from what
+            // the daily sweep applies. The `if:` expression above still
+            // hardcodes both names because workflow expressions cannot
+            // reference JS; a test in close-old-prs.test.js pins those
+            // literals to these constants.
             const {
-              minimizeMarkerComment,
+              clearPendingDeletion,
               DEFAULT_PENDING_DELETION_LABEL: pendingDeletionLabel,
             } = require('./.github/scripts/labeling/close-old-prs.js');
 
@@ -102,38 +106,4 @@ jobs:
               `PR #${issue_number} gained do-not-close — removing ${pendingDeletionLabel}`,
             );
 
-            try {
-              await github.rest.issues.removeLabel({
-                owner,
-                repo,
-                issue_number,
-                name: pendingDeletionLabel,
-              });
-            } catch (e) {
-              if (e.status !== 404) throw e;
-              // The job's `if:` already saw pending-deletion in the event
-              // payload, so a 404 here means a genuine race: the daily
-              // close_old_prs sweep, or a maintainer, got there first. (Before
-              // the constant above was shared, a drifted label name produced an
-              // identical 404 and turned this workflow into a permanent no-op —
-              // hence a warning rather than a routine log line.)
-              core.warning(
-                `removeLabel returned 404 for '${pendingDeletionLabel}' on PR ` +
-                `#${issue_number}; the label was present in the event payload, ` +
-                `so something else removed it first: ${e.message}`,
-              );
-            }
-
-            // The label is only half of what a maintainer sees: close-old-prs.js
-            // posts a warning comment alongside it that claims the PR will be
-            // auto-closed. Minimize it so the PR does not keep advertising a
-            // fate that no longer applies. Best-effort — the label removal
-            // above is the load-bearing part.
-            //
-            // Shared with the daily script, which calls the same helper from
-            // refreshLabelsUnlessBypassed when do-not-close lands between
-            // posting the warning and applying the label. In that race the PR
-            // never carries pending-deletion, so this workflow's `if:` is never
-            // met — which is why that branch minimizes the warning itself
-            // instead of waiting for this workflow.
-            await minimizeMarkerComment({ github, core, owner, repo, issueNumber: issue_number });
+            await clearPendingDeletion({ github, core, owner, repo, issueNumber: issue_number });

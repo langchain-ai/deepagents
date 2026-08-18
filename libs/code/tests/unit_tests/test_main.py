@@ -18,7 +18,7 @@ from rich.console import Console
 if TYPE_CHECKING:
     from prompt_toolkit.layout import Layout
 
-from deepagents_code._env_vars import INVOKED_AS
+from deepagents_code._env_vars import INVOKED_AS, LAUNCH_TERM_PROGRAM
 from deepagents_code._invocation import invoked_name
 from deepagents_code.app import (
     AppResult,
@@ -164,7 +164,7 @@ class TestStartupAutoUpdate:
     def test_successful_update_restarts_before_launch(self) -> None:
         """A successful startup auto-update should exec a fresh process."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -185,9 +185,9 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
-            ),
+            ) as create_log_file,
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
             patch(
                 "deepagents_code.update_check.clear_startup_auto_update_failure"
@@ -206,6 +206,7 @@ class TestStartupAutoUpdate:
         # `pytest.raises(SystemExit)` would swallow that and pass.
         assert exit_info.value.code == 0
         upgrade.assert_awaited_once()
+        create_log_file.assert_called_once_with()
         clear_failure.assert_called_once_with("9.9.9")
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "tail -f /tmp/dcode-update.log" in printed
@@ -224,7 +225,7 @@ class TestStartupAutoUpdate:
         from deepagents_code.update_check import ShadowedDcode
 
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         # Embed `[` in the shadowing path — legal on POSIX filesystems —
         # so a regression that dropped `escape()` would raise a Rich
         # `MarkupError` here instead of silently emitting broken styling.
@@ -252,7 +253,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -309,7 +310,7 @@ class TestStartupAutoUpdate:
         winning session's upgrade would suppress this one's next few attempts.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -358,10 +359,12 @@ class TestStartupAutoUpdate:
         held_during_install: list[bool] = []
 
         # Async to match the `perform_upgrade` it replaces, which is awaited.
-        async def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:  # noqa: RUF029
+        async def _record_lock_state(  # noqa: RUF029
+            **_kwargs: object,
+        ) -> tuple[bool, str, str | None]:
             with update_install_lock() as holding:
                 held_during_install.append(holding)
-            return True, "updated"
+            return True, "updated", "9.9.9"
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -382,7 +385,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", _record_lock_state),
@@ -408,7 +411,7 @@ class TestStartupAutoUpdate:
         where the restart raises and this process keeps running.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         held_during_restart: list[bool] = []
 
         def _record_lock_state() -> None:
@@ -435,7 +438,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -539,7 +542,7 @@ class TestStartupAutoUpdate:
     def test_failed_update_does_not_restart_and_continues(self) -> None:
         """A failed upgrade must not restart; it surfaces the error and returns."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(False, "pip exploded"))
+        upgrade = AsyncMock(return_value=(False, "pip exploded", None))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -556,7 +559,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch(
@@ -580,7 +583,7 @@ class TestStartupAutoUpdate:
     def test_unpersisted_failure_marker_warns_user(self) -> None:
         """An unwritable cooldown marker must be surfaced, not silently dropped."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(False, "pip exploded"))
+        upgrade = AsyncMock(return_value=(False, "pip exploded", None))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -597,7 +600,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch(
@@ -640,7 +643,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -865,7 +868,7 @@ class TestStartupAutoUpdate:
         outcome, and must not be worded as an update failure.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -882,7 +885,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -920,7 +923,7 @@ class TestStartupAutoUpdate:
         from deepagents_code.update_check import ShadowedDcode
 
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         shadow = ShadowedDcode(
             shadowing_bin=Path("C:/old/bin/dcode.cmd"),
             upgraded_bin_dir=Path("C:/uv/bin"),
@@ -942,7 +945,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -979,7 +982,7 @@ class TestStartupAutoUpdate:
         log and the exit status simultaneously.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -996,7 +999,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1040,7 +1043,7 @@ class TestStartupAutoUpdate:
         from deepagents_code.update_check import ShadowedDcode
 
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
         shadow = ShadowedDcode(
             shadowing_bin=Path("/opt/old/bin/dcode"),
             upgraded_bin_dir=Path("/home/user/.local/bin"),
@@ -1061,7 +1064,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1105,7 +1108,7 @@ class TestStartupAutoUpdate:
         uncaught and crash startup after an otherwise-successful upgrade.
         """
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1122,7 +1125,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1365,7 +1368,7 @@ class TestStartupAutoUpdate:
         stream = StringIO()
         console = Console(file=stream, force_terminal=True, no_color=True, width=80)
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.8")
-        upgrade = AsyncMock(return_value=(True, ""))
+        upgrade = AsyncMock(return_value=(True, "", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1392,7 +1395,7 @@ class TestStartupAutoUpdate:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1532,6 +1535,51 @@ class TestStartupAutoUpdate:
         assert "Aborted; no project MCP servers loaded" in capsys.readouterr().err
 
 
+class TestLaunchTermProgramSnapshot:
+    """`cli_main` records launch-time `TERM_PROGRAM` for the resume hint."""
+
+    def _run_cli_main(self) -> None:
+        """Run `cli_main` through its early exit, past the snapshot."""
+        with (
+            patch.object(sys, "argv", ["dcode", "--version"]),
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+
+    def test_snapshots_launch_term_program(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `TERM_PROGRAM` present at entry is recorded for the resume hint."""
+        monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+        monkeypatch.delenv(LAUNCH_TERM_PROGRAM, raising=False)
+
+        self._run_cli_main()
+
+        assert os.environ[LAUNCH_TERM_PROGRAM] == "WezTerm"
+
+    def test_skips_snapshot_when_term_program_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a launch `TERM_PROGRAM` no sentinel is written."""
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        monkeypatch.delenv(LAUNCH_TERM_PROGRAM, raising=False)
+
+        self._run_cli_main()
+
+        assert LAUNCH_TERM_PROGRAM not in os.environ
+
+    def test_inherited_snapshot_wins_over_launch_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The update re-exec's inherited sentinel is not overwritten."""
+        monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+        monkeypatch.setenv(LAUNCH_TERM_PROGRAM, "iTerm.app")
+
+        self._run_cli_main()
+
+        assert os.environ[LAUNCH_TERM_PROGRAM] == "iTerm.app"
+
+
 class TestAutoUpdateDefaultMigration:
     """First-run consent/migration notice for the auto-update opt-out default."""
 
@@ -1547,7 +1595,7 @@ class TestAutoUpdateDefaultMigration:
     def test_first_run_announces_and_skips_install(self) -> None:
         """An implicit (default) opt-in announces once and skips the install."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1587,7 +1635,7 @@ class TestAutoUpdateDefaultMigration:
     def test_first_run_persist_failure_warns_repeat(self) -> None:
         """A failed acknowledgement persist surfaces that the notice may repeat."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1634,7 +1682,7 @@ class TestAutoUpdateDefaultMigration:
         """
         monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_UPDATE", "1")
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1673,7 +1721,7 @@ class TestAutoUpdateDefaultMigration:
     def test_acknowledged_default_proceeds_with_install(self) -> None:
         """Once acknowledged, the install proceeds normally on later launches."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1698,7 +1746,7 @@ class TestAutoUpdateDefaultMigration:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1724,7 +1772,7 @@ class TestAutoUpdateDefaultMigration:
         config_path = tmp_path / "config.toml"
         state_file = tmp_path / "update_state.json"
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated"))
+        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1739,7 +1787,7 @@ class TestAutoUpdateDefaultMigration:
                 return_value="",
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=Path("/tmp/dcode-update.log"),
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
@@ -1868,20 +1916,41 @@ class TestRenderTeardownThreadHints:
         thread_url: str | None,
         return_code: int = 0,
         launch_name: str = "dcode",
+        term_program: str = "",
+        launch_term_program: str | None = None,
     ) -> str:
-        """Render the hints with patched dependencies, returning the output."""
+        """Render the hints with patched dependencies, returning the output.
+
+        `term_program` is the live variable; `launch_term_program` is the
+        launch snapshot the hint actually reads. Passing only `term_program`
+        exercises the no-snapshot path (hint stays bare); passing both
+        exercises the launch-time-carry path.
+        """
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         # `launch_name` is resolved (and cached) inside the renderer.
         invoked_name.cache_clear()
+        env = {INVOKED_AS: launch_name, "TERM_PROGRAM": term_program}
+        if launch_term_program is not None:
+            env[LAUNCH_TERM_PROGRAM] = launch_term_program
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
-            patch.dict(os.environ, {INVOKED_AS: launch_name}),
+            # Always set explicitly: an ambient `TERM_PROGRAM` or launch
+            # snapshot from the developer's or CI runner's shell would
+            # otherwise leak into the rendered command and flake assertions.
+            patch.dict(os.environ, env),
+            # These cases describe POSIX behavior; pin the platform so they do
+            # not take the native-Windows path when run on a Windows machine.
+            patch.object(sys, "platform", "darwin"),
         ):
+            # `patch.dict` only merges, so drop an inherited launch snapshot
+            # when the case wants no snapshot at all.
+            if launch_term_program is None:
+                os.environ.pop(LAUNCH_TERM_PROGRAM, None)
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
 
@@ -1914,6 +1983,158 @@ class TestRenderTeardownThreadHints:
 
         assert "abc -r test123" in output
         assert "dcode" not in output
+
+    @pytest.mark.parametrize("return_code", [0, 1])
+    def test_resume_hint_carries_term_program(self, return_code: int) -> None:
+        """A launch-time `TERM_PROGRAM` rides along as an env prefix.
+
+        A shell alias that exports the variable cannot be recovered from
+        `argv[0]`, so pasting a bare `dcode -r ...` would drop it (and with it
+        anything keyed off it, such as theme selection).
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            return_code=return_code,
+            term_program="WezTerm",
+            launch_term_program="WezTerm",
+        )
+
+        assert "TERM_PROGRAM=WezTerm dcode -r test123" in output
+
+    def test_resume_hint_omits_term_program_without_launch_snapshot(self) -> None:
+        """A `TERM_PROGRAM` set only after launch (a `.env` file) stays out."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
+
+    def test_resume_hint_omits_prefix_when_term_program_unset(self) -> None:
+        """An unset `TERM_PROGRAM` leaves the command bare, with no empty prefix."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+
+        assert "dcode -r test123" in output
+        assert "TERM_PROGRAM" not in output
+
+    @pytest.mark.parametrize("term_program", ["   ", "\t"])
+    def test_resume_hint_omits_blank_term_program(self, term_program: str) -> None:
+        """A whitespace-only value is treated as unset, matching other readers."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program=term_program,
+            launch_term_program=term_program,
+        )
+
+        assert "TERM_PROGRAM" not in output
+
+    def test_resume_hint_quotes_term_program_needing_quotes(self) -> None:
+        """A value the shell would split is quoted, keeping the line pasteable."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="Wez Term&whoami",
+            launch_term_program="Wez Term&whoami",
+        )
+
+        assert "TERM_PROGRAM='Wez Term&whoami' dcode -r test123" in output
+
+    def test_resume_hint_drops_term_program_with_control_characters(self) -> None:
+        """Terminal metadata cannot inject control sequences into teardown output.
+
+        The value is dropped rather than stripped: a stripped value would name a
+        terminal the environment never contained.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="Wez\x1b\nTerm",
+            launch_term_program="Wez\x1b\nTerm",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "\x1b" not in output
+        assert "dcode -r test123" in output
+
+    def _render_on_platform(
+        self,
+        platform: str,
+        *,
+        extra_env: dict[str, str] | None = None,
+    ) -> str:
+        """Render the resume hint as if running on `platform`.
+
+        `patch.dict` only merges, so POSIX markers the developer's own shell
+        exports (`SHELL`, at minimum) are deleted first to make the simulated
+        native Windows environment hermetic.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+        buffer = StringIO()
+        console = Console(file=buffer, width=200)
+        invoked_name.cache_clear()
+        env = {
+            INVOKED_AS: "dcode",
+            "TERM_PROGRAM": "vscode",
+            LAUNCH_TERM_PROGRAM: "vscode",
+            **(extra_env or {}),
+        }
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
+            patch(
+                "deepagents_code.config.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch.object(sys, "platform", platform),
+            patch.dict(os.environ, env),
+        ):
+            for marker in ("SHELL", "MSYSTEM", "WSL_DISTRO_NAME"):
+                if marker not in env:
+                    os.environ.pop(marker, None)
+            _render_teardown_thread_hints(console, "test123", return_code=0)
+        return buffer.getvalue()
+
+    def test_resume_hint_omits_prefix_on_native_windows(self) -> None:
+        """Native `cmd.exe`/PowerShell cannot parse a POSIX `VAR=value` prefix.
+
+        VS Code and WezTerm set `TERM_PROGRAM` on every platform, so its
+        presence under `win32` says nothing about the user's shell.
+        """
+        output = self._render_on_platform("win32")
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            {"SHELL": "C:\\Program Files\\Git\\bin\\bash.exe"},
+            {"MSYSTEM": "MINGW64"},
+            {"WSL_DISTRO_NAME": "Ubuntu"},
+        ],
+    )
+    def test_resume_hint_keeps_prefix_on_windows_posix_shells(
+        self, marker: dict[str, str]
+    ) -> None:
+        """git-bash/MSYS/WSL expose POSIX markers, so the prefix is valid there."""
+        output = self._render_on_platform("win32", extra_env=marker)
+
+        assert "TERM_PROGRAM=vscode dcode -r test123" in output
 
     def test_prints_langsmith_link_when_available(self) -> None:
         """A configured LangSmith URL is shown alongside the resume hint."""
@@ -4801,6 +5022,74 @@ class TestSelectProjectServersToPersist:
         )
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_refresh_picker_action_follows_abort(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Moving down once from the safe default selects environment refresh."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustAction,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustAction:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustAction] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                move_down = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_down"
+                )
+                confirm = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_confirm"
+                )
+                move_down(event)
+                confirm(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_trust_action_picker(
+            Console(stderr=True),
+            remember_label="Continue and hide until versions change",
+            allow_label="Continue this session only",
+            deny_label="Abort launch",
+            refresh_label="Refresh environment now",
+            deny_first=True,
+        )
+
+        assert result is _TrustAction.REFRESH
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert rendered.index("Abort launch") < rendered.index(
+            "Refresh environment now"
+        )
+        assert rendered.index("Refresh environment now") < rendered.index(
+            "Continue this session only"
+        )
+        assert rendered.index("Continue this session only") < rendered.index(
+            "Continue and hide until versions change"
+        )
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_abort_on_deny_maps_picker_deny_to_cancelled(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -5659,6 +5948,30 @@ class TestSelectProjectMcpTrustAction:
         result = _select_trust_action(Console(stderr=True))
 
         assert result is _TrustAction[expected_name]
+
+    @pytest.mark.parametrize("token", ["u", "update", "f", "refresh"])
+    def test_text_fallback_refresh_tokens(
+        self, token: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The dependency-floor fallback accepts update and refresh spellings."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": token)
+
+        result = _select_trust_action(
+            Console(stderr=True), refresh_label="Refresh environment now"
+        )
+
+        assert result is _TrustAction.REFRESH
 
 
 class TestCheckMcpProjectTrustDedupe:

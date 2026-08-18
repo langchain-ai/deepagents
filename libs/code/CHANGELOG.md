@@ -2,6 +2,20 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.56](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.55...deepagents-code==0.1.56) (2026-08-14)
+
+### Features
+
+- Personalized external editor hints to better match your setup ([#5445](https://github.com/langchain-ai/deepagents/issues/5445))
+
+### Bug Fixes
+
+- Improved dependency warning, Auto classifier, and paste expansion messages for clearer, more concise prompts and toasts ([#5489](https://github.com/langchain-ai/deepagents/issues/5489), [#5446](https://github.com/langchain-ai/deepagents/issues/5446), [#5443](https://github.com/langchain-ai/deepagents/issues/5443))
+- Queued `/copy` commands while generation is active so they run at the right time ([#5447](https://github.com/langchain-ai/deepagents/issues/5447))
+- Hid invalid cache metrics from the UI ([#5475](https://github.com/langchain-ai/deepagents/issues/5475))
+- Fixed forced-compaction forks by preserving the `session_id` ([#5492](https://github.com/langchain-ai/deepagents/issues/5492))
+- Stopped passing the removed `checkpoint_metadata` field ([#5473](https://github.com/langchain-ai/deepagents/issues/5473))
+
 ## [0.1.55](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.54...deepagents-code==0.1.55) (2026-08-12)
 
 ### Features

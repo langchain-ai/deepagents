@@ -982,20 +982,37 @@ class TestModelLabelPrefixStripping:
 
 
 class TestModelLabelClickTargets:
-    """Tests for the model and effort status-bar click targets."""
+    """Tests for the model and effort status-bar Ctrl+click targets."""
 
     @staticmethod
-    def _offset_for_action(label: ModelLabel, action: str) -> Offset:
+    def _offset_for_target(label: ModelLabel, target: str) -> Offset:
         x = label.content_region.x - label.region.x
         for segment in label.render_line(0):
-            if segment.style is not None and segment.style.meta.get("@click") == action:
+            if (
+                segment.style is not None
+                and segment.style.meta.get("status-picker-target") == target
+            ):
                 return Offset(x, 0)
             x += segment.cell_length
-        msg = f"No rendered segment for {action}"
+        msg = f"No rendered segment for {target}"
         raise AssertionError(msg)
 
-    async def test_model_and_effort_have_distinct_actions(self) -> None:
-        """Each visible label should route to its corresponding app picker."""
+    @staticmethod
+    def _rendered_targets(label: ModelLabel) -> dict[str, tuple[str, bool | None]]:
+        rendered = label.render()
+        assert isinstance(rendered, Content)
+        return {
+            rendered.plain[span.start : span.end]: (
+                span.style.meta["status-picker-target"],
+                span.style.underline,
+            )
+            for span in rendered.spans
+            if not isinstance(span.style, str)
+            and "status-picker-target" in span.style.meta
+        }
+
+    async def test_model_and_effort_have_distinct_targets(self) -> None:
+        """Each visible label should expose its corresponding picker target."""
         async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "openai"
@@ -1003,20 +1020,13 @@ class TestModelLabelClickTargets:
             label.effort = "high"
             await pilot.pause()
 
-            rendered = label.render()
-            assert isinstance(rendered, Content)
-            actions = {
-                rendered.plain[span.start : span.end]: span.style.meta["@click"]
-                for span in rendered.spans
-                if not isinstance(span.style, str) and "@click" in span.style.meta
-            }
-            assert actions == {
-                "openai:gpt-5.5": "app.open_model_selector",
-                "high": "app.open_effort_selector",
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", None),
+                "high": ("effort", None),
             }
 
-    async def test_clicks_dispatch_distinct_app_actions(self) -> None:
-        """Textual should broker each span click to the corresponding app action."""
+    async def test_clicks_require_ctrl_and_dispatch_distinct_app_actions(self) -> None:
+        """Ordinary clicks should be inert while Ctrl+click opens each picker."""
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
@@ -1025,16 +1035,44 @@ class TestModelLabelClickTargets:
             label.effort = "high"
             await pilot.pause()
 
-            model_offset = self._offset_for_action(label, "app.open_model_selector")
-            effort_offset = self._offset_for_action(label, "app.open_effort_selector")
+            model_offset = self._offset_for_target(label, "model")
+            effort_offset = self._offset_for_target(label, "effort")
             await pilot.click(label, offset=model_offset)
             await pilot.click(label, offset=effort_offset)
+            assert app.opened_pickers == []
+
+            await pilot.click(label, offset=model_offset, control=True)
+            await pilot.click(label, offset=effort_offset, control=True)
             await pilot.pause()
 
             assert app.opened_pickers == ["model", "effort"]
 
+    async def test_ctrl_hover_underlines_only_the_target(self) -> None:
+        """A Ctrl-modified pointer move should expose the target affordance."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            model_offset = self._offset_for_target(label, "model")
+            await pilot.mouse_up(label, offset=model_offset, control=True)
+            await pilot.pause()
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", True),
+                "high": ("effort", None),
+            }
+
+            await pilot.mouse_up(label, offset=model_offset)
+            await pilot.pause()
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", None),
+                "high": ("effort", None),
+            }
+
     async def test_hidden_effort_has_no_click_target(self) -> None:
-        """The narrow-layout fallback should expose only the visible model action."""
+        """The narrow-layout fallback should expose only the visible model target."""
         async with StatusBarApp().run_test() as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = ""
@@ -1043,14 +1081,7 @@ class TestModelLabelClickTargets:
             label.styles.width = 6
             await pilot.pause()
 
-            rendered = label.render()
-            assert isinstance(rendered, Content)
-            actions = {
-                rendered.plain[span.start : span.end]: span.style.meta["@click"]
-                for span in rendered.spans
-                if not isinstance(span.style, str) and "@click" in span.style.meta
-            }
-            assert actions == {"o1": "app.open_model_selector"}
+            assert self._rendered_targets(label) == {"o1": ("model", None)}
 
 
 class TestConnectionIndicator:

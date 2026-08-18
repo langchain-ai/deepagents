@@ -45,8 +45,16 @@ CONNECTION_STATES = frozenset(get_args(ConnectionState))
 
 Derived from the `Literal` so the two can never drift."""
 
-_MODEL_CLICK_STYLE = Style.from_meta({"@click": "app.open_model_selector"})
-_EFFORT_CLICK_STYLE = Style.from_meta({"@click": "app.open_effort_selector"})
+PickerTarget = Literal["model", "effort"]
+_PICKER_TARGET_META = "status-picker-target"
+_PICKER_ACTIONS: dict[PickerTarget, str] = {
+    "model": "app.open_model_selector",
+    "effort": "app.open_effort_selector",
+}
+_PICKER_STYLES = {
+    target: Style.from_meta({_PICKER_TARGET_META: target}) for target in _PICKER_ACTIONS
+}
+_PICKER_READY_STYLE = Style(underline=True)
 
 StatusMessageSource = Literal["agent", "hooks"]
 """Owners that may write the shared status-message slot."""
@@ -78,6 +86,7 @@ class ModelLabel(Widget):
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
     effort: reactive[str] = reactive("", layout=True)
+    modifier_target: reactive[PickerTarget | None] = reactive(None)
 
     def _clean_model(self) -> str:
         """Strip the provider's registered prefix so the status bar stays compact.
@@ -109,8 +118,35 @@ class ModelLabel(Widget):
         """
         return f"{text} {self.effort}" if self.effort else text
 
+    def _picker_style(self, target: PickerTarget) -> Style:
+        """Build the hit-target style and apply the active modifier hint.
+
+        Args:
+            target: Picker represented by the styled span.
+
+        Returns:
+            Target metadata with an underline when the modifier hint is active.
+        """
+        style = _PICKER_STYLES[target]
+        if self.modifier_target == target:
+            style += _PICKER_READY_STYLE
+        return style
+
+    @staticmethod
+    def _picker_target(event: events.MouseEvent) -> PickerTarget | None:
+        """Resolve an internal picker target from a mouse event.
+
+        Args:
+            event: Mouse event carrying the style under the pointer.
+
+        Returns:
+            Recognized picker target, or `None` outside a target.
+        """
+        target = event.style.meta.get(_PICKER_TARGET_META)
+        return target if target in _PICKER_ACTIONS else None
+
     def _clickable_content(self, model: str, *, include_effort: bool = True) -> Content:
-        """Render model and effort as distinct click targets.
+        """Render model and effort as distinct Ctrl+click targets.
 
         Args:
             model: Model text after provider stripping and width truncation.
@@ -119,14 +155,33 @@ class ModelLabel(Widget):
         Returns:
             Styled model content with an optional effort suffix.
         """
-        model_content = Content.styled(model, _MODEL_CLICK_STYLE)
+        model_content = Content.styled(model, self._picker_style("model"))
         if include_effort and self.effort:
             return Content.assemble(
                 model_content,
                 " ",
-                Content.styled(self.effort, _EFFORT_CLICK_STYLE),
+                Content.styled(self.effort, self._picker_style("effort")),
             )
         return model_content
+
+    async def on_click(self, event: events.Click) -> None:
+        """Open a picker only for a Ctrl+click on its visible footer label."""
+        target = self._picker_target(event)
+        if not event.ctrl or target is None:
+            return
+        event.stop()
+        await self.run_action(_PICKER_ACTIONS[target])
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Underline a picker target while Ctrl is held over it."""
+        target = self._picker_target(event) if event.ctrl else None
+        self.modifier_target = target
+        self.styles.pointer = "pointer" if target is not None else "default"
+
+    def on_leave(self) -> None:
+        """Clear the modifier affordance when the pointer leaves the label."""
+        self.modifier_target = None
+        self.styles.pointer = "default"
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
@@ -408,11 +463,6 @@ class StatusBar(Vertical):
         padding: 0 0 0 2;
         color: $text-muted;
         text-align: right;
-        link-color: $text-muted;
-        link-style: not underline;
-        link-color-hover: $text;
-        link-background-hover: transparent;
-        link-style-hover: not bold underline;
     }
 
     StatusBar BranchLabel {

@@ -1424,7 +1424,7 @@ class _CompletionViewAdapter:
 
 
 def _manual_height_ceiling(screen_height: int) -> int:
-    """Return the largest composer height a drag may request.
+    """Return the largest composer height a manual resize may request.
 
     Args:
         screen_height: Current screen height in rows.
@@ -1606,22 +1606,40 @@ class ChatInputBox(Vertical):
         text_area.styles.max_height = _CHAT_INPUT_AUTO_MAX_HEIGHT
         text_area.call_after_refresh(text_area.scroll_cursor_visible)
 
-    def toggle_expanded(self) -> None:
-        """Toggle between the maximum manual height and automatic sizing.
+    def _manual_height_is_visible(self) -> bool:
+        """Whether a manual height renders taller than automatic sizing would.
 
-        Branches on whether the composer is already at its maximum rather than
-        on whether a manual height exists at all, so a drag of a row or two
-        (including the incidental jitter of a double-click) still leaves the
-        next double-click meaning "expand".
+        A drag that lands at or below the draft's own height is floored by
+        `_content_height_floor`, so it renders exactly as automatic sizing does
+        even though a request is stored. Distinguishing the two keeps a toggle
+        from having no visible effect.
+
+        Returns:
+            True when a manual height is set and is what pins the composer.
         """
-        screen_height = self._screen_height()
-        if screen_height is None:
-            return
-        maximum = _manual_height_ceiling(screen_height)
-        if self._requested_height == maximum:
+        text_area = self._composer()
+        if self._requested_height is None or self._applied_height is None:
+            return False
+        if text_area is None:
+            return False
+        return self._applied_height > _content_height_floor(text_area)
+
+    def toggle_expanded(self) -> None:
+        """Expand to the manual-height ceiling, or drop a manual height.
+
+        Keys off whether a manual height is *visible* rather than merely stored.
+        A request floored by the draft renders identically to automatic sizing,
+        so collapsing it would leave the composer where it already is and the
+        gesture would read as broken -- expanding is the only move that
+        responds. That also covers the stray row of travel a press can emit
+        before the second half of a double-click lands.
+        """
+        if self._manual_height_is_visible():
             self._reset_height()
         else:
-            self.set_manual_height(maximum)
+            # Clamped to the screen ceiling inside `set_manual_height`, so
+            # asking for the absolute maximum lands on whatever fits now.
+            self.set_manual_height(_CHAT_INPUT_MANUAL_MAX_HEIGHT)
 
     def on_completion_popup_rows_changed(
         self, event: CompletionPopup.RowsChanged
@@ -1735,8 +1753,9 @@ class ChatInputResizeHandle(Static):
         delta = self._drag_start_y - event.screen_y
         # A double-click registers only when both presses land on the same cell,
         # which is exactly when the pointer drifts away and back — emitting a
-        # zero-delta move. Reporting it would establish a manual height and flip
-        # the meaning of the click that follows.
+        # zero-delta move. Reporting it would pin the composer to a manual height
+        # the user never asked for, freezing the auto-growth they expect as they
+        # keep typing.
         if delta:
             self.post_message(self.Dragged(delta))
         event.stop()
@@ -1806,8 +1825,9 @@ class ChatInput(Vertical):
     - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
     - Autocomplete for @ (files) and / (commands)
-    - Drag the top border to resize the composer; double-click it to toggle
-      between the maximum height and content-driven sizing
+    - Drag the top border to resize the composer; double-click it to expand to
+      the maximum height, or to drop a manual height back to content-driven
+      sizing
     """
 
     DEFAULT_CSS = (
@@ -2203,7 +2223,7 @@ class ChatInput(Vertical):
     def on_chat_input_resize_handle_toggle_expanded(
         self, event: ChatInputResizeHandle.ToggleExpanded
     ) -> None:
-        """Toggle maximum and automatic composer sizing."""
+        """Expand the composer, or drop a manual height back to automatic."""
         if self._input_box is not None:
             self._input_box.toggle_expanded()
         event.stop()

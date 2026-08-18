@@ -18,12 +18,20 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Iterator,
+        Sequence,
+        Set as AbstractSet,
+    )
 
     from langchain_core.messages import HumanMessage
     from textual.pilot import Pilot
 
     from deepagents_code.mcp_auth import McpServerSpec
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.resume_state import (
         GoalProposalKind,
@@ -7279,6 +7287,37 @@ class TestTraceCommand:
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
 
+    @staticmethod
+    def _record_manager_state_loads(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> list[tuple[tuple[MCPServerInfo, ...], bool]]:
+        """Stub the manager's state loader and record each snapshot it sees.
+
+        Returns a list of `(mcp_server_info, mcp_connecting)` tuples, one per
+        completed load. Asserting against it keeps the connection tests
+        sensitive to a dropped refresh, which assertions on the synchronously
+        assigned `_mcp_connecting` flag cannot detect.
+        """
+        from deepagents_code.tui.modals import plugin_manager as plugin_manager_module
+        from deepagents_code.tui.modals.plugin_manager.state import _ManagerState
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        loads: list[tuple[tuple[MCPServerInfo, ...], bool]] = []
+
+        def _record(
+            info: Sequence[MCPServerInfo],
+            *,
+            mcp_connecting: bool,
+            loaded_plugin_ids: AbstractSet[str],  # noqa: ARG001
+        ) -> _ManagerState:
+            loads.append((tuple(info), mcp_connecting))
+            return _ManagerState((), (), (), ())
+
+        monkeypatch.setattr(plugin_manager_module, "_load_manager_state", _record)
+        return loads
+
     async def test_plugins_routed_from_handle_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -7299,6 +7338,107 @@ class TestTraceCommand:
             await app._handle_command("/plugins")
             await pilot.pause()
             assert isinstance(app.screen, PluginManagerScreen)
+
+    async def test_plugins_manager_settles_on_server_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A manager opened mid-startup must reload state when `ServerReady` fires.
+
+        Regression test for the stale constructor snapshot: without the
+        server-ready push, `mcp_connecting` stayed `True` for the life of the
+        modal and suppressed the settled connection status. The assertions
+        target the reload rather than the `_mcp_connecting` flag, which is
+        assigned synchronously and so stays correct even if the refresh is
+        dropped entirely.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        loads = self._record_manager_state_loads(monkeypatch, tmp_path)
+        settled = MCPServerInfo(name="docs", transport="stdio", status="ok")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            assert isinstance(app.screen, PluginManagerScreen)
+            assert app.screen._mcp_connecting is True
+            assert loads[-1] == ((), True)
+
+            app.on_deep_agents_app_server_ready(
+                DeepAgentsApp.ServerReady(
+                    agent=None, server_proc=None, mcp_server_info=[settled]
+                )
+            )
+            await pilot.pause()
+            assert app.screen._mcp_connecting is False
+            # The settled server info must reach the loader, not just the
+            # flag: clearing the flag against an empty list would render
+            # every MCP-declaring plugin as disconnected.
+            assert loads[-1] == ((settled,), False)
+
+            await app.screen.dismiss()
+            await pilot.pause()
+            assert app._active_plugin_manager is None
+
+    async def test_plugins_manager_settles_on_server_start_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed startup settles the manager just as `ServerReady` does.
+
+        `ServerStartFailed` also clears `_connecting`, so without its own push
+        the manager keeps the connecting snapshot for the life of the modal —
+        the same stale state on the failure branch.
+        """
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        loads = self._record_manager_state_loads(monkeypatch, tmp_path)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            assert isinstance(app.screen, PluginManagerScreen)
+            assert app.screen._mcp_connecting is True
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("boom"))
+            )
+            await pilot.pause()
+            assert app.screen._mcp_connecting is False
+            assert loads[-1][1] is False
+
+    async def test_plugins_manager_ignores_connection_push_after_dismiss(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A push into a dismissed manager must not query a torn-down DOM."""
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        loads = self._record_manager_state_loads(monkeypatch, tmp_path)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, PluginManagerScreen)
+
+            await screen.dismiss()
+            await pilot.pause()
+            before = len(loads)
+
+            screen.update_connection_state([], mcp_connecting=False)
+            await pilot.pause()
+            assert len(loads) == before
 
 
 class TestClearCommand:

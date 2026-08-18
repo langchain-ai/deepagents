@@ -3684,6 +3684,13 @@ class DeepAgentsApp(App):
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
+        self._active_plugin_manager: Any = None
+        """Handle to the `/plugins` modal so connection-settled events refresh it.
+
+        Set on push and cleared on dismiss. Both `ServerReady` and
+        `ServerStartFailed` push the settled state into it.
+        """
+
         self._mcp_viewer_disable_toggled = False
         """Whether the current/last `/mcp` viewer session toggled a disable state.
 
@@ -5990,6 +5997,17 @@ class DeepAgentsApp(App):
             task = asyncio.create_task(_refresh_viewer())
             task.add_done_callback(_log_task_exception)
 
+        # A `/plugins` manager opened mid-startup holds a connecting snapshot
+        # (empty `mcp_server_info`, `mcp_connecting=True`) that would otherwise
+        # suppress the settled connected/`/reload` status until the modal is
+        # reopened. Push both halves: clearing the flag alone would render
+        # every MCP-declaring plugin as disconnected instead.
+        if self._active_plugin_manager is not None:
+            self._active_plugin_manager.update_connection_state(
+                self._mcp_server_info or [],
+                mcp_connecting=False,
+            )
+
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
         # user-typed messages. Sequenced through a single task so the
@@ -6030,6 +6048,25 @@ class DeepAgentsApp(App):
         self._connecting = False
         self._reconnecting = False
         self._connection_ready_event.set()
+
+        # A failed startup settles the connection just as `ServerReady` does.
+        # Without this the manager keeps `mcp_connecting=True` for the life of
+        # the modal, re-creating the stale-snapshot bug on the failure branch.
+        #
+        # On a failed *reconnect* `_mcp_server_info` still holds the last
+        # healthy snapshot, so the manager can show those servers as connected
+        # while the server is down. There is no truthful alternative to push:
+        # `mcp_connecting=True` would pin the modal to "loading" forever, and
+        # `[]` would render every plugin as disconnected on a failed first
+        # startup, where `/reload` cannot help either. The last-known snapshot
+        # is the least-wrong settled state, and matches what `ServerReady`
+        # itself delivers when the post-restart MCP preload fails.
+        if self._active_plugin_manager is not None:
+            self._active_plugin_manager.update_connection_state(
+                self._mcp_server_info or [],
+                mcp_connecting=False,
+            )
+
         headline_truncated = False
         if isinstance(event.error, MCPConfigError):
             # Already carries the path + hint; showing the class name is noise.
@@ -23458,6 +23495,10 @@ class DeepAgentsApp(App):
                 assert_never(action)
 
         def on_close(result: PluginManagerResult) -> None:
+            # Guard identity: a stacked manager closing must not orphan the
+            # handle for one that is still open.
+            if self._active_plugin_manager is screen:
+                self._active_plugin_manager = None
             if result is None:
                 return
             self.call_after_refresh(
@@ -23468,19 +23509,21 @@ class DeepAgentsApp(App):
                 )
             )
 
-        self.push_screen(
-            PluginManagerScreen(
-                mcp_server_info=self._mcp_server_info or [],
-                loaded_plugin_ids=self._session_plugin_ids,
-                on_auto_update_enabled=(
-                    self._start_plugin_auto_update
-                    if self._plugin_auto_update_started
-                    else None
-                ),
-                check_reload_required=check_changes,
+        screen = PluginManagerScreen(
+            mcp_server_info=self._mcp_server_info or [],
+            mcp_connecting=self._connecting,
+            loaded_plugin_ids=self._session_plugin_ids,
+            on_auto_update_enabled=(
+                self._start_plugin_auto_update
+                if self._plugin_auto_update_started
+                else None
             ),
-            on_close,
+            check_reload_required=check_changes,
         )
+        # Tracked so the `ServerReady` / `ServerStartFailed` handlers can push
+        # the settled connection state into a manager opened mid-startup.
+        self._active_plugin_manager = screen
+        self.push_screen(screen, on_close)
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

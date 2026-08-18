@@ -71,6 +71,11 @@ from deepagents_code.tui.modals.plugin_manager.tabs import (
 
 logger = logging.getLogger(__name__)  # noqa: RUF067  # module-level logger
 
+_CONNECTION_REFRESH_ERROR = (  # noqa: RUF067  # module-level constant
+    "Could not refresh MCP connection status. Reopen /plugins."
+)
+"""Banner for a failed connection refresh, cleared when a later one succeeds."""
+
 # Bounds the close check so a stalled plugin scan cannot leave the manager
 # mounted with its keys locked out. Deliberately shorter than the app's modal
 # watchdog: nothing here waits on the user, only on a filesystem snapshot.
@@ -125,6 +130,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self,
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
+        mcp_connecting: bool = False,
         loaded_plugin_ids: AbstractSet[str] | None = None,
         on_auto_update_enabled: Callable[[], None] | None = None,
         check_reload_required: Callable[[], Awaitable[bool | None]] | None = None,
@@ -135,6 +141,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             mcp_server_info: Live MCP server metadata from the running session,
                 used to show connection status for plugins that declare MCP
                 servers.
+            mcp_connecting: Whether MCP connection status is still loading.
             loaded_plugin_ids: Plugin ids loaded into the current session.
                 Plugins whose enabled state differs from this set (enabled but
                 not loaded, or disabled but still loaded) are shown as pending
@@ -150,6 +157,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._tab: PluginTab = "discover"
         self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
+        self._mcp_connecting = mcp_connecting
         self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
         self._on_auto_update_enabled = on_auto_update_enabled
         self._check_reload_required = check_reload_required
@@ -165,6 +173,20 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._search_query = ""
         self._auto_update_enabled = False
         self._auto_update_source = "default"
+        # State loads run in worker threads. Keep their snapshots and view
+        # updates ordered so an older connecting snapshot cannot overwrite a
+        # later settled connection snapshot.
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_tasks: set[asyncio.Task[None]] = set()
+        """Strong references to in-flight fire-and-forget refresh tasks."""
+
+        self._dismissed = False
+        """Whether the screen has been unmounted.
+
+        Textual leaves `is_mounted` `True` and `is_attached` `False` after a
+        dismiss, and `is_attached` is also `False` before the first mount, so
+        neither flag distinguishes a dismissed screen from a fresh one.
+        """
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -220,6 +242,10 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         if self._status == "Loading plugins...":
             self._status = None
             self._refresh_view()
+
+    def on_unmount(self) -> None:
+        """Stop accepting deferred refreshes once the screen is torn down."""
+        self._dismissed = True
 
     def on_resize(self) -> None:
         """Refit width-sized dividers when the modal resizes."""
@@ -572,29 +598,123 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             return _confirm_marketplace_removal_options(self._selected_marketplace)
         return [Option("Back to plugin list", id="details-back")]
 
-    async def _refresh_state(self) -> None:
-        # A mutating action (install/toggle/uninstall/marketplace change) reloads
-        # state and shows a fresh list, so a leftover query would hide results.
-        # Details round-trips use `_refresh_view` instead and keep the query.
-        self._search_query = ""
-        self._state = await asyncio.to_thread(
-            _load_manager_state,
-            self._mcp_server_info,
-            loaded_plugin_ids=self._loaded_plugin_ids,
+    def update_connection_state(
+        self,
+        mcp_server_info: Sequence[MCPServerInfo],
+        *,
+        mcp_connecting: bool,
+    ) -> None:
+        """Update the live MCP connection snapshot and re-render.
+
+        The constructor only receives a snapshot of the app's connection
+        state, so a manager opened while a connection is still settling would
+        otherwise keep `mcp_connecting=True` forever — suppressing, for
+        session-loaded plugins that declare MCP servers, both the "connected"
+        indicator and a legitimate "run /reload" hint until the modal is
+        closed and reopened. The app calls this whenever a connection attempt
+        settles — `ServerReady` or a startup failure, including reconnects —
+        so the open manager reflects the final connection state.
+
+        Args:
+            mcp_server_info: Settled MCP server metadata from the session.
+            mcp_connecting: Whether MCP connection status is still loading.
+                While `True`, per-plugin MCP status is omitted entirely rather
+                than rendered as disconnected.
+        """
+        if self._dismissed:
+            # The app resolves its handle synchronously but this refresh is
+            # deferred, so a dismiss landing in between would otherwise leave
+            # `_refresh_view` querying a torn-down DOM.
+            return
+        self._mcp_server_info = mcp_server_info
+        self._mcp_connecting = mcp_connecting
+        task = asyncio.create_task(self._refresh_state(clear_search=False))
+        # `asyncio` keeps only a weak reference to a running task, so hold a
+        # strong one until it completes or the refresh can vanish mid-flight.
+        self._refresh_tasks.add(task)
+        task.add_done_callback(self._refresh_tasks.discard)
+        task.add_done_callback(self._settle_refresh_result)
+
+    def _settle_refresh_result(self, task: asyncio.Task[None]) -> None:
+        """Report a failed connection-state refresh instead of dropping it.
+
+        Logging alone would leave the manager showing the pre-settle snapshot
+        with no on-screen signal — indistinguishable from the stale state this
+        refresh exists to clear. Route through `_error` like every other
+        failure path in this screen, and retire that banner once a later
+        refresh succeeds.
+
+        Only this callback's own message is cleared: a reconnect must not wipe
+        a marketplace or install error the user still needs to read.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if not self.is_attached:
+            # Unmounted mid-refresh: a failure here means the DOM is gone, not
+            # that the plugin state is unreadable — and there is nothing left
+            # to render a message into either way.
+            if exc is not None:
+                logger.warning(
+                    "Plugin manager connection refresh failed after unmount",
+                    exc_info=exc,
+                )
+            return
+        if exc is None:
+            if self._error == _CONNECTION_REFRESH_ERROR:
+                self._error = None
+                self._refresh_view()
+            return
+        logger.warning(
+            "Failed to refresh plugin manager connection state",
+            exc_info=exc,
         )
-        self._auto_update_enabled, self._auto_update_source = await asyncio.to_thread(
-            plugin_auto_update_setting
-        )
-        if self._selected_plugin is not None:
-            refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
-            if refreshed is None:
-                refreshed = self._find_available_plugin(self._selected_plugin.plugin_id)
-            self._selected_plugin = refreshed
-        if self._selected_marketplace is not None:
-            self._selected_marketplace = self._find_marketplace(
-                self._selected_marketplace.name
-            )
+        self._error = _CONNECTION_REFRESH_ERROR
         self._refresh_view()
+
+    async def _refresh_state(self, *, clear_search: bool = True) -> None:
+        """Load and apply plugin state without allowing refreshes to overlap.
+
+        Args:
+            clear_search: Whether this refresh follows a plugin mutation that
+                should show the complete, newly loaded list.
+        """
+        async with self._refresh_lock:
+            # A mutating action (install/toggle/uninstall/marketplace change)
+            # reloads state and shows a fresh list, so a leftover query would
+            # hide results. Connection updates do not change plugin data and
+            # must retain the user's active filter.
+            if clear_search:
+                self._search_query = ""
+
+            # Take the snapshot only after acquiring the lock. A settled
+            # connection update queued behind the initial load therefore uses
+            # the current state rather than re-applying the connecting one.
+            mcp_server_info = tuple(self._mcp_server_info)
+            mcp_connecting = self._mcp_connecting
+            loaded_plugin_ids = self._loaded_plugin_ids
+            self._state = await asyncio.to_thread(
+                _load_manager_state,
+                mcp_server_info,
+                mcp_connecting=mcp_connecting,
+                loaded_plugin_ids=loaded_plugin_ids,
+            )
+            (
+                self._auto_update_enabled,
+                self._auto_update_source,
+            ) = await asyncio.to_thread(plugin_auto_update_setting)
+            if self._selected_plugin is not None:
+                refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
+                if refreshed is None:
+                    refreshed = self._find_available_plugin(
+                        self._selected_plugin.plugin_id
+                    )
+                self._selected_plugin = refreshed
+            if self._selected_marketplace is not None:
+                self._selected_marketplace = self._find_marketplace(
+                    self._selected_marketplace.name
+                )
+            self._refresh_view()
 
     def check_action(
         self,

@@ -83,6 +83,7 @@ if TYPE_CHECKING:
         RenderResult,
     )
     from textual.app import ComposeResult
+    from textual.css.types import PointerShape
     from textual.events import MouseMove
     from textual.timer import Timer
     from textual.widget import Widget
@@ -128,10 +129,56 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
     return colors.primary
 
 
-def _event_targets_selectable_text(event: MouseMove) -> bool:
-    """Return whether the hovered cell contains selectable rendered text."""
-    meta = getattr(event.style, "meta", None)
-    return isinstance(meta, dict) and "offset" in meta
+def _event_targets_rendered_text(event: MouseMove) -> bool:
+    """Return whether the hovered cell was rendered from widget content.
+
+    Textual tags every content segment's style with a selection `offset`
+    (`Content.to_strip` via `Style.rich_style_with_offset`) and reads the same
+    key back in `Compositor.get_widget_and_offset_at` to map a screen cell to a
+    text position. Alignment padding and cells past the end of a line carry no
+    such meta, so the key doubles as a rendered-text hit test that agrees
+    exactly with what Textual can resolve to an offset.
+
+    `offset` and both of its producers are private Textual API. Re-verify these
+    names on every Textual bump: if the key moves, every cell reads as blank
+    and the text pointer silently stops appearing.
+
+    This tracks *rendered* text, not *selectable* text — the meta is attached
+    unconditionally, so a widget with `ALLOW_SELECT = False` still reports
+    `True` here.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `True` when the hovered cell holds content-rendered text.
+    """
+    return "offset" in event.style.meta
+
+
+def _pointer_shape_for(event: MouseMove) -> PointerShape:
+    """Return the pointer shape to show for the cell under the mouse.
+
+    Textual applies a widget's pointer across its whole rectangle, so a message
+    declaring `pointer: text` in CSS shows an I-beam over the blank space beside
+    its short lines. Resolving the shape per cell instead keeps the I-beam on
+    text the reader can actually select.
+
+    The result is only accurate as of the last mouse movement: content that
+    grows or scrolls under a stationary pointer leaves the previous shape in
+    place until the mouse moves again.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `'pointer'` over links, `'text'` over rendered text, else `'default'`.
+    """
+    if event_targets_link(event):
+        return "pointer"
+    if _event_targets_rendered_text(event):
+        return "text"
+    return "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,7 +510,6 @@ class UserMessage(Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $primary;
-        pointer: text;
         /* The expand affordance carries `@click` meta, which Textual styles as
            a link (underline, and bold on an accent block when hovered).
            Neutralize both so the hint renders as plain inherited-colour dim
@@ -796,6 +842,14 @@ class UserMessage(Static):
         self._append_highlighted_body(parts, collapse.tail, colors=colors)
         return Content.assemble(*parts)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 class QueuedUserMessage(Static):
     """Widget displaying a queued (pending) user message in grey.
@@ -811,7 +865,6 @@ class QueuedUserMessage(Static):
         background: transparent;
         border-left: wide $panel;
         opacity: 0.6;
-        pointer: text;
     }
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
@@ -895,6 +948,14 @@ class QueuedUserMessage(Static):
         prefix, content = self._prefix_and_body()
         content = _truncate_for_display(content)
         return Content.assemble(prefix, (content, colors.muted))
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -1263,21 +1324,12 @@ class AssistantMessage(Vertical):
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Match the pointer shape to links, selectable text, or blank space."""
-        if self._markdown is None:
-            return
-        if event_targets_link(event):
-            pointer = "pointer"
-        elif _event_targets_selectable_text(event):
-            pointer = "text"
-        else:
-            pointer = "default"
-        self._markdown.styles.pointer = pointer
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Reset the markdown pointer shape when the mouse leaves the message."""
-        if self._markdown is not None:
-            self._markdown.styles.pointer = "default"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
     async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         """Open Markdown links with the same toast feedback as style links."""
@@ -4936,7 +4988,6 @@ class DiffMessage(Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $panel;
-        pointer: text;
     }
 
     DiffMessage .diff-header {
@@ -5124,6 +5175,14 @@ class DiffMessage(Static):
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.panel)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 class ErrorMessage(Static):
     """Widget displaying an error message."""
@@ -5136,7 +5195,6 @@ class ErrorMessage(Static):
         background: $error-muted;
         color: white;
         border-left: wide $error;
-        pointer: text;
     }
     """
     """Tinted background + left border to visually separate errors from output."""
@@ -5174,6 +5232,14 @@ class ErrorMessage(Static):
         """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class _RubricResultToggle(Static):
@@ -5504,7 +5570,6 @@ class AppMessage(Static):
         margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
-        pointer: text;
     }
     """
 
@@ -5597,17 +5662,12 @@ class AppMessage(Static):
         open_style_link(event)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over embedded links, text cursor elsewhere."""
-        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Restore the pointer shape when the mouse leaves the message.
-
-        `"text"` restates this widget's CSS default rather than clearing the
-        inline style, so a subclass declaring a different `pointer` would be
-        forced back to `text` on leave.
-        """
-        self.styles.pointer = "text"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class SummarizationMessage(AppMessage):
@@ -5622,7 +5682,6 @@ class SummarizationMessage(AppMessage):
         background: $surface;
         border-left: wide $primary;
         text-style: bold;
-        pointer: text;
     }
     """
 

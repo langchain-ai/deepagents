@@ -2,6 +2,14 @@
 
 # Deep Agents Changelog
 
+## [0.7.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.6...deepagents==0.7.7) (2026-08-18)
+
+
+### Bug Fixes
+
+* **sdk:** batch concurrent `ContextHubBackend` mutations ([#5471](https://github.com/langchain-ai/deepagents/issues/5471)) ([822f7c9](https://github.com/langchain-ai/deepagents/commit/822f7c9b02e6d99bdb46b5545bb2543783c01769))
+* **sdk:** make `BackendProtocol.glob` recursive for bare patterns ([#5026](https://github.com/langchain-ai/deepagents/issues/5026)) ([32f35d5](https://github.com/langchain-ai/deepagents/commit/32f35d5e01f460549c10365eb569978909f5c969))
+
 ## [0.7.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.5...deepagents==0.7.6) (2026-08-13)
 
 ### Bug Fixes

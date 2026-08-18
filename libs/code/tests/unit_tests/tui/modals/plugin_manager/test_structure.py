@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import re
+import threading
 from pathlib import Path
 from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
@@ -973,6 +974,179 @@ async def test_refresh_state_clears_search_query(
         # The cleared query restores every plugin, not just the "docs" match.
         ids = {options.get_option_at_index(i).id for i in range(options.option_count)}
         assert {"detail:docs@official", "detail:tests@official"} <= ids
+
+
+async def test_connection_refresh_preserves_search_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled MCP update leaves an in-progress plugin search intact."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(mcp_connecting=True)
+    fresh = _ManagerState(
+        available_plugins=(
+            _PluginRow(
+                plugin_id="docs@official",
+                description="Read/write documentation",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+            _PluginRow(
+                plugin_id="tests@official",
+                description="Run the test suite",
+                enabled=False,
+                version=None,
+                author=None,
+            ),
+        ),
+        installed_plugins=(),
+        marketplaces=(_MarketplaceRow("official", "owner/official", 2, 0),),
+        errors=(),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._load_manager_state",
+        lambda _info, **_kwargs: fresh,
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        # Ensure the initial, search-clearing load has completed before this
+        # test exercises the later connection-only refresh.
+        await screen._refresh_state()
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        search = screen.query_one("#plugin-manager-search", Input)
+
+        await pilot.press("/", "d", "o", "c", "s")
+        await pilot.pause()
+        assert screen._search_query == "docs"
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+
+        assert screen._search_query == "docs"
+        assert search.value == "docs"
+        assert options.option_count == 1
+
+
+async def test_connection_refresh_waits_for_initial_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled snapshot cannot be overwritten by the initial loading one."""
+    screen = PluginManagerScreen(mcp_connecting=True)
+    initial_started = threading.Event()
+    release_initial = threading.Event()
+    settled_loaded = threading.Event()
+    snapshots: list[bool] = []
+    loading_state = _ManagerState((), (), (), ("loading",))
+    settled_state = _ManagerState((), (), (), ("settled",))
+
+    def load_state(
+        _info: object,
+        *,
+        mcp_connecting: bool,
+        loaded_plugin_ids: frozenset[str],  # noqa: ARG001
+    ) -> _ManagerState:
+        snapshots.append(mcp_connecting)
+        if mcp_connecting:
+            initial_started.set()
+            release_initial.wait(timeout=1)
+            return loading_state
+        settled_loaded.set()
+        return settled_state
+
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._load_manager_state", load_state
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager.plugin_auto_update_setting",
+        lambda: (False, "default"),
+    )
+    monkeypatch.setattr(screen, "_refresh_view", MagicMock())
+
+    initial_refresh = asyncio.create_task(screen._refresh_state())
+    await asyncio.wait_for(asyncio.to_thread(initial_started.wait), timeout=1)
+    screen.update_connection_state([], mcp_connecting=False)
+    release_initial.set()
+    await initial_refresh
+    await asyncio.wait_for(asyncio.to_thread(settled_loaded.wait), timeout=1)
+
+    assert snapshots == [True, False]
+    assert screen._state == settled_state
+
+
+async def test_connection_refresh_failure_is_surfaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed connection refresh tells the user instead of only logging.
+
+    A bare log would leave the manager on the pre-settle snapshot with no
+    on-screen signal — indistinguishable from the stale state the refresh
+    exists to clear.
+    """
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(mcp_connecting=True)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        def _boom(_info: object, **_kwargs: object) -> _ManagerState:
+            msg = "state dir unreadable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state", _boom
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert screen._error is not None
+        assert "Reopen /plugins" in screen._error
+        # The error widget exists and `_refresh_view` ran, so the message
+        # reached the screen's error surface rather than only the log.
+        assert screen.query_one("#plugin-manager-error", Static) is not None
+
+
+async def test_connection_refresh_retires_its_own_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovered refresh clears its banner but leaves other errors alone."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(mcp_connecting=True)
+    empty = _ManagerState((), (), (), ())
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        def _boom(_info: object, **_kwargs: object) -> _ManagerState:
+            msg = "state dir unreadable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state", _boom
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error is not None
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state",
+            lambda _info, **_kwargs: empty,
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error is None
+
+        # An error from another source must survive a connection refresh.
+        screen._error = "Marketplace add failed."
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error == "Marketplace add failed."
 
 
 async def test_tab_switch_ignored_during_add_marketplace() -> None:

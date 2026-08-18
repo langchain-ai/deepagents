@@ -1916,8 +1916,12 @@ class TestDebugConsoleToggle:
             )
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
+            rendered = min(
+                MessageStore.INITIAL_WINDOW_SIZE,
+                MessageStore.WINDOW_SIZE,
+            )
             assert snapshot["Messages"] == (
-                f"{total} messages ({MessageStore.WINDOW_SIZE} rendered), {total} turns"
+                f"{total} messages ({rendered} rendered), {total} turns"
             )
 
     async def test_build_snapshot_message_count_resets_with_transcript(self) -> None:

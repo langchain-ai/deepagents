@@ -15659,28 +15659,54 @@ class DeepAgentsApp(App):
                 _effective_conversation(before_messages, new_event)
             )
             if reported_tokens_before:
-                fixed_tokens = max(
-                    0, reported_tokens_before - conversation_tokens_before
-                )
+                # Subtract the *delta* from the provider total rather than
+                # rebuilding the total as `overhead + conversation_after`. The two
+                # are algebraically equal, but only this form keeps both figures on
+                # the provider's scale: `count_tokens_approximately` need only
+                # overshoot the provider count by a token for an
+                # `overhead = max(0, reported - conversation_before)` clamp to
+                # collapse the overhead to zero, which would silently report the
+                # whole system prompt and tool schema as freed context.
+                #
+                # The estimator's error appears with opposite signs in the two
+                # conversation counts and largely cancels in the difference, which
+                # is why `before` prints exact and only `after` carries a `~`.
                 tokens_before = reported_tokens_before
-                tokens_after = fixed_tokens + conversation_tokens_after
+                tokens_after = max(
+                    0,
+                    reported_tokens_before
+                    - (conversation_tokens_before - conversation_tokens_after),
+                )
                 usage_label = "Context"
                 before = format_token_count(tokens_before)
                 after = f"~{format_token_count(tokens_after)}"
             else:
+                # No usable provider total (never set, or a checkpoint value
+                # `_persisted_context_tokens` rejected), so fall back to a
+                # conversation-only estimate. `usage_label` is what tells the user
+                # which metric they are reading: "Conversation" excludes the
+                # system/tool overhead that "Context" includes, so the two
+                # percentages are not comparable across offloads.
                 tokens_before = conversation_tokens_before
                 tokens_after = conversation_tokens_after
                 usage_label = "Conversation"
                 before = f"~{format_token_count(tokens_before)}"
                 after = f"~{format_token_count(tokens_after)}"
 
-            # Message counts are likewise derived purely from the absolute
-            # cutoffs, so those same machinery artifacts are never mistaken for
-            # kept conversation.
+            # Message counts are derived purely from the absolute cutoffs into
+            # the ORIGINAL pre-seed `before_messages`, never from the post-run
+            # `new_state["messages"]`. The compact tool's own machinery (the seeded
+            # tool call, its result, and the trailing model turn) lands at/after
+            # `new_cutoff` in the post-run list, so slicing that list instead would
+            # count those artifacts as kept conversation.
             messages_offloaded = max(0, new_cutoff - prior_cutoff)
             messages_kept = max(0, len(before_messages) - new_cutoff)
+            # Floored at zero: a summary can come out larger than the messages it
+            # replaced, and in the reported branch `tokens_after` mixes an exact
+            # provider total with an estimated delta. Neither should ever render as
+            # a negative "decrease".
             pct = (
-                round((tokens_before - tokens_after) / tokens_before * 100)
+                max(0, round((tokens_before - tokens_after) / tokens_before * 100))
                 if tokens_before > 0
                 else 0
             )

@@ -1584,6 +1584,7 @@ def _build_cached_mcp_tool(
                     f"MCP tool {lc_tool_name!r} failed on server "
                     f"{server_name!r}: {type(exc).__name__}: {exc}"
                 )
+                logger.warning("MCP tool call failed: %s", msg, exc_info=True)
                 raise ToolException(msg) from exc
             logger.info(
                 "MCP session for %r appears dead (%s: %s); "
@@ -1617,6 +1618,7 @@ def _build_cached_mcp_tool(
                         f"server {server_name!r}: {type(retry_exc).__name__}: "
                         f"{retry_exc}"
                     )
+                    logger.warning("MCP tool call failed: %s", msg, exc_info=True)
                     raise ToolException(msg) from retry_exc
                 finally:
                     # Invalidate the retry session last; log cleanup failure

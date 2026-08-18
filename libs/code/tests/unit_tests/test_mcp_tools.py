@@ -3526,6 +3526,130 @@ class TestCachedSessionProxy:
         assert manager is not None
         await manager.cleanup()
 
+    async def test_non_transient_failure_logs_warning(
+        self,
+        write_config: Callable[..., str],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-transient tool failure is warning-logged with its traceback."""
+        from langchain_core.tools import ToolException
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+        call_counter = {"n": 0}
+
+        def _new_session(*, fail: bool) -> AsyncMock:
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            error = OSError("socket glitch") if fail else None
+            session.call_tool = AsyncMock(side_effect=error)
+            return session
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            call_counter["n"] += 1
+            yield _new_session(fail=(call_counter["n"] == 2))
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, _ = await get_mcp_tools(path)
+            tool: Any = tools[0]
+            expected = (
+                "MCP tool 'srv_echo' failed on server 'srv': OSError: socket glitch"
+            )
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+                pytest.raises(ToolException) as exc_info,
+            ):
+                await tool.coroutine()
+
+        assert str(exc_info.value) == expected
+        warnings = [
+            record
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+            and record.levelno == logging.WARNING
+            and record.getMessage() == f"MCP tool call failed: {expected}"
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].exc_info is not None
+        assert call_counter["n"] == 2
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_retry_failure_logs_warning(
+        self,
+        write_config: Callable[..., str],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A failure after a transient retry is warning-logged with traceback."""
+        from anyio import ClosedResourceError
+        from langchain_core.tools import ToolException
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+        call_counter = {"n": 0}
+
+        def _new_session(*, attempt: int) -> AsyncMock:
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            if attempt == 2:
+                session.call_tool = AsyncMock(side_effect=ClosedResourceError())
+            elif attempt == 3:
+                session.call_tool = AsyncMock(side_effect=RuntimeError("retry boom"))
+            else:
+                session.call_tool = AsyncMock()
+            return session
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            call_counter["n"] += 1
+            yield _new_session(attempt=call_counter["n"])
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, _ = await get_mcp_tools(path)
+            tool: Any = tools[0]
+            expected = (
+                "MCP tool 'srv_echo' failed after one retry on server 'srv': "
+                "RuntimeError: retry boom"
+            )
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
+                pytest.raises(ToolException) as exc_info,
+            ):
+                await tool.coroutine()
+
+        assert str(exc_info.value) == expected
+        warnings = [
+            record
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+            and record.levelno == logging.WARNING
+            and record.getMessage() == f"MCP tool call failed: {expected}"
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].exc_info is not None
+        assert call_counter["n"] == 3
+        assert manager is not None
+        await manager.cleanup()
+
     async def test_transient_error_invalidates_and_retries(
         self,
         write_config: Callable[..., str],

@@ -3680,6 +3680,9 @@ class DeepAgentsApp(App):
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
+        self._active_plugin_manager: Any = None
+        """Handle to the `/plugins` modal so server-ready events can refresh it."""
+
         self._mcp_viewer_disable_toggled = False
         """Whether the current/last `/mcp` viewer session toggled a disable state.
 
@@ -5985,6 +5988,15 @@ class DeepAgentsApp(App):
 
             task = asyncio.create_task(_refresh_viewer())
             task.add_done_callback(_log_task_exception)
+
+        # A `/plugins` manager opened mid-startup holds a connecting snapshot
+        # (`mcp_connecting=True`) that would otherwise suppress the settled
+        # connected/`/reload` status until the modal is reopened.
+        if self._active_plugin_manager is not None:
+            self._active_plugin_manager.update_connection_state(
+                self._mcp_server_info or [],
+                mcp_connecting=False,
+            )
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -23444,6 +23456,7 @@ class DeepAgentsApp(App):
             )
 
         def on_close(_result: None) -> None:
+            self._active_plugin_manager = None
             self.call_after_refresh(
                 lambda: self.run_worker(
                     check_changes(),
@@ -23452,19 +23465,20 @@ class DeepAgentsApp(App):
                 )
             )
 
-        self.push_screen(
-            PluginManagerScreen(
-                mcp_server_info=self._mcp_server_info or [],
-                mcp_connecting=self._connecting,
-                loaded_plugin_ids=self._session_plugin_ids,
-                on_auto_update_enabled=(
-                    self._start_plugin_auto_update
-                    if self._plugin_auto_update_started
-                    else None
-                ),
+        screen = PluginManagerScreen(
+            mcp_server_info=self._mcp_server_info or [],
+            mcp_connecting=self._connecting,
+            loaded_plugin_ids=self._session_plugin_ids,
+            on_auto_update_enabled=(
+                self._start_plugin_auto_update
+                if self._plugin_auto_update_started
+                else None
             ),
-            on_close,
         )
+        # Tracked so `on_deep_agents_app_server_ready` can push the settled
+        # connection state into a manager opened mid-startup.
+        self._active_plugin_manager = screen
+        self.push_screen(screen, on_close)
 
     async def _offer_plugin_reload(self) -> None:
         """Offer to apply plugin changes after the manager closes."""

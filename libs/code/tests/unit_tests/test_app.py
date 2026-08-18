@@ -7302,6 +7302,42 @@ class TestTraceCommand:
             assert isinstance(app.screen, PluginManagerScreen)
             assert app.screen._mcp_connecting is True
 
+    async def test_plugins_manager_settles_on_server_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A manager opened mid-startup must refresh when `ServerReady` fires.
+
+        Regression test for the stale constructor snapshot: without the
+        server-ready push, `mcp_connecting` stayed `True` for the life of the
+        modal and suppressed the settled connection status.
+        """
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            assert isinstance(app.screen, PluginManagerScreen)
+            assert app.screen._mcp_connecting is True
+
+            app.on_deep_agents_app_server_ready(
+                DeepAgentsApp.ServerReady(
+                    agent=None, server_proc=None, mcp_server_info=[]
+                )
+            )
+            await pilot.pause()
+            assert app.screen._mcp_connecting is False
+
+            await app.screen.dismiss()
+            await pilot.pause()
+            assert app._active_plugin_manager is None
+
 
 class TestClearCommand:
     """Test /clear slash command."""

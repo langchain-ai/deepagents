@@ -550,6 +550,42 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             return _confirm_marketplace_removal_options(self._selected_marketplace)
         return [Option("Back to plugin list", id="details-back")]
 
+    def update_connection_state(
+        self,
+        mcp_server_info: Sequence[MCPServerInfo],
+        *,
+        mcp_connecting: bool,
+    ) -> None:
+        """Update the live MCP connection snapshot and re-render.
+
+        The constructor only receives a snapshot of the app's connection
+        state, so a manager opened while startup is still connecting would
+        otherwise keep `mcp_connecting=True` forever — suppressing both the
+        "connected" indicator and a legitimate "run /reload" hint until the
+        modal is closed and reopened. The app calls this when server startup
+        settles so the open manager reflects the final connection state.
+
+        Args:
+            mcp_server_info: Settled MCP server metadata from the session.
+            mcp_connecting: Whether MCP connection status is still loading.
+        """
+        self._mcp_server_info = mcp_server_info
+        self._mcp_connecting = mcp_connecting
+        task = asyncio.create_task(self._refresh_state())
+        task.add_done_callback(self._log_refresh_exception)
+
+    @staticmethod
+    def _log_refresh_exception(task: asyncio.Task[None]) -> None:
+        """Log a failed connection-state refresh instead of dropping it."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "Failed to refresh plugin manager connection state",
+                exc_info=exc,
+            )
+
     async def _refresh_state(self) -> None:
         # A mutating action (install/toggle/uninstall/marketplace change) reloads
         # state and shows a fresh list, so a leftover query would hide results.

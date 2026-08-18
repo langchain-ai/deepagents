@@ -3705,6 +3705,33 @@ class TestDroppedImagePaste:
             await pilot.pause()
             assert chat._text_area.cursor_location == (0, 1)
 
+    async def test_typed_duplicate_image_placeholder_does_not_skip_on_arrows(
+        self, tmp_path
+    ) -> None:
+        """A typed duplicate stays navigable even when its token is attached once."""
+        from PIL import Image
+
+        img_path = tmp_path / "duplicate-arrow.png"
+        Image.new("RGB", (4, 4), color="red").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+
+            chat._text_area.text = "[image 1] [image 1]"
+            await pilot.pause()
+
+            # The first occurrence is the tracked attachment and remains
+            # atomic. The second is text the user typed and moves one char.
+            typed_duplicate_start = len("[image 1] ")
+            chat._text_area.move_cursor((0, typed_duplicate_start))
+            await pilot.press("right")
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, typed_duplicate_start + 1)
+
     async def test_word_left_does_not_stop_inside_paste_placeholder(self) -> None:
         """Word-jump left over `[Pasted text #N]` never lands inside the token."""
         app = _ChatInputTestApp()

@@ -31,7 +31,6 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
-from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
     PastedContent,
@@ -1221,20 +1220,10 @@ class ChatTextArea(PasteBurstTextArea):
         text = self.text
         if not text:
             return []
-        media_placeholders = self._bound_media_placeholders()
         pasted_ids = self._bound_paste_ids()
-        spans: list[tuple[int, int]] = []
-        for pattern in (
-            IMAGE_PLACEHOLDER_PATTERN,
-            VIDEO_PLACEHOLDER_PATTERN,
-            PASTE_PLACEHOLDER_PATTERN,
-        ):
-            for match in pattern.finditer(text):
-                if pattern is PASTE_PLACEHOLDER_PATTERN:
-                    if int(match.group(1)) not in pasted_ids:
-                        continue
-                elif match.group(0) not in media_placeholders:
-                    continue
+        spans = self._bound_media_placeholder_spans()
+        for match in PASTE_PLACEHOLDER_PATTERN.finditer(text):
+            if int(match.group(1)) in pasted_ids:
                 spans.append(match.span())
         return spans
 
@@ -1273,20 +1262,24 @@ class ChatTextArea(PasteBurstTextArea):
         self.move_cursor(start_location)
         return True
 
-    def _bound_media_placeholders(self) -> set[str]:
-        """Return placeholder tokens bound to currently tracked media.
+    def _bound_media_placeholder_spans(self) -> list[tuple[int, int]]:
+        """Return the concrete spans of placeholders bound to tracked media.
 
         Returns:
-            The set of `[image N]`/`[video N]` tokens for media the tracker is
-                actually holding. Empty when there is no owner/tracker.
+            Character spans for media placeholders the tracker is actually
+            holding. Empty when there is no owner/tracker. Spans identify the
+            attached occurrence, so a manually typed duplicate token remains
+            ordinary text.
         """
         owner = self._chat_input_owner
         tracker = owner._image_tracker if owner is not None else None
         if tracker is None:
-            return set()
-        placeholders = {img.placeholder for img in tracker.images}
-        placeholders.update(video.placeholder for video in tracker.videos)
-        return placeholders
+            return []
+        return [
+            item.placeholder_span
+            for item in (*tracker.images, *tracker.videos)
+            if item.placeholder_span is not None
+        ]
 
     def _bound_paste_ids(self) -> set[int]:
         """Return paste ids that have backing content in the owner.

@@ -569,26 +569,23 @@ class TestChatInputResize:
             assert text_area.size.height == 1
             assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
-    async def test_double_click_from_a_partial_manual_height_expands(self) -> None:
-        """A part-way manual height still expands rather than collapsing.
-
-        The toggle keys off "already at the maximum", so a drag of a row or two
-        -- including the incidental jitter of a real double-click -- cannot
-        invert what the next double-click means.
-        """
+    async def test_double_click_from_a_partial_manual_height_collapses(self) -> None:
+        """Any manually resized height collapses around the current draft."""
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
+            text_area.insert("one\ntwo\nthree")
             box.set_manual_height(5)
             await pilot.pause()
+            assert text_area.size.height == 5
 
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
 
-            assert box._requested_height == _EXPANDED_HEIGHT
-            assert text_area.size.height == _EXPANDED_HEIGHT
+            assert box._requested_height is None
+            assert text_area.size.height == 3
 
     async def test_zero_delta_move_does_not_establish_a_manual_height(self) -> None:
         """Pointer jitter within one cell leaves sizing automatic.

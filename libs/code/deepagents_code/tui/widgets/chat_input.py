@@ -1607,21 +1607,14 @@ class ChatInputBox(Vertical):
         text_area.call_after_refresh(text_area.scroll_cursor_visible)
 
     def toggle_expanded(self) -> None:
-        """Toggle between the maximum manual height and automatic sizing.
-
-        Branches on whether the composer is already at its maximum rather than
-        on whether a manual height exists at all, so a drag of a row or two
-        (including the incidental jitter of a double-click) still leaves the
-        next double-click meaning "expand".
-        """
+        """Expand automatic sizing, or reset any manual size to automatic."""
         screen_height = self._screen_height()
         if screen_height is None:
             return
-        maximum = _manual_height_ceiling(screen_height)
-        if self._requested_height == maximum:
-            self._reset_height()
+        if self._requested_height is None:
+            self.set_manual_height(_manual_height_ceiling(screen_height))
         else:
-            self.set_manual_height(maximum)
+            self._reset_height()
 
     def on_completion_popup_rows_changed(
         self, event: CompletionPopup.RowsChanged

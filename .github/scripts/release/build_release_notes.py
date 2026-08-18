@@ -1038,7 +1038,7 @@ def collect_contributors(
             )
             continue
 
-        _collect_issue_reporters(pr_num, pr_data, reporters, warnings)
+        _collect_issue_reporters(pr_num, pr_data, repository, reporters, warnings)
 
         author = pr_data.get("author")
         if not isinstance(author, dict):
@@ -1128,6 +1128,7 @@ def collect_contributors(
 def _collect_issue_reporters(
     pr_num: str,
     pr_data: dict,
+    repository: str,
     reporters: dict[str, set[int]],
     warnings: list[str],
 ) -> None:
@@ -1139,9 +1140,12 @@ def _collect_issue_reporters(
     themselves internal to this release.
 
     `closingIssuesReferences` covers both the `Closes`/`Fixes`/`Resolves`
-    keywords and issues linked manually in the PR's Development section. Its
-    `author` payload has no `is_bot` field, so bots are caught by the login
-    suffix only. A missing or null field warns rather than being read as "no
+    keywords and issues linked manually in the PR's Development section, but
+    the `gh pr view --json` payload carries only `id`/`number`/`repository`/
+    `url` — never the nested `author`. The author therefore comes from one
+    follow-up `gh api repos/{repo}/issues/{number}` call per closed issue
+    (`_run_gh`'s rate-limit retry applies), filtered by the `[bot]` login
+    suffix. A missing or null field warns rather than being read as "no
     closed issues": schema drift must not silently empty the section.
     """
     if pr_data.get("closingIssuesReferences") is None:
@@ -1161,8 +1165,22 @@ def _collect_issue_reporters(
     for issue in issues:
         if not isinstance(issue, dict):
             continue
-        author = issue.get("author")
-        login = author.get("login") if isinstance(author, dict) else None
+        number = issue.get("number")
+        if not isinstance(number, int):
+            warnings.append(
+                f"contributor lookup: PR #{pr_num} closes an issue with no"
+                " usable number; reporter will not appear in release notes"
+            )
+            continue
+        login, error = _gh_api(
+            f"/repos/{repository}/issues/{number}", jq=".user.login // empty"
+        )
+        if error:
+            warnings.append(
+                f"contributor lookup: issue #{number} author lookup failed"
+                f" ({error}); reporter will not appear in release notes"
+            )
+            continue
         if not login:
             warnings.append(
                 f"contributor lookup: PR #{pr_num} closes an issue with no"
@@ -1170,13 +1188,6 @@ def _collect_issue_reporters(
             )
             continue
         if login.endswith("[bot]"):
-            continue
-        number = issue.get("number")
-        if not isinstance(number, int):
-            warnings.append(
-                f"contributor lookup: PR #{pr_num} closes an issue with no"
-                " usable number; reporter will not appear in release notes"
-            )
             continue
         reporters.setdefault(login, set()).add(number)
 

@@ -1395,16 +1395,25 @@ def _fail(stderr: str, code: int = 1) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _pr_handler(pr_number: str, payload: str):
-    """A `_run_gh` replacement for the common two-call contributor lookup.
+def _pr_handler(
+    pr_number: str, payload: str, issue_authors: dict[int, str] | None = None
+):
+    """A `_run_gh` replacement for the common contributor lookup.
 
     The commit-to-PR `gh api` call answers *pr_number*; the follow-up
     `gh pr view` answers *payload* verbatim, so a caller can hand over either
-    JSON or the raw string a `--jq` query would print.
+    JSON or the raw string a `--jq` query would print. The per-issue
+    `gh api repos/.../issues/{n}` author lookup answers *issue_authors*
+    (issue number to login), defaulting to no author login.
     """
 
     def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
-        return _ok(pr_number) if args[0] == "api" else _ok(payload)
+        if args[0] == "api":
+            issue = re.search(r"/issues/(\d+)$", args[1])
+            if issue and "--jq" in args:
+                return _ok((issue_authors or {}).get(int(issue.group(1)), ""))
+            return _ok(pr_number)
+        return _ok(payload)
 
     return handler
 
@@ -1468,6 +1477,41 @@ class TestGhRequestContract:
         # `closingIssuesReferences` the special-thanks section.
         assert set(fields) == {"author", "body", "labels", "closingIssuesReferences"}
         assert "--repo" in view and REPOSITORY in view
+
+    def test_closed_issue_authors_are_looked_up_per_issue(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`closingIssuesReferences` carries no nested `author`, so the login
+        comes from a follow-up issues-API call; dropping it would empty the
+        special-thanks section while every response stub kept passing."""
+        head = self._repo(tmp_path)
+        calls: list[list[str]] = []
+
+        def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(args))
+            if args[0] == "api":
+                if "/issues/" in args[1]:
+                    return _ok("carol")
+                return _ok("7")
+            return _ok(
+                json.dumps(
+                    {
+                        "author": {"login": "alice"},
+                        "labels": [],
+                        "closingIssuesReferences": [{"number": 101}],
+                    }
+                )
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        assert result.issue_reporters == [brn.IssueReporter("carol", [101])]
+        issue = next(c for c in calls if c[0] == "api" and "/issues/" in c[1])
+        assert issue[1] == f"/repos/{REPOSITORY}/issues/101"
+        assert ".user.login // empty" in issue
 
     def test_merged_by_requests_the_merger_login(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1807,14 +1851,36 @@ class TestIssueReporters:
         payload.update(overrides)
         return payload
 
+    def _run_with_authors(
+        self,
+        tmp_path: Path,
+        head: str,
+        pr_payload: dict,
+        issue_authors: dict[int, str],
+        monkeypatch: pytest.MonkeyPatch,
+        warnings: list[str] | None = None,
+    ) -> brn.Contributors:
+        monkeypatch.setattr(
+            brn, "_run_gh", _pr_handler("7", json.dumps(pr_payload), issue_authors)
+        )
+        return brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings if warnings is not None else [],
+        )
+
     def test_reporter_is_credited_with_the_issue_they_filed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        result = self._run(
+        result = self._run_with_authors(
             tmp_path,
             head,
-            self._payload([{"number": 101, "author": {"login": "carol"}}]),
+            self._payload([{"number": 101}]),
+            {101: "carol"},
             monkeypatch,
         )
         assert result.issue_reporters == [brn.IssueReporter("carol", [101])]
@@ -1825,16 +1891,11 @@ class TestIssueReporters:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        result = self._run(
+        result = self._run_with_authors(
             tmp_path,
             head,
-            self._payload(
-                [
-                    {"number": 220, "author": {"login": "carol"}},
-                    {"number": 101, "author": {"login": "carol"}},
-                    {"number": 220, "author": {"login": "carol"}},
-                ]
-            ),
+            self._payload([{"number": 220}, {"number": 101}, {"number": 220}]),
+            {101: "carol", 220: "carol"},
             monkeypatch,
         )
         assert result.issue_reporters == [brn.IssueReporter("carol", [101, 220])]
@@ -1854,12 +1915,10 @@ class TestIssueReporters:
 
         def handler(args: list[str]):
             if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _ok("carol")
                 return _ok(next(prs))
-            return _ok(
-                json.dumps(
-                    self._payload([{"number": 101, "author": {"login": "carol"}}])
-                )
-            )
+            return _ok(json.dumps(self._payload([{"number": 101}])))
 
         monkeypatch.setattr(brn, "_run_gh", handler)
         result = brn.collect_contributors(
@@ -1871,12 +1930,13 @@ class TestIssueReporters:
     def test_bot_reporter_is_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The issue-author payload has no is_bot field; the suffix is all we get."""
+        """The per-issue lookup carries no is_bot field; the suffix is all we get."""
         head = self._repo(tmp_path)
-        result = self._run(
+        result = self._run_with_authors(
             tmp_path,
             head,
-            self._payload([{"number": 101, "author": {"login": "dependabot[bot]"}}]),
+            self._payload([{"number": 101}]),
+            {101: "dependabot[bot]"},
             monkeypatch,
         )
         assert result.issue_reporters == []
@@ -1900,7 +1960,7 @@ class TestIssueReporters:
 
         payloads = {
             # Newest commit first: the feature PR closing carol's issue.
-            "1": self._payload([{"number": 101, "author": {"login": "carol"}}]),
+            "1": self._payload([{"number": 101}]),
             # carol's own internal-labeled PR puts her in the internal set.
             "2": self._payload(
                 [],
@@ -1912,6 +1972,8 @@ class TestIssueReporters:
 
         def handler(args: list[str]):
             if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _ok("carol")
                 return _ok(next(prs))
             return _ok(json.dumps(payloads[args[2]]))
 
@@ -1938,24 +2000,49 @@ class TestIssueReporters:
         assert any("no closingIssuesReferences field" in w for w in warnings)
 
     @pytest.mark.parametrize(
-        "issues",
+        ("issues", "issue_authors"),
         [
-            [{"number": 101}],  # no author
-            [{"number": 101, "author": None}],
-            [{"number": 101, "author": {"login": None}}],
-            [{"number": 101, "author": {"login": ""}}],
-            [{"author": {"login": "carol"}}],  # no number
-            [{"number": "101", "author": {"login": "carol"}}],  # non-int number
+            ([{"number": 101}], {}),  # lookup resolves no login
+            ([{"number": 101}], {101: ""}),  # empty login
+            ([{"author": {"login": "carol"}}], {}),  # no number
+            ([{"number": "101", "author": {"login": "carol"}}], {}),  # non-int number
         ],
     )
     def test_unusable_issue_entries_warn_and_are_skipped(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, issues: list[dict]
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        issues: list[dict],
+        issue_authors: dict[int, str],
     ) -> None:
         head = self._repo(tmp_path)
         warnings: list[str] = []
-        result = self._run(tmp_path, head, self._payload(issues), monkeypatch, warnings)
+        result = self._run_with_authors(
+            tmp_path, head, self._payload(issues), issue_authors, monkeypatch, warnings
+        )
         assert result.issue_reporters == []
         assert any("PR #7" in w for w in warnings)
+
+    def test_failed_issue_author_lookup_warns_and_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _fail("HTTP 502")
+                return _ok("7")
+            return _ok(json.dumps(self._payload([{"number": 101}])))
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        warnings: list[str] = []
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=warnings,
+        )
+        assert result.issue_reporters == []
+        assert any("issue #101 author lookup failed" in w for w in warnings)
 
     def test_offline_returns_no_reporters(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1997,13 +2084,11 @@ class TestIssueReporters:
 
         def handler(args: list[str]):
             if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _ok("carol")
                 return _ok(next(prs))
             if args[2] == "1":
-                return _ok(
-                    json.dumps(
-                        self._payload([{"number": 101, "author": {"login": "carol"}}])
-                    )
-                )
+                return _ok(json.dumps(self._payload([{"number": 101}])))
             return _fail("HTTP 502")
 
         monkeypatch.setattr(brn, "_run_gh", handler)
@@ -2921,6 +3006,8 @@ class TestBuildReleaseNotesOnline:
 
         def handler(args: list[str]):
             if args[0] == "api":
+                if re.search(r"/issues/5310$", args[1]):
+                    return _ok("carol")
                 return _ok("11")
             if "mergedBy" in args:
                 return _ok("merger-person")
@@ -2930,9 +3017,7 @@ class TestBuildReleaseNotesOnline:
                         "author": {"login": "outside-dev", "is_bot": False},
                         "body": "Twitter: @outsidedev\n",
                         "labels": [],
-                        "closingIssuesReferences": [
-                            {"number": 5310, "author": {"login": "carol"}}
-                        ],
+                        "closingIssuesReferences": [{"number": 5310}],
                     }
                 )
             )

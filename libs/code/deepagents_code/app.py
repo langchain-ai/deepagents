@@ -22449,10 +22449,10 @@ class DeepAgentsApp(App):
             message_label = "message" if total == 1 else "messages"
             turn_label = "turn" if turns == 1 else "turns"
             if total == 0:
-                return "0 messages (0 turns)"
+                return "0 messages (0 rendered), 0 turns"
             return (
                 f"{total} {message_label} "
-                f"({turns} {turn_label}, {store.visible_count} rendered)"
+                f"({store.visible_count} rendered), {turns} {turn_label}"
             )
 
         def _log_path() -> str:

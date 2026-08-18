@@ -1851,7 +1851,7 @@ class TestDebugConsoleToggle:
         async with app.run_test():
             assert (
                 _snapshot_dict(app._build_debug_snapshot())["Messages"]
-                == "0 messages (0 turns)"
+                == "0 messages (0 rendered), 0 turns"
             )
 
             for index in range(3):
@@ -1860,7 +1860,7 @@ class TestDebugConsoleToggle:
                 )
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
-            assert snapshot["Messages"] == "3 messages (3 turns, 3 rendered)"
+            assert snapshot["Messages"] == "3 messages (3 rendered), 3 turns"
 
     async def test_build_snapshot_turns_include_skills_but_not_agent_rows(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -1876,7 +1876,7 @@ class TestDebugConsoleToggle:
                 app._message_store.append(message)
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
-            assert snapshot["Messages"] == "5 messages (2 turns, 5 rendered)"
+            assert snapshot["Messages"] == "5 messages (5 rendered), 2 turns"
 
     async def test_build_snapshot_message_count_reports_rendered_window(self) -> None:
         """A virtualized thread reports its full count, not the mounted window."""
@@ -1892,7 +1892,7 @@ class TestDebugConsoleToggle:
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["Messages"] == (
-                f"{total} messages ({total} turns, {MessageStore.WINDOW_SIZE} rendered)"
+                f"{total} messages ({MessageStore.WINDOW_SIZE} rendered), {total} turns"
             )
 
     async def test_build_snapshot_message_count_resets_with_transcript(self) -> None:
@@ -1904,14 +1904,14 @@ class TestDebugConsoleToggle:
             )
             assert (
                 _snapshot_dict(app._build_debug_snapshot())["Messages"]
-                != "0 messages (0 turns)"
+                != "0 messages (0 rendered), 0 turns"
             )
 
             await app._clear_messages()
 
             assert (
                 _snapshot_dict(app._build_debug_snapshot())["Messages"]
-                == "0 messages (0 turns)"
+                == "0 messages (0 rendered), 0 turns"
             )
 
     async def test_open_debug_console_wires_live_snapshot_provider(self) -> None:
@@ -1947,7 +1947,7 @@ class TestDebugConsoleToggle:
             turn_label = "turn" if turns == 1 else "turns"
             expected = (
                 f"{after_total} {message_label} "
-                f"({turns} {turn_label}, {app._message_store.visible_count} rendered)"
+                f"({app._message_store.visible_count} rendered), {turns} {turn_label}"
             )
             after_value = _snapshot_dict(screen._snapshot)["Messages"]
             assert after_value != before_value

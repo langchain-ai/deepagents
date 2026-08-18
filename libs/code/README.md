@@ -27,6 +27,25 @@ Run:
 dcode
 ```
 
+### Optional Phoenix tracing
+
+Install the Phoenix extra, then explicitly enable tracing and point it at your
+Phoenix collector:
+
+```bash
+DEEPAGENTS_CODE_EXTRAS="phoenix" curl -LsSf https://langch.in/dcode | bash
+export DEEPAGENTS_CODE_PHOENIX_TRACING=true
+export PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
+export PHOENIX_PROJECT_NAME=deepagents-code
+dcode
+```
+
+For Phoenix Cloud, also set `PHOENIX_API_KEY`. Tracing is disabled by default
+and the optional packages are not imported unless it is enabled. Trace payloads
+can include prompts, model responses, and tool arguments, so only export to a
+collector you trust. Phoenix settings may be placed in the trusted global
+`~/.deepagents/.env`, but are intentionally ignored in a project's `.env`.
+
 ## 🤔 What is this?
 
 The fastest way to start using Deep Agents. `deepagents-code` is a pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM that supports tool calling. One install command and you're up and running, no code required.

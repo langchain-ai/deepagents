@@ -29,6 +29,7 @@ from deepagents_code._env_vars import (
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
+    PHOENIX_TRACING,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -176,6 +177,16 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
         AUTO_CLASSIFIER_TIMEOUT,
+        PHOENIX_TRACING,
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "PHOENIX_API_KEY",
+        "PHOENIX_CLIENT_HEADERS",
+        "PHOENIX_COLLECTOR_ENDPOINT",
+        "PHOENIX_DISCOVER_CONFIG",
+        "PHOENIX_GRPC_PORT",
+        "PHOENIX_PROJECT",
+        "PHOENIX_PROJECT_NAME",
         "TERM_PROGRAM",
     }
 )
@@ -206,6 +217,11 @@ batch up to the ceiling, or squeeze the budget until reviews time out and the
 session degrades into repeated denials and approval prompts.
 `[models].auto_classifier_timeout` in
 `~/.deepagents/config.toml` and the trusted env surfaces still set it.
+
+The Phoenix and OTLP vars opt into exporting prompts, model responses, and tool
+arguments or choose the collector that receives them. A project `.env` must not
+be able to turn that export on or redirect it. Users can configure Phoenix from
+their shell or the trusted global `~/.deepagents/.env` instead.
 
 `TERM_PROGRAM` identifies the terminal from which the user launched Deep
 Agents Code and is included in trace metadata. A project `.env` must not

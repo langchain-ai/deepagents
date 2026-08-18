@@ -404,6 +404,14 @@ option declares `empty_env_is_false`. Other tokens are parsed by
 user-supplied key is always preserved.
 """
 
+PHOENIX_TRACING = "DEEPAGENTS_CODE_PHOENIX_TRACING"
+"""Export agent traces to Arize Phoenix when explicitly enabled.
+
+Off by default. Parsed by `is_env_truthy`; accepts `1`, `true`, `yes`, and `on`
+as enabled. Phoenix connection settings use the standard `PHOENIX_*`
+environment variables documented by the Phoenix SDK.
+"""
+
 PLUGIN_AUTO_UPDATE = "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE"
 """Toggle background updates for installed marketplace plugins.
 

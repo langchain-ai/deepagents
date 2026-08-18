@@ -143,6 +143,10 @@ all-sandboxes = [
 
 # Standalone integrations
 media = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
+phoenix = [
+    "arize-phoenix-otel>=0.16.0,<1.0.0",
+    "openinference-instrumentation-langchain>=0.1.67,<1.0.0",
+]
 # (quickjs kept for backwards-compatible install commands)
 quickjs = []
 

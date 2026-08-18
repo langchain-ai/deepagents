@@ -249,6 +249,14 @@ async def _make_graph() -> Any:  # noqa: ANN401
         settings,
         configure_langsmith_secret_redaction,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
+
+    # Phoenix uses process-global OpenTelemetry state, so initialize it off the
+    # event loop after dotenv/settings bootstrap and before constructing the
+    # model or graph. The disabled path is a cheap env-var check and imports no
+    # optional packages.
+    from deepagents_code.phoenix_tracing import configure_phoenix_tracing
+
+    await asyncio.to_thread(configure_phoenix_tracing)
     configure_langsmith_secret_redaction()
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some

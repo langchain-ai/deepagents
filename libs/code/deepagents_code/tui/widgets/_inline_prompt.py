@@ -163,21 +163,13 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         now = time.monotonic()
 
         # Drive the shared paste-burst state machine so a paste replayed as rapid
-        # key events (no bracketed paste) stays grouped and can be collapsed.
+        # key events (no bracketed paste) stays grouped without delaying typing.
         if await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()
             return
 
-        if self._maybe_start_burst(event, now):
-            event.prevent_default()
-            event.stop()
-            return
-
-        if self._track_burst_run(event, now):
-            event.prevent_default()
-            event.stop()
-            return
+        self._track_burst_run(event, now)
 
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
             event.prevent_default()
@@ -206,6 +198,10 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             return
 
         await super()._on_key(event)
+
+        # Must follow `super()._on_key`: promotion verifies the run against the
+        # document, so the current character has to be in it already.
+        self._check_burst_run_for_promotion()
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Reject a dragged media file, else defer to shared paste handling."""

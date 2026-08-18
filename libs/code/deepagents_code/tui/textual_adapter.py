@@ -1092,7 +1092,7 @@ def _require_approval_mode_key(value: str | None) -> str:
 
 
 def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401
-    """Return whether a custom event is a sanitized top-level Auto event."""
+    """Return whether a custom event is a sanitized Auto control-state notice."""
     if (
         not is_main_agent
         or not isinstance(data, dict)
@@ -1103,7 +1103,7 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
     reason = data.get("reason")
     mode = data.get("mode")
     return (
-        event in {"denial", "unavailable", "fallback", "warning"}
+        event in {"fallback", "warning"}
         and (reason is None or isinstance(reason, str))
         and (mode is None or (event == "fallback" and mode == "manual"))
     )

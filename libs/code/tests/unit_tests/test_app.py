@@ -18,12 +18,20 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Iterator,
+        Sequence,
+        Set as AbstractSet,
+    )
 
     from langchain_core.messages import HumanMessage
     from textual.pilot import Pilot
 
     from deepagents_code.mcp_auth import McpServerSpec
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.resume_state import (
         GoalProposalKind,
@@ -70,9 +78,11 @@ from deepagents_code.app import (
     _ChatScroll,
     _display_model_label,
     _extra_is_ready,
+    _format_mcp_server_changes,
     _GoalApplication,
     _GoalGradeObservation,
     _parse_rubric_max_iterations,
+    _ServerRespawnResult,
     _ThreadHistoryPayload,
     _warn_discarded_goal_channels,
 )
@@ -106,6 +116,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
     QueuedUserMessage,
     RubricResultMessage,
     SummarizationMessage,
@@ -2612,6 +2623,17 @@ class TestCacheStatus:
             150,
             input_tokens=1_500,
         )
+
+    def test_refresh_swallows_uncomposed_status_bar(self) -> None:
+        """A usage update racing `/reload` compose/teardown must not raise."""
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._status_bar = MagicMock()
+        app._status_bar.query_one.side_effect = NoMatches(
+            "No nodes match '#cache-display'"
+        )
+
+        # Should not raise despite the status bar lacking `#cache-display`.
+        app._refresh_cache_display()
 
 
 class TestThreadCachePrewarm:
@@ -6166,7 +6188,7 @@ class TestAskUserLifecycle:
         widget = MagicMock(spec=UserMessage)
         widget.id = "msg-1"
 
-        with patch.object(app, "_schedule_message_height_measurement") as measure:
+        with patch.object(app, "_schedule_message_height_measurements") as measure:
             app.on_user_message_expansion_changed(
                 UserMessage.ExpansionChanged(widget, expanded=True)
             )
@@ -6174,7 +6196,7 @@ class TestAskUserLifecycle:
         app._message_store.update_message.assert_called_once_with(
             "msg-1", user_expanded=True
         )
-        measure.assert_called_once_with("msg-1")
+        measure.assert_called_once_with(["msg-1"])
 
     async def test_long_user_message_submit_toasts(self) -> None:
         """Submitting a >threshold message posts an information toast."""
@@ -7266,6 +7288,37 @@ class TestTraceCommand:
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
 
+    @staticmethod
+    def _record_manager_state_loads(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> list[tuple[tuple[MCPServerInfo, ...], bool]]:
+        """Stub the manager's state loader and record each snapshot it sees.
+
+        Returns a list of `(mcp_server_info, mcp_connecting)` tuples, one per
+        completed load. Asserting against it keeps the connection tests
+        sensitive to a dropped refresh, which assertions on the synchronously
+        assigned `_mcp_connecting` flag cannot detect.
+        """
+        from deepagents_code.tui.modals import plugin_manager as plugin_manager_module
+        from deepagents_code.tui.modals.plugin_manager.state import _ManagerState
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        loads: list[tuple[tuple[MCPServerInfo, ...], bool]] = []
+
+        def _record(
+            info: Sequence[MCPServerInfo],
+            *,
+            mcp_connecting: bool,
+            loaded_plugin_ids: AbstractSet[str],  # noqa: ARG001
+        ) -> _ManagerState:
+            loads.append((tuple(info), mcp_connecting))
+            return _ManagerState((), (), (), ())
+
+        monkeypatch.setattr(plugin_manager_module, "_load_manager_state", _record)
+        return loads
+
     async def test_plugins_routed_from_handle_command(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -7286,6 +7339,107 @@ class TestTraceCommand:
             await app._handle_command("/plugins")
             await pilot.pause()
             assert isinstance(app.screen, PluginManagerScreen)
+
+    async def test_plugins_manager_settles_on_server_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A manager opened mid-startup must reload state when `ServerReady` fires.
+
+        Regression test for the stale constructor snapshot: without the
+        server-ready push, `mcp_connecting` stayed `True` for the life of the
+        modal and suppressed the settled connection status. The assertions
+        target the reload rather than the `_mcp_connecting` flag, which is
+        assigned synchronously and so stays correct even if the refresh is
+        dropped entirely.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        loads = self._record_manager_state_loads(monkeypatch, tmp_path)
+        settled = MCPServerInfo(name="docs", transport="stdio", status="ok")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            assert isinstance(app.screen, PluginManagerScreen)
+            assert app.screen._mcp_connecting is True
+            assert loads[-1] == ((), True)
+
+            app.on_deep_agents_app_server_ready(
+                DeepAgentsApp.ServerReady(
+                    agent=None, server_proc=None, mcp_server_info=[settled]
+                )
+            )
+            await pilot.pause()
+            assert app.screen._mcp_connecting is False
+            # The settled server info must reach the loader, not just the
+            # flag: clearing the flag against an empty list would render
+            # every MCP-declaring plugin as disconnected.
+            assert loads[-1] == ((settled,), False)
+
+            await app.screen.dismiss()
+            await pilot.pause()
+            assert app._active_plugin_manager is None
+
+    async def test_plugins_manager_settles_on_server_start_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed startup settles the manager just as `ServerReady` does.
+
+        `ServerStartFailed` also clears `_connecting`, so without its own push
+        the manager keeps the connecting snapshot for the life of the modal —
+        the same stale state on the failure branch.
+        """
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        loads = self._record_manager_state_loads(monkeypatch, tmp_path)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            assert isinstance(app.screen, PluginManagerScreen)
+            assert app.screen._mcp_connecting is True
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("boom"))
+            )
+            await pilot.pause()
+            assert app.screen._mcp_connecting is False
+            assert loads[-1][1] is False
+
+    async def test_plugins_manager_ignores_connection_push_after_dismiss(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A push into a dismissed manager must not query a torn-down DOM."""
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+
+        loads = self._record_manager_state_loads(monkeypatch, tmp_path)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            await app._handle_command("/plugins")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, PluginManagerScreen)
+
+            await screen.dismiss()
+            await pilot.pause()
+            before = len(loads)
+
+            screen.update_connection_state([], mcp_connecting=False)
+            await pilot.pause()
+            assert len(loads) == before
 
 
 class TestClearCommand:
@@ -7339,11 +7493,18 @@ class TestClearCommand:
 
     async def test_clear_points_back_to_previous_thread(self) -> None:
         """/clear should surface the abandoned thread and a resume hint."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app = DeepAgentsApp(thread_id="old-thread")
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState(thread_id="old-thread")
             app._lc_thread_id = "old-thread"
+            # The hint is only offered for a thread the user did work in;
+            # `/clear` samples the store before emptying it.
+            app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="existing response")
+            )
 
             with (
                 patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
@@ -7401,6 +7562,39 @@ class TestClearCommand:
             assert "Previous thread: old-thread" not in contents
             assert not any("Resume it with /threads -r" in text for text in contents)
             schedule.assert_called_once()
+
+    async def test_clear_omits_previous_thread_without_agent_output(self) -> None:
+        """Back-to-back `/clear` must not point at the untouched thread.
+
+        `thread_exists` is stubbed `True` because a brand-new thread can pick
+        up a checkpoint row from server-mode registration alone, so the
+        resumability check does not cover this on its own.
+        """
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+            thread_exists = AsyncMock(return_value=True)
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch("deepagents_code.sessions.thread_exists", thread_exists),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="agent"),
+                ),
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any(text.startswith("Previous thread:") for text in contents), (
+                contents
+            )
+            # The switch itself still happened.
+            assert app._session_state.previous_thread_id == "old-thread"
+            thread_exists.assert_not_awaited()
 
 
 class TestCopyCommand:
@@ -9772,7 +9966,7 @@ class TestGoalCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ):
                 await app._handle_command("/goal model clear")
                 await pilot.pause()
@@ -10041,12 +10235,12 @@ class TestGoalCommand:
 
         with (
             patch.object(app._message_store, "update_message") as update,
-            patch.object(app, "_schedule_message_height_measurement") as measure,
+            patch.object(app, "_schedule_message_height_measurements") as measure,
         ):
             app.on_rubric_result_message_expansion_changed(event)
 
         update.assert_called_once_with("rubric-1", rubric_expanded=True)
-        measure.assert_called_once_with("rubric-1")
+        measure.assert_called_once_with(["rubric-1"])
 
     async def test_goal_command_proposes_pending_rubric(self) -> None:
         """`/goal <objective>` should draft criteria for widget review."""
@@ -12737,7 +12931,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ) as respawn:
                 await app._set_rubric_max_iterations(12)
             await pilot.pause()
@@ -12767,7 +12961,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=False,
+                return_value=_ServerRespawnResult(restarted=False),
             ):
                 await app._set_rubric_max_iterations(12)
 
@@ -12918,7 +13112,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ) as respawn:
                 await app._set_rubric_max_iterations(None)
             await pilot.pause()
@@ -12948,7 +13142,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ):
                 await app._handle_command("/rubric max-iterations clear")
             await pilot.pause()
@@ -13101,7 +13295,7 @@ class TestRubricCommand:
                     app,
                     "_respawn_server",
                     new_callable=AsyncMock,
-                    return_value=True,
+                    return_value=_ServerRespawnResult(restarted=True),
                 ) as respawn,
             ):
                 # Attach the env-staging calls and the respawn to a shared
@@ -13152,7 +13346,7 @@ class TestRubricCommand:
                     app,
                     "_respawn_server",
                     new_callable=AsyncMock,
-                    return_value=False,
+                    return_value=_ServerRespawnResult(restarted=False),
                 ),
             ):
                 await app._set_rubric_model("openai:gpt-5.1")
@@ -13180,7 +13374,7 @@ class TestRubricCommand:
                 app,
                 "_respawn_server",
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=_ServerRespawnResult(restarted=True),
             ) as respawn:
                 await app._set_rubric_model(None)
             await pilot.pause()
@@ -14553,6 +14747,14 @@ class TestMessageTimestampFooters:
         config.write_text("[ui]\nshow_message_timestamps = true\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         app = DeepAgentsApp()
+        tool = MessageData(
+            type=MessageType.TOOL,
+            content="",
+            id="hist-tool",
+            timestamp=1_704_110_405.0,
+            tool_name="read_file",
+            tool_status=ToolStatus.SUCCESS,
+        )
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -14563,6 +14765,13 @@ class TestMessageTimestampFooters:
                         content="restored",
                         id="hist-msg",
                         timestamp=1_704_110_405.0,
+                    ),
+                    MessageData(
+                        type=MessageType.TOOL_GROUP,
+                        content="",
+                        id="hist-tool-group",
+                        timestamp=tool.timestamp,
+                        tool_group_messages=[tool],
                     ),
                     # Excluded types never receive a footer, even on restore.
                     MessageData(
@@ -14587,6 +14796,17 @@ class TestMessageTimestampFooters:
             children = list(messages.children)
             anchor = app.query_one("#hist-msg", UserMessage)
             assert children[children.index(anchor) + 1] is footer
+            # Lazy tool details also build linked footers when expanded.
+            summary = app.query_one(LazyToolGroupSummary)
+            await summary._set_expanded(True)
+            tool_footer = summary.query_one("#hist-tool-timestamp-footer", Static)
+            assert tool_footer.display
+            assert (
+                tool_footer
+                in summary.query_one(
+                    "#hist-tool", ToolCallMessage
+                )._visibility_accessories
+            )
             # Excluded-type messages get no footer, even on restore.
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
@@ -14902,7 +15122,7 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
-            await app._hydrate_messages_above()
+            await app._hydrate_messages("above")
             await pilot.pause()
 
             footer = app.query_one("#hist-0-timestamp-footer", Static)
@@ -14967,7 +15187,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._prune_messages("below", messages)
             await pilot.pause()
 
             assert app._message_store.has_messages_below
@@ -14993,10 +15213,10 @@ class TestMessageTimestampFooters:
             for message_id in ["tail-3", "tail-4", "tail-new"]:
                 assert app.query_one(f"#{message_id}", UserMessage)
 
-    async def test_hydrate_below_stops_at_first_failure(
+    async def test_hydrate_below_replaces_unbuildable_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A mid-batch mount failure must not desync the store from the DOM."""
+        """A poisoned row must not block the remaining contiguous history."""
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
@@ -15007,12 +15227,12 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             messages = app.query_one("#messages", Container)
-            await app._prune_messages_below_window(messages)
+            await app._prune_messages("below", messages)
             await pilot.pause()
             assert app._message_store.has_messages_below
 
-            # Make the SECOND hidden row fail to build; hydration must stop
-            # there so the mounted block stays contiguous with the window.
+            # Make the second hidden row fail to build. It should become a visible
+            # placeholder while the rows after it continue hydrating in order.
             _start, end = app._message_store.get_visible_range()
             hidden = app._message_store.get_all_messages()[end:]
             assert len(hidden) >= 2
@@ -15024,7 +15244,7 @@ class TestMessageTimestampFooters:
 
             monkeypatch.setattr(failing, "to_widget", _boom)
 
-            await app._hydrate_messages_below()
+            await app._hydrate_messages("below")
             await pilot.pause()
 
             # The store's visible range must match exactly the mounted rows:
@@ -15036,7 +15256,112 @@ class TestMessageTimestampFooters:
                 child.id for child in messages.children if child.id in all_ids
             }
             assert mounted_ids == visible_ids
-            assert failing.id not in visible_ids
+            assert failing.id in visible_ids
+            assert app.query_one(f"#{failing.id}", ErrorMessage)
+
+    async def test_cancelled_assistant_hydration_rolls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cancelled content render must not leave a batch mounted as hydrated."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        data = MessageData(
+            type=MessageType.ASSISTANT,
+            content="restored",
+            id="cancelled-assistant",
+        )
+        widget = data.to_widget()
+        assert isinstance(widget, AssistantMessage)
+
+        async def cancel_render(_content: str) -> None:
+            await asyncio.sleep(0)
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(widget, "set_content", cancel_render)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            with pytest.raises(asyncio.CancelledError):
+                await app._mount_hydration_batch(
+                    messages,
+                    [(widget, data, None)],
+                    generation=app._transcript_generation,
+                )
+            await pilot.pause()
+
+            assert not widget.is_attached
+
+    async def test_pruning_reconciles_a_missing_boundary_widget(self) -> None:
+        """A missing DOM row must not permanently block bounded pruning."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for index in range(3):
+                await app._mount_message(
+                    UserMessage(f"m{index}", id=f"missing-{index}")
+                )
+            await pilot.pause()
+
+            app._message_store.WINDOW_SIZE = 1
+            await app.query_one("#missing-0", UserMessage).remove()
+            await pilot.pause()
+
+            assert await app._prune_messages("above") == 2
+            assert [data.id for data in app._message_store.get_visible_messages()] == [
+                "missing-2"
+            ]
+
+    async def test_pruning_preserves_expanded_lazy_tool_detail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Virtualizing an expanded group must retain its inner output state."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        tool = MessageData(
+            type=MessageType.TOOL,
+            content="",
+            id="lazy-inner-tool",
+            tool_name="read_file",
+            tool_status=ToolStatus.SUCCESS,
+            tool_output="output\n" * 500,
+        )
+        group = MessageData(
+            type=MessageType.TOOL_GROUP,
+            content="",
+            id="lazy-group",
+            tool_group_messages=[tool],
+        )
+        app = DeepAgentsApp()
+        monkeypatch.setattr(app, "_schedule_transcript_prune", lambda *_args: None)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            summary, footer = app._build_message_with_timestamp_footer(group)
+            assert isinstance(summary, LazyToolGroupSummary)
+            app._message_store.append(group)
+            await app._mount_before_queued(messages, summary)
+            if footer is not None:
+                await app._mount_before_queued(messages, footer)
+            await app._mount_message(UserMessage("tail", id="lazy-tail"))
+            await summary._set_expanded(True)
+            await pilot.pause()
+
+            inner = summary.query_one("#lazy-inner-tool", ToolCallMessage)
+            inner.toggle_output()
+            assert inner._expanded is True
+
+            app._message_store.WINDOW_SIZE = 1
+            assert await app._prune_messages("above") == 1
+            assert tool.tool_expanded is True
+
+            assert await app._hydrate_messages("above", count=1) == 1
+            await pilot.pause()
+            restored = app.query_one("#lazy-group", LazyToolGroupSummary)
+            await restored._set_expanded(True)
+            restored_inner = restored.query_one("#lazy-inner-tool", ToolCallMessage)
+            assert restored_inner._expanded is True
 
     async def test_tool_state_sync_updates_store_and_protection(self) -> None:
         """Mutable tool widget state should be canonical in MessageStore."""
@@ -19035,7 +19360,7 @@ class TestToolsSlashCommand:
         )
 
     async def test_remote_agent_reports_unavailable_mcp_server(self) -> None:
-        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPServerStatus
 
         app = DeepAgentsApp(
             agent=MagicMock(spec=[]),
@@ -20433,6 +20758,40 @@ class TestExitGracefulWorkerHandoff:
                 await asyncio.sleep(0)
                 server_proc.stop.assert_not_called()
                 release_other_cleanup.set()
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+            server_proc.stop.assert_called_once_with()
+            super_exit.assert_called_once()
+
+    async def test_exit_cancels_reload_before_stopping_server(self) -> None:
+        """Shutdown settles detached reload work before stopping its server."""
+        reload_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+
+        async def blocked_reload() -> None:
+            reload_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+
+        server_proc = MagicMock()
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+            app._reload_task = asyncio.create_task(blocked_reload())
+            await reload_started.wait()
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
+
+                server_proc.stop.assert_not_called()
+                release_cleanup.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
 
             server_proc.stop.assert_called_once_with()
@@ -24427,7 +24786,7 @@ class TestRestartServerForAgentSwap:
             preloaded_payload=payload,
             resolve_pending_goal=False,
         )
-        mount_previous.assert_awaited_once_with("old-thread")
+        mount_previous.assert_awaited_once_with("old-thread", had_agent_output=False)
         save_mock.assert_not_called()
         plain = [str(getattr(message, "_content", message)) for message in mounted]
         assert any(
@@ -24499,7 +24858,13 @@ class TestRestartServerForAgentSwap:
         Telling the user to relaunch when a single command suffices sends them
         the long way around.
         """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app, _server_proc = self._make_app()
+        # Only a thread the user did work in is worth pointing back at.
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="existing response")
+        )
 
         mounted: list[object] = []
         async with app.run_test() as pilot:
@@ -30061,6 +30426,16 @@ class TestLiveApprovalModeWrites:
         )
         mount.assert_awaited_once()
 
+    @pytest.mark.parametrize("kind", ["denial", "unavailable"])
+    async def test_tool_outcome_auto_event_is_not_mounted(self, kind: str) -> None:
+        app = DeepAgentsApp()
+        event = {"event": kind, "reason": "tool was denied"}
+
+        with patch.object(app, "_mount_message", new=AsyncMock()) as mount:
+            await app._on_auto_mode_event(event)
+
+        mount.assert_not_awaited()
+
 
 class TestExternalBypassFieldHonored:
     """`event.bypass` overrides queue when set on a prompt event."""
@@ -32943,6 +33318,364 @@ class TestRestartCommand:
             assert len(app._pending_messages) == 0
 
 
+class TestFormatMcpServerChanges:
+    """MCP server change summaries shown after `/reload`."""
+
+    def test_lists_loaded_and_removed_servers_in_sorted_order(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(name="removed-b", transport="stdio"),
+            MCPServerInfo(name="kept", transport="stdio"),
+            MCPServerInfo(name="removed-a", transport="stdio"),
+        ]
+        current = [
+            MCPServerInfo(name="loaded-b", transport="stdio"),
+            MCPServerInfo(name="kept", transport="stdio"),
+            MCPServerInfo(name="loaded-a", transport="stdio"),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Loaded: loaded-a, loaded-b\n"
+            "  - Removed: removed-a, removed-b"
+        )
+
+    def test_reports_no_changes(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [MCPServerInfo(name="notion", transport="stdio")]
+
+        assert (
+            _format_mcp_server_changes(servers, servers)
+            == "MCP server changes: no changes detected."
+        )
+
+    def test_reports_unavailable_metadata_when_refresh_failed(self) -> None:
+        assert _format_mcp_server_changes([], None) == (
+            "MCP server changes couldn't be determined; use /mcp to check."
+        )
+
+    def test_reports_current_servers_when_baseline_is_missing(self) -> None:
+        """A lost baseline still permits saying what is loaded now."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        current = [
+            MCPServerInfo(name="notion", transport="stdio"),
+            MCPServerInfo(name="github", transport="stdio"),
+        ]
+
+        assert _format_mcp_server_changes(None, current) == (
+            "MCP server changes couldn't be determined (no baseline metadata); "
+            "currently loaded: github, notion."
+        )
+
+    def test_flags_server_that_kept_its_name_but_started_failing(self) -> None:
+        """A same-name `ok` -> `error` transition is not "no changes"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Failed to load: notion (use /mcp for details)"
+        )
+
+    def test_flags_newly_added_server_that_failed_to_load(self) -> None:
+        """A new server failing its first discovery is a failure, not a load."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            MCPServerInfo(name="notion", transport="stdio"),
+            MCPServerInfo(
+                name="github",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Failed to load: github (use /mcp for details)"
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "error"),
+        [
+            ("unauthenticated", "sign in required"),
+            ("disabled", "disabled by user"),
+            ("awaiting_reconnect", "reconnect required"),
+        ],
+    )
+    def test_reports_newly_added_unavailable_server(
+        self, status: str, error: str
+    ) -> None:
+        """New servers that are not ready must not be omitted from the diff."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            *previous,
+            MCPServerInfo(
+                name="github",
+                transport="stdio",
+                status=status,  # ty: ignore[invalid-argument-type]
+                error=error,
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            f"  - Unavailable: github ({status}) (use /mcp for details)"
+        )
+
+    def test_reports_server_that_recovered_with_the_same_name(self) -> None:
+        """A same-name `error` -> `ok` transition is not "no changes"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+        current = [MCPServerInfo(name="notion", transport="stdio")]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Recovered: notion"
+        )
+
+    def test_reports_non_error_server_status_changes(self) -> None:
+        """Availability changes other than an error recovery remain visible."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="unauthenticated",
+                error="sign in required",
+            ),
+        ]
+        current = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="disabled",
+                error="disabled by user",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Status changed: notion (unauthenticated → disabled)"
+        )
+
+    def test_reports_config_errors_separately_from_loaded_servers(self) -> None:
+        """A bad config file is a parse error, not a newly loaded server."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Removed: notion\n"
+            "  - Config errors: <config:mcp.json>"
+        )
+
+    def test_reports_resolved_config_errors(self) -> None:
+        """A repaired config error changes MCP availability after `/reload`."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, []) == (
+            "MCP server changes:\n  - Resolved config errors: <config:mcp.json>"
+        )
+
+    def test_qualifies_no_changes_when_a_server_still_needs_attention(self) -> None:
+        """An unchanged-but-broken server must not read as "all good"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no changes detected "
+            "(still needs attention: notion; use /mcp)."
+        )
+
+    def test_qualifies_no_changes_for_a_server_awaiting_login(self) -> None:
+        """The attention qualifier covers logins, not just hard errors."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="unauthenticated",
+                error="sign in required",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no changes detected "
+            "(still needs attention: notion; use /mcp)."
+        )
+
+    def test_qualifies_no_changes_for_an_unrepaired_config_error(self) -> None:
+        """A `/reload` run to check a config fix must not read as success."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        servers = [
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(servers, servers) == (
+            "MCP server changes: no changes detected "
+            "(still needs attention: <config:mcp.json>; use /mcp)."
+        )
+
+    def test_names_still_broken_servers_alongside_real_changes(self) -> None:
+        """A successful load must not present a still-broken server as fine."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        broken = MCPServerInfo(
+            name="github",
+            transport="stdio",
+            status="error",
+            error="handshake failed",
+        )
+        previous = [MCPServerInfo(name="notion", transport="stdio"), broken]
+        current = [*previous, MCPServerInfo(name="slack", transport="stdio")]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Loaded: slack\n"
+            "  - Still needs attention: github (use /mcp)"
+        )
+
+    def test_reports_a_new_unavailable_server_alongside_a_successful_load(
+        self,
+    ) -> None:
+        """The server needing action must not vanish because another loaded."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [
+            *previous,
+            MCPServerInfo(name="slack", transport="stdio"),
+            MCPServerInfo(
+                name="github",
+                transport="stdio",
+                status="unauthenticated",
+                error="sign in required",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n"
+            "  - Loaded: slack\n"
+            "  - Unavailable: github (unauthenticated) (use /mcp for details)"
+        )
+
+    def test_reports_a_transport_change_under_an_unchanged_name(self) -> None:
+        """Editing a server's transport and reloading is not "no changes"."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        previous = [MCPServerInfo(name="notion", transport="stdio")]
+        current = [MCPServerInfo(name="notion", transport="http")]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Reconfigured: notion (stdio → http)"
+        )
+
+    def test_reports_a_tool_count_change_under_an_unchanged_name(self) -> None:
+        """A server whose tool set changed is a change worth reporting."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        def _tools(count: int) -> tuple[MCPToolInfo, ...]:
+            return tuple(
+                MCPToolInfo(name=f"t{i}", description="d") for i in range(count)
+            )
+
+        previous = [MCPServerInfo(name="notion", transport="stdio", tools=_tools(1))]
+        current = [MCPServerInfo(name="notion", transport="stdio", tools=_tools(3))]
+
+        assert _format_mcp_server_changes(previous, current) == (
+            "MCP server changes:\n  - Reconfigured: notion (1 → 3 tools)"
+        )
+
+    def test_missing_baseline_does_not_call_a_broken_server_loaded(self) -> None:
+        """A named server must be usable to count as loaded here too."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        current = [
+            MCPServerInfo(name="slack", transport="stdio"),
+            MCPServerInfo(
+                name="notion",
+                transport="stdio",
+                status="error",
+                error="handshake failed",
+            ),
+            MCPServerInfo(
+                name="<config:mcp.json>",
+                transport="config",
+                status="error",
+                error="/p/mcp.json: bad json",
+            ),
+        ]
+
+        assert _format_mcp_server_changes(None, current) == (
+            "MCP server changes couldn't be determined (no baseline metadata); "
+            "currently loaded: slack; unavailable: notion (error); "
+            "config errors: <config:mcp.json>."
+        )
+
+    def test_names_the_refresh_failure_when_one_is_known(self) -> None:
+        """The cause identifies the offending server; it should not stay in the log."""
+        assert _format_mcp_server_changes([], None, "RuntimeError: bad config") == (
+            "MCP server changes couldn't be determined (RuntimeError: bad config); "
+            "use /mcp to check."
+        )
+
+
 class TestRespawnServer:
     """Direct coverage of `_respawn_server` — invoked via `_restart_server_manual`."""
 
@@ -33031,16 +33764,23 @@ class TestRespawnServer:
         """`/reload` may restart inline without retaining its message-loop caller."""
         from deepagents_code import theme
         from deepagents_code.config import settings
+        from deepagents_code.mcp_tools import MCPServerInfo
 
-        app = DeepAgentsApp(agent=MagicMock())
+        removed = MCPServerInfo(name="removed-plugin:server", transport="stdio")
+        loaded = MCPServerInfo(name="loaded-plugin:server", transport="stdio")
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[removed])
         async with app.run_test() as pilot:
             await pilot.pause()
             proc = await self._prepare(app)
             app._plugin_fingerprints = {}
 
-            async def restart_manual() -> bool:
+            async def restart_manual() -> _ServerRespawnResult:
                 await app._restart_server_process(proc)
-                return True
+                return _ServerRespawnResult(
+                    restarted=True,
+                    mcp_server_info=[loaded],
+                    mcp_status="fresh",
+                )
 
             monkeypatch.setattr(settings, "reload_from_environment", list)
             monkeypatch.setattr(
@@ -33057,7 +33797,7 @@ class TestRespawnServer:
                 "_discover_plugins_with_fingerprints",
                 lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
             )
-            monkeypatch.setattr(app, "_restart_server_manual", restart_manual)
+            monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(
                 app,
                 "_maybe_start_deferred_server_from_default",
@@ -33066,10 +33806,100 @@ class TestRespawnServer:
 
             caller = asyncio.current_task()
             await app._handle_command("/reload")
+            assert app._reload_task is not None
+            await app._reload_task
 
             proc.restart.assert_awaited_once()
             assert caller not in app._server_restart_tasks
             assert not app._server_restart_tasks
+            reports = [str(message._content) for message in app.query(AppMessage)]
+            assert any(
+                "MCP server changes:\n"
+                "  - Loaded: loaded-plugin:server\n"
+                "  - Removed: removed-plugin:server" in report
+                for report in reports
+            )
+
+    async def test_reload_preserves_queue_across_idle_server_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Messages submitted during a detached `/reload` survive the restart.
+
+        `/reload` runs off the message pump, so a prompt submitted mid-reload
+        queues (the app is busy with the server restart). The idle restart path
+        discards the queue before respawning; without preservation that prompt
+        would vanish.
+        """
+        from deepagents_code import theme
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            proc = await self._prepare(app)
+            app._plugin_fingerprints = {}
+
+            gate = asyncio.Event()
+            gate_waiting = asyncio.Event()
+
+            async def restart_manual() -> _ServerRespawnResult:
+                gate_waiting.set()
+                # The real respawn marks the app connecting for its duration,
+                # which is what queues mid-reload submissions; reproduce that
+                # busy state here since the mocked restart skips it.
+                app._connecting = True
+                try:
+                    await gate.wait()
+                    await app._restart_server_process(proc)
+                finally:
+                    app._connecting = False
+                return _ServerRespawnResult(restarted=True, mcp_status="disabled")
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(theme, "reload_registry", lambda: None)
+            monkeypatch.setattr(app, "_register_custom_themes", lambda: None)
+            monkeypatch.setattr(
+                "deepagents_code.app._load_theme_preference", lambda: app.theme
+            )
+            monkeypatch.setattr(app, "_discover_skills", AsyncMock(return_value=True))
+            monkeypatch.setattr(
+                app,
+                "_discover_plugins_with_fingerprints",
+                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+            )
+            monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
+            monkeypatch.setattr(
+                app,
+                "_maybe_start_deferred_server_from_default",
+                AsyncMock(return_value=False),
+            )
+            handled: list[str] = []
+
+            async def record(text: str) -> None:  # noqa: RUF029
+                handled.append(text)
+
+            monkeypatch.setattr(app, "_handle_user_message", record)
+
+            await app._handle_command("/reload")
+            assert app._reload_task is not None
+            # Wait until the reload reaches the gated restart so the submission
+            # below queues against a busy app rather than racing the discard.
+            await gate_waiting.wait()
+            await app._submit_input("typed during reload", "normal")
+            assert len(app._pending_messages) == 1
+
+            gate.set()
+            await app._reload_task
+            # The preserved message drains via call_after_refresh; run the
+            # scheduled callback before asserting on it.
+            await pilot.pause()
+            await asyncio.sleep(0)
+
+            assert not app._pending_messages
+            assert handled == ["typed during reload"]
 
     async def test_pending_mcp_reconnect_does_not_leave_restart_registration(
         self, monkeypatch: pytest.MonkeyPatch
@@ -33117,14 +33947,195 @@ class TestRespawnServer:
             posted: list[Any] = []
             monkeypatch.setattr(app, "post_message", posted.append)
 
-            result = await app._restart_server_manual()
+            result = await app._restart_server_manual_result()
 
-            assert result is True
+            assert result.restarted is True
+            assert result.mcp_server_info == ["info"]
             proc.restart.assert_awaited_once()
             ready = [m for m in posted if isinstance(m, app.ServerReady)]
             assert len(ready) == 1
             assert ready[0].mcp_server_info == ["info"]
             assert app._connecting is False or app._agent is not None
+
+    async def test_disabled_mcp_skips_preload_without_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--no-mcp` must not splat `None` into the preload.
+
+        Doing so raises `TypeError` into the broad `except Exception`, which
+        logs a traceback and toasts "MCP tool metadata could not be
+        refreshed" at a user who explicitly disabled MCP.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            proc = await self._prepare(app)
+            # `--no-mcp`: `main` leaves the preload kwargs unset entirely and
+            # records the flag itself in the server kwargs. Both are required —
+            # absent kwargs alone are only a proxy, and `disabled` drives an
+            # unconditional all-clear in the `/reload` report.
+            app._mcp_preload_kwargs = None
+            app._server_kwargs = {"no_mcp": True}
+
+            called = False
+
+            async def _preload(**_: Any) -> list[str]:  # noqa: RUF029
+                nonlocal called
+                called = True
+                return ["info"]
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            notes: list[Any] = []
+            monkeypatch.setattr(app, "notify", lambda *a, **k: notes.append((a, k)))
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "disabled"
+            assert result.mcp_server_info is None
+            assert called is False
+            assert notes == []
+            proc.restart.assert_awaited_once()
+
+    async def test_preload_failure_marks_metadata_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising preload is distinguishable from a disabled session."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+
+            async def _preload(**_: Any) -> list[str]:  # noqa: RUF029
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            notes: list[Any] = []
+            monkeypatch.setattr(app, "notify", lambda *a, **k: notes.append((a, k)))
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "unavailable"
+            assert result.mcp_server_info is None
+            # The genuine failure still warns, at warning severity and naming
+            # the cause — the message is the user's only pointer to what broke.
+            assert len(notes) == 1
+            assert notes[0][1]["severity"] == "warning"
+            assert "RuntimeError: boom" in notes[0][0][0]
+            assert result.mcp_error == "RuntimeError: boom"
+
+    async def test_absent_preload_kwargs_without_no_mcp_is_not_an_all_clear(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing kwargs are a proxy for `--no-mcp`; the flag is the fact.
+
+        `disabled` drives an unconditional "no servers were loaded" in the
+        `/reload` report, so inferring it from the proxy alone would let an
+        MCP-enabled session fabricate a clean bill of health.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+            app._mcp_preload_kwargs = None
+            app._server_kwargs = {"no_mcp": False}
+
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "unavailable"
+
+    async def test_preload_returning_none_is_not_reported_as_fresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`fresh` must track the returned value, not merely a lack of raising.
+
+        The preload is typed `list[...] | None`, so keying off the `else:` of
+        the `try` would pair `fresh` with `None` and break the contract that
+        `/reload` relies on to tell a real diff from an unknown one.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+
+            async def _preload(**_: Any) -> None:  # noqa: RUF029
+                return None
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            monkeypatch.setattr(app, "post_message", lambda _m: None)
+
+            result = await app._restart_server_manual_result()
+
+            assert result.restarted is True
+            assert result.mcp_status == "unavailable"
+            assert result.mcp_server_info is None
+
+    async def test_failed_preload_keeps_the_last_known_mcp_snapshot_in_the_ui(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed refresh must not blank the status bar and `/mcp` viewer.
+
+        `ServerReady` recomputes the MCP counters and the viewer from its
+        payload, so posting `None` after a failure renders "No MCP servers
+        configured" — an all-clear — at the moment the app knows least, and the
+        report line sends the user to exactly that screen.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        known = MCPServerInfo(
+            name="notion",
+            transport="stdio",
+            status="error",
+            error="handshake failed",
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await self._prepare(app)
+            app._mcp_server_info = [known]
+
+            async def _preload(**_: Any) -> list[Any]:  # noqa: RUF029
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+            monkeypatch.setattr(app, "notify", lambda *_a, **_k: None)
+            posted: list[Any] = []
+            monkeypatch.setattr(app, "post_message", posted.append)
+
+            result = await app._restart_server_manual_result()
+
+            ready = [m for m in posted if isinstance(m, app.ServerReady)]
+            assert len(ready) == 1
+            assert ready[0].mcp_server_info == [known]
+            # The result itself stays indeterminate, so `/reload` reports an
+            # unknown rather than diffing the stale snapshot against itself.
+            assert result.mcp_server_info is None
+            assert result.mcp_status == "unavailable"
 
     async def test_subprocess_failure_posts_server_start_failed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -33174,7 +34185,8 @@ class TestRespawnServer:
                 restart_timeout=0.01,
             )
 
-            assert result is False
+            assert result.restarted is False
+            assert result.mcp_server_info is None
             failed = [m for m in posted if isinstance(m, app.ServerStartFailed)]
             assert len(failed) == 1
             assert isinstance(failed[0].error, asyncio.TimeoutError)
@@ -33238,7 +34250,8 @@ class TestRespawnServer:
                 mcp_failure_toast="",
             )
 
-            assert result is False
+            assert result.restarted is False
+            assert result.mcp_server_info is None
             assert not any(
                 isinstance(m, (app.ServerReady, app.ServerStartFailed)) for m in posted
             )
@@ -33788,6 +34801,68 @@ class TestChatScrollAnchoring:
             await pilot.pause()
 
             assert not chat._follow_bottom_when_scrollable
+            assert not chat.is_anchored
+
+
+class TestResumeScrollPosition:
+    """Regression coverage for resumed transcript positioning."""
+
+    async def test_history_load_scrolls_to_bottom_after_layout(self) -> None:
+        """A resumed transcript should open on its newest message.
+
+        Two independent properties are pinned, because polling alone cannot
+        distinguish the implementations:
+
+        1. The view ends up at the bottom. `scroll_end()` defers the
+           `max_scroll_y` read via `call_after_refresh`, so the scroll lands a
+           few refreshes after `_load_thread_history` returns -- hence the
+           bounded poll. A fixed number of `pause()` calls is racy under CPU
+           contention (two is not enough on a loaded box). Passing
+           `immediate=True` fails here: it reads pre-layout bounds and strands
+           the view short of the bottom, which no amount of polling corrects.
+        2. No timer is used to get there. The poll spans enough wall clock for a
+           fixed-delay `set_timer` to fire, so property 1 would also pass
+           against the timer implementation that caused the top-flash bug. The
+           `set_timer` spy is what actually rules that out.
+
+        The message count and viewport must keep the transcript overflowing for
+        these assertions to mean anything -- `max_scroll_y > 0` guards that.
+        """
+        app = DeepAgentsApp()
+        payload = _ThreadHistoryPayload(
+            messages=[
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"message {index}",
+                    id=f"resume-message-{index}",
+                )
+                for index in range(20)
+            ],
+            context_tokens=0,
+            model_spec="",
+        )
+
+        async with app.run_test(size=(80, 12)) as pilot:
+            await pilot.pause()
+            with patch.object(app, "set_timer", wraps=app.set_timer) as set_timer:
+                await app._load_thread_history(
+                    thread_id="resume-scroll", preloaded_payload=payload
+                )
+            assert set_timer.call_count == 0, (
+                "resume must reach the bottom via a refresh-deferred scroll, "
+                "not a fixed-delay timer"
+            )
+
+            chat = app.query_one("#chat", _ChatScroll)
+            for _ in range(20):
+                await pilot.pause()
+                if chat.max_scroll_y > 0 and chat.scroll_y == chat.max_scroll_y:
+                    break
+
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == chat.max_scroll_y
+            # Resume reaches the bottom via a one-shot scroll, not bottom-follow
+            # (see `DeepAgentsApp.on_mount`).
             assert not chat.is_anchored
 
 

@@ -61,6 +61,13 @@ upstream.
     masking; it stays until Textual grows one.
 
 Imported for side effect from `app.py` before any `App()` is created.
+
+Not every Textual-internals workaround lives here: subclasses that shadow a
+private base method carry theirs inline. When auditing a Textual bump, grep for
+`Textual's private` and `Validated against Textual` alongside this module. Those
+two markers are a starting point rather than a complete inventory — a workaround
+can always land without one, so treat an unflagged subclass of a Textual widget
+as unaudited until you have read it.
 """
 
 from __future__ import annotations

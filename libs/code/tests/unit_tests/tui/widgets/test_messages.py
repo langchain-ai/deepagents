@@ -924,7 +924,10 @@ class TestToolCallMessageDuration:
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_running()
-            app.msg._start_time -= 5  # ty: ignore
+            # 4.9 keeps the faked elapsed off the `.05` rounding boundary: the
+            # wall clock keeps running between the subtraction and
+            # `set_success`, so an exact `-5` can render as `5.1s`.
+            app.msg._start_time -= 4.9  # ty: ignore
             app.msg.set_success("done")
             await pilot.pause()
 
@@ -933,7 +936,7 @@ class TestToolCallMessageDuration:
             assert status.display is True
             content = status._Static__content  # ty: ignore
             assert isinstance(content, Content)
-            assert content.plain == "Took 5s"
+            assert content.plain == "Took 4.9s"
 
     async def test_execute_shows_fractional_seconds(self) -> None:
         """Sub-minute `execute` runs report tenths — `elapsed` is a float.

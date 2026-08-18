@@ -19,6 +19,8 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.widget import Widget
 
     from deepagents_code.diff_utils import DiffStats
@@ -49,6 +51,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_reject_reason",
         "tool_diff_superseded",
         "tool_display_caveat",
+        "tool_group_expanded",
         "skill_expanded",
         "rubric_expanded",
         "user_expanded",
@@ -73,6 +76,9 @@ class MessageType(StrEnum):
 
     TOOL = "tool"
     """Record of a tool invocation, including its args, status, and output."""
+
+    TOOL_GROUP = "tool_group"
+    """Lazy summary retaining completed tool rows as data until expanded."""
 
     SKILL = "skill"
     """Record of a skill invocation, carrying its SKILL.md body and metadata."""
@@ -180,6 +186,12 @@ class MessageData:
     line. See `ToolCallMessage.has_display_caveat`.
     """
 
+    tool_group_messages: list[MessageData] = field(default_factory=list)
+    """Completed tool/diff rows retained by a lazy `TOOL_GROUP` summary."""
+
+    tool_group_expanded: bool = False
+    """Whether a lazy tool group currently has its detail widgets mounted."""
+
     # ---
 
     diff_file_path: str | None = None
@@ -273,6 +285,16 @@ class MessageData:
     chunks and should not be pruned or re-hydrated.
     """
 
+    assistant_local_only: bool = False
+    """Whether an `ASSISTANT` row holds client-side output, not agent output.
+
+    Set for non-incognito `!` shell output, which renders through
+    `AssistantMessage` without invoking the agent. Lets callers ask whether the
+    *agent* produced anything in a thread rather than trusting the row type.
+    Never set on a restored transcript: shell output reaches thread state as a
+    `<user_shell_command>` human message, not as an assistant turn.
+    """
+
     is_markdown: bool = False
     """For APP messages, whether `content` is a markdown source string.
 
@@ -283,7 +305,7 @@ class MessageData:
     height_hint: int | None = None
     """Cached rendered widget height in terminal rows, or None if unmeasured.
 
-    Measured after layout by `_measure_message_height` in `app.py` and stored
+    Measured after layout by `_measure_message_heights` in `app.py` and stored
     via `set_height_hint`. Consumed by `estimate_height`/`range_height` to size
     the transcript spacers and to keep the scroll anchor stable across
     hydrate-above/below. When None (not yet measured), `estimate_height` falls
@@ -294,12 +316,15 @@ class MessageData:
         """Validate type-field coherence after construction.
 
         Raises:
-            ValueError: If a TOOL message is missing `tool_name`, a SKILL
-                message is missing `skill_name`, or a RUBRIC message is missing
-                `rubric_details`.
+            ValueError: If a TOOL message is missing `tool_name`, a TOOL_GROUP
+                has no detail rows, a SKILL message is missing `skill_name`, or a
+                RUBRIC message is missing `rubric_details`.
         """
         if self.type == MessageType.TOOL and not self.tool_name:
             msg = "TOOL messages must have a tool_name"
+            raise ValueError(msg)
+        if self.type == MessageType.TOOL_GROUP and not self.tool_group_messages:
+            msg = "TOOL_GROUP messages must have detail rows"
             raise ValueError(msg)
         if self.type == MessageType.SKILL and not self.skill_name:
             msg = "SKILL messages must have a skill_name"
@@ -322,8 +347,16 @@ class MessageData:
         if self.diff_after_content is not None:
             self.diff_after_content = self.diff_after_content[:MAX_HIGHLIGHT_CHARS]
 
-    def to_widget(self) -> Widget:
+    def to_widget(
+        self,
+        *,
+        tool_group_detail_builder: Callable[[MessageData], tuple[Widget, Widget | None]]
+        | None = None,
+    ) -> Widget:
         """Recreate a widget from this message data.
+
+        Args:
+            tool_group_detail_builder: Optional lazy tool-detail widget factory.
 
         Returns:
             The appropriate message widget for this data.
@@ -334,6 +367,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            LazyToolGroupSummary,
             RubricResultMessage,
             SkillMessage,
             SummarizationMessage,
@@ -352,7 +386,12 @@ class MessageData:
                 return widget
 
             case MessageType.ASSISTANT:
-                return AssistantMessage(self.content, id=self.id)
+                # Carry `local_only` back so a row pruned by virtualization and
+                # rehydrated does not read as agent output on the next
+                # `from_widget` round trip.
+                return AssistantMessage(
+                    self.content, id=self.id, local_only=self.assistant_local_only
+                )
 
             case MessageType.TOOL:
                 widget = ToolCallMessage(
@@ -374,6 +413,15 @@ class MessageData:
                     # passes the same tool-name guard as the live path; writing
                     # the flag directly could hide a row no diff can replace.
                     widget.mark_superseded_by_diff()
+                return widget
+
+            case MessageType.TOOL_GROUP:
+                widget = LazyToolGroupSummary(
+                    self.tool_group_messages,
+                    detail_builder=tool_group_detail_builder,
+                    id=self.id,
+                )
+                widget._deferred_expanded = self.tool_group_expanded
                 return widget
 
             case MessageType.SKILL:
@@ -482,6 +530,7 @@ class MessageData:
                 content=widget._content,
                 id=widget_id,
                 is_streaming=widget._stream is not None,
+                assistant_local_only=widget._local_only,
             )
 
         if isinstance(widget, ToolCallMessage):
@@ -584,20 +633,24 @@ class MessageStore:
     of widgets that are actually mounted in the DOM.
 
     Attributes:
-        WINDOW_SIZE: Maximum number of messages to keep mounted in the DOM.
+        INITIAL_WINDOW_SIZE: Messages mounted synchronously when resuming a thread.
+        WINDOW_SIZE: Soft target for the mounted message window.
 
-            Trades DOM cost against scroll smoothness. Note each message may
-            also mount a timestamp footer, so the live widget count is up to
-            ~2x this value. Spacer rows above/below the window preserve full
-            scroll geometry, so this only bounds how much is rendered at once,
-            not what the user can scroll to.
-        HYDRATE_BUFFER: Number of messages to hydrate when scrolling near edge.
-
-            Provides enough buffer to avoid visible loading pauses.
+            Hydration may temporarily exceed this target while the user scrolls;
+            pruning returns to it after scrolling settles. Note each message may
+            also mount a timestamp footer, so the live widget count is up to ~2x
+            this value.
+        HARD_WINDOW_SIZE: Mounted-message limit that triggers immediate pruning.
+        HYDRATE_BUFFER: Messages mounted or removed per event-loop slice.
+        PREFETCH_VIEWPORTS: Distance from a virtual spacer boundary at which
+            hydration starts.
     """
 
-    WINDOW_SIZE: int = 200
-    HYDRATE_BUFFER: int = 15
+    INITIAL_WINDOW_SIZE: int = 100
+    WINDOW_SIZE: int = 400
+    HARD_WINDOW_SIZE: int = 500
+    HYDRATE_BUFFER: int = 8
+    PREFETCH_VIEWPORTS: int = 8
 
     def __init__(self) -> None:
         """Initialize the message store."""
@@ -630,6 +683,27 @@ class MessageStore:
     def total_count(self) -> int:
         """Total number of messages stored."""
         return len(self._messages)
+
+    @property
+    def turn_count(self) -> int:
+        """Number of user-authored rows stored, including local-only commands.
+
+        Counts `USER` and `SKILL` rows. A `/skill` invocation mounts a `SKILL` row
+        *instead of* a `USER` row, so each skill turn contributes exactly one;
+        everything else (`ASSISTANT`, `TOOL`, `APP`, `ERROR`, ...) is excluded.
+
+        This counts stored transcript rows, not server turns: it spans the whole
+        store rather than the rendered window (`visible_count`), and it includes
+        local-only flows such as `!shell` and most slash commands, which mount a
+        `UserMessage` without ever invoking the server. It is therefore a broader
+        population than the "conversation turns" the offload report derives from
+        graph state, which counts only non-internal `HumanMessage`s the model
+        actually saw. Do not converge the two -- they answer different questions.
+        """
+        return sum(
+            message.type in {MessageType.USER, MessageType.SKILL}
+            for message in self._messages
+        )
 
     @property
     def visible_count(self) -> int:
@@ -670,8 +744,9 @@ class MessageStore:
         """Load many messages at once, keeping only the tail visible.
 
         This is optimized for thread resumption: all messages are stored as
-        lightweight data, but only the last `WINDOW_SIZE` entries are marked
-        visible (i.e. will need DOM widgets).
+        lightweight data, but only the last `INITIAL_WINDOW_SIZE` entries are
+        marked visible. A smaller monkeypatched `WINDOW_SIZE` still caps the
+        initial window, which keeps focused virtualization tests deterministic.
 
         Args:
             messages: Ordered list of message data to load.
@@ -690,10 +765,11 @@ class MessageStore:
             self._index[msg.id] = msg
         total = len(self._messages)
 
-        if total <= self.WINDOW_SIZE:
+        initial_window = min(self.INITIAL_WINDOW_SIZE, self.WINDOW_SIZE)
+        if total <= initial_window:
             self._visible_start = 0
         else:
-            self._visible_start = total - self.WINDOW_SIZE
+            self._visible_start = total - initial_window
 
         self._visible_end = total
 
@@ -810,12 +886,20 @@ class MessageStore:
         return message_id in self._protection_reasons
 
     def window_exceeded(self) -> bool:
-        """Check if the visible window exceeds the maximum size.
+        """Check if the visible window exceeds the soft target size.
 
         Returns:
-            True if we should prune some widgets.
+            True if pruning should eventually return the window to its target.
         """
         return self.visible_count > self.WINDOW_SIZE
+
+    def hard_window_exceeded(self) -> bool:
+        """Check if mounted history exceeds the immediate-pruning limit.
+
+        Returns:
+            Whether pruning should run without waiting for scroll inactivity.
+        """
+        return self.visible_count > max(self.WINDOW_SIZE, self.HARD_WINDOW_SIZE)
 
     def get_messages_to_prune(self, count: int | None = None) -> list[MessageData]:
         """Get the oldest visible messages that should be pruned.
@@ -962,23 +1046,27 @@ class MessageStore:
         self._visible_end = min(len(self._messages), self._visible_end + count)
 
     def should_hydrate_above(
-        self, scroll_position: float, viewport_height: int
+        self,
+        scroll_position: float,
+        viewport_height: int,
+        top_spacer_bottom: int,
     ) -> bool:
-        """Check if we should hydrate messages above the current view.
+        """Check if older messages should hydrate near the mounted-window edge.
 
         Args:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
+            top_spacer_bottom: Estimated row where mounted messages begin.
 
         Returns:
-            True if user is scrolling near the top and we have archived messages.
+            Whether the viewport is approaching the virtual top spacer.
         """
         if not self.has_messages_above:
             return False
 
-        # Hydrate when within 2x viewport height of the top
-        threshold = viewport_height * 2
-        return scroll_position < threshold
+        distance_from_top_spacer = scroll_position - top_spacer_bottom
+        threshold = viewport_height * self.PREFETCH_VIEWPORTS
+        return distance_from_top_spacer < threshold
 
     def should_prune_below(
         self, scroll_position: float, viewport_height: int, content_height: int
@@ -1037,7 +1125,7 @@ class MessageStore:
             return True
         viewport_bottom = scroll_position + viewport_height
         distance_from_bottom_spacer = bottom_spacer_top - viewport_bottom
-        threshold = viewport_height * 2
+        threshold = viewport_height * self.PREFETCH_VIEWPORTS
         return distance_from_bottom_spacer < threshold
 
     def clear(self) -> None:

@@ -25,7 +25,7 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.sandbox import _GLOB_COMMAND_TEMPLATE, _build_glob_cmd
+from deepagents.backends.sandbox import _build_glob_cmd
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import _glob_search_files
@@ -184,6 +184,7 @@ def _run_glob_script(
     *,
     allow_error: bool = False,
     time_budget: float | None = None,
+    max_matches: int | None = None,
 ) -> list[dict[str, Any]]:
     """Run the sandbox remote glob script the same way `_build_glob_cmd` does."""
     cmd = _build_glob_cmd(pattern, str(path))
@@ -192,6 +193,8 @@ def _run_glob_script(
     assert script, "failed to extract remote glob script from template"
     if time_budget is not None:
         script = script.replace("TIME_BUDGET = 5.0", f"TIME_BUDGET = {time_budget!r}", 1)
+    if max_matches is not None:
+        script = script.replace("MAX_MATCHES = 10000", f"MAX_MATCHES = {max_matches!r}", 1)
     proc = subprocess.run(  # noqa: S603
         [sys.executable, "-c", script],
         capture_output=True,
@@ -215,8 +218,6 @@ def _run_glob_script(
 def test_build_glob_cmd_passes_user_pattern_unchanged() -> None:
     cmd = _build_glob_cmd("*.py", "/workspace")
     assert base64.b64encode(b"*.py").decode("ascii") in cmd
-    # Bare basename expansion is handled by the remote walk matcher, not the host.
-    assert base64.b64encode(b"**/*.py").decode("ascii") not in cmd
     cmd_anchored = _build_glob_cmd("/*.py", "/workspace")
     assert base64.b64encode(b"/*.py").decode("ascii") in cmd_anchored
 
@@ -318,14 +319,6 @@ class TestSandboxGlobScriptMatrix:
         assert sb == fs, pattern
 
 
-def test_glob_command_template_uses_walk_not_stdlib_glob() -> None:
-    # Stdlib glob(recursive=True) neither expands bare basename patterns nor
-    # walks into leading-dot directories for `**` matches.
-    assert "os.walk" in _GLOB_COMMAND_TEMPLATE
-    assert "fnmatch" in _GLOB_COMMAND_TEMPLATE
-    assert "glob.glob" not in _GLOB_COMMAND_TEMPLATE
-
-
 def test_glob_directory_only_walk_honors_time_budget(tmp_path: Path) -> None:
     """An expired budget stops a walk even when no directory contains files."""
     (tmp_path / "one" / "two" / "three").mkdir(parents=True)
@@ -390,7 +383,12 @@ def test_glob_script_reports_unreadable_subtree_instead_of_shrinking(tmp_path: P
         locked.chmod(stat.S_IRWXU)
 
     assert {r["path"] for r in rows if "path" in r} == {"ok.py"}
-    assert {"warning": "walk_errors", "count": 1} in rows
+    warnings = [r for r in rows if r.get("warning") == "walk_errors"]
+    assert len(warnings) == 1
+    assert warnings[0]["count"] == 1
+    # The sample must name the offending path: a bare exception class cannot
+    # distinguish one chronically unreadable mount from an unreadable tree.
+    assert warnings[0]["sample"] == ["PermissionError:./locked"]
 
 
 class TestSandboxGlobBraceExpansionLimit:
@@ -436,3 +434,123 @@ class TestSandboxGlobBraceExpansionLimit:
         (tmp_path / "{x}b.py").write_text("x")
         rows = _run_glob_script(tmp_path, "{x}{a,b}.py")
         assert {r["path"] for r in rows} == {"{x}a.py", "{x}b.py"}
+
+
+class TestTraversalIsRefusedByEveryBackend:
+    """`..` must not be an exception in one backend and a silent empty in another.
+
+    Rejection lives in `compile_grep_include_glob`, the one function every
+    backend routes through, so the agreed shape is `GlobResult(error=...)` with
+    `matches=None` -- never a raise, and never a confident empty result that
+    hides the refusal.
+    """
+
+    @pytest.mark.parametrize("pattern", ["../*.py", "a/../../etc/*"])
+    def test_state_backend(self, pattern: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = StateBackend()
+        files = {p: _file_data(c) for p, c in _TREE_FILES.items()}
+        monkeypatch.setattr(be, "_read_files", lambda: files)
+        result = be.glob(pattern, path="/")
+        assert result.matches is None
+        assert result.error is not None and "traversal" in result.error
+
+    @pytest.mark.parametrize("pattern", ["../*.py", "a/../../etc/*"])
+    def test_store_backend(self, pattern: str) -> None:
+        store = InMemoryStore()
+        be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+        for p, content in _TREE_FILES.items():
+            assert be.write(p, content).error is None
+        result = be.glob(pattern, path="/")
+        assert result.matches is None
+        assert result.error is not None and "traversal" in result.error
+
+    @pytest.mark.parametrize("virtual_mode", [True, False])
+    @pytest.mark.parametrize("pattern", ["../*.py", "a/../../etc/*"])
+    def test_filesystem_backend_in_both_modes(self, tmp_path: Path, pattern: str, *, virtual_mode: bool) -> None:
+        """Non-virtual mode previously returned an empty result, hiding the refusal."""
+        _write_tree_on_disk(tmp_path)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=virtual_mode)
+        result = be.glob(pattern, path="/")
+        assert result.matches is None
+        assert result.error is not None and "traversal" in result.error
+
+    def test_filesystem_backend_does_not_raise(self, tmp_path: Path) -> None:
+        """`glob` is a tool boundary; a refusal is a result, not an exception."""
+        _write_tree_on_disk(tmp_path)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        be.glob("../*.py", path="/")  # must not raise
+
+    def test_sandbox_script(self, tmp_path: Path) -> None:
+        rows = _run_glob_script(tmp_path, "../*.py", allow_error=True)
+        assert rows == [{"error": "invalid_pattern"}]
+
+
+class TestFilesystemBackendGlobMatrixNonVirtual:
+    """Non-virtual mode takes a different result-construction branch.
+
+    Restricted to root searches: outside virtual mode `path` is a host path
+    rather than a root-relative one, so a `/sub` search is a different operation
+    and belongs in the non-virtual path-resolution tests, not the pattern matrix.
+    """
+
+    @pytest.mark.parametrize(
+        ("pattern", "path", "expected"),
+        [case for case in _matrix_expectations() if case[1] == "/"],
+    )
+    def test_matrix(self, tmp_path: Path, pattern: str, path: str, expected: set[str]) -> None:
+        _write_tree_on_disk(tmp_path)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        actual = _paths_from_infos(be.glob(pattern, path=path).matches)
+        # Non-virtual mode returns absolute host paths; compare on the tail.
+        root = str(tmp_path)
+        assert {p[len(root) :] or "/" for p in actual} == expected
+
+
+def test_glob_script_match_cap_truncates(tmp_path: Path) -> None:
+    """`MAX_MATCHES` is the only unbounded-result guard; pin it like TIME_BUDGET."""
+    for i in range(5):
+        (tmp_path / f"f{i}.py").write_text("x")
+
+    rows = _run_glob_script(tmp_path, "*.py", max_matches=2)
+
+    assert len([r for r in rows if "path" in r]) == 2
+    assert {"warning": "truncated"} in rows
+
+
+def test_glob_script_does_not_follow_symlink_loops(tmp_path: Path) -> None:
+    """`os.walk` defaults to `followlinks=False`; a future flip would hang the walk."""
+    (tmp_path / "a.py").write_text("a")
+    loop = tmp_path / "loop"
+    loop.mkdir()
+    (loop / "self").symlink_to(loop, target_is_directory=True)
+
+    rows = _run_glob_script(tmp_path, "*.py")
+
+    assert {r["path"] for r in rows if "path" in r} == {"a.py"}
+
+
+def test_filesystem_glob_does_not_follow_symlink_loops(tmp_path: Path) -> None:
+    """`Path.rglob` defaults to not recursing symlinks; pin it alongside the script."""
+    (tmp_path / "a.py").write_text("a")
+    loop = tmp_path / "loop"
+    loop.mkdir()
+    (loop / "self").symlink_to(loop, target_is_directory=True)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    assert _paths_from_infos(be.glob("*.py", path="/").matches) == {"/a.py"}
+
+
+def test_glob_script_does_not_prune_pseudo_fs_names_below_root(tmp_path: Path) -> None:
+    """Pruning applies only when the search root is `/`.
+
+    A user directory named `proc`, `sys` or `dev` is ordinary content; pruning it
+    would silently drop real matches with no warning.
+    """
+    for name in ("proc", "sys", "dev"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "f.py").write_text("x")
+
+    rows = _run_glob_script(tmp_path, "*.py")
+
+    assert {r["path"] for r in rows if "path" in r} == {"proc/f.py", "sys/f.py", "dev/f.py"}

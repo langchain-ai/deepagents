@@ -705,17 +705,20 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             if cutoff == 0:
                 return self._nothing_to_compact(tool_call_id)
 
+            session_id = summarization._get_session_id(runtime.state)
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = summarization._create_summary(to_summarize)
             backend = self._guarded_backend()
-            file_path = summarization._offload_to_backend(backend, to_summarize)
+            file_path = summarization._offload_to_backend(
+                backend, to_summarize, session_id
+            )
             # The inherited `_build_compact_result` produces the same event and
             # tool message as the SDK's gated path via model-independent helpers
             # (string formatting + a staticmethod), so the runtime-selected
             # summarizer is not needed to build it. Kept inside the `try` so a
             # failure here still returns a ToolMessage rather than raising.
             return self._build_compact_result(
-                runtime, to_summarize, summary, file_path, event, cutoff
+                runtime, to_summarize, summary, file_path, event, cutoff, session_id
             )
         except Exception as exc:  # tool errors must surface as ToolMessages
             logger.exception("forced compact_conversation failed")
@@ -740,14 +743,17 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             if cutoff == 0:
                 return self._nothing_to_compact(tool_call_id)
 
+            session_id = summarization._get_session_id(runtime.state)
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = await summarization._acreate_summary(to_summarize)
             backend = self._guarded_backend()
-            file_path = await summarization._aoffload_to_backend(backend, to_summarize)
+            file_path = await summarization._aoffload_to_backend(
+                backend, to_summarize, session_id
+            )
             # See `_run_forced_compact` for why the inherited builder is reused
             # and why it stays inside the `try`.
             return self._build_compact_result(
-                runtime, to_summarize, summary, file_path, event, cutoff
+                runtime, to_summarize, summary, file_path, event, cutoff, session_id
             )
         except Exception as exc:  # tool errors must surface as ToolMessages
             logger.exception("forced compact_conversation failed")

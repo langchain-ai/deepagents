@@ -197,8 +197,11 @@ def _cache_write_counts(details: Mapping[str, Any]) -> tuple[int, int, int]:
     fall back to the generic cache-write rate. Forwarding the five-minute count
     is therefore inert today and kept for when a rate appears.
 
-    Falls back to `cache_creation`, then to a `cache_write` alias that no bundled
-    LangChain integration currently emits, kept only as a defensive spelling.
+    Falls back to `cache_creation`, then to a `cache_write` alias. No bundled
+    LangChain integration emits `cache_write`, but it is not dead: `cold_cache.
+    estimate_rewarm_cost` synthesizes it to price a GPT-5.6+ cache miss at the
+    write rate, so removing the alias would silently reprice those estimates at
+    plain input.
 
     Returns:
         The generic-only, five-minute, and one-hour counts. A TTL breakdown wins
@@ -253,6 +256,23 @@ def _clamp_cache_counts(
         clamped_writes[0],
         clamped_writes[1],
         clamped_writes[2],
+    )
+
+
+def cache_token_counts(
+    usage_metadata: Mapping[str, Any] | None,
+) -> tuple[int, tuple[int, int, int]]:
+    """Return normalized cache reads and generic, 5m, and 1h writes."""
+    if not usage_metadata:
+        return 0, (0, 0, 0)
+    input_tokens = _token_count(usage_metadata.get("input_tokens"))
+    details = usage_metadata.get("input_token_details")
+    if not isinstance(details, Mapping):
+        return 0, (0, 0, 0)
+    return _clamp_cache_counts(
+        input_tokens,
+        _token_count(details.get("cache_read")),
+        _cache_write_counts(details),
     )
 
 
@@ -1348,9 +1368,7 @@ def estimate_cost(
     # numbers, so say so -- a silent clamp can materially undercount.
     original_cache_read = cache_read_tokens
     original_cache_writes = cache_writes
-    cache_read_tokens, cache_writes = _clamp_cache_counts(
-        input_tokens, cache_read_tokens, cache_writes
-    )
+    cache_read_tokens, cache_writes = cache_token_counts(usage_metadata)
     if (
         cache_read_tokens != original_cache_read
         or cache_writes != original_cache_writes

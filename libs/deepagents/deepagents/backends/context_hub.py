@@ -6,11 +6,20 @@ import fnmatch
 import logging
 import os
 import re
+import threading
+import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from langsmith import Client
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
-from langsmith.utils import LangSmithError, LangSmithNotFoundError
+from langsmith.utils import (
+    LangSmithConflictError,
+    LangSmithError,
+    LangSmithNotFoundError,
+    parse_hub_identifier,
+)
 
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
@@ -29,6 +38,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    compile_grep_include_glob,
     create_file_data,
     perform_string_replacement,
     slice_read_response,
@@ -39,8 +49,49 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Matches the ":<hash>" suffix appended by langsmith's _build_context_url.
-_URL_COMMIT_SUFFIX_RE = re.compile(r":([0-9a-f]{8,64})$")
+_COMMIT_HASH_RE = re.compile(r"[0-9a-f]{8}")
+_BATCH_WINDOW_SECONDS = 0.05
+_MAX_CONFLICT_RETRIES = 3
+_TreeSnapshot = tuple[dict[str, str], dict[str, str], str | None]
+
+
+@dataclass(frozen=True)
+class _WriteIntent:
+    changes: dict[str, str | None]
+
+
+@dataclass(frozen=True)
+class _EditIntent:
+    path: str
+    old_string: str
+    new_string: str
+    replace_all: bool
+
+
+@dataclass(frozen=True)
+class _DeleteIntent:
+    path: str
+
+
+@dataclass
+class _Mutation:
+    """One accepted mutation and the caller waiting for its durability."""
+
+    intent: _WriteIntent | _EditIntent | _DeleteIntent
+    changes: dict[str, str | None]
+    occurrences: int | None = None
+    done: threading.Event = field(default_factory=threading.Event)
+    error: BaseException | None = None
+
+
+@dataclass
+class _MutationQueue:
+    """Mutation overlays guarded by one condition lock."""
+
+    condition: threading.Condition = field(default_factory=threading.Condition)
+    pending: list[_Mutation] = field(default_factory=list)
+    in_flight: list[_Mutation] = field(default_factory=list)
+    deadline: float | None = None
 
 
 class ContextHubBackend(BackendProtocol):
@@ -63,74 +114,342 @@ class ContextHubBackend(BackendProtocol):
         self._cache: dict[str, str] | None = None
         self._linked_entries: dict[str, str] = {}
         self._commit_hash: str | None = None
+        self._mutations = _MutationQueue()
+        self._worker: threading.Thread | None = None
 
-    def _load_tree(self) -> None:
-        """Fetch the file tree; missing repos are treated as empty."""
+    def _fetch_tree(self) -> _TreeSnapshot:
+        """Fetch a remote snapshot; missing repos are treated as empty."""
         try:
             context: AgentContext = self._client.pull_agent(self._identifier)
         except LangSmithNotFoundError:
-            self._cache = {}
-            self._linked_entries = {}
-            self._commit_hash = None
-            return
+            return {}, {}, None
 
-        self._commit_hash = context.commit_hash
-        self._cache = {}
-        self._linked_entries = {}
+        cache: dict[str, str] = {}
+        linked_entries: dict[str, str] = {}
 
         for path, entry in context.files.items():
             if isinstance(entry, FileEntry):
-                self._cache[path] = entry.content
+                cache[path] = entry.content
             else:
-                self._linked_entries[path] = entry.repo_handle
+                linked_entries[path] = entry.repo_handle
+        return cache, linked_entries, context.commit_hash
 
-    def _ensure_cache(self) -> dict[str, str]:
-        """Load the file tree if not yet loaded."""
+    def _load_tree_locked(self) -> None:
+        cache, linked_entries, commit_hash = self._fetch_tree()
+        self._cache = cache
+        self._linked_entries = linked_entries
+        self._commit_hash = commit_hash
+
+    def _ensure_cache_locked(self) -> dict[str, str]:
         if self._cache is None:
-            self._load_tree()
+            # The state lock makes the cold remote pull single-flight.
+            self._load_tree_locked()
         if self._cache is None:
             msg = "Context Hub cache failed to initialize"
             raise RuntimeError(msg)
         return self._cache
 
+    @staticmethod
+    def _overlay(cache: dict[str, str], changes: dict[str, str | None]) -> None:
+        for path, content in changes.items():
+            if content is None:
+                cache.pop(path, None)
+            else:
+                cache[path] = content
+
+    def _visible_cache_locked(self) -> dict[str, str]:
+        visible = dict(self._ensure_cache_locked())
+        for mutations in (self._mutations.in_flight, self._mutations.pending):
+            for mutation in mutations:
+                self._overlay(visible, mutation.changes)
+        return visible
+
+    def _ensure_cache(self) -> dict[str, str]:
+        """Return a snapshot including accepted local mutation overlays."""
+        with self._mutations.condition:
+            return self._visible_cache_locked()
+
     def get_linked_entries(self) -> dict[str, str]:
         """Return linked-entry paths mapped to their repo handles."""
-        self._ensure_cache()
-        return dict(self._linked_entries)
+        with self._mutations.condition:
+            self._ensure_cache_locked()
+            return dict(self._linked_entries)
 
     def has_prior_commits(self) -> bool:
         """Return `True` if the hub repo already exists with at least one commit."""
-        self._ensure_cache()
-        return self._commit_hash is not None
+        with self._mutations.condition:
+            self._ensure_cache_locked()
+            return self._commit_hash is not None
 
-    def _commit(self, changes: dict[str, str | None]) -> None:
-        """Push `changes` as one commit; update the cache on success.
-
-        Each value is either new file content or `None`. A `None` value is the
-        deletion marker: relative to `parent_commit`, the server drops that path
-        from the tree.
-        """
-        if not changes:
-            return
-
-        payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
-            path: FileEntry(type="file", content=content) if content is not None else None for path, content in changes.items()
-        }
-        url = self._client.push_agent(
-            self._identifier,
-            files=payload,
-            parent_commit=self._commit_hash,
+    def _queue_changes_locked(
+        self,
+        changes: dict[str, str | None],
+        *,
+        intent: _WriteIntent | _EditIntent | _DeleteIntent | None = None,
+        occurrences: int | None = None,
+    ) -> _Mutation:
+        accepted_changes = dict(changes)
+        mutation = _Mutation(
+            intent=intent or _WriteIntent(changes=dict(accepted_changes)),
+            changes=accepted_changes,
+            occurrences=occurrences,
         )
-        match = _URL_COMMIT_SUFFIX_RE.search(url)
-        if match:
-            self._commit_hash = match.group(1)
+        queue = self._mutations
+        if not queue.pending:
+            queue.deadline = time.monotonic() + _BATCH_WINDOW_SECONDS
+        queue.pending.append(mutation)
 
-        if self._cache is not None:
-            # Rebuild the cache rather than mutating in place: drop paths whose
-            # new content is None (deletions) and overlay the rest as updates.
-            deletions = {path for path, content in changes.items() if content is None}
-            updates = {path: content for path, content in changes.items() if content is not None}
-            self._cache = {path: content for path, content in self._cache.items() if path not in deletions} | updates
+        if self._worker is None:
+            try:
+                worker = threading.Thread(
+                    target=self._drain_mutations,
+                    name="context-hub-mutations",
+                    daemon=True,
+                )
+                self._worker = worker
+                worker.start()
+            except BaseException:  # Construction failure must not orphan the mutation.
+                self._worker = None
+                queue.pending.remove(mutation)
+                if not queue.pending:
+                    queue.deadline = None
+                raise
+        queue.condition.notify_all()
+        return mutation
+
+    @staticmethod
+    def _wait_for_mutation(mutation: _Mutation) -> None:
+        mutation.done.wait()
+        if mutation.error is not None:
+            raise mutation.error
+
+    def _submit_changes(self, changes: dict[str, str | None]) -> None:
+        with self._mutations.condition:
+            self._ensure_cache_locked()
+            mutation = self._queue_changes_locked(changes)
+        self._wait_for_mutation(mutation)
+
+    def _take_batch(self) -> list[_Mutation] | None:
+        queue = self._mutations
+        with queue.condition:
+            while queue.pending:
+                if queue.deadline is None:
+                    msg = "Context Hub mutation deadline is missing"
+                    raise RuntimeError(msg)
+                remaining = queue.deadline - time.monotonic()
+                if remaining > 0:
+                    queue.condition.wait(timeout=remaining)
+                    continue
+                batch = queue.pending
+                queue.pending = []
+                queue.deadline = None
+                queue.in_flight = batch
+                return batch
+            self._worker = None
+            return None
+
+    @staticmethod
+    def _merge_batch(batch: list[_Mutation]) -> dict[str, str | None]:
+        changes: dict[str, str | None] = {}
+        for mutation in batch:
+            changes.update(mutation.changes)
+        return changes
+
+    @staticmethod
+    def _rematerialize_mutation(
+        mutation: _Mutation,
+        cache: dict[str, str],
+        conflict: LangSmithConflictError,
+    ) -> tuple[dict[str, str | None], int | None]:
+        intent = mutation.intent
+        if isinstance(intent, _WriteIntent):
+            return dict(intent.changes), None
+        if isinstance(intent, _EditIntent):
+            current = cache.get(intent.path)
+            if current is None:
+                raise conflict
+            result = perform_string_replacement(
+                current,
+                intent.old_string,
+                intent.new_string,
+                intent.replace_all,
+            )
+            if isinstance(result, str):
+                raise conflict
+            content, occurrences = result
+            return {intent.path: content}, occurrences
+
+        base = intent.path
+        prefix = base + "/"
+        paths = [path for path in cache if path == base or path.startswith(prefix)]
+        return dict.fromkeys(paths, None), None
+
+    def _rematerialize_locked(
+        self,
+        mutations: list[_Mutation],
+        cache: dict[str, str],
+        conflict: LangSmithConflictError,
+    ) -> None:
+        materialized: list[tuple[_Mutation, dict[str, str | None], int | None]] = []
+        visible = dict(cache)
+        for mutation in mutations:
+            changes, occurrences = self._rematerialize_mutation(mutation, visible, conflict)
+            materialized.append((mutation, changes, occurrences))
+            self._overlay(visible, changes)
+
+        for mutation, changes, occurrences in materialized:
+            mutation.changes = changes
+            mutation.occurrences = occurrences
+
+    def _reload_after_conflict(self, conflict: LangSmithConflictError) -> None:
+        cache, linked_entries, commit_hash = self._fetch_tree()
+        failed_pending: list[_Mutation] = []
+        with self._mutations.condition:
+            self._rematerialize_locked(self._mutations.in_flight, cache, conflict)
+            pending_cache = dict(cache)
+            for mutation in self._mutations.in_flight:
+                self._overlay(pending_cache, mutation.changes)
+            try:
+                self._rematerialize_locked(self._mutations.pending, pending_cache, conflict)
+            except LangSmithConflictError as exc:
+                failed_pending = self._mutations.pending
+                self._mutations.pending = []
+                self._mutations.deadline = None
+                for mutation in failed_pending:
+                    mutation.error = exc
+            self._cache = cache
+            self._linked_entries = linked_entries
+            self._commit_hash = commit_hash
+        for mutation in failed_pending:
+            mutation.done.set()
+
+    def _extract_commit_hash(self, url: str) -> str | None:
+        try:
+            path = urlsplit(url).path
+            owner, name, _ = parse_hub_identifier(self._identifier)
+        except ValueError:
+            return None
+
+        prefixes = (f"/context/{name}/", f"/hub/{owner}/{name}:")
+        for prefix in prefixes:
+            if path.startswith(prefix):
+                commit_hash = path.removeprefix(prefix)
+                if _COMMIT_HASH_RE.fullmatch(commit_hash):
+                    return commit_hash
+        return None
+
+    def _push_batch(self, batch: list[_Mutation]) -> tuple[dict[str, str | None], str | None, _TreeSnapshot | None]:
+        for attempt in range(_MAX_CONFLICT_RETRIES + 1):
+            with self._mutations.condition:
+                changes = self._merge_batch(batch)
+                parent_commit = self._commit_hash
+            if not changes:
+                return changes, parent_commit, None
+
+            payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
+                path: FileEntry(type="file", content=content) if content is not None else None for path, content in changes.items()
+            }
+            try:
+                url = self._client.push_agent(
+                    self._identifier,
+                    files=payload,
+                    parent_commit=parent_commit,
+                )
+            except LangSmithConflictError as conflict:
+                if attempt == _MAX_CONFLICT_RETRIES:
+                    raise
+                self._reload_after_conflict(conflict)
+                continue
+
+            commit_hash = self._extract_commit_hash(url)
+            if commit_hash is not None:
+                return changes, commit_hash, None
+
+            snapshot = self._fetch_tree()
+            commit_hash = snapshot[2]
+            if commit_hash is None:
+                msg = "Context Hub commit succeeded but its hash could not be resolved"
+                raise RuntimeError(msg)
+            return changes, commit_hash, snapshot
+
+        msg = "Context Hub conflict retry loop exhausted unexpectedly"
+        raise RuntimeError(msg)
+
+    def _complete_batch(
+        self,
+        batch: list[_Mutation],
+        changes: dict[str, str | None],
+        commit_hash: str | None,
+        *,
+        authoritative_snapshot: _TreeSnapshot | None,
+    ) -> bool:
+        failed_pending: list[_Mutation] = []
+        with self._mutations.condition:
+            if authoritative_snapshot is None:
+                cache = dict(self._ensure_cache_locked())
+                self._overlay(cache, changes)
+                self._cache = cache
+            else:
+                cache, linked_entries, _ = authoritative_snapshot
+                if self._mutations.pending:
+                    msg = "Context Hub changed before a pending mutation could be applied"
+                    pending_conflict = LangSmithConflictError(msg)
+                    try:
+                        self._rematerialize_locked(self._mutations.pending, cache, pending_conflict)
+                    except LangSmithConflictError as exc:
+                        failed_pending = self._mutations.pending
+                        self._mutations.pending = []
+                        self._mutations.deadline = None
+                        for mutation in failed_pending:
+                            mutation.error = exc
+                self._cache = cache
+                self._linked_entries = linked_entries
+            self._commit_hash = commit_hash
+            self._mutations.in_flight = []
+            drained = not self._mutations.pending
+            if drained:
+                self._worker = None
+        for mutation in batch:
+            mutation.done.set()
+        for mutation in failed_pending:
+            mutation.done.set()
+        return drained
+
+    def _fail_burst(self, batch: list[_Mutation], error: BaseException) -> None:
+        with self._mutations.condition:
+            affected = [*batch, *self._mutations.pending]
+            self._mutations.in_flight = []
+            self._mutations.pending = []
+            self._mutations.deadline = None
+            self._cache = None
+            self._linked_entries = {}
+            self._commit_hash = None
+            self._worker = None
+            for mutation in affected:
+                mutation.error = error
+        for mutation in affected:
+            mutation.done.set()
+
+    def _drain_mutations(self) -> None:
+        while True:
+            batch: list[_Mutation] = []
+            try:
+                next_batch = self._take_batch()
+                if next_batch is None:
+                    return
+                batch = next_batch
+                changes, commit_hash, authoritative_snapshot = self._push_batch(batch)
+                drained = self._complete_batch(
+                    batch,
+                    changes,
+                    commit_hash,
+                    authoritative_snapshot=authoritative_snapshot,
+                )
+            except BaseException as exc:  # noqa: BLE001  # Every queued waiter must be settled.
+                self._fail_burst(batch, exc)
+                return
+            if drained:
+                return
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
@@ -164,11 +483,9 @@ class ContextHubBackend(BackendProtocol):
         """Commit `content` to `file_path`."""
         hub_path = self._strip_prefix(file_path)
         try:
-            self._ensure_cache()  # populates _commit_hash for parent_commit on push
-            self._commit({hub_path: content})
+            self._submit_changes({hub_path: content})
         except LangSmithError as exc:
             logger.exception("Hub write failed for %r", self._identifier)
-            self._cache = None
             return WriteResult(error=f"Hub unavailable: {exc}")
         return WriteResult(path=file_path)
 
@@ -182,22 +499,31 @@ class ContextHubBackend(BackendProtocol):
         """Replace `old_string` with `new_string` in a file."""
         hub_path = self._strip_prefix(file_path)
         try:
-            cache = self._ensure_cache()
-            current = cache.get(hub_path)
-            if current is None:
-                return EditResult(error=f"Error: File '{file_path}' not found")
+            with self._mutations.condition:
+                current = self._visible_cache_locked().get(hub_path)
+                if current is None:
+                    return EditResult(error=f"Error: File '{file_path}' not found")
 
-            result = perform_string_replacement(current, old_string, new_string, replace_all)
-            if isinstance(result, str):
-                return EditResult(error=result)
+                result = perform_string_replacement(current, old_string, new_string, replace_all)
+                if isinstance(result, str):
+                    return EditResult(error=result)
 
-            new_content, occurrences = result
-            self._commit({hub_path: new_content})
+                new_content, occurrences = result
+                mutation = self._queue_changes_locked(
+                    {hub_path: new_content},
+                    intent=_EditIntent(
+                        path=hub_path,
+                        old_string=old_string,
+                        new_string=new_string,
+                        replace_all=replace_all,
+                    ),
+                    occurrences=occurrences,
+                )
+            self._wait_for_mutation(mutation)
         except LangSmithError as exc:
             logger.exception("Hub edit failed for %r", self._identifier)
-            self._cache = None
             return EditResult(error=f"Hub unavailable: {exc}")
-        return EditResult(path=file_path, occurrences=occurrences)
+        return EditResult(path=file_path, occurrences=mutation.occurrences)
 
     def delete(self, file_path: str) -> DeleteResult:
         """Delete a file or directory by committing its removal from the hub repo.
@@ -214,16 +540,20 @@ class ContextHubBackend(BackendProtocol):
         """
         hub_path = self._strip_prefix(file_path)
         try:
-            cache = self._ensure_cache()
-            base = hub_path.rstrip("/")
-            prefix = base + "/"
-            to_delete = [key for key in cache if key == base or key.startswith(prefix)]
-            if not to_delete:
-                return DeleteResult(error=f"Error: File '{file_path}' not found")
-            self._commit(dict.fromkeys(to_delete, None))
+            with self._mutations.condition:
+                cache = self._visible_cache_locked()
+                base = hub_path.rstrip("/")
+                prefix = base + "/"
+                to_delete = [key for key in cache if key == base or key.startswith(prefix)]
+                if not to_delete:
+                    return DeleteResult(error=f"Error: File '{file_path}' not found")
+                mutation = self._queue_changes_locked(
+                    dict.fromkeys(to_delete, None),
+                    intent=_DeleteIntent(path=base),
+                )
+            self._wait_for_mutation(mutation)
         except LangSmithError as exc:
             logger.exception("Hub delete failed for %r", self._identifier)
-            self._cache = None
             return DeleteResult(error=f"Hub unavailable: {exc}")
         return DeleteResult(path=file_path)
 
@@ -281,11 +611,6 @@ class ContextHubBackend(BackendProtocol):
             return GrepResult(error=f"Hub unavailable: {exc}")
         matches: list[GrepMatch] = []
 
-        try:
-            regex = re.compile(pattern)
-        except re.error as e:
-            return GrepResult(error=f"Invalid regex pattern: {e}")
-
         prefix = self._strip_prefix(path).rstrip("/") if path else ""
 
         glob_re = re.compile(fnmatch.translate(os.path.normcase(glob))) if glob else None
@@ -296,7 +621,7 @@ class ContextHubBackend(BackendProtocol):
             if glob_re is not None and not glob_re.match(os.path.normcase(file_path)):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
-                if regex.search(line):
+                if pattern in line:
                     if max_count is not None and len(matches) >= max_count:
                         # A further match beyond `max_count` proves more exist;
                         # stop and flag truncation. Checked before appending so
@@ -307,17 +632,24 @@ class ContextHubBackend(BackendProtocol):
         return GrepResult(matches=matches)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: ARG002
-        """Return files matching `pattern` (`path` unused — flat namespace)."""
+        """Return files matching `pattern` (`path` unused — flat namespace).
+
+        Matching uses the shared backend contract (`compile_grep_include_glob`),
+        so a bare pattern matches the basename at any depth, a pattern with `/`
+        matches the namespace-relative path, and a leading `/` anchors. Plain
+        `fnmatch` would diverge on all three: its `*` crosses `/`, so `/*.py`
+        would widen to every depth instead of anchoring to the top level.
+        """
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return GlobResult(error=f"Hub unavailable: {exc}")
-        results: list[FileInfo] = [
-            FileInfo(path=f"/{file_path}", is_dir=False)
-            for file_path in cache
-            if fnmatch.fnmatch(f"/{file_path}", pattern) or fnmatch.fnmatch(file_path, pattern)
-        ]
+        try:
+            matcher = compile_grep_include_glob(pattern)
+        except ValueError as exc:
+            return GlobResult(error=f"Invalid glob pattern: {exc}")
+        results: list[FileInfo] = [FileInfo(path=f"/{file_path}", is_dir=False) for file_path in cache if matcher(file_path)]
         return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -337,11 +669,9 @@ class ContextHubBackend(BackendProtocol):
         commit_error: str | None = None
         if valid_files:
             try:
-                self._ensure_cache()
-                self._commit(valid_files)
+                self._submit_changes(valid_files)
             except LangSmithError as exc:
                 logger.exception("Hub batch upload failed for %r", self._identifier)
-                self._cache = None
                 commit_error = f"Hub unavailable: {exc}"
 
         results: list[FileUploadResponse] = []

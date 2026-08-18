@@ -1,8 +1,15 @@
 """Tests for message store and serialization."""
 
+import logging
+
 import pytest
+from textual.app import App, ComposeResult
+from textual.content import Content
+from textual.widget import Widget
 from textual.widgets import Static
 
+from deepagents_code.diff_utils import DiffStats
+from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.message_store import (
     DEFAULT_HEIGHT_HINT,
     MIN_HEIGHT_HINT,
@@ -16,12 +23,19 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
     RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
     UserMessage,
 )
+
+
+def _rendered_text(widget: Widget) -> str:
+    """Return a composed child's plain text, ignoring styles."""
+    rendered = widget.render()
+    return rendered.plain if isinstance(rendered, Content) else str(rendered)
 
 
 class TestMessageData:
@@ -92,6 +106,33 @@ class TestMessageData:
         assert restored._content == "# Hello\n\nThis is **markdown**."
         assert restored.id == "test-asst-1"
 
+    def test_assistant_message_defaults_to_agent_output(self):
+        """A plain assistant message is agent output, not client output."""
+        data = MessageData.from_widget(AssistantMessage("hi", id="asst-plain"))
+
+        assert data.assistant_local_only is False
+
+    def test_local_only_assistant_message_roundtrip(self):
+        """`local_only` survives serialization and rehydration.
+
+        `!` shell output renders through `AssistantMessage`, and callers asking
+        whether the agent did anything in a thread rely on this flag. Losing it
+        on a virtualization round trip would make shell output read as a turn.
+        """
+        original = AssistantMessage(
+            "```text\nREADME.md\n```", id="asst-shell-1", local_only=True
+        )
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.ASSISTANT
+        assert data.assistant_local_only is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, AssistantMessage)
+        assert restored._local_only is True
+        # A second round trip must not lose the flag either.
+        assert MessageData.from_widget(restored).assistant_local_only is True
+
     def test_tool_message_roundtrip(self):
         """Test ToolCallMessage serialization and deserialization."""
         original = ToolCallMessage(
@@ -122,6 +163,144 @@ class TestMessageData:
         assert restored._deferred_status == ToolStatus.SUCCESS
         assert restored._deferred_output == "File contents here"
         assert restored._deferred_expanded is True
+
+    async def test_lazy_tool_group_mounts_details_only_when_expanded(self) -> None:
+        """Collapsed restored groups keep their tool widget trees out of the DOM."""
+        data = MessageData(
+            type=MessageType.TOOL_GROUP,
+            content="",
+            tool_group_messages=[
+                MessageData(
+                    type=MessageType.TOOL,
+                    content="",
+                    tool_name="read_file",
+                    tool_status=ToolStatus.SUCCESS,
+                    tool_output="contents",
+                ),
+                MessageData(
+                    type=MessageType.TOOL,
+                    content="",
+                    tool_name="grep",
+                    tool_status=ToolStatus.SUCCESS,
+                    tool_output="match",
+                ),
+            ],
+        )
+        restored = data.to_widget()
+        assert isinstance(restored, LazyToolGroupSummary)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert not restored.query(ToolCallMessage)
+            await restored._set_expanded(True)
+            assert len(restored.query(ToolCallMessage)) == 2
+            await restored._set_expanded(False)
+            assert not restored.query(ToolCallMessage)
+
+    def test_tool_diff_superseded_roundtrip(self) -> None:
+        """Test that a diff-superseded tool stays hidden after virtualization."""
+        original = ToolCallMessage("edit_file")
+        original._status = "success"
+        original.mark_superseded_by_diff()
+
+        data = MessageData.from_widget(original)
+        restored = data.to_widget()
+
+        assert data.tool_diff_superseded is True
+        assert isinstance(restored, ToolCallMessage)
+        assert restored._diff_superseded is True
+
+    def test_tool_diff_superseded_reaches_the_store_after_the_row_is_stored(
+        self,
+    ) -> None:
+        """A row is stored before its diff mounts, so the flag arrives late.
+
+        Supersession happens when the diff lands, well after `from_widget`
+        captured the row at mount time. If `update_message` cannot carry the
+        flag, the store keeps `False` and rehydration resurrects the row next
+        to the diff that replaced it.
+        """
+        store = MessageStore()
+        widget = ToolCallMessage("edit_file")
+        widget.id = "msg-superseded"
+        store.append(MessageData.from_widget(widget))
+
+        widget._status = "success"
+        widget.mark_superseded_by_diff()
+        fresh = MessageData.from_widget(widget)
+        assert store.update_message(
+            widget.id, tool_diff_superseded=fresh.tool_diff_superseded
+        )
+
+        stored = store.get_message(widget.id)
+        assert stored is not None
+        assert stored.tool_diff_superseded is True
+        rehydrated = stored.to_widget()
+        assert isinstance(rehydrated, ToolCallMessage)
+        assert rehydrated._diff_superseded is True
+
+    async def test_rehydrated_superseded_row_is_hidden_once_mounted(self) -> None:
+        """The flag only matters if it survives all the way to `display`.
+
+        Restoring deferred status does not itself apply visibility, so the row
+        depends on `on_mount` re-applying it. Without a mounted assertion, a
+        resurrected edit row sitting beside its own diff would pass every test.
+        """
+        original = ToolCallMessage("edit_file")
+        original._status = "success"
+        original.mark_superseded_by_diff()
+        restored = MessageData.from_widget(original).to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert restored.display is False
+
+    async def test_rehydrated_non_diff_tool_is_not_hidden(self) -> None:
+        """Only the superseded-by-diff tool may hide; nothing replaces the rest.
+
+        The store writes restored state straight onto the widget, so the
+        tool-name guard is the only thing standing between a stray stored flag
+        and a row that vanishes with no diff to stand in for it.
+        """
+        data = MessageData.from_widget(ToolCallMessage("shell"))
+        data.tool_status = ToolStatus.SUCCESS
+        data.tool_diff_superseded = True
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert restored.display is True
+
+    def test_rejected_supersession_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The guard protects an invariant, so tripping it must leave a trace.
+
+        Two name sources decide one outcome — the adapter gates on
+        `record.tool_name`, the widget on its own. A divergence mounts an
+        empty-bodied diff reading "no changes" *beside* a row that stayed visible,
+        and a silent return leaves nothing to debug that from.
+        """
+        widget = ToolCallMessage("shell")
+
+        with caplog.at_level(logging.WARNING):
+            widget.mark_superseded_by_diff()
+
+        assert widget._diff_superseded is False
+        assert any(
+            "may be superseded" in record.getMessage() for record in caplog.records
+        ), caplog.text
 
     def test_error_message_roundtrip(self):
         """Test ErrorMessage serialization and deserialization."""
@@ -239,6 +418,7 @@ class TestMessageData:
             diff_content,
             file_path="src/file.py",
             tool_name="edit_file",
+            show_numbers=False,
             id="test-diff-1",
         )
 
@@ -248,6 +428,7 @@ class TestMessageData:
         assert data.content == diff_content
         assert data.diff_file_path == "src/file.py"
         assert data.diff_tool_name == "edit_file"
+        assert data.diff_show_numbers is False
         assert data.id == "test-diff-1"
 
         # Deserialize
@@ -256,6 +437,7 @@ class TestMessageData:
         assert restored._diff_content == diff_content
         assert restored._file_path == "src/file.py"
         assert restored._tool_name == "edit_file"
+        assert restored._show_numbers is False
         assert restored.id == "test-diff-1"
 
     def test_summarization_message_roundtrip(self):
@@ -356,6 +538,105 @@ class TestMessageData:
         assert restored._deferred_expanded is True
         assert restored.id == "test-skill-1"
 
+    def test_diff_message_roundtrip_preserves_highlighting_inputs(self) -> None:
+        """Virtualized diffs retain only the needed lexer prefixes and true counts.
+
+        `shown` with real counts, because `untrusted_before` leaves `stats`
+        unset — `FileOperationRecord.diff_stats` documents that pairing as
+        impossible, and a test that builds it stops describing what the code
+        produces.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            before="a\nunused before\n",
+            after="b\nunused after\n",
+            stats=DiffStats(additions=200, deletions=200),
+            id="test-diff-highlight",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert (restored._before, restored._after) == ("a", "b")
+        assert restored._stats == DiffStats(additions=200, deletions=200)
+        assert restored._outcome == "shown"
+        # Not only the privates: a rehydration bug preserving all four while
+        # breaking composition would pass on the assertions above alone.
+        assert any("+200" in _rendered_text(child) for child in restored.compose())
+
+    def test_an_untrusted_diff_roundtrips_without_counts(self) -> None:
+        """The outcome and its suppressed body have to survive separately.
+
+        Split from the highlighting round-trip above so each asserts a state the
+        tracker can actually produce: this one carries no `stats`, because a
+        count taken against a stand-in pre-image would be fiction.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            before="a\n",
+            after="b\n",
+            outcome="untrusted_before",
+            id="test-diff-untrusted",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert restored._outcome == "untrusted_before"
+        assert restored._stats is None
+        assert any(
+            "prior contents could not be read" in _rendered_text(child)
+            for child in restored.compose()
+        )
+
+    def test_a_suppressed_caveat_stays_suppressed_after_rehydration(self) -> None:
+        """The decision depends on what else was mounted, which the store cannot see.
+
+        Without persisting it, a diff whose tool row carries the caveat comes
+        back printing the same sentence a second time.
+        """
+        original = DiffMessage(
+            "@@ -1 +1 @@\n-a\n+b",
+            "example.py",
+            tool_name="edit_file",
+            outcome="untrusted_before",
+            show_caveat=False,
+            id="test-diff-no-caveat",
+        )
+
+        restored = MessageData.from_widget(original).to_widget()
+
+        assert isinstance(restored, DiffMessage)
+        assert restored.renders_caveat is False
+        texts = [_rendered_text(child) for child in restored.compose()]
+        assert all("prior contents could not be read" not in text for text in texts)
+        # The body stays suppressed regardless — only the sentence was hidden.
+        assert all("+b" not in text for text in texts)
+
+    def test_highlight_prefixes_are_clamped_on_direct_construction(self) -> None:
+        """The store's premise is that thousands of messages cost little.
+
+        `from_widget` supplies already-trimmed values, so only a direct
+        constructor call could park an unbounded copy of a file here.
+        """
+        oversized = "x" * (diff_module.MAX_HIGHLIGHT_CHARS + 5000)
+
+        data = MessageData(
+            type=MessageType.DIFF,
+            content="@@ -1 +1 @@\n-a\n+b",
+            diff_before_content=oversized,
+            diff_after_content=oversized,
+        )
+
+        assert data.diff_before_content is not None
+        assert data.diff_after_content is not None
+        assert len(data.diff_before_content) == diff_module.MAX_HIGHLIGHT_CHARS
+        assert len(data.diff_after_content) == diff_module.MAX_HIGHLIGHT_CHARS
+
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""
         unknown = Static("hello", id="unk-1")
@@ -373,15 +654,55 @@ class TestMessageStore:
         """Test appending messages and counting."""
         store = MessageStore()
         assert store.total_count == 0
+        assert store.turn_count == 0
         assert store.visible_count == 0
 
         store.append(MessageData(type=MessageType.USER, content="msg1"))
         assert store.total_count == 1
+        assert store.turn_count == 1
         assert store.visible_count == 1
 
         store.append(MessageData(type=MessageType.ASSISTANT, content="msg2"))
         assert store.total_count == 2
+        assert store.turn_count == 1
         assert store.visible_count == 2
+
+        store.append(
+            MessageData(type=MessageType.SKILL, content="msg3", skill_name="test")
+        )
+        assert store.total_count == 3
+        assert store.turn_count == 2
+        assert store.visible_count == 3
+
+    @pytest.mark.parametrize("message_type", list(MessageType))
+    def test_turn_count_counts_only_user_and_skill_rows(self, message_type):
+        """Exactly `USER` and `SKILL` count, across every `MessageType`.
+
+        Parametrized over the whole enum so a new member -- or a member quietly
+        added to the counted set -- fails here rather than silently shifting the
+        number the Debug Console reports.
+        """
+        store = MessageStore()
+        store.append(
+            MessageData(
+                type=message_type,
+                content="msg",
+                skill_name="test" if message_type is MessageType.SKILL else None,
+                tool_name="test" if message_type is MessageType.TOOL else None,
+                rubric_details=(
+                    "details" if message_type is MessageType.RUBRIC else None
+                ),
+                tool_group_messages=(
+                    [MessageData(type=MessageType.TOOL, content="t", tool_name="t")]
+                    if message_type is MessageType.TOOL_GROUP
+                    else []
+                ),
+            )
+        )
+
+        expected = 1 if message_type in {MessageType.USER, MessageType.SKILL} else 0
+        assert store.turn_count == expected
+        assert store.total_count == 1
 
     def test_append_preserves_hidden_tail(self):
         """Appending while scrolled up should keep newer messages hidden."""
@@ -580,25 +901,30 @@ class TestMessageStore:
         with pytest.raises(ValueError, match="Cannot update unknown or protected"):
             store.update_message("protected-1", nonexistent_field="value")
 
-    def test_should_hydrate_above(self):
-        """Test hydration trigger based on scroll position."""
+    def test_should_hydrate_above_uses_top_spacer_boundary(self):
+        """Hydration starts before the viewport reaches the mounted window."""
         store = MessageStore()
-
-        for i in range(10):
+        for i in range(30):
             store.append(MessageData(type=MessageType.USER, content=f"msg{i}"))
 
-        # No messages above - shouldn't hydrate
-        assert not store.should_hydrate_above(scroll_position=0, viewport_height=100)
+        assert not store.should_hydrate_above(
+            scroll_position=0,
+            viewport_height=10,
+            top_spacer_bottom=0,
+        )
 
-        # Simulate pruned messages
-        store._visible_start = 5
-        assert store.has_messages_above
-
-        # Near top - should hydrate
-        assert store.should_hydrate_above(scroll_position=50, viewport_height=100)
-
-        # Far from top - shouldn't hydrate
-        assert not store.should_hydrate_above(scroll_position=500, viewport_height=100)
+        store._visible_start = 20
+        top_spacer_bottom = store.range_height(0, store._visible_start)
+        assert store.should_hydrate_above(
+            scroll_position=top_spacer_bottom + 70,
+            viewport_height=10,
+            top_spacer_bottom=top_spacer_bottom,
+        )
+        assert not store.should_hydrate_above(
+            scroll_position=top_spacer_bottom + 90,
+            viewport_height=10,
+            top_spacer_bottom=top_spacer_bottom,
+        )
 
     def test_should_prune_below(self):
         """Test prune-below trigger based on scroll position and distance."""
@@ -630,12 +956,12 @@ class TestMessageStore:
     def test_should_hydrate_below_uses_bottom_spacer_top(self):
         """Hydration should start near mounted rows, not virtual transcript end."""
         store = MessageStore()
-        for i in range(100):
+        for i in range(400):
             store.append(
                 MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
             )
-        store._visible_start = 20
-        store._visible_end = 30
+        store._visible_start = 200
+        store._visible_end = 300
 
         bottom_spacer_top = store.range_height(0, store.get_visible_range()[1])
         assert store.should_hydrate_below(
@@ -644,7 +970,7 @@ class TestMessageStore:
             bottom_spacer_top=bottom_spacer_top,
         )
         assert not store.should_hydrate_below(
-            scroll_position=bottom_spacer_top - 400,
+            scroll_position=bottom_spacer_top - 1000,
             viewport_height=100,
             bottom_spacer_top=bottom_spacer_top,
         )
@@ -1228,3 +1554,32 @@ class TestMessageStoreIndex:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_display_caveat_survives_the_store_roundtrip() -> None:
+    """A rehydrated caveated row must still refuse to fold.
+
+    The flag cannot be re-derived from `tool_output` without matching the
+    caveat's prose, so it is persisted. Losing it means a scrolled-away write
+    whose contents could not be read comes back folded into a summary that says
+    only `▸ Wrote 1 file`.
+    """
+    tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+    tool.set_success("could not be shown\n\nWrote file")
+    tool._mark_display_caveat()
+
+    restored = MessageData.from_widget(tool).to_widget()
+
+    assert isinstance(restored, ToolCallMessage)
+    assert restored.has_display_caveat is True
+
+
+def test_an_ordinary_row_roundtrips_without_the_caveat_flag() -> None:
+    """The default must stay `False`, or nothing would ever group again."""
+    tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+    tool.set_success("Wrote file")
+
+    restored = MessageData.from_widget(tool).to_widget()
+
+    assert isinstance(restored, ToolCallMessage)
+    assert restored.has_display_caveat is False

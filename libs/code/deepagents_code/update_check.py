@@ -22,7 +22,9 @@ import shlex
 import shutil
 import signal
 import sys
+import sysconfig
 import tempfile
+import threading
 import time
 import tomllib
 import uuid
@@ -38,7 +40,11 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
-from deepagents_code.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
+from deepagents_code.model_config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_STATE_DIR,
+    default_cache_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +54,15 @@ CACHE_FILE: Path = DEFAULT_STATE_DIR / "latest_version.json"
 Populated by `get_latest_version`; reads short-circuit on the cached payload
 when it is younger than `CACHE_TTL`. SDK upload timestamps are stored under
 `_SDK_RELEASE_TIMES_KEY`.
+"""
+
+UPDATE_LOCK_FILE: Path = DEFAULT_STATE_DIR / "update.lock"
+"""Advisory lock file serializing dcode self-upgrades across processes.
+
+Held for the duration of an install by whichever process is upgrading, so
+several concurrently launched terminals do not each run their own
+`uv tool install -U` against the same tool environment. Carries no data — only
+the lock matters. See `update_install_lock`.
 """
 
 UPDATE_STATE_FILE: Path = DEFAULT_STATE_DIR / "update_state.json"
@@ -182,8 +197,15 @@ _TERMINATE_WAIT_TIMEOUT = 5  # seconds
 INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 """Promoted public install command for Deep Agents Code."""
 
-UPDATE_LOG_DIR: Path = DEFAULT_STATE_DIR / "update_logs"
-"""Directory for persisted update command logs."""
+UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
+"""Directory for persisted update command logs.
+
+Lives under the OS cache directory (`default_cache_dir()`), since these are
+ephemeral `uv`/`pip` diagnostics rather than app state. Note the install
+script's `<cache>/deepagents-code/install.log` follows
+`${XDG_CACHE_HOME:-~/.cache}` unconditionally, so on macOS the two logs land
+under different roots.
+"""
 
 UPDATE_LOG_RETENTION_DAYS = 14
 """Delete update logs older than this many days."""
@@ -267,6 +289,59 @@ def _latest_from_releases(
             best = ver
             best_str = ver_str
     return best_str
+
+
+def read_installed_distribution_version() -> str | None:
+    """Read the currently installed `deepagents-code` distribution version.
+
+    Unlike `__version__`, this does not come from the module this process
+    imported at launch: it reads the running tool environment's
+    `deepagents_code-*.dist-info` directory name from disk, so it reflects the
+    install even after an in-session upgrade rewrote the environment. Used to
+    report what an upgrade actually installed.
+
+    Returns:
+        The installed version string, or `None` when it cannot be determined
+            (missing/ambiguous dist-info, unreadable directory, or a version
+            this process's `packaging` rejects).
+    """
+    # `sysconfig`'s purelib resolves the per-platform layout (`lib/pythonX.Y/
+    # site-packages` on POSIX, `Lib\site-packages` on Windows), so the
+    # readback works for uv tool environments on every supported OS.
+    site_packages = Path(sysconfig.get_path("purelib"))
+    try:
+        candidates = [
+            entry
+            for entry in site_packages.iterdir()
+            if entry.name.startswith("deepagents_code-")
+            and entry.name.endswith(".dist-info")
+        ]
+    except OSError:
+        logger.debug(
+            "Could not list site-packages at %s to read the installed version",
+            site_packages,
+            exc_info=True,
+        )
+        return None
+    if len(candidates) != 1:
+        # Zero matches means the distribution is missing from this environment;
+        # more than one means leftover dist-infos make the installed version
+        # ambiguous. Neither is actionable from the caller — a successful
+        # upgrade just gets a less precise report — so debug is loud enough.
+        logger.debug(
+            "Expected exactly one deepagents_code dist-info under %s, found %d",
+            site_packages,
+            len(candidates),
+        )
+        return None
+    raw = candidates[0].name[len("deepagents_code-") : -len(".dist-info")]
+    try:
+        return str(_parse_version(raw))
+    except InvalidVersion:
+        # A newer packaging could accept a version this process's copy rejects;
+        # reporting nothing beats reporting an unparseable string.
+        logger.debug("Unparseable installed dist-info version: %s", raw)
+        return None
 
 
 def get_cached_update_available() -> tuple[bool, str | None]:
@@ -1897,6 +1972,56 @@ def create_update_log_path() -> Path:
     return UPDATE_LOG_DIR / f"{stamp}-update.log"
 
 
+def create_update_log_file() -> Path | None:
+    """Create an empty update log file and return its path.
+
+    Callers that *advertise* the log to a user — "Update log: tail -f <path>" —
+    must use this rather than `create_update_log_path`, which only computes a
+    path. `perform_upgrade` refuses some upgrades before ever spawning an
+    installer (unknown or unsupported install method, `brew` missing from
+    `PATH`, the pre-release gate), and `_run_install_subprocess` degrades to
+    not persisting output when the log cannot be opened. In all of those cases
+    the path alone would name a file that never comes into existence, leaving
+    the user tailing an `ENOENT`.
+
+    Returns:
+        The created log path, or `None` if it could not be created — callers
+            should then omit the log hint rather than point at a missing file.
+    """
+    log_path = create_update_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch()
+    except OSError:
+        logger.warning(
+            "Could not create update log at %s; not advertising it",
+            log_path,
+            exc_info=True,
+        )
+        return None
+    return log_path
+
+
+def format_log_follow_command(log_path: Path | str) -> str:
+    """Return a copy-pasteable command for following a log file as it is written.
+
+    Args:
+        log_path: Log file to follow.
+
+    Returns:
+        A `tail -f` invocation on POSIX, or its PowerShell equivalent on
+            Windows, where `tail` is not available.
+    """
+    if sys.platform == "win32":
+        # PowerShell, the default Windows shell. Single-quote the literal path
+        # so `$`, `$()`, and backticks in it are not expanded, doubling any
+        # embedded quote as PowerShell requires. `-LiteralPath` additionally
+        # keeps `[`/`]` in a cache path from being read as wildcards.
+        quoted = str(log_path).replace("'", "''")
+        return f"Get-Content -Wait -LiteralPath '{quoted}'"
+    return f"tail -f {shlex.quote(str(log_path))}"
+
+
 async def _emit_progress(callback: UpgradeProgressCallback | None, line: str) -> None:
     """Send a progress line to *callback*, supporting sync or async callbacks."""
     if callback is None:
@@ -2093,13 +2218,149 @@ async def _run_install_subprocess(
     return False, output
 
 
+_UPDATE_INSTALL_THREAD_LOCK = threading.Lock()
+"""Process-local half of `update_install_lock`.
+
+`update_install_lock` builds a fresh `FileLock(thread_local=False)` per call, so
+the cross-process lock alone would not stop two threads in one dcode process
+from both entering the install. This guarantees a single in-process holder,
+independent of the filelock backend's cross-thread behavior.
+
+`thread_local=False` is required rather than incidental: `_perform_app_upgrade`
+holds this lock across `await`s, so acquisition and release are not guaranteed
+to happen on the same thread, and a thread-local `FileLock` would refuse to
+release on a different one.
+"""
+
+
+@contextmanager
+def update_install_lock() -> Iterator[bool]:
+    """Try to claim the exclusive right to self-upgrade dcode.
+
+    Startup auto-update, `dcode update`, `/update`, and the update notification
+    all replace the same installed package, so concurrently launched terminals
+    would otherwise each run their own install against one tool environment.
+    Whichever process wins the lock performs the upgrade; the rest keep running
+    the version they launched with and pick the new one up on their next launch.
+
+    Non-blocking by design: a loser returns immediately rather than stalling
+    startup behind an install it does not need.
+
+    The locking itself never raises; exceptions from the caller's own body
+    propagate as usual. When the lock is unusable — an unwritable state
+    directory, or a filesystem whose locking the OS refuses — this yields
+    `True` and lets the caller proceed unsynchronized. That is the behavior
+    from before this lock existed, and it is the fail-open choice: yielding
+    `False` there would mean updates never run again on that machine. Only a
+    lock genuinely held elsewhere yields `False`.
+
+    Yields:
+        `True` while this process may install, `False` when an install is
+        already under way — in another process, on another thread, or on this
+        same thread, since the lock is not reentrant. Callers must not upgrade
+        unless they were handed `True`.
+    """
+    # Deferred: importing `filelock` costs tens of milliseconds, and this module
+    # is imported on every launch to decide whether an update is even due. Only
+    # a launch that reaches an actual install pays for it. This only helps while
+    # nothing else on the pre-TUI path imports `filelock`; `approval_mode`,
+    # `mcp_auth`, and `hooks.trust` all import it at module level, so moving any
+    # of those onto that path would quietly make this deferral pointless.
+    try:
+        from filelock import FileLock, Timeout
+    except ImportError:
+        # A self-upgrade replaces the very environment this process imports
+        # from, so a clobbered or half-written `site-packages` is exactly this
+        # function's domain. Fail open rather than raise out of a caller that
+        # would report it as an update failure.
+        logger.warning(
+            "Proceeding without the update lock; filelock is unavailable",
+            exc_info=True,
+        )
+        yield True
+        return
+
+    if not _UPDATE_INSTALL_THREAD_LOCK.acquire(blocking=False):
+        logger.info("Skipping update install; one is already running in this process")
+        yield False
+        return
+    try:
+        try:
+            UPDATE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            logger.warning(
+                "Proceeding without the update lock; could not create %s",
+                UPDATE_LOCK_FILE.parent,
+                exc_info=True,
+            )
+            yield True
+            return
+        if os.name != "nt":
+            try:
+                UPDATE_LOCK_FILE.parent.chmod(0o700)
+            except OSError:
+                # Only the permission hardening failed. The directory is still
+                # perfectly usable for locking (CIFS/exFAT mounts routinely
+                # refuse `chmod`), so abandoning the lock here would disable
+                # this protection on every launch for no reason.
+                logger.warning(
+                    "Could not restrict permissions on %s",
+                    UPDATE_LOCK_FILE.parent,
+                    exc_info=True,
+                )
+        file_lock = FileLock(str(UPDATE_LOCK_FILE), timeout=0, thread_local=False)
+        try:
+            file_lock.acquire()
+        # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
+        # clause MUST stay above the one below. Reorder them and every "another
+        # process is installing" case silently becomes a fail-open `yield True`
+        # — the concurrent double-install this lock exists to prevent.
+        except Timeout:
+            logger.info(
+                "Skipping update install; %s is held by another dcode process",
+                UPDATE_LOCK_FILE,
+            )
+            yield False
+            return
+        except OSError:
+            logger.warning(
+                "Proceeding without the update lock; could not acquire %s. "
+                "If this persists, removing that file may clear it.",
+                UPDATE_LOCK_FILE,
+                exc_info=True,
+            )
+            yield True
+            return
+        try:
+            yield True
+        finally:
+            # Releasing must not mask the install's own outcome, and the lock is
+            # dropped when the process exits regardless. But it is not harmless:
+            # `UnixFileLock._release` clears its fd handle *before* unlocking, so
+            # a raising `flock` leaks an fd that still holds the lock, and every
+            # later attempt in this session then reports a phantom concurrent
+            # install. Log it, or that failure is undiagnosable.
+            try:
+                file_lock.release()
+            except OSError:
+                logger.warning(
+                    "Failed to release the update lock at %s; further update "
+                    "attempts in this session may report a concurrent install "
+                    "until dcode is restarted",
+                    UPDATE_LOCK_FILE,
+                    exc_info=True,
+                )
+    finally:
+        _UPDATE_INSTALL_THREAD_LOCK.release()
+
+
 async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
     target_version: str | None = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
     Only tries the detected method — does not fall back to other package
@@ -2116,7 +2377,14 @@ async def perform_upgrade(
             dcode releases that intentionally depend on pre-release packages.
 
     Returns:
-        `(success, output)` — *output* is the combined stdout/stderr.
+        `(success, output, installed_version)` — *output* is the combined
+        stdout/stderr. *installed_version* is the version the successful
+        install actually resolved to, read back from the tool environment on
+        disk, or `None` when the upgrade failed or the installed version
+        could not be determined. Callers should report *installed_version*
+        rather than the version their update check observed: the install
+        command is unpinned, so a release published between check and install
+        is what lands on disk.
 
     Raises:
         OSError: Propagated from building the upgrade command or running the
@@ -2126,13 +2394,17 @@ async def perform_upgrade(
     """
     method = detect_install_method()
     if method == "unknown":
-        return False, "Editable install detected — skipping auto-update."
+        return False, "Editable install detected — skipping auto-update.", None
     if method == "other":
-        return False, (
-            "Unsupported install method detected — cannot auto-update without "
-            "knowing which environment provides `dcode`. Reinstall with "
-            "`uv tool install -U deepagents-code` or upgrade with the package "
-            "manager originally used for this install."
+        return (
+            False,
+            (
+                "Unsupported install method detected — cannot auto-update without "
+                "knowing which environment provides `dcode`. Reinstall with "
+                "`uv tool install -U deepagents-code` or upgrade with the package "
+                "manager originally used for this install."
+            ),
+            None,
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
     # Targeted pre-release admission: a *stable* dcode target that mandates an
@@ -2153,11 +2425,11 @@ async def perform_upgrade(
     if resolved_include_prereleases or targeted_pins:
         supported, reason = prerelease_upgrade_supported(method)
         if not supported:
-            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
+            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE, None
 
     # Skip brew if binary not on PATH (before touching temp files).
     if method == "brew" and not shutil.which("brew"):
-        return False, "brew not found on PATH."
+        return False, "brew not found on PATH.", None
 
     prerelease_strategy = _UV_TARGETED_PRERELEASE_STRATEGY if targeted_pins else None
     constraints_staged = False
@@ -2238,10 +2510,14 @@ async def perform_upgrade(
             target_version,
             exc_info=True,
         )
-        return False, (
-            "Could not prepare the pre-release dependency constraints required "
-            f"to install v{target_version}; the existing installation was left "
-            f"unchanged.\n{type(exc).__name__}: {exc}"
+        return (
+            False,
+            (
+                "Could not prepare the pre-release dependency constraints required "
+                f"to install v{target_version}; the existing installation was left "
+                f"unchanged.\n{type(exc).__name__}: {exc}"
+            ),
+            None,
         )
 
     if success and fell_back_to_bare_command:
@@ -2257,7 +2533,23 @@ async def perform_upgrade(
             "installed extras or extra packages may not carry over. "
             "Re-add them if a feature stops working after relaunch.",
         )
-    return success, output
+    installed_version: str | None = None
+    if success:
+        if pin_target_version is not None:
+            # The install was pinned to the exact target version, so that is
+            # what landed on disk; skip the filesystem readback.
+            installed_version = pin_target_version
+        else:
+            # The install command is unpinned (`uv tool install -U` / `brew
+            # upgrade`), so a release published between the update check and
+            # the install is what actually landed. Read the installed
+            # distribution back rather than reporting the earlier check's
+            # version; when the readback is indeterminate, the caller's
+            # checked version is still the best available answer.
+            installed_version = (
+                await asyncio.to_thread(read_installed_distribution_version)
+            ) or target_version
+    return success, output, installed_version
 
 
 async def perform_dependency_refresh(

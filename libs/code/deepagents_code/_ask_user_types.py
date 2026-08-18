@@ -11,16 +11,87 @@ side produces it and which reads it.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Literal, NotRequired, assert_never, get_args
 
 from pydantic import Field
 from typing_extensions import TypedDict
 
+QuestionType = Literal["text", "multiple_choice", "multi_select"]
+"""Supported `ask_user` question types."""
+
+QUESTION_TYPES: frozenset[str] = frozenset(get_args(QuestionType))
+"""Runtime membership view of `QuestionType`.
+
+Derived via `get_args` so the membership checks in `ask_user` and `auto_mode`
+cannot drift from the alias when a new question type is added. That drift would
+be silent: an unrecognized type makes `_ask_user_question_count` return `None`,
+which drops the user's answers as same-turn authorization without any error.
+"""
+
+
+def _requires_choices(question_type: QuestionType) -> bool:
+    """Return whether `question_type` needs a non-empty `choices` list.
+
+    Args:
+        question_type: A member of `QuestionType`.
+
+    Returns:
+        True if questions of this type must define `choices`.
+    """
+    if question_type == "text":
+        return False
+    if question_type in {"multiple_choice", "multi_select"}:
+        return True
+    # Exhaustiveness guard: adding a `QuestionType` member without deciding here
+    # whether it needs choices fails type checking rather than silently landing
+    # on the wrong side of `CHOICE_QUESTION_TYPES`.
+    assert_never(question_type)
+
+
+CHOICE_QUESTION_TYPES: frozenset[str] = frozenset(
+    question_type
+    for question_type in get_args(QuestionType)
+    if _requires_choices(question_type)
+)
+"""Question types that require a non-empty `choices` list.
+
+Derived from `_requires_choices` rather than written out, so it cannot omit a
+new choice-based `QuestionType` member. Note that requiring `choices` is not the
+same as being *rendered* as a choice list: the TUI has its own exhaustive
+dispatch in `_QuestionWidget.compose`.
+"""
+
+MULTI_SELECT_ANSWER_SEPARATOR = ", "
+"""Separator joining the selected values of a `multi_select` answer."""
+
+MULTI_SELECT_FORBIDDEN_IN_VALUE = ","
+"""Substring a `multi_select` choice value must not contain.
+
+Deliberately stated outright rather than derived from
+`MULTI_SELECT_ANSWER_SEPARATOR`, so the two can evolve independently: a separator
+of `" and "` would, if the forbidden text were derived from it, reject every value
+containing "and".
+
+This buys *legibility* of the joined answer, not invertibility. Nothing decodes a
+multi-select answer back into its components, and per
+`format_ask_user_transcript` the transcript is not unambiguously decodable
+anyway. If one is ever written, that is the moment to introduce a structured
+answer type instead of leaning on this ban.
+"""
+
 
 class Choice(TypedDict):
-    """A single choice option for a multiple choice question."""
+    """A single choice option for a multiple choice or multi-select question."""
 
-    value: Annotated[str, Field(description="The display label for this choice.")]
+    value: Annotated[
+        str,
+        Field(
+            description=(
+                "The display label for this choice. Also the text returned as "
+                "the answer when this choice is selected."
+            )
+        ),
+    ]
 
 
 class Question(TypedDict):
@@ -29,11 +100,18 @@ class Question(TypedDict):
     question: Annotated[str, Field(description="The question text to display.")]
 
     type: Annotated[
-        Literal["text", "multiple_choice"],
+        QuestionType,
         Field(
             description=(
                 "Question type. 'text' for free-form input, 'multiple_choice' for "
-                "predefined options."
+                "picking exactly one predefined option, 'multi_select' for picking "
+                "one or more predefined options. Both choice types always append an "
+                "'Other' free-form option automatically; multi-select can accept "
+                "multiple custom Other values (filling one reveals another). A "
+                "'multi_select' answer comes back as the selected values "
+                "(including any custom Other text) joined with ', '; if nothing "
+                "is selected on an optional question the answer is an empty "
+                "string."
             )
         ),
     ]
@@ -43,8 +121,12 @@ class Question(TypedDict):
             list[Choice],
             Field(
                 description=(
-                    "Options for multiple_choice questions. An 'Other' free-form "
-                    "option is always appended automatically."
+                    "Options for 'multiple_choice' and 'multi_select' questions. "
+                    "Every choice needs a non-empty 'value'. An 'Other' free-form "
+                    "option is always appended automatically for both types; "
+                    "multi-select may collect multiple custom Other values. "
+                    "'multi_select' values (including custom Other text) must not "
+                    "contain ',' because the answer joins them with ', '."
                 )
             ),
         ]
@@ -53,8 +135,18 @@ class Question(TypedDict):
     required: NotRequired[
         Annotated[
             bool,
+            # `strict=True` so a stringly-typed `"false"` is rejected at the tool
+            # boundary rather than coerced. Without it pydantic accepts the string,
+            # the prompt renders, and then `_ask_user_question_count` — which reads
+            # the *raw* tool args and requires a real bool — returns `None`, which
+            # drops every answer in the call as same-turn authorization with no
+            # error. Strict here keeps the two boundaries agreeing, and makes the
+            # coercion loud instead of silently expensive.
             Field(
-                description="Whether the user must answer. Defaults to true if omitted."
+                description=(
+                    "Whether the user must answer. Defaults to true if omitted."
+                ),
+                strict=True,
             ),
         ]
     ]
@@ -75,6 +167,11 @@ class AskUserRequest(TypedDict):
 
 ASK_USER_AUTHORIZATION_METADATA_KEY = "deepagents_code_ask_user_authorization"
 MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS = 4000
+# These limits bound the receipt-anchored question/answer evidence copied into
+# Auto's classifier prompt. Questions are model-generated and otherwise have no
+# schema length constraint, so they must not be able to exhaust that context.
+MAX_ASK_USER_AUTHORIZATION_QUESTION_CHARS = 4000
+MAX_ASK_USER_AUTHORIZATION_QUESTION_TOTAL_CHARS = 8000
 
 
 class AskUserAuthorizationReceipt(TypedDict):

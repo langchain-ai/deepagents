@@ -1324,6 +1324,8 @@ class Glyphs:
     error: str  # ✗ vs [X]
     circle_empty: str  # ○ vs [ ]
     circle_filled: str  # ● vs [*]
+    checkbox_empty: str  # ☐ vs [ ]
+    checkbox_checked: str  # ☑ vs [x]
     output_prefix: str  # ⎿ vs L
     spinner_frames: tuple[str, ...]  # Braille vs ASCII spinner
     pause: str  # ⏸ vs ||
@@ -1340,12 +1342,11 @@ class Glyphs:
     disclosure_expanded: str  # ▾ vs v
 
     # Box-drawing characters
-    box_vertical: str  # │ vs |
     box_horizontal: str  # ─ vs -
-    box_double_horizontal: str  # ═ vs =
+    box_horizontal_heavy: str  # ━ vs =
 
     # Diff-specific
-    gutter_bar: str  # ▌ vs |
+    hunk_break: str  # ⋮ vs :
 
     # Status bar
     git_branch: str  # "↗" vs "git:"
@@ -1358,6 +1359,8 @@ UNICODE_GLYPHS = Glyphs(
     error="✗",
     circle_empty="○",
     circle_filled="●",
+    checkbox_empty="☐",
+    checkbox_checked="☑",
     output_prefix="⎿",
     spinner_frames=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
     pause="⏸",
@@ -1373,10 +1376,11 @@ UNICODE_GLYPHS = Glyphs(
     disclosure_collapsed="▸",
     disclosure_expanded="▾",
     # Box-drawing characters
-    box_vertical="│",
     box_horizontal="─",
-    box_double_horizontal="═",
-    gutter_bar="▌",
+    box_horizontal_heavy="━",
+    # Diff-specific
+    hunk_break="⋮",
+    # Status bar
     git_branch="↗",
 )
 """Glyph set for terminals with full Unicode support."""
@@ -1388,6 +1392,8 @@ ASCII_GLYPHS = Glyphs(
     error="[X]",
     circle_empty="[ ]",
     circle_filled="[*]",
+    checkbox_empty="[ ]",
+    checkbox_checked="[x]",
     output_prefix="L",
     spinner_frames=("(-)", "(\\)", "(|)", "(/)"),
     pause="||",
@@ -1403,10 +1409,11 @@ ASCII_GLYPHS = Glyphs(
     disclosure_collapsed=">",
     disclosure_expanded="v",
     # Box-drawing characters
-    box_vertical="|",
     box_horizontal="-",
-    box_double_horizontal="=",
-    gutter_bar="|",
+    box_horizontal_heavy="=",
+    # Diff-specific
+    hunk_break=":",
+    # Status bar
     git_branch="git:",
 )
 """Glyph set for terminals limited to 7-bit ASCII."""
@@ -3531,12 +3538,20 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     own actions. The caller gets a description so it can say so on a surface the
     user actually reads; a log line alone is not that surface.
 
+    A present-but-blank env var is an explicit "inherit" and outranks
+    `config.toml`, so it is detected before resolution rather than being skipped
+    as unset the way `resolve_scalar` treats every other option's blank env
+    value. `dcode config` shares that veto via
+    `resolve_auto_classifier_model_with_source`, so the two surfaces cannot
+    disagree about which model grades gated actions.
+
     Returns:
         `(spec, problem)`. `spec` is a `provider:model` spec, or `None` when the
             classifier should inherit. `problem` is a one-line description when a
             configured value was ignored, else `None`.
     """
     from deepagents_code.config_manifest import (
+        blank_auto_classifier_env_name,
         get_option,
         load_config_toml,
         resolve_scalar,
@@ -3546,6 +3561,22 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     if option is None:
         return None, None
     toml_data = load_config_toml()
+    blank_env = blank_auto_classifier_env_name()
+    if blank_env is not None:
+        # Name the config.toml value being overridden: without it the warning
+        # sends the user to a config file that still shows their setting.
+        shadowed, shadowed_source = resolve_scalar(option, toml_data=toml_data)
+        overridden = (
+            f" (overriding {shadowed_source} {shadowed!r})"
+            if isinstance(shadowed, str) and shadowed.strip()
+            else ""
+        )
+        problem = (
+            f"Ignoring blank env ({blank_env}) auto_classifier model{overridden}; "
+            "the Auto approval classifier will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
     value, source = resolve_scalar(option, toml_data=toml_data)
     if isinstance(value, str) and value.strip():
         return value.strip(), None
@@ -4593,10 +4624,7 @@ def _get_provider_kwargs(
     from deepagents_code.model_config import ModelConfig
 
     config = ModelConfig.load()
-    result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
-    base_url = config.get_base_url(provider)
-    if base_url:
-        result["base_url"] = base_url
+    result = config.get_effective_kwargs(provider, model_name=model_name)
     from deepagents_code.model_config import (
         OPTIONAL_AUTH_ENV,
         PROVIDER_API_KEY_ENV,

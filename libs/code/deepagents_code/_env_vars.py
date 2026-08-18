@@ -80,6 +80,17 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+CURSOR_BLINK = "DEEPAGENTS_CODE_CURSOR_BLINK"
+"""Blink the chat input cursor.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or blank)
+for a steady cursor. Parsed by `classify_env_bool` (an unrecognized value falls
+through to the config value rather than forcing the default). A blank value —
+empty or whitespace-only — counts as `false` because the option declares
+`empty_env_is_false`, so it overrides `config.toml` instead of falling through.
+Also settable via `[ui].cursor_blink` in config.toml.
+"""
+
 CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
 """Chat input cursor style (`block` or `underline`).
 
@@ -117,6 +128,27 @@ Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
 as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
+DEBUG_COLD_CACHE = "DEEPAGENTS_CODE_DEBUG_COLD_CACHE"
+"""Force the cold prompt-cache warning modal on every interactive send.
+
+Set to a truthy value when launching the interactive TUI to make
+`_cold_cache_warning_for` synthesize a warning from the current model and
+context, bypassing the provider-policy, token-floor, cache-window, and
+cost-threshold gates as well as both session and persisted suppression. Lets
+the modal be exercised without waiting out a provider cache window.
+
+The flag is re-read on every send and nothing clears it, so the modal fires
+for the life of the process, not just once.
+
+When the active model has no documented cache policy, `debug_stand_in_policy`
+supplies an Anthropic-shaped placeholder. On a non-Anthropic model the modal
+will therefore cite Anthropic's retention window, and the dollar figures are
+illustrative rather than real estimates.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
 DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
 r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
 
@@ -130,6 +162,22 @@ When set, this env var takes precedence over the persisted
 `[ui].debug_console_click_to_copy` config value on launch, so toggling the
 checkbox will not appear to "stick" across restarts while the env var remains
 set.
+"""
+
+DEBUG_DEP_FLOOR = "DEEPAGENTS_CODE_DEBUG_DEP_FLOOR"
+"""Synthesize a stale editable-dependency floor mismatch at launch.
+
+Set to a truthy value to short-circuit `_collect_violations` to a hard-coded
+fake below-floor dependency, bypassing the editable-install gate and the real
+version comparison. Both channels are then reachable without a genuinely stale
+environment: the blocking pre-TUI continue/mute/abort prompt on an interactive
+terminal launch, and the one-off stderr warning everywhere else.
+
+Note that muting the synthetic mismatch writes a real dismissal for this
+checkout; it re-arms on its own once the fake mismatch changes or the var is
+unset.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
@@ -268,6 +316,18 @@ The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
 """
 
+LAUNCH_TERM_PROGRAM = "DEEPAGENTS_CODE_LAUNCH_TERM_PROGRAM"
+"""Internal sentinel recording the `TERM_PROGRAM` present when `dcode` started.
+
+Not user-facing. The resume hint echoes `TERM_PROGRAM` only when the launch
+environment supplied it (an inline `TERM_PROGRAM=x dcode`, a terminal's own
+export, or a shell alias), so the value set by a project or global `.env` file
+*after* launch must not leak in. The app itself never sets `TERM_PROGRAM`, so
+`cli_main` snapshotting the variable here at entry means a set sentinel always
+marks an explicit launch value; the update re-exec inherits it unchanged,
+which is correct because the relaunch runs the command the user typed.
+"""
+
 LEGACY_ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
 """Removed project MCP allowlist env var retained for migration detection only.
 
@@ -355,6 +415,13 @@ option declares `empty_env_is_false`. Other tokens are parsed by
 user-supplied key is always preserved.
 """
 
+PLUGIN_AUTO_UPDATE = "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE"
+"""Toggle background updates for installed marketplace plugins.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to disable every plugin update regardless of its manifest setting.
+"""
+
 PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 
@@ -396,6 +463,15 @@ version), skips auto-updating to break out of an otherwise endless
 upgrade/restart loop. Set and read internally across `os.execv`.
 """
 
+RESUME_TERM_PROGRAM = "DEEPAGENTS_CODE_RESUME_TERM_PROGRAM"
+"""Include launch-time `TERM_PROGRAM` in teardown resume commands.
+
+Disabled by default and enabled by default in experimental or debug mode. An
+explicit boolean (`1`/`true`/`yes`/`on`, or `0`/`false`/`no`/`off`) overrides
+that mode-dependent default, as does an empty value, which reads as false. Also
+settable as `[features].resume_term_program` in config.toml.
+"""
+
 RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
 """Select how ripgrep is provisioned: `managed` (default) or `system`.
 
@@ -420,6 +496,17 @@ SHOW_LANGSMITH_REPLICA_TRACING = "DEEPAGENTS_CODE_SHOW_LANGSMITH_REPLICA_TRACING
 
 Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to hide replica tracing details from the splash while leaving tracing active.
+"""
+
+SHOW_MESSAGE_TIMESTAMPS = "DEEPAGENTS_CODE_SHOW_MESSAGE_TIMESTAMPS"
+"""Show the timestamp footer under each chat message when enabled.
+
+Off by default; use the `/timestamps` slash command or
+`[ui].show_message_timestamps` in config.toml to toggle. Parsed by
+`classify_env_bool` (an unrecognized or empty value falls through to the config
+value rather than forcing the default). While this env var is set it outranks
+the persisted value, so a `/timestamps` toggle will not appear to "stick"
+across restarts.
 """
 
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
@@ -466,6 +553,19 @@ only reads canonical names, picks it up). The value you exported in your own
 shell is unaffected, since a process cannot change its parent's environment.
 Off by default; set to a truthy value (`1`, `true`, `yes`, `on`) to suppress
 the warning when this coexistence is expected. Parsed by `is_env_truthy`.
+"""
+
+TERMINAL_PROGRESS = "DEEPAGENTS_CODE_TERMINAL_PROGRESS"
+"""Report agent activity as `OSC 9;4` taskbar/dock/tab progress.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or blank)
+to stop emitting the sequence on terminals that render it poorly. Parsed by
+`classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). A blank value — empty or whitespace-only —
+counts as `false` because the option declares `empty_env_is_false`, so it
+overrides `config.toml` instead of falling through. Also settable via
+`[ui].terminal_progress` in config.toml. `NO_TERMINAL_ESCAPE` suppresses the
+sequence regardless.
 """
 
 THEME = "DEEPAGENTS_CODE_THEME"

@@ -11,8 +11,10 @@ config, no widget imports) so that `app.py` can import `SessionStats` and
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code.formatting import format_duration
@@ -173,6 +175,12 @@ class SessionStats:
     output_tokens: int = 0
     """Cumulative output tokens across all LLM requests."""
 
+    cache_read_tokens: int = 0
+    """Cumulative prompt tokens served from provider caches."""
+
+    cache_write_tokens: int = 0
+    """Cumulative prompt tokens written to provider caches."""
+
     total_cost_usd: float = 0.0
     """Cumulative estimated USD cost across priceable LLM requests."""
 
@@ -202,6 +210,8 @@ class SessionStats:
         *,
         cost_usd: float | None = None,
         kind: UsageKind = "assistant",
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         """Accumulate usage for one completed LLM request.
 
@@ -223,10 +233,14 @@ class SessionStats:
 
                 Missing estimates leave monetary totals unchanged.
             kind: Request class used for `/cost` type breakdowns.
+            cache_read_tokens: Input tokens served from provider caches.
+            cache_write_tokens: Input tokens written to provider caches.
         """
         self.request_count += 1
         self.input_tokens += input_toks
         self.output_tokens += output_toks
+        self.cache_read_tokens += cache_read_tokens
+        self.cache_write_tokens += cache_write_tokens
         if cost_usd is not None:
             self.total_cost_usd += cost_usd
             self.priced_request_count += 1
@@ -276,6 +290,8 @@ class SessionStats:
         self.request_count -= 1
         self.input_tokens -= input_toks
         self.output_tokens -= output_toks
+        self.cache_read_tokens -= recorded.cache_read_tokens
+        self.cache_write_tokens -= recorded.cache_write_tokens
         if cost_usd is not None:
             self.total_cost_usd -= cost_usd
             self.priced_request_count -= 1
@@ -318,6 +334,8 @@ class SessionStats:
         self.request_count += other.request_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.cache_read_tokens += other.cache_read_tokens
+        self.cache_write_tokens += other.cache_write_tokens
         self.total_cost_usd += other.total_cost_usd
         self.priced_request_count += other.priced_request_count
         self.wall_time_seconds += other.wall_time_seconds
@@ -363,6 +381,12 @@ class RecordedRequest:
 
     output_tokens: int
     """Running output tokens recorded so far for the request."""
+
+    cache_read_tokens: int
+    """Running cache-read tokens recorded so far for the request."""
+
+    cache_write_tokens: int
+    """Running cache-write tokens recorded so far for the request."""
 
     cost_usd: float | None
     """Estimate for the whole request so far, or `None` when unpriceable."""
@@ -654,6 +678,8 @@ def _move_request_to_named_model(
         provider,
         cost_usd=cost_usd,
         kind=previous.kind,
+        cache_read_tokens=previous.cache_read_tokens,
+        cache_write_tokens=previous.cache_write_tokens,
     )
     recorded_requests[request_id] = RecordedRequest(
         model_name=model_name,
@@ -661,6 +687,8 @@ def _move_request_to_named_model(
         kind=previous.kind,
         input_tokens=previous.input_tokens,
         output_tokens=previous.output_tokens,
+        cache_read_tokens=previous.cache_read_tokens,
+        cache_write_tokens=previous.cache_write_tokens,
         cost_usd=cost_usd,
         usage_metadata=previous.usage_metadata,
         finalized=previous.finalized,
@@ -782,7 +810,7 @@ def record_message_usage(
                 )
         return None
 
-    from deepagents_code.cost_tracking import estimate_cost
+    from deepagents_code.cost_tracking import cache_token_counts, estimate_cost
 
     model_name, provider = _resolve_usage_model(
         message,
@@ -816,6 +844,8 @@ def record_message_usage(
     # when the fallback is unpriceable, leave a priceable request showing no
     # cost at all.
     cost_usd = estimate_cost(accumulated_usage, model_name, provider)
+    cache_reads, cache_writes = cache_token_counts(accumulated_usage)
+    cache_write_tokens = sum(cache_writes)
 
     stats.record_request(
         model_name,
@@ -824,6 +854,8 @@ def record_message_usage(
         provider,
         cost_usd=cost_usd,
         kind=kind,
+        cache_read_tokens=cache_reads,
+        cache_write_tokens=cache_write_tokens,
     )
     if request_id is not None:
         recorded_requests[request_id] = RecordedRequest(
@@ -832,6 +864,8 @@ def record_message_usage(
             kind=kind,
             input_tokens=input_count,
             output_tokens=output_count,
+            cache_read_tokens=cache_reads,
+            cache_write_tokens=cache_write_tokens,
             cost_usd=cost_usd,
             usage_metadata=accumulated_usage,
             finalized=not is_chunk,
@@ -881,6 +915,49 @@ def format_cost(cost_usd: float) -> str:
     if cost_usd < 0.01:  # noqa: PLR2004  # Display floor for sub-cent estimates.
         return "<$0.01"
     return f"${cost_usd:.2f}"
+
+
+def format_cost_estimate(cost_usd: float) -> str:
+    """Format a speculative USD cost as a rounded, approximate upper bound.
+
+    Used where the figure is a worst-case estimate rather than recorded spend
+    (e.g. the cold-cache warning modal, whose cache may be partially warm):
+    rounds so the display does not imply false precision, and prefixes with `~`
+    to signal "approximately". Do not use for recorded session spend --
+    `format_cost` renders actuals exactly.
+
+    Rounding is upward to two significant figures at or above a dime so it can
+    safely appear in an upper-bound estimate. Between one cent and a dime the
+    figure keeps cent-level precision instead (`0.062` renders `~$0.07`); a
+    second digit there would be sub-cent noise.
+
+    Args:
+        cost_usd: Estimated cost in US dollars.
+
+    Returns:
+        A string such as `'~$0.62'` or `'~$12'`; non-positive values use
+        `'$0.00'` and positive sub-cent values use `'<$0.01'`, matching
+        `format_cost` edge conventions.
+    """
+    if cost_usd <= 0:
+        return "$0.00"
+    if cost_usd < 0.01:  # noqa: PLR2004  # Display floor for sub-cent estimates.
+        return "<$0.01"
+    if cost_usd < 0.1:  # noqa: PLR2004  # Keep cent-level precision under a dime.
+        rounded = Decimal(str(cost_usd)).quantize(
+            Decimal("0.01"), rounding=ROUND_CEILING
+        )
+        return f"~${rounded:.2f}"
+    # Quantize through `Decimal(str(...))` so floating-point representation
+    # cannot cause the upper-bound display to round down. `ROUND_CEILING` is
+    # appropriate here because all values that reach this branch are positive.
+    # `normalize().adjusted()` re-derives the magnitude from the rounded
+    # value so a decade carry (9.99 -> 10) renders as `$10`, not `$10.0`.
+    exponent = math.floor(math.log10(cost_usd))
+    quantum = Decimal(1).scaleb(exponent - 1)
+    rounded = Decimal(str(cost_usd)).quantize(quantum, rounding=ROUND_CEILING)
+    decimals = max(1 - rounded.normalize().adjusted(), 0)
+    return f"~${rounded:.{decimals}f}"
 
 
 def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:

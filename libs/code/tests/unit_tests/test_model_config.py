@@ -2,6 +2,7 @@
 
 import io
 import logging
+import sys
 import threading
 import tomllib
 from collections.abc import Iterator
@@ -34,6 +35,7 @@ from deepagents_code.model_config import (
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
+    ProviderConfig,
     _get_builtin_providers,
     _get_provider_profile_modules,
     _is_local_endpoint,
@@ -43,6 +45,7 @@ from deepagents_code.model_config import (
     clear_default_agent,
     clear_default_model,
     clear_effort_for_model,
+    default_cache_dir,
     fingerprint_mcp_server_config,
     get_available_models,
     get_model_profiles,
@@ -63,6 +66,7 @@ from deepagents_code.model_config import (
     save_recent_model,
     save_thread_columns,
     suppress_warning,
+    suppress_warning_reason,
     touch_recent_model,
     unsuppress_warning,
 )
@@ -76,6 +80,80 @@ def _create_git_common_dir(common_dir: Path) -> Path:
     (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
     (common_dir / "config").write_text("[core]\n\tbare = false\n")
     return common_dir
+
+
+class TestDefaultCacheDir:
+    """`default_cache_dir` resolves the OS-appropriate cache root."""
+
+    def test_xdg_cache_home_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set `XDG_CACHE_HOME` wins on Linux."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+        assert default_cache_dir() == tmp_path / "xdg-cache"
+
+    def test_xdg_cache_home_unset_falls_back_to_dot_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without `XDG_CACHE_HOME`, Linux falls back to `~/.cache`."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / ".cache"
+
+    def test_xdg_cache_home_empty_falls_back_to_dot_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty `XDG_CACHE_HOME` is treated as unset."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CACHE_HOME", "")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / ".cache"
+
+    def test_macos_uses_library_caches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MacOS resolves to `~/Library/Caches`, ignoring `XDG_CACHE_HOME`."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / "Library" / "Caches"
+
+    def test_macos_without_xdg_cache_home_uses_library_caches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MacOS resolves to `~/Library/Caches` when `XDG_CACHE_HOME` is unset."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / "Library" / "Caches"
+
+    def test_xdg_cache_home_relative_falls_back_to_dot_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative `XDG_CACHE_HOME` is invalid per the XDG spec and ignored."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CACHE_HOME", "cache")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / ".cache"
+
+    def test_windows_uses_local_app_data(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows uses its native local application-data directory."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+        assert default_cache_dir() == tmp_path / "local-app-data"
+
+    def test_windows_without_local_app_data_uses_home_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows retains a predictable fallback when `LOCALAPPDATA` is unavailable."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert default_cache_dir() == tmp_path / "AppData" / "Local"
 
 
 def _create_git_repository(root: Path) -> Path:
@@ -1897,6 +1975,20 @@ models = ["llama3"]
 class TestModelConfigGetAllModels:
     """Tests for ModelConfig.get_all_models() method."""
 
+    def test_positional_providers_argument_remains_third(self):
+        """Existing positional callers continue to populate `providers`.
+
+        `auto_classifier_model` was added to this dataclass; declaring it before
+        `providers` would silently bind a positional third argument to the wrong
+        field.
+        """
+        providers: dict[str, ProviderConfig] = {"openai": {"models": ["gpt-5.5"]}}
+
+        config = ModelConfig("openai:gpt-5.5", "openai:gpt-5.4", providers)
+
+        assert config.providers == providers
+        assert config.auto_classifier_model is None
+
     def test_returns_empty_list_when_no_providers(self):
         """Returns empty list when no providers configured."""
         config = ModelConfig()
@@ -2446,6 +2538,212 @@ recent = "openai:gpt-5.2"
         result = clear_default_model(config_path)
 
         assert result is True
+
+
+class TestAutoClassifierModelPersistence:
+    """Tests for the `[models].auto_classifier` writer/reader pair."""
+
+    def test_saves_without_touching_default(self, tmp_path: Path) -> None:
+        """The classifier key must not retarget the main agent model."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "anthropic:claude-opus-4-8"\n',
+            encoding="utf-8",
+        )
+
+        assert (
+            model_config.save_auto_classifier_model(
+                "anthropic:claude-sonnet-5", config_path
+            )
+            is True
+        )
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["models"]["auto_classifier"] == "anthropic:claude-sonnet-5"
+        assert data["models"]["default"] == "anthropic:claude-opus-4-8"
+
+    def test_clear_removes_only_the_classifier_key(self, tmp_path: Path) -> None:
+        """Clearing the classifier leaves the main default in place."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[models]\n"
+            'default = "anthropic:claude-opus-4-8"\n'
+            'auto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        assert model_config.clear_auto_classifier_model(config_path) is True
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data["models"]
+        assert data["models"]["default"] == "anthropic:claude-opus-4-8"
+
+    def test_clear_is_noop_when_absent(self, tmp_path: Path) -> None:
+        """A missing key (or file) still reports success."""
+        config_path = tmp_path / "config.toml"
+
+        assert model_config.clear_auto_classifier_model(config_path) is True
+
+        config_path.write_text('[models]\ndefault = "openai:gpt-5.6-sol"\n')
+
+        assert model_config.clear_auto_classifier_model(config_path) is True
+        assert 'default = "openai:gpt-5.6-sol"' in config_path.read_text()
+
+    def test_load_exposes_stored_spec(self, tmp_path: Path) -> None:
+        """`ModelConfig` surfaces the stored spec for the selector's marker."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "openai:gpt-5.6-luna"\n',
+            encoding="utf-8",
+        )
+
+        config = model_config.ModelConfig.load(config_path)
+
+        assert config.auto_classifier_model == "openai:gpt-5.6-luna"
+
+    def test_round_trips_through_the_launch_resolver(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """What Ctrl+S writes must be what the launcher reads.
+
+        `ModelConfig.auto_classifier_model` (the picker's `(default)` marker) and
+        `config.resolve_auto_classifier_model_with_problem` (what actually
+        configures the classifier) reach the same key by different routes, so
+        nothing else in the suite would catch them drifting apart.
+        """
+        from deepagents_code import config as config_module
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL", raising=False)
+        model_config.clear_caches()
+
+        assert model_config.save_auto_classifier_model("openai:gpt-5.6-luna") is True
+        assert config_module.resolve_auto_classifier_model_with_problem() == (
+            "openai:gpt-5.6-luna",
+            None,
+        )
+
+        assert model_config.clear_auto_classifier_model() is True
+        assert config_module.resolve_auto_classifier_model_with_problem() == (
+            None,
+            None,
+        )
+
+    def test_clear_returns_false_and_leaves_no_temp_file_on_write_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An I/O failure mid-write is reported, not swallowed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(model_config.tomli_w, "dump", _boom)
+
+        assert model_config.clear_auto_classifier_model(config_path) is False
+        assert list(tmp_path.glob("*.tmp")) == []
+        # The original file survives an aborted write.
+        assert "auto_classifier" in config_path.read_text()
+
+    def test_clear_invalidates_the_default_config_cache(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A cleared key must not linger in the process-wide cache.
+
+        The selector's `(default)` marker re-reads through `ModelConfig.load()`
+        after Ctrl+S, so a stale cache would keep marking a cleared row.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+
+        assert (
+            model_config.ModelConfig.load().auto_classifier_model
+            == "anthropic:claude-sonnet-5"
+        )
+
+        assert model_config.clear_auto_classifier_model() is True
+
+        assert model_config.ModelConfig.load().auto_classifier_model is None
+
+    def test_clear_fails_and_warns_on_non_table_models(
+        self, caplog: pytest.LogCaptureFixture, tmp_path: Path
+    ) -> None:
+        """A structurally broken `[models]` reports failure, not a clean clear.
+
+        `True` is this contract's clean-clear signal and the picker relays it to
+        the user as "cleared", so a file that still needs hand repair must not
+        return it — the warning alone reaches no user surface.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("models = 1\n", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config.clear_auto_classifier_model(config_path) is False
+
+        assert "non-table [models] section" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("contents", "label"),
+        [("", "empty file"), ('[permissions]\nmode = "auto"\n', "no [models] table")],
+    )
+    def test_clear_is_a_silent_noop_when_no_models_table_exists(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+        contents: str,
+        label: str,
+    ) -> None:
+        """An ordinary config with nothing stored clears cleanly and quietly.
+
+        `data.get("models")` yields `None` here, which must not be mistaken for
+        the wrong-shape branch: telling the user their `[models]` section is
+        broken when they simply never stored a model sends them to repair a file
+        that is fine.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(contents, encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config.clear_auto_classifier_model(config_path) is True
+            assert model_config.clear_default_model(config_path) is True
+
+        assert "non-table [models] section" not in caplog.text, label
+
+    def test_validate_warns_when_spec_lacks_provider(
+        self, caplog: pytest.LogCaptureFixture, tmp_path: Path
+    ) -> None:
+        """A provider-less spec gets the same warning as `default`/`recent`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "claude-sonnet-5"\n', encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            model_config.ModelConfig.load(config_path)
+
+        assert "auto_classifier_model 'claude-sonnet-5'" in caplog.text
+
+    def test_load_drops_non_string_spec(self, tmp_path: Path) -> None:
+        """A malformed entry resolves to `None` instead of a non-spec value."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nauto_classifier = 3\n", encoding="utf-8")
+
+        config = model_config.ModelConfig.load(config_path)
+
+        assert config.auto_classifier_model is None
 
 
 class TestEffortPersistence:
@@ -4497,6 +4795,38 @@ api_key_env = "CIS_API_KEY"
         assert has_provider_credentials("nonexistent_provider_xyz") is None
 
 
+class TestIsLangsmithGatewayHost:
+    """Tests for the shared LangSmith gateway host predicate.
+
+    Two modules gate behavior on this (`doctor` classifies tracing endpoints,
+    `app` decides whether a provider key mismatches the gateway it is being
+    sent through), so its boundary cases are pinned directly rather than only
+    through callers. `cold_cache` deliberately does *not* use it: its
+    cross-format decision comes from the model-name prefix alone and is
+    host-independent.
+    """
+
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [
+            ("smith.langchain.com", True),
+            ("eu.api.smith.langchain.com", True),
+            # A dot boundary is required, so a longer name that merely ends in
+            # the gateway's letters is not a subdomain of it.
+            ("notsmith.langchain.com", False),
+            # The gateway name appearing earlier in the string is not a suffix.
+            ("smith.langchain.com.evil.example", False),
+            ("langchain.com", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_host_classification(self, host: str | None, expected: bool) -> None:
+        from deepagents_code.model_config import is_langsmith_gateway_host
+
+        assert is_langsmith_gateway_host(host) is expected
+
+
 class TestIsLocalEndpoint:
     """Tests for _is_local_endpoint URL classification."""
 
@@ -4844,6 +5174,39 @@ temperature = 0.5
         config = ModelConfig.load(config_path)
         kwargs = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert kwargs == {"temperature": 0.5}
+
+
+class TestModelConfigGetEffectiveKwargs:
+    """Tests for effective request kwargs used by model construction and policy."""
+
+    def test_merges_params_endpoint_and_runtime_override(self, tmp_path):
+        """Runtime params win after per-model config and the resolved endpoint."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+base_url = "https://configured.example.com/v1"
+
+[models.providers.openai.params]
+temperature = 0
+base_url = "https://params.example.com/v1"
+prompt_cache_retention = "in_memory"
+
+[models.providers.openai.params."gpt-5.5"]
+prompt_cache_retention = "24h"
+""")
+        config = ModelConfig.load(config_path)
+
+        kwargs = config.get_effective_kwargs(
+            "openai",
+            model_name="gpt-5.5",
+            overrides={"temperature": 0.5},
+        )
+
+        assert kwargs == {
+            "temperature": 0.5,
+            "base_url": "https://configured.example.com/v1",
+            "prompt_cache_retention": "24h",
+        }
 
 
 class TestModelConfigGetProfileOverrides:
@@ -5924,6 +6287,42 @@ class TestSuppressWarning:
         assert data["models"]["default"] == "some:model"
         assert "ripgrep" in data["warnings"]["suppress"]
 
+    def test_returns_false_when_warnings_is_not_a_table(self, tmp_path) -> None:
+        """Reports failure instead of raising on a hand-edited `warnings = []`.
+
+        Callers run this inside detached async continuations where a raised
+        `AttributeError` would surface only as a background-task failure and
+        abandon the user's pending action.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        result = suppress_warning("ripgrep", config_path)
+
+        assert result is False
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
+    def test_reason_names_a_malformed_warnings_table(self, tmp_path: Path) -> None:
+        """The cause must be distinguishable from an I/O failure.
+
+        The two need different fixes, and a bare `False` supports only the
+        generic "check file permissions" advice -- which sends a user with one
+        line of bad TOML to `chmod` a file that was never unwritable.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        reason = suppress_warning_reason("ripgrep", config_path)
+
+        assert reason is not None
+        assert "not a table" in reason
+
+    def test_reason_is_none_on_success(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+
+        assert suppress_warning_reason("ripgrep", config_path) is None
+        assert is_warning_suppressed("ripgrep", config_path) is True
+
 
 class TestUnsuppressWarning:
     """Tests for unsuppress_warning() function."""
@@ -5999,6 +6398,15 @@ class TestUnsuppressWarning:
         result = unsuppress_warning("ripgrep", config_path)
 
         assert result is True
+
+    def test_returns_false_when_warnings_is_not_a_table(self, tmp_path: Path) -> None:
+        """Reports failure instead of raising on a hand-edited `warnings = []`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('warnings = ["ripgrep"]\n')
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is False
 
     def test_roundtrip_suppress_unsuppress(self, tmp_path: Path) -> None:
         """Suppress then unsuppress returns to original state."""

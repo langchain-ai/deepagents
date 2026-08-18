@@ -25,6 +25,7 @@ from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
 )
+from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.client.non_interactive import (
     _MAX_HITL_ITERATIONS,
@@ -50,7 +51,11 @@ from deepagents_code.client.non_interactive import (
     run_non_interactive,
 )
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
-from deepagents_code.file_ops import FileOpTracker
+from deepagents_code.file_ops import (
+    DiffOutcome,
+    FileOperationRecord,
+    FileOpTracker,
+)
 from deepagents_code.hooks.client_lifecycle import (
     ClientHookService,
     ClientHookStopError,
@@ -668,9 +673,31 @@ class TestQuietFileOpNotification:
     """The file-operation (📝) notification honors quiet mode."""
 
     @staticmethod
-    def _run(*, quiet: bool) -> str:
-        """Drive a file-op `ToolMessage` chunk and return captured stderr."""
-        record = SimpleNamespace(diff="--- a\n+++ b", display_path="src/foo.py")
+    def _run(
+        *,
+        quiet: bool,
+        diff_outcome: DiffOutcome = "shown",
+        after_read_error: str | None = None,
+        tool_succeeded: bool = True,
+    ) -> str:
+        """Drive a file-op `ToolMessage` chunk and return captured stderr.
+
+        Builds a real `FileOperationRecord` rather than a stand-in: the parity
+        this class asserts is between `-p` and the TUI reading the same type,
+        and a `SimpleNamespace` would keep passing after a field was renamed
+        out from under both.
+        """
+        record = FileOperationRecord(
+            tool_name="delete",
+            display_path="src/foo.py",
+            physical_path=None,
+            tool_call_id="tc1",
+            status="success",
+            tool_succeeded=tool_succeeded,
+            diff="--- a\n+++ b" if diff_outcome == "shown" else None,
+            diff_outcome=diff_outcome,
+            after_read_error=after_read_error,
+        )
         tracker = MagicMock()
         tracker.complete_with_message.return_value = record
 
@@ -691,6 +718,73 @@ class TestQuietFileOpNotification:
 
     def test_non_quiet_emits_file_op_notification(self) -> None:
         assert "foo.py" in self._run(quiet=False)
+
+    def test_a_lost_pre_image_is_reported_without_a_diff(self) -> None:
+        """Headless output must not stay silent about a change it cannot verify.
+
+        A `delete` whose pre-image was lost produces no diff, so gating the
+        notification on `record.diff` printed nothing at all — leaving `-p` and
+        CI users with no signal that the file's contents were never read.
+        """
+        output = self._run(quiet=False, diff_outcome="untrusted_before")
+
+        assert "foo.py" in output
+        assert "prior contents could not be read" in output
+
+    def test_quiet_keeps_the_caveat_but_drops_the_path_line(self) -> None:
+        """Quiet suppresses diagnostics; an unverifiable change is not one.
+
+        `--quiet` exists to keep stdout clean for `-p`, and it already routes
+        this console to stderr — so the caveat cannot pollute the result either
+        way. Dropping it here would leave a change that could not be verified
+        stated nowhere at all, which is the mode CI reads.
+        """
+        output = self._run(quiet=True, diff_outcome="untrusted_before")
+
+        assert "prior contents could not be read" in output
+        assert "foo.py" not in output
+
+    @pytest.mark.parametrize(
+        ("diff_outcome", "after_read_error", "expected"),
+        [
+            ("untrusted_before", None, "prior contents could not be read"),
+            ("unreadable_after", "permission_denied", "permission_denied"),
+            ("terminators_only", None, "confined to line terminators"),
+        ],
+    )
+    def test_every_unshowable_outcome_reaches_headless_output(
+        self,
+        diff_outcome: DiffOutcome,
+        after_read_error: str | None,
+        expected: str,
+    ) -> None:
+        """`-p` is the surface CI reads, so no outcome may go unstated there.
+
+        Only `untrusted_before` was covered, leaving the other two free to
+        print an unqualified path — a change reported as routine when it could
+        not be verified.
+        """
+        output = self._run(
+            quiet=False,
+            diff_outcome=diff_outcome,
+            after_read_error=after_read_error,
+        )
+
+        assert expected in output
+
+    def test_a_failed_tool_gets_no_success_caveat(self) -> None:
+        """A caveat describes what a *successful* call could not show.
+
+        With the pre-image lost and the tool then failing, the outcome survives
+        into the caveat, which would print "The `delete` call succeeded" beside
+        an operation that did not — and a CI consumer parsing `-p` would record
+        a successful write.
+        """
+        output = self._run(
+            quiet=False, diff_outcome="untrusted_before", tool_succeeded=False
+        )
+
+        assert "succeeded" not in output
 
 
 class TestNoStreamMode:
@@ -2084,6 +2178,56 @@ class TestMaxTurns:
                     max_turns=3,
                 )
         assert agent.astream.call_count == 3  # 1 initial + 2 HITL resumes = 3 turns
+
+    async def test_tags_every_resume_round_but_not_the_initial_run(self) -> None:
+        """Headless resumes carry the resume marker; the turn's first run does not.
+
+        The tag is what lets LangSmith fold a headless approval turn's sibling
+        root runs back together, and long auto-approval CI runs are where that
+        matters most. Also pins that the base config is never tagged in place --
+        reassigning instead of deriving would leak the marker onto the next
+        turn's initial run.
+        """
+        agent = _make_looping_agent()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._HITL_REQUEST_ADAPTER"
+            ) as mock_adapter,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.model_name = ""
+            mock_adapter.validate_python.side_effect = lambda v: v
+            with pytest.raises(HITLIterationLimitError):
+                await _run_agent_loop(
+                    agent,
+                    "task",
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=True,
+                    max_turns=3,
+                )
+
+        configs = [call.kwargs["config"] for call in agent.astream.call_args_list]
+        assert len(configs) == 3
+        assert RESUME_TRACE_TAG not in configs[0].get("tags", [])
+        for resume_config in configs[1:]:
+            assert RESUME_TRACE_TAG in resume_config["tags"]
+            assert resume_config["configurable"] == config["configurable"]
+        assert "tags" not in config
 
     async def test_limit_hit_returns_exit_code_124(self) -> None:
         """run_non_interactive returns 124 when --max-turns is exhausted.

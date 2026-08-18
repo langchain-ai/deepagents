@@ -12,6 +12,7 @@ import importlib.util
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import tomllib
@@ -530,6 +531,42 @@ top-level user-facing config and agent directories so listing/iterating
 `~/.deepagents` doesn't conflate state with agents.
 """
 
+
+def default_cache_dir() -> Path:
+    """Return the OS-appropriate cache directory for Deep Agents Code.
+
+    Uses `~/Library/Caches` on macOS, `LOCALAPPDATA` on Windows (falling back
+    to `~/AppData/Local`), and `XDG_CACHE_HOME` elsewhere when it is an
+    absolute path (falling back to `~/.cache`). The XDG spec treats relative
+    `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
+    resolved against the launch directory.
+
+    Platform-native locations are the convention for a long-lived app (this is
+    what `platformdirs` codifies and what `uv` itself does — its own cache is
+    `~/Library/Caches/uv` on macOS). The install script deliberately does not
+    follow this: as a portable one-shot POSIX bootstrap it uses XDG-style
+    `${XDG_CACHE_HOME:-~/.cache}` on every platform (like the rustup and uv
+    installers), so on macOS its `<cache>/deepagents-code/install.log` lands
+    under a different root than the update logs. That divergence is
+    intentional; do not "fix" one side to match the other without a concrete
+    need (e.g., a diagnostic command that collects both logs).
+
+    Returns:
+        Base cache directory, before the `deepagents-code` subdirectory.
+    """
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data)
+        return Path.home() / "AppData" / "Local"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches"
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home and Path(xdg_cache_home).is_absolute():
+        return Path(xdg_cache_home)
+    return Path.home() / ".cache"
+
+
 RECENT_MODELS_FILENAME = "recent_models.json"
 """Filename under `DEFAULT_STATE_DIR` for the MRU list shown in `/model`."""
 
@@ -544,6 +581,42 @@ LANGSMITH_GATEWAY_PROVIDERS: frozenset[str] = frozenset(
     {"anthropic", "baseten", "fireworks", "google_genai", "openai"}
 )
 """Providers whose LangChain integrations support LangSmith LLM Gateway env vars."""
+
+LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
+"""Host identifying LangSmith's managed (SaaS) gateway.
+
+The single definition: compare against it through `is_langsmith_gateway_host`
+rather than testing it as a raw-URL substring, which also accepts lookalikes
+such as `smith.langchain.com.evil.example`.
+"""
+
+
+def is_langsmith_gateway_host(host: str | None) -> bool:
+    """Return whether a parsed hostname is the LangSmith managed gateway.
+
+    Matches the host exactly or as a subdomain (org-scoped gateway URLs). The
+    suffix match requires a dot boundary, so `notsmith.langchain.com` does not
+    qualify; a host that merely *contains* the gateway name earlier in the
+    string (`smith.langchain.com.evil.example`) is not a suffix and is
+    likewise rejected.
+
+    Case and a trailing root dot are normalized here rather than left to the
+    caller. Both callers reach this from a different parser, and a precondition
+    enforced only by a comment in each caller is the way the two drift apart.
+
+    Args:
+        host: A hostname, or `None` when the URL could not be parsed.
+
+    Returns:
+        `True` when the host is the gateway or a subdomain of it.
+    """
+    if host is None:
+        return False
+    normalized = host.strip().lower().removesuffix(".")
+    return normalized == LANGSMITH_GATEWAY_HOST or normalized.endswith(
+        f".{LANGSMITH_GATEWAY_HOST}"
+    )
+
 
 LANGSMITH_GATEWAY_ENV = "LANGSMITH_GATEWAY"
 LANGSMITH_GATEWAY_API_KEY_ENV = "LANGSMITH_GATEWAY_API_KEY"
@@ -2551,6 +2624,23 @@ class ModelConfig:
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
+    auto_classifier_model: str | None = None
+    """The stored Auto classifier model (from config file `[models].auto_classifier`).
+
+    Carries the raw string with only a `str` type guard, so a blank or
+    unbuildable spec reaches this field. Its only *value* consumer is the
+    `/auto model` picker's `(default)` marker, which needs the stored text
+    rather than a resolved model, so this field never rewrites or drops a value:
+    `_validate` logs a warning when the text lacks a `provider:` prefix,
+    `config.resolve_auto_classifier_model_with_problem` rejects a blank or
+    non-string value at launch, and a spec that cannot be built fails closed at
+    review time.
+
+    Not the resolution path — a `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` export
+    or `--auto-classifier-model` flag outranks this value at launch, so it may
+    differ from the classifier Auto actually reviews with.
+    """
+
     def __post_init__(self) -> None:
         """Freeze the providers dict into a read-only proxy."""
         if not isinstance(self.providers, MappingProxyType):
@@ -2590,9 +2680,13 @@ class ModelConfig:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
             models_section = data.get("models", {})
+            stored_classifier = models_section.get("auto_classifier")
             config = cls(
                 default_model=models_section.get("default"),
                 recent_model=models_section.get("recent"),
+                auto_classifier_model=(
+                    stored_classifier if isinstance(stored_classifier, str) else None
+                ),
                 providers=models_section.get("providers", {}),
             )
         except tomllib.TOMLDecodeError as e:
@@ -2649,6 +2743,14 @@ class ModelConfig:
                 "recent_model '%s' should use provider:model format "
                 "(e.g., 'anthropic:claude-sonnet-4-5')",
                 self.recent_model,
+            )
+
+        # Warn if auto_classifier_model is set but doesn't use provider:model format
+        if self.auto_classifier_model and ":" not in self.auto_classifier_model:
+            logger.warning(
+                "auto_classifier_model '%s' should use provider:model format "
+                "(e.g., 'anthropic:claude-sonnet-4-5')",
+                self.auto_classifier_model,
             )
 
         # Validate enabled field type and class_path format / params references
@@ -2951,6 +3053,37 @@ class ModelConfig:
                 result.update(overrides)
         return result
 
+    def get_effective_kwargs(
+        self,
+        provider_name: str,
+        *,
+        model_name: str | None = None,
+        overrides: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the effective configured and runtime model kwargs.
+
+        This mirrors the ordering used when constructing a model: provider and
+        per-model `params`, then the resolved `base_url`, then runtime
+        overrides. Consumers that need to reason about an actual request (such
+        as cache policy checks) must use this rather than inspecting one source
+        of settings in isolation.
+
+        Args:
+            provider_name: Provider whose configuration should be resolved.
+            model_name: Optional model name for per-model params.
+            overrides: Per-request params, which take highest precedence.
+
+        Returns:
+            Effective model kwargs.
+        """
+        result = self.get_kwargs(provider_name, model_name=model_name)
+        base_url = self.get_base_url(provider_name)
+        if base_url:
+            result["base_url"] = base_url
+        if overrides:
+            result.update(overrides)
+        return result
+
     def get_profile_overrides(
         self, provider_name: str, *, model_name: str | None = None
     ) -> dict[str, Any]:
@@ -3104,6 +3237,32 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
     return _save_model_field("default", model_spec, config_path)
 
 
+def save_auto_classifier_model(
+    model_spec: str, config_path: Path | None = None
+) -> bool:
+    """Persist the model the Auto approval classifier reviews actions with.
+
+    Writes `[models].auto_classifier`, the persistent counterpart of the
+    session-only `/auto model` switch. Both `--auto-classifier-model` and a
+    `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` export outrank the stored value at
+    launch (flag > env > this key), so a successful write does not guarantee the
+    next launch reviews with it.
+
+    Args:
+        model_spec: The classifier model in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+
+    Note:
+        This function does not preserve comments in the config file.
+    """
+    return _save_model_field("auto_classifier", model_spec, config_path)
+
+
 def clear_default_model(config_path: Path | None = None) -> bool:
     """Remove the default model from the config file.
 
@@ -3116,7 +3275,55 @@ def clear_default_model(config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        True if the key was removed (or was already absent), False on I/O error.
+        True if the key was removed or was already absent, False when the config
+            file could not be read or written or its `[models]` section is not a
+            table. See `_clear_model_field` for the full contract.
+    """
+    return _clear_model_field("default", config_path)
+
+
+def clear_auto_classifier_model(config_path: Path | None = None) -> bool:
+    """Remove the stored Auto classifier model from the config file.
+
+    Deletes the `[models].auto_classifier` key so future launches review gated
+    actions with the main agent model, unless `--auto-classifier-model` or
+    `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` supplies one — both outrank this key,
+    so clearing it does not guarantee the main agent model is used.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed or was already absent, False when the config
+            file could not be read or written or its `[models]` section is not a
+            table. See `_clear_model_field` for the full contract.
+
+    Note:
+        This function does not preserve comments in the config file.
+    """
+    return _clear_model_field("auto_classifier", config_path)
+
+
+def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
+    """Delete a `[models].<field>` key from the config file.
+
+    Args:
+        field: Key name under the `[models]` table (e.g., `'default'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed, or was already absent because the file or
+            its `[models]` table does not exist. False on I/O error, on
+            unparseable TOML, and when `[models]` is present but is not a table
+            — nothing can be deleted from those and the file needs hand repair,
+            so callers must not report a clean clear.
+
+    Note:
+        This function does not preserve comments in the config file.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3130,10 +3337,27 @@ def clear_default_model(config_path: Path | None = None) -> bool:
                 data = tomllib.load(f)
 
             models_section = data.get("models")
-            if not isinstance(models_section, dict) or "default" not in models_section:
+            if models_section is None:
+                # No `[models]` table at all — an ordinary config that simply
+                # never stored a model. Nothing to clear and nothing to report.
+                return True
+            if not isinstance(models_section, dict):
+                # Valid TOML of the wrong shape (e.g. a scalar `models = 1`).
+                # There is no key to delete and the file needs hand repair, so
+                # report failure: `True` is this contract's clean-clear signal,
+                # and callers relay it to the user as "cleared".
+                logger.warning(
+                    "Config file %s has a non-table [models] section (%s); "
+                    "cannot clear models.%s",
+                    config_path,
+                    type(models_section).__name__,
+                    field,
+                )
+                return False
+            if field not in models_section:
                 return True  # Already absent
 
-            del models_section["default"]
+            del models_section[field]
 
             fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
             try:
@@ -3147,7 +3371,7 @@ def clear_default_model(config_path: Path | None = None) -> bool:
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # See `_save_toml_field` for why `TypeError` / `ValueError` are
         # folded into the bool return contract.
-        logger.exception("Could not clear default model preference")
+        logger.exception("Could not clear models.%s preference", field)
         return False
     else:
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
@@ -3404,7 +3628,32 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section). Callers that surface
+            the failure to the user should prefer `suppress_warning_reason`,
+            which distinguishes those causes.
+    """
+    return suppress_warning_reason(key, config_path) is None
+
+
+def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | None:
+    """Suppress a warning, reporting *why* the save failed when it does.
+
+    Same write as `suppress_warning`. The distinct causes matter because they
+    have different fixes: a malformed `[warnings]` section is one line of TOML
+    the user can correct, while telling them to check file permissions -- the
+    only advice a bare `False` supports -- sends them to `chmod` a file that
+    was never unwritable.
+
+    Args:
+        key: Warning identifier to suppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `None` when the save succeeded, otherwise a short phrase naming the
+            cause, suitable for interpolating into a user-facing message.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3421,6 +3670,20 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
 
             if "warnings" not in data:
                 data["warnings"] = {}
+            # A hand-edited `warnings = [...]` (or any non-table) would make
+            # `.get("suppress")` below raise `AttributeError`, and the callers'
+            # detached tasks cannot surface a raised exception — report the
+            # failure so the caller can fall back to an in-app warning.
+            if not isinstance(data["warnings"], dict):
+                # Warning, not debug: this is a user-fixable config error whose
+                # only other symptom is a preference that silently fails to
+                # save.
+                logger.warning(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(data["warnings"]).__name__,
+                )
+                return f"[warnings] in {config_path} is not a table"
             suppress_list = data["warnings"].get("suppress", [])
             if not isinstance(suppress_list, list):
                 logger.debug(
@@ -3442,10 +3705,13 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except tomllib.TOMLDecodeError:
         logger.exception("Could not save warning suppression for '%s'", key)
-        return False
-    return True
+        return f"{config_path} is not valid TOML"
+    except OSError:
+        logger.exception("Could not save warning suppression for '%s'", key)
+        return f"{config_path} could not be written"
+    return None
 
 
 def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
@@ -3462,7 +3728,8 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3475,7 +3742,15 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
 
-            suppress_list = data.get("warnings", {}).get("suppress", [])
+            warnings_section = data.get("warnings", {})
+            if not isinstance(warnings_section, dict):
+                logger.debug(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(warnings_section).__name__,
+                )
+                return False
+            suppress_list = warnings_section.get("suppress", [])
             if not isinstance(suppress_list, list):
                 logger.debug(
                     "[warnings].suppress in %s should be a list, got %s",
@@ -3487,7 +3762,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
                 return True  # already unsuppressed
 
             suppress_list.remove(key)
-            data.setdefault("warnings", {})["suppress"] = suppress_list
+            warnings_section["suppress"] = suppress_list
 
             fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
             try:

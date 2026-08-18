@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -43,6 +44,7 @@ from deepagents_code.plugins.adapters.skills_middleware import (
     discover_skill_dirs,
 )
 from deepagents_code.plugins.commands_cli import execute_plugin_command
+from deepagents_code.plugins.discovery import auto_update_plugins
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     load_marketplace,
@@ -122,6 +124,29 @@ def _make_marketplace(root: Path) -> None:
             }
         },
     )
+
+
+def _install_remote_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, str]:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    monkeypatch.setattr(
+        "deepagents_code.plugins.discovery.materialize_marketplace_source",
+        lambda _source: (load_marketplace(marketplace_root), marketplace_root),
+    )
+    add_marketplace_source("https://example.com/company-tools.git")
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1")
+    monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE")
+    return marketplace_root, plugin_id
 
 
 def _add_docs_helper_plugin(root: Path) -> None:
@@ -311,6 +336,95 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
     )
     _write_json(manifest_path, {"name": "quality-review-plugin"})
     assert install_plugin(plugin_id).version is None
+
+
+@pytest.mark.parametrize(
+    ("global_enabled", "manifest_enabled", "should_update"),
+    [
+        (True, True, True),
+        (False, True, False),
+        (None, True, True),
+        (True, None, False),
+    ],
+    ids=(
+        "enabled",
+        "global-disabled",
+        "global-default",
+        "manifest-omitted",
+    ),
+)
+def test_plugin_auto_update_requires_global_and_manifest_enablement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    global_enabled: bool | None,
+    manifest_enabled: bool | None,
+    should_update: bool,
+) -> None:
+    marketplace_root, plugin_id = _install_remote_plugin(tmp_path, monkeypatch)
+    if global_enabled is None:
+        monkeypatch.delenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE")
+    else:
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1" if global_enabled else "0"
+        )
+    old_cache = Path(load_installed_plugins()[plugin_id].install_path)
+    manifest: dict[str, object] = {
+        "name": "quality-review-plugin",
+        "version": "2.0.0",
+    }
+    if manifest_enabled is not None:
+        manifest["extensions"] = {
+            "com.langchain.deepagents.code": {"autoUpdate": manifest_enabled}
+        }
+    _write_json(
+        marketplace_root / "plugins" / "quality-review-plugin" / "plugin.json",
+        manifest,
+    )
+
+    assert auto_update_plugins() == ((plugin_id,) if should_update else ())
+    installed = load_installed_plugins()[plugin_id]
+    assert installed.version == ("2.0.0" if should_update else "1.0.0")
+    if should_update:
+        assert Path(installed.install_path) == versioned_cache_path(plugin_id, "2.0.0")
+    assert old_cache.is_dir()
+
+
+def test_plugin_auto_update_serializes_with_uninstall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marketplace_root, plugin_id = _install_remote_plugin(tmp_path, monkeypatch)
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+
+    def wait_during_refresh(_source: object) -> tuple[PluginMarketplace, Path]:
+        refresh_started.set()
+        assert release_refresh.wait(5)
+        return load_marketplace(marketplace_root), marketplace_root
+
+    monkeypatch.setattr(
+        "deepagents_code.plugins.discovery.materialize_marketplace_source",
+        wait_during_refresh,
+    )
+    uninstall_started = threading.Event()
+
+    def run_uninstall() -> None:
+        uninstall_started.set()
+        uninstall_plugin(plugin_id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        update = executor.submit(auto_update_plugins)
+        try:
+            assert refresh_started.wait(5)
+            uninstall = executor.submit(run_uninstall)
+            assert uninstall_started.wait(5)
+            assert not uninstall.done()
+        finally:
+            release_refresh.set()
+        assert update.result(timeout=5) == ()
+        uninstall.result(timeout=5)
+
+    assert plugin_id not in load_installed_plugins()
+    assert plugin_id not in load_enabled_plugin_ids()
 
 
 def test_failed_cached_plugin_load_rolls_back_install(
@@ -806,6 +920,48 @@ async def test_plugin_manager_opens_add_marketplace_input(
         help_text = str(screen.query_one("#plugin-manager-help").render())
         assert "Enter to add" in help_text
         assert "Esc to cancel" in help_text
+
+
+async def test_plugin_manager_blocks_option_selection_while_checking_close_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close snapshot cannot miss a plugin change made from an option row."""
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def check_reload_required() -> bool:
+        started.set()
+        await release.wait()
+        return False
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen(check_reload_required=check_reload_required)
+        app.push_screen(screen)
+        await pilot.pause()
+
+        await pilot.press("escape")
+        await started.wait()
+        assert screen._close_phase == "checking"
+
+        # Enter normally opens the selected plugin's details, from which it can
+        # be installed. It must be ignored while the close snapshot is pending.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._mode == "list"
+        assert screen._selected_plugin is None
+
+        release.set()
+        await pilot.pause()
 
 
 async def test_plugin_manager_add_marketplace_runs_in_background(
@@ -1607,6 +1763,39 @@ def test_manager_state_keeps_pending_reload_after_disable_while_loaded(
     assert row.enabled is False
     assert row.session_loaded is True
     assert row.load_state == "pending_reload"
+
+
+def test_manager_state_defers_mcp_reload_hint_while_connecting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+    loaded_plugin_ids = frozenset({plugin_id})
+
+    connecting_state = _load_manager_state(
+        mcp_connecting=True,
+        loaded_plugin_ids=loaded_plugin_ids,
+    )
+    settled_state = _load_manager_state(loaded_plugin_ids=loaded_plugin_ids)
+    connecting_row = next(
+        row for row in connecting_state.installed_plugins if row.plugin_id == plugin_id
+    )
+    settled_row = next(
+        row for row in settled_state.installed_plugins if row.plugin_id == plugin_id
+    )
+
+    assert connecting_row.load_state == "enabled"
+    assert connecting_row.mcp_connected is None
+    assert settled_row.mcp_connected is False
 
 
 def test_manager_state_previews_local_discover_components(

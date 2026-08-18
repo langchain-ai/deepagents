@@ -54,6 +54,18 @@ class TestPrepareConfig:
         result = _prepare_config({"configurable": {"thread_id": ""}})
         assert result["configurable"]["thread_id"] == ""
 
+    def test_preserves_top_level_tags(self) -> None:
+        """Every dcode config crosses this seam before reaching the server.
+
+        Trace tags such as `dcode:resume` live at the top level, so narrowing
+        this to a whitelist of known keys would drop them and make trace
+        grouping a silent no-op with its own tests still green.
+        """
+        result = _prepare_config(
+            {"configurable": {"thread_id": "t1"}, "tags": ["dcode:resume"]}
+        )
+        assert result["tags"] == ["dcode:resume"]
+
 
 # ---------------------------------------------------------------------------
 # _convert_message_data

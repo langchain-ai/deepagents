@@ -615,7 +615,7 @@ jobs:
           MAX_WAIT=2700 # 45 min
           MAX_QUERY_FAILS=5
           WAITED=0
-          echo "::notice::Publish in flight; waiting up to $((MAX_WAIT / 60))m for it to finish before running release-please: $PENDING"
+          echo "::notice title=Release publish in progress::Waiting up to $((MAX_WAIT / 60)) minutes for the current publish to finish before updating release PRs. Pending publish: $PENDING"
 
           while [ -n "$PENDING" ] && [ "$WAITED" -lt "$MAX_WAIT" ]; do
             if [ "$QUERY_FAILS" -ge "$MAX_QUERY_FAILS" ]; then
@@ -646,7 +646,7 @@ jobs:
           # next push rather than failing — a hung publish is outside this run's
           # control and the operator must clear it manually.
           echo "skip=true" >> "$GITHUB_OUTPUT"
-          echo "::warning::release-please deferred after waiting ${WAITED}s: publish still in flight (or release state unverifiable): $PENDING"
+          echo "::warning title=Release publish still in progress::Waited $((WAITED / 60)) minutes, but the publish is still running or its status could not be verified. Release PR updates are deferred until the next push. Pending publish: $PENDING"
           {
             echo "## release-please deferred"
             echo ""
@@ -783,8 +783,18 @@ jobs:
         with:
           ref: ${{ matrix.pr.headBranchName }}
 
+      # Use the composite action rather than calling setup-uv directly: it is
+      # the single place the uv `version:` pin lives, and `bump_uv_pin.yml`
+      # only rewrites that file. A direct setup-uv call here would pass no
+      # `version:` and silently resolve latest uv on every release run, racing
+      # the `releases.astral.sh` mirror on fresh releases.
       - name: Setup uv
-        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          # Only `uv lock` runs below, which leaves the cache dir empty and
+          # makes setup-uv's post-job save throw. See `check_lockfiles.yml`.
+          enable-cache: "false"
 
       - name: Update lockfiles
         id: update-lockfiles

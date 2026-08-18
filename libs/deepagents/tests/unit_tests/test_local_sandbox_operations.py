@@ -1376,8 +1376,8 @@ class TestLocalSandboxOperations:
         assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
-        assert "file1.txt" in paths
-        assert "file2.txt" in paths
+        assert f"{base_dir}/file1.txt" in paths
+        assert f"{base_dir}/file2.txt" in paths
         assert not any(".py" in p for p in paths)
 
     def test_glob_recursive_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -1407,7 +1407,7 @@ class TestLocalSandboxOperations:
         assert result == []
 
     def test_glob_with_directories(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test that glob includes directories in results."""
+        """Glob filters out directories and only returns regular files."""
         base_dir = "/tmp/test_sandbox_ops/glob_dirs"
         sandbox.execute(f"mkdir -p {base_dir}/dir1 {base_dir}/dir2")
         sandbox.write(f"{base_dir}/file.txt", "content")
@@ -1415,12 +1415,11 @@ class TestLocalSandboxOperations:
         result = sandbox.glob("*", path=base_dir).matches
 
         assert result is not None
-        assert len(result) == 3
-        # Check is_dir flags
-        dir_count = sum(1 for info in result if info["is_dir"])
+        assert len(result) == 1
+        # All results must be regular files
         file_count = sum(1 for info in result if not info["is_dir"])
-        assert dir_count == 2
         assert file_count == 1
+        assert result[0]["path"] == f"{base_dir}/file.txt"
 
     def test_glob_specific_extension(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with specific file extension pattern."""
@@ -1449,7 +1448,7 @@ class TestLocalSandboxOperations:
         assert result is not None
         # Should only match hidden files
         paths = [info["path"] for info in result]
-        assert ".hidden1" in paths or ".hidden2" in paths
+        assert f"{base_dir}/.hidden1" in paths or f"{base_dir}/.hidden2" in paths
         # Should not match visible.txt
         assert not any("visible" in p for p in paths)
 
@@ -1467,10 +1466,10 @@ class TestLocalSandboxOperations:
         assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
-        assert "file1.txt" in paths
-        assert "file2.txt" in paths
-        assert "file3.txt" not in paths
-        assert "fileA.txt" not in paths
+        assert f"{base_dir}/file1.txt" in paths
+        assert f"{base_dir}/file2.txt" in paths
+        assert f"{base_dir}/file3.txt" not in paths
+        assert f"{base_dir}/fileA.txt" not in paths
 
     def test_glob_with_question_mark(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with single character wildcard (?)."""

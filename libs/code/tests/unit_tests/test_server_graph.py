@@ -13,6 +13,13 @@ import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+from deepagents_code.extensions.runtime import ExtensionLoadResult
+
+
+@pytest.fixture(autouse=True)
+def _disable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep user extension code out of server graph unit tests."""
+    monkeypatch.setenv("DEEPAGENTS_CODE_EXTENSIONS", "0")
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -221,6 +228,7 @@ class TestServerGraph:
 
         config = ServerConfig(
             no_mcp=False,
+            trust_project_extensions=True,
             profile_overrides={"max_input_tokens": 32000},
             # Non-default allowlist so the `fs_tools=` assertion below is
             # load-bearing: it round-trips through `to_env()`/`from_env()` and
@@ -234,6 +242,7 @@ class TestServerGraph:
             if value is not None:
                 env_overrides[f"{SERVER_ENV_PREFIX}{suffix}"] = value
 
+        load_extensions = AsyncMock(return_value=ExtensionLoadResult())
         with (
             patch.dict(os.environ, env_overrides, clear=False),
             patch.dict(
@@ -253,6 +262,10 @@ class TestServerGraph:
                 "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
                 return_value=(),
             ),
+            patch(
+                "deepagents_code.extensions.load_extensions",
+                load_extensions,
+            ),
         ):
             for suffix in (
                 "MCP_CONFIG_PATH",
@@ -269,6 +282,12 @@ class TestServerGraph:
         configure_redaction.assert_called_once_with()
         reload_from_environment.assert_called_once_with(start_path=user_cwd)
         resolve_mcp_tools.assert_awaited_once()
+        load_extensions.assert_awaited_once_with(
+            cwd=user_cwd,
+            mode="interactive",
+            project_root=project_context.project_root,
+            project_trust_granted=True,
+        )
         assert create_cli_agent_thread_ids
         assert create_cli_agent_thread_ids[0] != loop_thread_id
         # Project-context resolution and the settings bootstrap must run off the

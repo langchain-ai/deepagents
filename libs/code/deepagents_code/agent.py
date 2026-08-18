@@ -25,7 +25,7 @@ from deepagents.middleware import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.backends.sandbox import SandboxBackendProtocol
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
+    from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -2195,6 +2196,90 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
         env["PYTHONPATH"] = inherited
 
 
+def _extension_backend_routes(
+    registry: ExtensionRegistry,
+    *,
+    reserved: Iterable[str],
+) -> dict[str, BackendProtocol]:
+    """Return extension routes that do not overlap internal namespaces.
+
+    Args:
+        registry: Loaded extension registry.
+        reserved: Internal route prefixes that extensions cannot intercept.
+
+    Returns:
+        Safe extension route mapping in registration order.
+    """
+    reserved_prefixes = tuple(reserved)
+    routes: dict[str, BackendProtocol] = {}
+    for route in registry.backend_routes:
+        if any(
+            route.name.startswith(prefix) or prefix.startswith(route.name)
+            for prefix in reserved_prefixes
+        ):
+            logger.warning(
+                "Ignoring extension backend route %r from %s: "
+                "prefix overlaps an internal route",
+                route.name,
+                route.source.label,
+            )
+            continue
+        routes[route.name] = route.unit
+    return routes
+
+
+def _merge_extension_tools(
+    tools: Sequence[BaseTool | Callable | dict[str, Any]],
+    registry: ExtensionRegistry,
+) -> list[BaseTool | Callable | dict[str, Any]]:
+    """Append extension tools without replacing existing names.
+
+    Returns:
+        Existing tools followed by uniquely named extension tools.
+    """
+    merged = list(tools)
+    names = {
+        name
+        for tool in merged
+        if (name := getattr(tool, "name", None) or getattr(tool, "__name__", None))
+    }
+    for registered in registry.tools:
+        if registered.name in names:
+            logger.warning(
+                "Ignoring extension tool %r from %s: name is already in use",
+                registered.name,
+                registered.source.label,
+            )
+            continue
+        merged.append(registered.unit)
+        names.add(registered.name)
+    return merged
+
+
+def _merge_extension_middleware(
+    middleware: Sequence[AgentMiddleware[Any, Any]],
+    registry: ExtensionRegistry,
+) -> list[AgentMiddleware[Any, Any]]:
+    """Append extension middleware without replacing existing names.
+
+    Returns:
+        Existing middleware followed by uniquely named extension middleware.
+    """
+    merged = list(middleware)
+    names = {getattr(item, "name", type(item).__name__) for item in merged}
+    for registered in registry.middleware:
+        if registered.name in names:
+            logger.warning(
+                "Ignoring extension middleware %r from %s: name is already in use",
+                registered.name,
+                registered.source.label,
+            )
+            continue
+        merged.append(registered.unit)
+        names.add(registered.name)
+    return merged
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -2402,6 +2487,11 @@ def create_cli_agent(
         if cwd is not None
         else (project_context.user_cwd if project_context is not None else None)
     )
+    from deepagents_code.extensions.runtime import get_server_extensions
+
+    extension_result = get_server_extensions()
+    for message in extension_result.errors:
+        logger.warning("Extension not loaded: %s", message)
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
@@ -2855,16 +2945,23 @@ def create_cli_agent(
                     virtual_mode=True,
                 )
             )
+        extension_routes = _extension_backend_routes(
+            extension_result.registry,
+            reserved=artifact_routes,
+        )
         composite_backend = CompositeBackend(
             default=backend,
-            routes=artifact_routes,
+            routes={**extension_routes, **artifact_routes},
             artifacts_root=artifacts_root,
         )
     else:
-        # Sandbox mode: No special routing needed
+        extension_routes = _extension_backend_routes(
+            extension_result.registry,
+            reserved=(),
+        )
         composite_backend = CompositeBackend(
             default=backend,
-            routes={},
+            routes=extension_routes,
         )
 
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
@@ -3080,6 +3177,10 @@ def create_cli_agent(
 
     effective_recursion_limit = (
         recursion_limit if recursion_limit is not None else resolve_recursion_limit()
+    )
+    tools = _merge_extension_tools(tools, extension_result.registry)
+    agent_middleware = _merge_extension_middleware(
+        agent_middleware, extension_result.registry
     )
     agent = create_deep_agent(
         model=model,

@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import tomllib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -1061,23 +1060,33 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     Returns:
         List of `AsyncSubAgent` specs (empty if section is absent or invalid).
     """
+    is_default = config_path is None
     if config_path is None:
-        config_path = Path.home() / ".deepagents" / "config.toml"
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
-    if not config_path.exists():
-        return []
+        config_path = DEFAULT_CONFIG_PATH
 
-    try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as e:
-        logger.warning("Could not read async subagents from %s: %s", config_path, e)
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import ProviderHealth
+
+    sources = get_config_sources(
+        user_path=config_path,
+        include_managed=is_default,
+    )
+    if sources.user.status.health in {
+        ProviderHealth.CORRUPT,
+        ProviderHealth.UNREADABLE,
+    }:
+        detail = sources.user.status.detail or sources.user.status.health.value
+        logger.warning(
+            "Could not read async subagents from %s: %s", config_path, detail
+        )
         console.print(
             f"[bold yellow]Warning:[/bold yellow] Could not read async subagents "
-            f"from {config_path}: {e}",
+            f"from {config_path}: {detail}",
         )
         return []
-
+    data, _ = sources.merged()
     section = data.get("async_subagents")
     if not isinstance(section, dict):
         return []

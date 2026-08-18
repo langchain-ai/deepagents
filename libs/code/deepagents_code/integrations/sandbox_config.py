@@ -9,7 +9,6 @@ a `working_dir`, an optional install `package`, and `params` forwarded to
 from __future__ import annotations
 
 import logging
-import tomllib
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -120,26 +119,30 @@ class SandboxConfig:
             Parsed `SandboxConfig`. Returns an empty config if the file is
                 missing, unreadable, or contains invalid TOML.
         """
+        is_default = config_path is None
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
-        if not config_path.exists():
-            return cls()
+        from deepagents_code.configuration.service import get_config_sources
+        from deepagents_code.configuration.types import ProviderHealth
 
-        try:
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        except tomllib.TOMLDecodeError as e:
+        sources = get_config_sources(
+            user_path=config_path,
+            include_managed=is_default,
+        )
+        if sources.user.status.health is ProviderHealth.CORRUPT:
+            detail = sources.user.status.detail or "unknown parse error"
             logger.warning(
                 "Config file %s has invalid TOML syntax: %s. Ignoring sandbox config.",
                 config_path,
-                e,
+                detail,
             )
-            return cls(parse_error=f"invalid TOML syntax: {e}")
-        except (PermissionError, OSError) as e:
-            logger.warning("Could not read config file %s: %s", config_path, e)
-            return cls(parse_error=f"could not read config file: {e}")
-
+            return cls(parse_error=f"invalid TOML syntax: {detail}")
+        if sources.user.status.health is ProviderHealth.UNREADABLE:
+            detail = sources.user.status.detail or "unknown read error"
+            logger.warning("Could not read config file %s: %s", config_path, detail)
+            return cls(parse_error=f"could not read config file: {detail}")
+        data, _ = sources.merged()
         section = data.get("sandboxes", {})
         if not isinstance(section, dict):
             logger.warning("[sandboxes] is not a table; ignoring sandbox config")

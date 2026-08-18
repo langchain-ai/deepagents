@@ -48,6 +48,34 @@ By default, `dcode` trusts the directory you run it in. Human-in-the-loop approv
 
 Do not run `dcode` in a directory you do not trust without a sandbox backend. For untrusted repositories, use a [remote sandbox](https://docs.langchain.com/oss/python/deepagents/code/remote-sandboxes) so execution is isolated from your machine. Running `dcode` in a directory lets that directory's files shape execution. See [`THREAT_MODEL.md`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/THREAT_MODEL.md) for details.
 
+## Managed configuration
+
+Administrators can enforce any supported `config.toml` setting with a read-only
+`managed_config.toml` using the same TOML schema:
+
+- macOS: `/Library/Application Support/dcode/managed_config.toml`
+- Windows: `%ProgramData%\dcode\managed_config.toml` (or
+  `C:\ProgramData\dcode\managed_config.toml` when `ProgramData` is unset)
+- Linux and other supported POSIX systems: `/etc/dcode/managed_config.toml`
+
+Managed values override explicit CLI flags, `DEEPAGENTS_CODE_` and compatibility
+environment variables, and `~/.deepagents/config.toml`. Tables merge recursively;
+deny lists are unioned, while an explicitly managed allow or trust list replaces
+lower-precedence grants, including an empty-list lockdown. `dcode` never writes the
+managed file. User preference changes can still be saved, but the UI reports when a
+managed value keeps them from becoming effective.
+
+A missing managed file is normal. If one exists but is unreadable, not UTF-8, or
+invalid TOML, agent startup fails closed; `--help`, `--version`, `config`, and
+`doctor` remain available for recovery. Use `dcode config path` and `dcode doctor`
+to inspect its fixed path and parse health. Individual values with the wrong type
+are ignored without discarding valid sibling settings.
+
+Deployment tooling must create and protect this file with appropriate administrator
+or root permissions. `dcode` deliberately performs no ownership or mode validation
+and provides no privileged writer; deployment and `sudo` policy remain the
+administrator's responsibility.
+
 ## 📖 Resources
 
 - **[Documentation](https://docs.langchain.com/deepagents-code)**

@@ -2201,29 +2201,26 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
         The raw `[retries]` mapping, or `None` when the section is absent or the
             file cannot be read.
     """
-    import tomllib
-
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import ProviderHealth
     from deepagents_code.model_config import (
-        DEFAULT_CONFIG_PATH,
         IMPLICIT_AUTH_PROVIDERS,
         NO_AUTH_REQUIRED_PROVIDERS,
         PROVIDER_API_KEY_ENV,
         RETRY_PARAM_BY_PROVIDER,
     )
 
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except FileNotFoundError:
-        return None
-    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+    sources = get_config_sources()
+    if sources.user.status.health in {
+        ProviderHealth.CORRUPT,
+        ProviderHealth.UNREADABLE,
+    }:
         logger.warning(
             "Could not read retries config from %s",
-            DEFAULT_CONFIG_PATH,
-            exc_info=True,
+            sources.user.status.path,
         )
         return None
-
+    data, _ = sources.merged()
     section = data.get("retries")
     if not isinstance(section, dict):
         return None
@@ -2418,23 +2415,20 @@ def _read_config_toml_skills_dirs() -> list[str] | None:
         List of path strings, or `None` if the key is absent or the file
             cannot be read.
     """
-    import tomllib
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import ProviderHealth
 
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except FileNotFoundError:
-        return None
-    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+    sources = get_config_sources()
+    if sources.user.status.health in {
+        ProviderHealth.CORRUPT,
+        ProviderHealth.UNREADABLE,
+    }:
         logger.warning(
             "Could not read skills config from %s",
-            DEFAULT_CONFIG_PATH,
-            exc_info=True,
+            sources.user.status.path,
         )
         return None
-
+    data, _ = sources.merged()
     skills_section = data.get("skills", {})
     dirs = skills_section.get("extra_allowed_dirs")
     if isinstance(dirs, list):
@@ -2681,11 +2675,20 @@ class Settings:
 
         project_root = find_project_root(start_path)
 
-        # Parse shell command allow-list from environment
-        # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
+        from deepagents_code.config_manifest import (
+            get_option,
+            load_config_toml,
+            resolve_scalar,
+        )
 
-        shell_allow_list_str = os.environ.get(SHELL_ALLOW_LIST)
-        shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
+        shell_option = get_option("shell.allow_list")
+        if shell_option is None:
+            shell_allow_list = parse_shell_allow_list(os.environ.get(SHELL_ALLOW_LIST))
+        else:
+            shell_allow_list, _ = resolve_scalar(
+                shell_option,
+                toml_data=load_config_toml(),
+            )
 
         # Parse extra skill containment roots from env var or config.toml.
         # These extend the path allowlist for load_skill_content but do not
@@ -2731,6 +2734,13 @@ class Settings:
             LANGSMITH_PROJECT,
             SHELL_ALLOW_LIST,
         )
+        from deepagents_code.configuration.service import (
+            get_managed_snapshot,
+            invalidate_config_sources,
+        )
+
+        invalidate_config_sources()
+        managed_data = get_managed_snapshot().data
 
         try:
             shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
@@ -2740,6 +2750,18 @@ class Settings:
                 SHELL_ALLOW_LIST,
             )
             shell_allow_list = previous["shell_allow_list"]
+
+        from deepagents_code.config_manifest import get_option, resolve_scalar
+
+        shell_option = get_option("shell.allow_list")
+        if shell_option is not None:
+            managed_shell, managed_source = resolve_scalar(
+                shell_option,
+                toml_data={},
+                managed_toml_data=managed_data,
+            )
+            if managed_source == "managed config":
+                shell_allow_list = managed_shell
 
         try:
             from deepagents_code.project_utils import find_project_root

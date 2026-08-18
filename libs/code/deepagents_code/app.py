@@ -26,9 +26,12 @@ from typing import (
     ClassVar,
     Literal,
     NamedTuple,
+    Protocol,
     TypeVar,
     assert_never,
     cast,
+    override,
+    runtime_checkable,
 )
 
 from textual import on
@@ -49,7 +52,6 @@ from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
 from textual.worker import NoActiveWorker, get_current_worker
-from typing_extensions import Protocol, override, runtime_checkable
 
 # Applied as an import-time side effect; must come before any App is created.
 from deepagents_code import (
@@ -1306,19 +1308,20 @@ def _load_terminal_default() -> str | None:
     if not os.environ.get("TERM_PROGRAM", "").strip():
         return None
 
-    import tomllib
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import ProviderHealth
 
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    if not DEFAULT_CONFIG_PATH.exists():
+    sources = get_config_sources()
+    if sources.user.status.health in {
+        ProviderHealth.CORRUPT,
+        ProviderHealth.UNREADABLE,
+    }:
+        logger.warning(
+            "Could not read config for terminal theme default: %s",
+            sources.user.status.detail or sources.user.status.health.value,
+        )
         return None
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for terminal theme default: %s", exc)
-        return None
-
+    data, _ = sources.merged()
     ui = data.get("ui")
     if not isinstance(ui, dict):
         if ui is not None:
@@ -1335,20 +1338,24 @@ def _load_theme_preference() -> str:
 
     Resolution order:
 
-    1. `DEEPAGENTS_CODE_THEME` env var (explicit override). If it is set but
-        cannot be resolved, the default theme is used immediately.
-    2. `[ui.terminal_themes]` mapping keyed by `TERM_PROGRAM` — wins over the
-        saved preference so a user moving between terminals (e.g. dark iTerm,
-        light Apple Terminal) gets the right theme automatically.
-    3. `[ui].theme` in `~/.deepagents/config.toml` (saved preference, used
-        when no terminal mapping matches).
+    1. Managed `[ui.terminal_themes]` or `[ui].theme` policy.
+    2. `DEEPAGENTS_CODE_THEME` env var.
+    3. User `[ui.terminal_themes]` or `[ui].theme` preference.
     4. `theme.DEFAULT_THEME`.
 
     Returns:
         A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
     """
     from deepagents_code._env_vars import THEME
+    from deepagents_code.config_manifest import (
+        _resolve_theme,
+        load_config_toml,
+        load_managed_config_toml,
+    )
 
+    managed = _resolve_theme(load_managed_config_toml(), source="managed config")
+    if managed is not None:
+        return managed[0]
     env_name = os.environ.get(THEME)
     if env_name is not None:
         resolved = _resolve_theme_name(env_name)
@@ -1360,43 +1367,8 @@ def _load_theme_preference() -> str:
             THEME,
         )
         return theme.DEFAULT_THEME
-
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    if not DEFAULT_CONFIG_PATH.exists():
-        return theme.DEFAULT_THEME
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for theme preference: %s", exc)
-        return theme.DEFAULT_THEME
-
-    ui = data.get("ui", {})
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] should be a table; got %s while loading theme preference",
-            type(ui).__name__,
-        )
-        return theme.DEFAULT_THEME
-
-    resolved = _resolve_terminal_mapping(ui)
-    if resolved is not None:
-        return resolved
-
-    saved = ui.get("theme")
-    resolved = _resolve_theme_name(saved)
-    if resolved is not None:
-        return resolved
-    if isinstance(saved, str):
-        logger.warning(
-            "Unknown theme '%s' in config; falling back to default",
-            saved,
-        )
-
-    return theme.DEFAULT_THEME
+    user = _resolve_theme(load_config_toml(), source="config.toml")
+    return user[0] if user is not None else theme.DEFAULT_THEME
 
 
 def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
@@ -1538,54 +1510,41 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
         logger.warning("Refusing to save unknown theme '%s'", name)
         return _ConfigWriteResult(False, f"Unknown theme '{name}' was not saved.")
 
-    import contextlib
-    import tempfile
-    import tomllib
+    from deepagents_code.configuration.writer import update_user_config
 
-    try:
-        import tomli_w
+    repair_message: str | None = None
 
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
+    def mutate(data: dict[str, Any]) -> bool:
+        nonlocal repair_message
+        ui, repair_message = _replace_malformed_ui(data)
+        ui["theme"] = name
+        return True
 
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["theme"] = name
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save theme preference")
+    result = update_user_config(mutate)
+    if not result.ok:
+        logger.error("Could not save theme preference: %s", result.error)
         return _ConfigWriteResult(
             False,
-            f"Theme applied for this session but could not be saved "
-            f"({type(exc).__name__}).",
+            "Theme applied for this session but could not be saved.",
             "error",
+        )
+
+    from deepagents_code.config_manifest import (
+        _resolve_theme,
+        load_managed_config_toml,
+    )
+
+    if (
+        _resolve_theme(
+            load_managed_config_toml(),
+            source="managed config",
+        )
+        is not None
+    ):
+        return _ConfigWriteResult(
+            True,
+            "Theme preference saved, but managed config remains effective.",
+            "warning",
         )
     return _ConfigWriteResult(True, repair_message)
 
@@ -1679,71 +1638,57 @@ def _save_terminal_theme_mapping_result(
             "TERM_PROGRAM is unset; can't set a per-terminal default.",
         )
 
-    import contextlib
-    import tempfile
-    import tomllib
+    from deepagents_code.configuration.writer import update_user_config
 
-    try:
-        import tomli_w
+    repair_messages: list[str] = []
 
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
+    def mutate(data: dict[str, Any]) -> bool:
+        ui, repair_message = _replace_malformed_ui(data)
+        if repair_message is not None:
+            repair_messages.append(repair_message)
+        terminal_themes = ui.get("terminal_themes")
+        terminal_themes_table = _as_toml_table(terminal_themes)
+        if terminal_themes_table is None:
+            if terminal_themes is not None:
+                logger.warning(
+                    "Existing [ui.terminal_themes] is not a table (got %r); "
+                    "replacing with a fresh table",
+                    terminal_themes,
+                )
+                repair_messages.append(
+                    "Existing [ui.terminal_themes] was not a table and was "
+                    "replaced while saving this terminal default.",
+                )
+            terminal_themes_table = {}
+            ui["terminal_themes"] = terminal_themes_table
+        terminal_themes_table[term_program] = name
+        return True
 
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        repair_messages: list[str] = []
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            if repair_message is not None:
-                repair_messages.append(repair_message)
-            terminal_themes = ui.get("terminal_themes")
-            terminal_themes_table = _as_toml_table(terminal_themes)
-            if terminal_themes_table is None:
-                if terminal_themes is not None:
-                    logger.warning(
-                        "Existing [ui.terminal_themes] is not a table (got %r); "
-                        "replacing with a fresh table",
-                        terminal_themes,
-                    )
-                    repair_messages.append(
-                        "Existing [ui.terminal_themes] was not a table and was "
-                        "replaced while saving this terminal default.",
-                    )
-                terminal_themes_table = {}
-                ui["terminal_themes"] = terminal_themes_table
-            terminal_themes_table[term_program] = name
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save terminal theme mapping")
+    result = update_user_config(mutate)
+    if not result.ok:
+        logger.error("Could not save terminal theme mapping: %s", result.error)
         return _ConfigWriteResult(
             False,
-            f"Could not save terminal mapping ({type(exc).__name__}).",
+            "Could not save terminal mapping.",
             "error",
+        )
+
+    from deepagents_code.config_manifest import (
+        _resolve_theme,
+        load_managed_config_toml,
+    )
+
+    if (
+        _resolve_theme(
+            load_managed_config_toml(),
+            source="managed config",
+        )
+        is not None
+    ):
+        return _ConfigWriteResult(
+            True,
+            "Terminal mapping saved, but managed config remains effective.",
+            "warning",
         )
     return _ConfigWriteResult(True, " ".join(repair_messages) or None)
 
@@ -1770,6 +1715,55 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
     return _save_terminal_theme_mapping_result(term_program, name).ok
 
 
+def _save_ui_bool_result(
+    *,
+    toml_key: str,
+    option_key: str,
+    value: bool,
+    failure_message: str,
+) -> _ConfigWriteResult:
+    """Persist one user UI boolean and report managed shadowing.
+
+    Returns:
+        Write status and optional user-facing detail.
+    """
+    from deepagents_code.configuration.writer import update_user_config
+
+    repair_message: str | None = None
+
+    def mutate(data: dict[str, Any]) -> bool:
+        nonlocal repair_message
+        ui, repair_message = _replace_malformed_ui(data)
+        ui[toml_key] = value
+        return True
+
+    result = update_user_config(mutate)
+    if not result.ok:
+        logger.error("Could not save %s: %s", option_key, result.error)
+        return _ConfigWriteResult(False, failure_message, "error")
+
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_managed_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option(option_key)
+    if option is not None:
+        _, source = resolve_scalar(
+            option,
+            toml_data={},
+            managed_toml_data=load_managed_config_toml(),
+        )
+        if source == "managed config":
+            return _ConfigWriteResult(
+                True,
+                "Preference saved, but managed config remains effective.",
+                "warning",
+            )
+    return _ConfigWriteResult(True, repair_message)
+
+
 def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult:
     """Persist the timestamp-footer visibility preference.
 
@@ -1780,56 +1774,12 @@ def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult
         Write status and a message suitable for a toast when the user needs to
             know about a repair or failure.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["show_message_timestamps"] = visible
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save timestamp preference")
-        return _ConfigWriteResult(
-            False,
-            f"Timestamps toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="show_message_timestamps",
+        option_key="display.show_message_timestamps",
+        value=visible,
+        failure_message=("Timestamps toggled for this session but could not be saved."),
+    )
 
 
 def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
@@ -1842,56 +1792,12 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
         Write status and a message suitable for a toast when the user needs to
             know about a repair or failure.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["show_scrollbar"] = visible
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save scrollbar preference")
-        return _ConfigWriteResult(
-            False,
-            f"Scrollbar toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="show_scrollbar",
+        option_key="display.show_scrollbar",
+        value=visible,
+        failure_message="Scrollbar toggled for this session but could not be saved.",
+    )
 
 
 def _save_show_diff_line_numbers_result(enabled: bool) -> _ConfigWriteResult:
@@ -1904,56 +1810,14 @@ def _save_show_diff_line_numbers_result(enabled: bool) -> _ConfigWriteResult:
         Write status and a message suitable for a toast when the user needs to
             know about a repair or failure.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["show_diff_line_numbers"] = enabled
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save diff line-number preference")
-        return _ConfigWriteResult(
-            False,
-            f"Diff line numbers toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="show_diff_line_numbers",
+        option_key="display.show_diff_line_numbers",
+        value=enabled,
+        failure_message=(
+            "Diff line numbers toggled for this session but could not be saved."
+        ),
+    )
 
 
 def _save_debug_console_click_to_copy_result(enabled: bool) -> _ConfigWriteResult:
@@ -1966,56 +1830,14 @@ def _save_debug_console_click_to_copy_result(enabled: bool) -> _ConfigWriteResul
         Write status and a message suitable for a toast when the user needs to
             know about a repair or failure.
     """
-    import contextlib
-    import tempfile
-    import tomllib
-
-    try:
-        import tomli_w
-
-        from deepagents_code.model_config import (
-            DEFAULT_CONFIG_PATH,
-            _config_write_lock,
-        )
-
-        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _config_write_lock:
-            if DEFAULT_CONFIG_PATH.exists():
-                with DEFAULT_CONFIG_PATH.open("rb") as f:
-                    data = tomllib.load(f)
-            else:
-                data = {}
-
-            ui, repair_message = _replace_malformed_ui(data)
-            ui["debug_console_click_to_copy"] = enabled
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent,
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-            except BaseException:
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
-    except (
-        OSError,
-        tomllib.TOMLDecodeError,
-        ImportError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        logger.exception("Could not save debug console click-to-copy preference")
-        return _ConfigWriteResult(
-            False,
-            f"Click-to-copy toggled for this session but could not be saved "
-            f"({type(exc).__name__}).",
-            "error",
-        )
-    return _ConfigWriteResult(True, repair_message)
+    return _save_ui_bool_result(
+        toml_key="debug_console_click_to_copy",
+        option_key="display.debug_console_click_to_copy",
+        value=enabled,
+        failure_message=(
+            "Click-to-copy toggled for this session but could not be saved."
+        ),
+    )
 
 
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
@@ -24959,6 +24781,9 @@ class DeepAgentsApp(App):
                 severity="error",
                 markup=False,
             )
+            return
+        if detail:
+            self.notify(detail, severity="warning", markup=False)
             return
 
         had_original = server_name in self._mcp_optimistic_original_server_info

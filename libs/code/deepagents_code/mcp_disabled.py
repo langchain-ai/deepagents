@@ -13,12 +13,11 @@ since the agent cannot distinguish overlapping names at runtime anyway
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import os
-import tempfile
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from deepagents_code.model_config import DEFAULT_CONFIG_PATH as _DEFAULT_CONFIG_PATH
 
@@ -70,28 +69,22 @@ def _load_config(config_path: Path) -> dict[str, Any]:
 
 
 def _save_config(data: dict[str, Any], config_path: Path) -> bool:
-    """Atomic TOML write.
+    """Atomically replace user TOML through the shared writer.
 
     Returns:
-        `True` on success, `False` on I/O failure.
+        Whether the transaction succeeded.
     """
-    import tomli_w
+    from deepagents_code.configuration.writer import update_user_config
 
-    try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
-    except (OSError, ValueError):
-        logger.exception("Failed to save config to %s", config_path)
-        return False
-    return True
+    def replace(current: dict[str, Any]) -> bool:
+        current.clear()
+        current.update(data)
+        return True
+
+    result = update_user_config(replace, config_path=config_path)
+    if not result.ok:
+        logger.error("Failed to save config to %s: %s", config_path, result.error)
+    return result.ok
 
 
 def _coerce_entries(entries: object) -> set[str] | None:
@@ -118,6 +111,13 @@ def _disabled_entries(data: dict[str, Any]) -> set[str]:
     return set()
 
 
+def _managed_disabled_servers() -> set[str]:
+    """Return names denied by the read-only managed source."""
+    from deepagents_code.configuration.service import get_managed_snapshot
+
+    return _disabled_entries(get_managed_snapshot().data)
+
+
 def _remove_legacy_disabled_section(data: dict[str, Any]) -> None:
     """Drop the old top-level section after writing the folded config shape."""
     legacy_section = data.get(_LEGACY_SECTION)
@@ -141,13 +141,17 @@ def get_disabled_servers(*, config_path: Path | None = None) -> set[str]:
         Set of server names. Empty when nothing is disabled or the config
         cannot be read.
     """
+    is_default = config_path is None
     if config_path is None:
         config_path = _DEFAULT_CONFIG_PATH
     try:
         data = _load_config(config_path)
     except _ConfigLoadError:
         return set()
-    return _disabled_entries(data)
+    disabled = _disabled_entries(data)
+    if is_default:
+        disabled.update(_managed_disabled_servers())
+    return disabled
 
 
 def is_server_disabled(server_name: str, *, config_path: Path | None = None) -> bool:
@@ -186,6 +190,7 @@ def set_server_disabled(
         failure `error_detail` is a short user-facing string suitable
         for a toast.
     """
+    is_default = config_path is None
     if config_path is None:
         config_path = _DEFAULT_CONFIG_PATH
     try:
@@ -198,8 +203,16 @@ def set_server_disabled(
         current.add(server_name)
     else:
         current.discard(server_name)
+    shadowed = (
+        is_default and not disabled and server_name in _managed_disabled_servers()
+    )
+    shadowed_detail = (
+        f"MCP server {server_name!r} remains disabled by managed config."
+        if shadowed
+        else None
+    )
     if current == previous and _LEGACY_SECTION not in data:
-        return True, None
+        return True, shadowed_detail
 
     section = data.get(_SECTION)
     if not isinstance(section, dict):
@@ -208,5 +221,5 @@ def set_server_disabled(
     data[_SECTION] = section
     _remove_legacy_disabled_section(data)
     if _save_config(data, config_path):
-        return True, None
+        return True, shadowed_detail
     return False, f"could not write {config_path}"

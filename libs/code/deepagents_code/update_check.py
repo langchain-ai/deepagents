@@ -903,7 +903,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
+    value = file_entry.get("upload_time_iso_8601")
     return value if isinstance(value, str) else None
 
 
@@ -3671,6 +3671,31 @@ async def perform_install_package(
 # ---------------------------------------------------------------------------
 
 
+def _managed_update_value(key: str) -> tuple[bool, bool]:
+    """Return one valid managed update boolean without masking type errors."""
+    from deepagents_code.configuration.service import get_managed_snapshot
+    from deepagents_code.configuration.types import ProviderHealth
+
+    snapshot = get_managed_snapshot()
+    if snapshot.status.health in {
+        ProviderHealth.UNREADABLE,
+        ProviderHealth.CORRUPT,
+    }:
+        return True, False
+    section = snapshot.data.get("update")
+    if not isinstance(section, dict) or key not in section:
+        return False, False
+    value = section[key]
+    if isinstance(value, bool):
+        return True, value
+    logger.warning(
+        "Ignoring [update].%s in managed config (expected bool, got %s)",
+        key,
+        type(value).__name__,
+    )
+    return False, False
+
+
 def is_update_check_enabled() -> bool:
     """Return whether update checks are enabled.
 
@@ -3681,6 +3706,9 @@ def is_update_check_enabled() -> bool:
     """
     from deepagents_code._env_vars import NO_UPDATE_CHECK
 
+    managed, value = _managed_update_value("check")
+    if managed:
+        return value
     if os.environ.get(NO_UPDATE_CHECK):
         return False
     return _read_update_config().get("check", True)
@@ -3708,6 +3736,9 @@ def is_auto_update_enabled() -> bool:
 
     if _is_editable_install():
         return False
+    managed, value = _managed_update_value("auto_update")
+    if managed:
+        return value
     if AUTO_UPDATE in os.environ:
         raw = os.environ[AUTO_UPDATE]
         classified = classify_env_bool(raw)
@@ -3744,33 +3775,25 @@ def set_auto_update(enabled: bool) -> None:
 
     Args:
         enabled: Whether auto-update should be enabled.
+
+    Raises:
+        OSError: If the user config cannot be updated atomically.
     """
-    import contextlib
-    import tempfile
-    from pathlib import Path
+    from deepagents_code.configuration.writer import update_user_config
 
-    import tomli_w
+    def mutate(data: dict[str, Any]) -> bool:
+        section = data.get("update")
+        if not isinstance(section, dict):
+            section = {}
+            data["update"] = section
+        if section.get("auto_update") is enabled:
+            return False
+        section["auto_update"] = enabled
+        return True
 
-    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if DEFAULT_CONFIG_PATH.exists():
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    else:
-        data = {}
-
-    if "update" not in data:
-        data["update"] = {}
-    data["update"]["auto_update"] = enabled
-
-    fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            tomli_w.dump(data, f)
-        Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            Path(tmp_path).unlink()
-        raise
+    result = update_user_config(mutate, config_path=DEFAULT_CONFIG_PATH)
+    if not result.ok:
+        raise OSError(result.error or f"could not update {DEFAULT_CONFIG_PATH}")
 
 
 class _ConfigReadError(Exception):

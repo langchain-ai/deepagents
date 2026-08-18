@@ -27,6 +27,7 @@ import tomli_w
 
 from deepagents_code import _env_vars, auth_store
 from deepagents_code._git import find_git_common_dir
+from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -887,7 +888,7 @@ _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 _provider_profiles_cache: dict[str, dict[str, Any]] = {}
 _provider_profiles_lock = threading.Lock()
-_config_write_lock = threading.RLock()
+_config_write_lock = USER_CONFIG_WRITE_LOCK
 """Process-wide lock serializing read-modify-write transactions on `config.toml`.
 
 Any helper that reads the file, mutates a section, and atomically replaces it
@@ -899,12 +900,43 @@ same snapshot and the last `replace()` silently drops the other's change.
 Because the hazard is on the whole-file replace (not per-section), *every* writer
 of `config.toml` must share this one lock — a second lock guarding the same file
 would not mutually exclude, so a `[effort]` write could still clobber a `[ui]`
-write. All such helpers here hold it, and `app.py`'s theme/UI writers import and
-hold this same object rather than defining their own.
+write. All such helpers here and in `app.py` use this shared writer lock.
 
 It is reentrant so a caller can hold it across several of these helpers without
 self-deadlock. Cross-process races are out of scope (mirrors the existing
 helpers)."""
+
+
+def _load_effective_config_data(
+    config_path: Path | None,
+) -> tuple[dict[str, Any], Path]:
+    """Load user TOML plus managed policy for default-path reads.
+
+    Returns:
+        Effective data and resolved user path.
+
+    Raises:
+        OSError: If the user TOML is present but unusable.
+    """
+    is_default = config_path is None
+    resolved_path = DEFAULT_CONFIG_PATH if config_path is None else config_path
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import ProviderHealth
+
+    sources = get_config_sources(
+        user_path=resolved_path,
+        include_managed=is_default,
+    )
+    if sources.user.status.health in {
+        ProviderHealth.CORRUPT,
+        ProviderHealth.UNREADABLE,
+    }:
+        detail = sources.user.status.detail or sources.user.status.health.value
+        raise OSError(detail)
+    data = sources.merged()[0] if is_default else sources.user.data
+    return data, resolved_path
+
+
 _ollama_installed_models_cache: dict[str, list[str]] = {}
 _ollama_unreachable_endpoints: set[str] = set()
 """Local endpoints (trailing slash stripped) whose daemon refused the TCP
@@ -2670,15 +2702,41 @@ class ModelConfig:
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
-        if not config_path.exists():
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
+        from deepagents_code.configuration.service import get_config_sources
+        from deepagents_code.configuration.types import ProviderHealth
 
         try:
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
+            user_mode = config_path.stat().st_mode if config_path.exists() else None
+        except OSError:
+            user_mode = 0
+        if user_mode is not None and user_mode & 0o444 == 0:
+            logger.warning(
+                "Could not read config file %s: permission denied", config_path
+            )
+            config = cls()
+            if is_default:
+                _default_config_cache = config
+            return config
+
+        sources = get_config_sources(
+            user_path=config_path,
+            include_managed=is_default,
+        )
+        if sources.user.status.health is ProviderHealth.CORRUPT:
+            logger.warning(
+                "Config file %s has invalid TOML syntax: %s. "
+                "Ignoring config file. Fix the file or delete it to reset.",
+                config_path,
+                sources.user.status.detail or "unknown parse error",
+            )
+        elif sources.user.status.health is ProviderHealth.UNREADABLE:
+            logger.warning(
+                "Could not read config file %s: %s",
+                config_path,
+                sources.user.status.detail or "unknown read error",
+            )
+        data, _ = sources.merged()
+        try:
             models_section = data.get("models", {})
             stored_classifier = models_section.get("auto_classifier")
             config = cls(
@@ -2689,24 +2747,7 @@ class ModelConfig:
                 ),
                 providers=models_section.get("providers", {}),
             )
-        except tomllib.TOMLDecodeError as e:
-            logger.warning(
-                "Config file %s has invalid TOML syntax: %s. "
-                "Ignoring config file. Fix the file or delete it to reset.",
-                config_path,
-                e,
-            )
-            config = cls()
-        except (PermissionError, OSError) as e:
-            logger.warning("Could not read config file %s: %s", config_path, e)
-            config = cls()
         except (AttributeError, TypeError) as e:
-            # Syntactically valid TOML can still have the wrong shape — a scalar
-            # `[models]`, a non-table `providers` — which surfaces here as an
-            # AttributeError from `.get(...)` or a TypeError from the dataclass
-            # constructor. Treat it like any other unreadable config rather than
-            # letting it crash callers (e.g. the /auth modal on Ctrl+R) that
-            # assume load() is total and never raises.
             logger.warning(
                 "Config file %s is structurally invalid: %s. "
                 "Ignoring config file. Fix the file or delete it to reset.",
@@ -3418,14 +3459,8 @@ def load_effort_for_model(
         are not distinguished by the return value, but a read failure is always
         logged rather than swallowed silently.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-    if not config_path.exists():
-        return None
-
     try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, config_path = _load_effective_config_data(config_path)
         effort_section = data.get("effort")
         if effort_section is None:
             return None  # No preference stored; not a failure.
@@ -3576,14 +3611,8 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
             when the file is missing, unreadable, or has a missing or
             malformed `[warnings]` section).
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-
     try:
-        if not config_path.exists():
-            return False
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, config_path = _load_effective_config_data(config_path)
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug(
             "Could not read config file %s for warning suppression check",
@@ -4459,74 +4488,113 @@ def load_mcp_server_trust_lists(
             table, or when `disabled_project_servers` is a wrong type that cannot
             be read as a deny list; env-sourced names still apply in that case.
     """
+    is_default = config_path is None
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import ProviderHealth
+
+    sources = get_config_sources(
+        user_path=config_path,
+        include_managed=is_default,
+    )
     toml_approvals: list[McpProjectServerApproval] = []
     malformed_approvals = 0
     toml_disabled: list[str] = []
+    managed_disabled: list[str] = []
+    managed_approvals_explicit = False
     legacy_ignored: list[str] = []
     read_error: str | None = None
-    try:
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-            mcp_section = data.get("mcp", {})
-            if isinstance(mcp_section, dict):
-                toml_approvals, malformed_approvals = _toml_project_server_approvals(
-                    mcp_section.get("enabled_project_server_approvals"),
-                    config_path=config_path,
-                )
-                legacy_enabled, _ = _toml_str_list(
-                    mcp_section.get("enabled_project_servers"),
-                    key="enabled_project_servers",
-                    config_path=config_path,
-                )
-                if legacy_enabled:
-                    legacy_ignored = legacy_enabled
-                    logger.warning(
-                        "[mcp].enabled_project_servers in %s is ignored; run "
-                        "the project MCP approval prompt again to save "
-                        "project-scoped approvals",
-                        config_path,
-                    )
-                toml_disabled, disabled_malformed = _toml_str_list(
-                    mcp_section.get("disabled_project_servers"),
-                    key="disabled_project_servers",
-                    config_path=config_path,
-                )
-                if disabled_malformed:
-                    # A wrong-typed deny list cannot be read, so proceeding as
-                    # if nothing were denied would be a fail-open. Surface it and
-                    # fail closed, mirroring the unreadable-file path below.
-                    read_error = (
-                        f"[mcp].disabled_project_servers in {config_path} must be "
-                        "a list of strings; refusing to proceed with an "
-                        "unenforced deny list"
-                    )
-            else:
-                # An `[mcp]` value that is not a table means the deny list is
-                # unreadable too; fail closed rather than leave it unenforced.
-                read_error = (
-                    f"[mcp] in {config_path} must be a table, got "
-                    f"{type(mcp_section).__name__}"
-                )
-                logger.warning(
-                    "[mcp] in %s should be a table, got %s; treating project "
-                    "configs as untrusted",
-                    config_path,
-                    type(mcp_section).__name__,
-                )
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        # The file exists but is unreadable/unparseable. Record it so callers
-        # fail closed rather than silently proceeding with an empty deny list.
-        read_error = f"Could not read MCP trust lists from {config_path}: {exc}"
+    if sources.user.status.health in {
+        ProviderHealth.UNREADABLE,
+        ProviderHealth.CORRUPT,
+    }:
+        read_error = (
+            f"Could not read MCP trust lists from {config_path}: "
+            f"{sources.user.status.detail or sources.user.status.health.value}"
+        )
         logger.warning(
             "Could not read %s for MCP server trust lists; treating project "
             "configs as untrusted",
             config_path,
-            exc_info=True,
         )
+    else:
+        mcp_section = sources.user.data.get("mcp", {})
+        if isinstance(mcp_section, dict):
+            toml_approvals, malformed_approvals = _toml_project_server_approvals(
+                mcp_section.get("enabled_project_server_approvals"),
+                config_path=config_path,
+            )
+            legacy_enabled, _ = _toml_str_list(
+                mcp_section.get("enabled_project_servers"),
+                key="enabled_project_servers",
+                config_path=config_path,
+            )
+            if legacy_enabled:
+                legacy_ignored = legacy_enabled
+                logger.warning(
+                    "[mcp].enabled_project_servers in %s is ignored; run "
+                    "the project MCP approval prompt again to save "
+                    "project-scoped approvals",
+                    config_path,
+                )
+            toml_disabled, disabled_malformed = _toml_str_list(
+                mcp_section.get("disabled_project_servers"),
+                key="disabled_project_servers",
+                config_path=config_path,
+            )
+            if disabled_malformed:
+                read_error = (
+                    f"[mcp].disabled_project_servers in {config_path} must be "
+                    "a list of strings; refusing to proceed with an "
+                    "unenforced deny list"
+                )
+        else:
+            read_error = (
+                f"[mcp] in {config_path} must be a table, got "
+                f"{type(mcp_section).__name__}"
+            )
+            logger.warning(
+                "[mcp] in %s should be a table, got %s; treating project "
+                "configs as untrusted",
+                config_path,
+                type(mcp_section).__name__,
+            )
+
+    managed_status = sources.managed.status
+    if managed_status.health in {
+        ProviderHealth.UNREADABLE,
+        ProviderHealth.CORRUPT,
+    }:
+        read_error = (
+            f"Could not enforce MCP trust lists from {managed_status.path}: "
+            f"{managed_status.detail or managed_status.health.value}"
+        )
+    else:
+        managed_mcp = sources.managed.data.get("mcp", {})
+        if isinstance(managed_mcp, dict):
+            approvals_key = "enabled_project_server_approvals"
+            if approvals_key in managed_mcp:
+                raw_managed_approvals = managed_mcp.get(approvals_key)
+                parsed_approvals, dropped = _toml_project_server_approvals(
+                    raw_managed_approvals,
+                    config_path=managed_status.path or config_path,
+                )
+                malformed_approvals += dropped
+                if isinstance(raw_managed_approvals, list):
+                    managed_approvals_explicit = True
+                    toml_approvals = parsed_approvals
+            managed_disabled, _ = _toml_str_list(
+                managed_mcp.get("disabled_project_servers"),
+                key="disabled_project_servers",
+                config_path=managed_status.path or config_path,
+            )
+        elif managed_mcp is not None:
+            logger.warning(
+                "[mcp] in managed config should be a table, got %s; ignoring it",
+                type(managed_mcp).__name__,
+            )
 
     env_enabled = _parse_csv_env(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS)
     env_disabled = _parse_csv_env(_env_vars.DISABLED_PROJECT_MCP_SERVERS)
@@ -4544,9 +4612,13 @@ def load_mcp_server_trust_lists(
     # Process-wide env names and scoped TOML approvals are independent grants.
     # Keep both active so the escape hatch cannot make the interactive prompt's
     # successfully persisted choices ineffective on the next launch.
-    enabled = frozenset(env_enabled or ())
+    enabled = frozenset(() if managed_approvals_explicit else (env_enabled or ()))
     approvals = frozenset(() if read_error is not None else toml_approvals)
-    disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
+    disabled = (
+        frozenset(toml_disabled)
+        | frozenset(managed_disabled)
+        | frozenset(env_disabled or ())
+    )
     # Corner: when `read_error` is set because `config.toml` was unreadable,
     # `toml_disabled` is lost, so a name that is both TOML-`disabled` *and*
     # exported in `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` would survive here —
@@ -4746,11 +4818,9 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     """
     global _thread_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
 
-    if config_path is None:
-        if _thread_config_cache is not None:
-            return _thread_config_cache
-        config_path = DEFAULT_CONFIG_PATH
-    use_default = config_path == DEFAULT_CONFIG_PATH
+    use_default = config_path is None
+    if use_default and _thread_config_cache is not None:
+        return _thread_config_cache
 
     columns = dict(THREAD_COLUMN_DEFAULTS)
     relative_time = True
@@ -4758,14 +4828,10 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     scope = "cwd"
 
     try:
-        if not config_path.exists():
-            result = ThreadConfig(columns, relative_time, sort_order, scope)
-            if use_default:
-                _thread_config_cache = result
-            return result
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, _ = _load_effective_config_data(config_path)
         threads_section = data.get("threads", {})
+        if not isinstance(threads_section, dict):
+            threads_section = {}
 
         # columns
         raw_columns = threads_section.get("columns", {})
@@ -4815,16 +4881,11 @@ def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
     Returns:
         Dict mapping column names to visibility booleans.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-
     result = dict(THREAD_COLUMN_DEFAULTS)
     try:
-        if not config_path.exists():
-            return result
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        columns = data.get("threads", {}).get("columns", {})
+        data, _ = _load_effective_config_data(config_path)
+        threads = data.get("threads", {})
+        columns = threads.get("columns", {}) if isinstance(threads, dict) else {}
         if isinstance(columns, dict):
             for key in result:
                 if key in columns and isinstance(columns[key], bool):
@@ -4888,14 +4949,10 @@ def load_thread_relative_time(config_path: Path | None = None) -> bool:
     Returns:
         True if timestamps should display as relative time.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
     try:
-        if not config_path.exists():
-            return True
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        value = data.get("threads", {}).get("relative_time")
+        data, _ = _load_effective_config_data(config_path)
+        threads = data.get("threads", {})
+        value = threads.get("relative_time") if isinstance(threads, dict) else None
         if isinstance(value, bool):
             return value
     except (OSError, tomllib.TOMLDecodeError):
@@ -4951,14 +5008,10 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
     Returns:
         `"updated_at"` or `"created_at"`.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
     try:
-        if not config_path.exists():
-            return "updated_at"
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        value = data.get("threads", {}).get("sort_order")
+        data, _ = _load_effective_config_data(config_path)
+        threads = data.get("threads", {})
+        value = threads.get("sort_order") if isinstance(threads, dict) else None
         if value in {"updated_at", "created_at"}:
             return value
     except (OSError, tomllib.TOMLDecodeError):
@@ -5001,13 +5054,8 @@ def load_startup_mode(config_path: Path | None = None) -> str:
         `"manual"`, `"auto"`, or `"yolo"`; falls back to `"manual"` when
         unset, unreadable, or invalid.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
     try:
-        if not config_path.exists():
-            return DEFAULT_STARTUP_MODE
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, _ = _load_effective_config_data(config_path)
         startup = data.get("startup")
         value = startup.get("mode") if isinstance(startup, dict) else None
         # `value` may be any TOML type; guard against non-strings (e.g. an
@@ -5363,18 +5411,13 @@ def _load_agents_field(field: str, config_path: Path | None = None) -> str | Non
         The trimmed string value, or `None` if the file, section, or key
         is missing or the file is unreadable.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-    if not config_path.exists():
-        return None
     try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, _ = _load_effective_config_data(config_path)
     except (OSError, tomllib.TOMLDecodeError):
         logger.warning("Could not read agents.%s from config", field, exc_info=True)
         return None
     agents_section = data.get("agents", {})
-    value = agents_section.get(field)
+    value = agents_section.get(field) if isinstance(agents_section, dict) else None
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None

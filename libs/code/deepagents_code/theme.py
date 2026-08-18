@@ -27,12 +27,12 @@ import functools
 import logging
 import re
 from dataclasses import dataclass, fields
-from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     from textual.app import App
 
@@ -560,29 +560,34 @@ def _load_user_themes(
             overrides replace existing entries).
         config_path: Override for the config file path (testing).
     """
+    is_default = config_path is None
     if config_path is None:
         try:
-            config_path = Path.home() / ".deepagents" / "config.toml"
+            from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+            config_path = DEFAULT_CONFIG_PATH
         except RuntimeError:
             logger.debug("Cannot determine home directory; skipping user theme loading")
             return
 
-    import tomllib
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import ProviderHealth
 
-    try:
-        if not config_path.exists():
-            return
-
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+    sources = get_config_sources(
+        user_path=config_path,
+        include_managed=is_default,
+    )
+    if sources.user.status.health in {
+        ProviderHealth.CORRUPT,
+        ProviderHealth.UNREADABLE,
+    }:
         logger.warning(
             "Could not read %s for user themes: %s",
             config_path,
-            exc,
+            sources.user.status.detail or sources.user.status.health.value,
         )
         return
-
+    data, _ = sources.merged()
     themes_section: Any = data.get("themes")
     if not isinstance(themes_section, dict) or not themes_section:
         return

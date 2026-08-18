@@ -9,11 +9,11 @@ its dataclass defaults from them — so a default is defined in exactly one plac
 `resolve_scalar` is the shared resolution engine used both by the runtime
 (`Settings.from_environment`) and by the `config` CLI command, so introspection
 can never drift from what the app actually reads. Resolution precedence mirrors
-the loaders: a `DEEPAGENTS_CODE_`-prefixed env var beats the canonical name,
-env beats `config.toml`, and the typed default is the final fallback. A
+the loaders: managed TOML beats `DEEPAGENTS_CODE_`-prefixed and canonical env,
+env beats user `config.toml`, and the typed default is the final fallback. A
 malformed numeric/list/PTC value, an unrecognized boolean token, or a
 wrong-typed TOML value is logged and falls back to the next layer rather than
-raising, so a bad config never blocks startup.
+raising, so one bad entry does not discard valid sibling policy.
 
 Structured, user-defined config is *not* a flat scalar option and is parsed by
 dedicated typed loaders elsewhere; the manifest references those tables as
@@ -481,11 +481,24 @@ def load_config_toml() -> dict[str, Any]:
         return {}
 
 
+def load_managed_config_toml(*, refresh: bool = False) -> dict[str, Any]:
+    """Load the fixed operating-system managed TOML source.
+
+    Returns:
+        Parsed managed mapping, or an empty mapping when unavailable.
+    """
+    from deepagents_code.configuration.service import get_managed_snapshot
+
+    return get_managed_snapshot(refresh=refresh).data
+
+
 _warned_non_table_paths: set[tuple[str, ...]] = set()
 
 
-def _toml_lookup(data: dict[str, Any], keys: tuple[str, ...]) -> tuple[bool, Any]:
-    """Navigate nested `keys` in `data`.
+def _toml_lookup(
+    data: dict[str, Any], keys: tuple[str, ...], *, source: str = "config.toml"
+) -> tuple[bool, Any]:
+    """Navigate nested `keys` in one TOML source.
 
     A traversal that stops because an intermediate node is not a table (say
     `ui = "dark"` shadowing the whole `[ui]` table) is logged, because it
@@ -501,11 +514,13 @@ def _toml_lookup(data: dict[str, Any], keys: tuple[str, ...]) -> tuple[bool, Any
     for index, key in enumerate(keys):
         if not isinstance(node, dict):
             path = keys[:index]
-            if path not in _warned_non_table_paths:
-                _warned_non_table_paths.add(path)
+            warning_key = (source, *path)
+            if warning_key not in _warned_non_table_paths:
+                _warned_non_table_paths.add(warning_key)
                 logger.warning(
-                    "Ignoring config.toml [%s]; expected a table, got %s — every "
-                    "option under it falls back to its default",
+                    "Ignoring %s [%s]; expected a table, got %s — every option "
+                    "under it falls back to its next source",
+                    source,
                     ".".join(path),
                     type(node).__name__,
                 )
@@ -628,7 +643,9 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
     assert_never(kind)
 
 
-def _coerce_toml(option: ConfigOption, raw: object) -> object:
+def _coerce_toml(
+    option: ConfigOption, raw: object, *, source: str = "config.toml"
+) -> object:
     """Coerce a raw TOML value by the option's kind, logging on mismatch.
 
     Returns:
@@ -671,7 +688,7 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
                 # Unresolvable `~user` / NUL byte in a path string: fall back
                 # rather than crash resolution.
                 logger.warning(
-                    "Ignoring %s in config.toml (could not resolve a path)", label
+                    "Ignoring %s in %s (could not resolve a path)", label, source
                 )
                 return _INVALID
     elif kind is OptionKind.PTC_DELEGATE:
@@ -680,15 +697,16 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         try:
             return _parse_interpreter_ptc(raw)
         except ValueError as exc:
-            logger.warning("Ignoring %s in config.toml: %s", label, exc)
+            logger.warning("Ignoring %s in %s: %s", label, source, exc)
             return _INVALID
     elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
         if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
             return raw
         logger.warning(
-            "Ignoring %s=%r in config.toml (expected 'block' or 'underline')",
+            "Ignoring %s=%r in %s (expected 'block' or 'underline')",
             label,
             raw,
+            source,
         )
         return _INVALID
     elif kind is OptionKind.STARTUP_MODE_DELEGATE:
@@ -697,100 +715,129 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r in config.toml (expected 'manual', 'auto', or 'yolo')",
+            "Ignoring %s=%r in %s (expected 'manual', 'auto', or 'yolo')",
             label,
             raw,
+            source,
         )
         return _INVALID
     elif kind is OptionKind.STRUCTURED:
         # Passed through verbatim for display; parsed by a dedicated loader.
         return raw
     elif kind is OptionKind.SHELL_LIST_DELEGATE:
-        # Env-only; never read from TOML, so passed through untouched.
-        return raw
+        from deepagents_code.config import parse_shell_allow_list
+
+        if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+            return list(raw)
+        if isinstance(raw, str):
+            try:
+                return parse_shell_allow_list(raw)
+            except ValueError:
+                return _INVALID
     # Any other (future) kind falls through to the warning below, so a missing
     # branch logs and falls back rather than passing a raw value through.
 
     logger.warning(
-        "Ignoring %s=%r in config.toml (expected %s)", label, raw, option.type
+        "Ignoring %s=%r in %s (expected %s)", label, raw, source, option.type
     )
     return _INVALID
 
 
-def _resolve_theme(toml_data: dict[str, Any]) -> tuple[str, str]:
-    """Resolve the active theme using the same precedence as app startup.
+def _resolve_theme(toml_data: dict[str, Any], *, source: str) -> tuple[str, str] | None:
+    """Resolve a theme from one TOML layer.
 
     Returns:
-        `(theme_name, source)` for the effective Textual theme.
+        Theme and source, or `None` when unset or invalid.
+    """
+    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
+
+    ui = toml_data.get("ui")
+    if ui is None:
+        return None
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] in %s should be a table; got %s while resolving theme",
+            source,
+            type(ui).__name__,
+        )
+        return None
+    resolved = _resolve_terminal_mapping(ui)
+    if resolved is not None:
+        term_program = os.environ.get("TERM_PROGRAM", "").strip()
+        return resolved, f"{source} [ui.terminal_themes.{term_program}]"
+    saved = ui.get("theme")
+    resolved = _resolve_theme_name(saved)
+    if resolved is not None:
+        return resolved, f"{source} [ui.theme]"
+    if isinstance(saved, str):
+        logger.warning("Unknown theme '%s' in %s; ignoring it", saved, source)
+    return None
+
+
+def _resolve_effective_theme(
+    toml_data: dict[str, Any], managed_toml_data: dict[str, Any]
+) -> tuple[str, str]:
+    """Resolve managed, environment, and user theme preferences.
+
+    Returns:
+        Effective theme name and source.
     """
     from deepagents_code import theme
     from deepagents_code._env_vars import THEME
-    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
+    from deepagents_code.app import _resolve_theme_name
 
+    managed = _resolve_theme(managed_toml_data, source="managed config")
+    if managed is not None:
+        return managed
     env_name = os.environ.get(THEME)
     if env_name is not None:
         resolved = _resolve_theme_name(env_name)
         if resolved is not None:
             return resolved, f"env ({THEME})"
-        logger.warning(
-            "Unknown theme '%s' in %s; falling back to default",
-            env_name,
-            THEME,
-        )
-        return theme.DEFAULT_THEME, "default"
-
-    ui = toml_data.get("ui", {})
-    if not isinstance(ui, dict):
-        if ui is not None:
-            logger.warning(
-                "[ui] should be a table; got %s while resolving theme",
-                type(ui).__name__,
-            )
-        return theme.DEFAULT_THEME, "default"
-
-    resolved = _resolve_terminal_mapping(ui)
-    if resolved is not None:
-        term_program = os.environ.get("TERM_PROGRAM", "").strip()
-        return resolved, f"config.toml [ui.terminal_themes.{term_program}]"
-
-    saved = ui.get("theme")
-    resolved = _resolve_theme_name(saved)
-    if resolved is not None:
-        return resolved, "config.toml [ui.theme]"
-    if isinstance(saved, str):
-        logger.warning("Unknown theme '%s' in config; falling back to default", saved)
-
-    return theme.DEFAULT_THEME, "default"
+        logger.warning("Unknown theme '%s' in %s; falling through", env_name, THEME)
+    user = _resolve_theme(toml_data, source="config.toml")
+    return user if user is not None else (theme.DEFAULT_THEME, "default")
 
 
 def resolve_scalar(
-    option: ConfigOption, *, toml_data: dict[str, Any]
+    option: ConfigOption,
+    *,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[Any, str]:
-    """Resolve an option against the environment then `config.toml`.
+    """Resolve an option through managed, environment, user, and default tiers.
 
     Args:
         option: The option to resolve.
-        toml_data: Parsed `config.toml` mapping (see `load_config_toml`).
-
-    Resolution order is: the prefixed primary `env_var`, then each
-    `fallback_env_vars` name in declaration order, then `config.toml`, then the
-    typed `default` -- or, for `BOOL_MODE_DEFAULT`, a default derived from debug
-    or experimental mode rather than from `option.default`.
+        toml_data: Parsed user `config.toml` mapping.
+        managed_toml_data: Parsed managed TOML mapping. The process snapshot is
+            used when omitted; pass an empty mapping for an isolated user source.
 
     Returns:
-        `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
-        `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
-        boolean token, or any TOML value of the wrong type is logged and skipped
-        so the next layer (or the typed default) applies. An empty or
-        whitespace-only env value is treated as unset, so it falls through to
-        the next env var, then `config.toml`/`default`, rather than counting as
-        set; this is deliberately stricter than `resolve_env_var`, which keeps a
-        whitespace-only value. Options declaring `empty_env_is_false` instead
-        resolve an empty *or* whitespace-only value to `False`. Theme resolution
-        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
+        `(value, source)` for the first valid scalar or merged structured value.
     """
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
     if option.kind is OptionKind.THEME_DELEGATE:
-        return _resolve_theme(toml_data)
+        return _resolve_effective_theme(toml_data, managed_data)
+
+    managed_found = False
+    managed_raw: object = None
+    if option.toml_keys:
+        managed_found, managed_raw = _toml_lookup(
+            managed_data,
+            option.toml_keys,
+            source="managed config",
+        )
+        if managed_found and option.kind is not OptionKind.STRUCTURED:
+            managed_value = _coerce_toml(
+                option,
+                managed_raw,
+                source="managed config",
+            )
+            if managed_value is not _INVALID:
+                return managed_value, "managed config"
 
     if option.env_var or option.fallback_env_vars:
         from deepagents_code.model_config import resolved_env_var_name
@@ -838,6 +885,30 @@ def resolve_scalar(
 
     if option.toml_keys:
         found, raw = _toml_lookup(toml_data, option.toml_keys)
+        if option.kind is OptionKind.STRUCTURED and managed_found:
+            if found and isinstance(raw, dict) and isinstance(managed_raw, dict):
+                from deepagents_code.configuration.resolver import merge_toml_tables
+
+                merged, _ = merge_toml_tables(
+                    raw,
+                    managed_raw,
+                    lower_source="config.toml",
+                    higher_source="managed config",
+                )
+                return merged, "managed config + config.toml"
+            if (
+                found
+                and option.key
+                in {"mcp.disabled_project_servers", "mcp.disabled_servers"}
+                and isinstance(raw, list)
+                and isinstance(managed_raw, list)
+            ):
+                merged_list = list(raw)
+                for item in managed_raw:
+                    if item not in merged_list:
+                        merged_list.append(item)
+                return merged_list, "managed config + config.toml"
+            return managed_raw, "managed config"
         if found:
             value = _coerce_toml(option, raw)
             if value is not _INVALID:
@@ -857,7 +928,9 @@ def resolve_scalar(
 
 
 def resolve_interpreter_kwargs(
-    *, toml_data: dict[str, Any] | None = None
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve the `[interpreter]` options into `Settings` constructor kwargs.
 
@@ -869,6 +942,8 @@ def resolve_interpreter_kwargs(
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
 
     Returns:
         Mapping of `Settings` field name to resolved value for the interpreter
@@ -879,7 +954,11 @@ def resolve_interpreter_kwargs(
     for option in get_config_options():
         if option.group != "Interpreter" or option.settings_field is None:
             continue
-        value, _ = resolve_scalar(option, toml_data=data)
+        value, _ = resolve_scalar(
+            option,
+            toml_data=data,
+            managed_toml_data=managed_toml_data,
+        )
         resolved[option.settings_field] = value
     return resolved
 
@@ -899,12 +978,16 @@ def _is_valid_auto_classifier_timeout(value: object) -> bool:
 
 
 def resolve_auto_classifier_timeout_with_source(
-    *, toml_data: dict[str, Any] | None = None
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[float, str]:
     """Resolve the Auto classifier decision-batch budget and its source.
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
 
     Returns:
         `(timeout_seconds, source)`, where `source` is the layer that supplied
@@ -919,9 +1002,29 @@ def resolve_auto_classifier_timeout_with_source(
     if option is None:
         return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
 
-    value, source = resolve_scalar(option, toml_data=data)
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    value, source = resolve_scalar(
+        option,
+        toml_data=data,
+        managed_toml_data=managed_data,
+    )
     if _is_valid_auto_classifier_timeout(value):
         return value, source
+
+    if source == "managed config":
+        logger.warning(
+            "Ignoring managed auto_classifier_timeout %r (expected seconds in "
+            "[%g, %g]); falling through to the next config source",
+            value,
+            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+            AUTO_CLASSIFIER_TIMEOUT_CEILING,
+        )
+        return resolve_auto_classifier_timeout_with_source(
+            toml_data=data,
+            managed_toml_data={},
+        )
 
     # Invalid higher-precedence values must fall through instead of jumping
     # straight to the default. Hide the rejected env var and re-resolve so
@@ -951,7 +1054,10 @@ def resolve_auto_classifier_timeout_with_source(
             )
             return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
         try:
-            return resolve_auto_classifier_timeout_with_source(toml_data=data)
+            return resolve_auto_classifier_timeout_with_source(
+                toml_data=data,
+                managed_toml_data=managed_data,
+            )
         finally:
             os.environ[env_name] = previous
 
@@ -969,7 +1075,9 @@ def resolve_auto_classifier_timeout_with_source(
 
 
 def resolve_auto_classifier_timeout(
-    *, toml_data: dict[str, Any] | None = None
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> float:
     """Resolve the wall-clock budget for one Auto classifier decision batch.
 
@@ -983,12 +1091,17 @@ def resolve_auto_classifier_timeout(
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
 
     Returns:
         The resolved timeout in seconds, guaranteed within
             `[AUTO_CLASSIFIER_TIMEOUT_FLOOR, AUTO_CLASSIFIER_TIMEOUT_CEILING]`.
     """
-    value, _ = resolve_auto_classifier_timeout_with_source(toml_data=toml_data)
+    value, _ = resolve_auto_classifier_timeout_with_source(
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
+    )
     return value
 
 
@@ -1024,7 +1137,9 @@ def blank_auto_classifier_env_name() -> str | None:
 
 
 def resolve_auto_classifier_model_with_source(
-    *, toml_data: dict[str, Any] | None = None
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> tuple[str | None, str]:
     """Resolve the effective Auto classifier model spec and its source.
 
@@ -1035,6 +1150,8 @@ def resolve_auto_classifier_model_with_source(
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
 
     Returns:
         `(spec, source)`. `source` credits the layer that decided the outcome,
@@ -1046,11 +1163,28 @@ def resolve_auto_classifier_model_with_source(
     if option is None:
         return None, "default"
 
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    value, source = resolve_scalar(
+        option,
+        toml_data=data,
+        managed_toml_data=managed_data,
+    )
+    if source == "managed config":
+        return (
+            value.strip() if isinstance(value, str) and value.strip() else None
+        ), source
+
     blank_env = blank_auto_classifier_env_name()
     if blank_env is not None:
         return None, f"env ({blank_env})"
 
-    value, source = resolve_scalar(option, toml_data=data)
+    value, source = resolve_scalar(
+        option,
+        toml_data=data,
+        managed_toml_data={},
+    )
     if isinstance(value, str) and value.strip():
         return value.strip(), source
     # A blank or wrong-typed `config.toml` entry reverts to the main agent model;
@@ -1067,7 +1201,11 @@ def _is_valid_recursion_limit(value: object) -> bool:
     )
 
 
-def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
+def resolve_recursion_limit(
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
+) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 
     Resolves `runtime.recursion_limit` through the standard env → `config.toml`
@@ -1078,6 +1216,8 @@ def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
+        managed_toml_data: Parsed managed TOML; the process snapshot is used when
+            omitted.
 
     Returns:
         The resolved recursion limit, guaranteed within
@@ -1088,9 +1228,29 @@ def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
     if option is None:
         return RECURSION_LIMIT_DEFAULT
 
-    value, source = resolve_scalar(option, toml_data=data)
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    value, source = resolve_scalar(
+        option,
+        toml_data=data,
+        managed_toml_data=managed_data,
+    )
     if _is_valid_recursion_limit(value):
         return value
+
+    if source == "managed config":
+        logger.warning(
+            "Ignoring managed recursion_limit %r (expected int in [%d, %d]); "
+            "falling through to the next config source",
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+        )
+        return resolve_recursion_limit(
+            toml_data=data,
+            managed_toml_data={},
+        )
 
     # Invalid higher-precedence values must fall through instead of jumping
     # straight to the default. Hide the rejected env var (if any) and re-resolve
@@ -1107,7 +1267,10 @@ def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
         )
         previous = os.environ.pop(env_name, None)
         try:
-            return resolve_recursion_limit(toml_data=data)
+            return resolve_recursion_limit(
+                toml_data=data,
+                managed_toml_data=managed_data,
+            )
         finally:
             if previous is not None:
                 os.environ[env_name] = previous
@@ -1684,6 +1847,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.SHELL_LIST_DELEGATE,
         env_var=_env_vars.SHELL_ALLOW_LIST,
+        toml_keys=("shell", "allow_list"),
         cli_flag="--shell-allow-list",
         settings_field="shell_allow_list",
     ),

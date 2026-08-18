@@ -4052,6 +4052,7 @@ def _check_mcp_project_trust(
             f"[yellow]Warning: {escape(trust_lists.read_error)}; treating "
             "project MCP servers as untrusted.[/yellow]",
             highlight=False,
+            soft_wrap=True,
         )
         return False
 
@@ -4246,6 +4247,70 @@ def _verify_interpreter_or_exit() -> None:
         sys.exit(1)
 
 
+def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
+    """Replace lower-tier runtime arguments with valid managed values."""
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_managed_config_toml,
+        resolve_scalar,
+    )
+
+    managed_data = load_managed_config_toml()
+    if not managed_data:
+        return
+
+    def managed_value(key: str) -> tuple[bool, object]:
+        option = get_option(key)
+        if option is None:
+            return False, None
+        value, source = resolve_scalar(
+            option,
+            toml_data={},
+            managed_toml_data=managed_data,
+        )
+        return source == "managed config", value
+
+    mappings = {
+        "models.default": "model",
+        "models.auto_classifier": "auto_classifier_model",
+        "interpreter.enable_interpreter": "interpreter",
+        "runtime.recursion_limit": "recursion_limit",
+        "sandboxes.default": "sandbox",
+    }
+    for key, destination in mappings.items():
+        found, value = managed_value(key)
+        if found and hasattr(args, destination):
+            setattr(args, destination, value)
+
+    found, _ = managed_value("interpreter.ptc")
+    if found and hasattr(args, "interpreter_tools"):
+        args.interpreter_tools = None
+
+    found, _ = managed_value("shell.allow_list")
+    if found and hasattr(args, "shell_allow_list"):
+        args.shell_allow_list = None
+
+    found, startup_mode = managed_value("startup.mode")
+    if found:
+        args.auto_approve = startup_mode == "auto"
+        args.yolo = startup_mode == "yolo"
+
+
+def _require_managed_config_or_exit() -> None:
+    """Fail an agent launch when present managed policy cannot be enforced."""
+    from deepagents_code.configuration.service import (
+        ManagedConfigError,
+        require_healthy_managed_config,
+    )
+
+    try:
+        require_healthy_managed_config(refresh=True)
+    except ManagedConfigError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        sys.stderr.flush()
+        sys.exit(78)
+
+
 def cli_main() -> None:
     """Entry point for console script.
 
@@ -4363,6 +4428,9 @@ def cli_main() -> None:
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
 
+        if command is None:
+            _apply_managed_runtime_policy(args)
+
         if command == "auth":
             from deepagents_code.client.commands.auth import run_auth_command
 
@@ -4414,6 +4482,7 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            _require_managed_config_or_exit()
             if getattr(args, "yolo", False):
                 from deepagents_code.approval_mode import has_yolo_acknowledgement
 
@@ -4904,8 +4973,16 @@ def cli_main() -> None:
                 currently_enabled = is_auto_update_enabled()
                 new_state = not currently_enabled
                 set_auto_update(new_state)
-                label = "enabled" if new_state else "disabled"
-                console.print(f"Auto-updates {label}.")
+                effective_state = is_auto_update_enabled()
+                if effective_state != new_state:
+                    effective_label = "enabled" if effective_state else "disabled"
+                    console.print(
+                        "Preference saved, but auto-updates remain "
+                        f"{effective_label} due to managed config."
+                    )
+                else:
+                    label = "enabled" if new_state else "disabled"
+                    console.print(f"Auto-updates {label}.")
             except OSError:
                 logger.warning("--auto-update failed: filesystem error", exc_info=True)
                 console.print(
@@ -4971,6 +5048,9 @@ def cli_main() -> None:
             sys.exit(0)
 
         output_format = getattr(args, "output_format", "text")
+
+        if command is None:
+            _require_managed_config_or_exit()
 
         if args.command == "help":
             from deepagents_code.ui import show_help

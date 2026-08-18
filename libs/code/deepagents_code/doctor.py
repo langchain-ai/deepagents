@@ -508,6 +508,24 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     )
 
 
+def _managed_config_diagnostic() -> DiagnosticItem:
+    """Report managed TOML location and parse health without blocking doctor.
+
+    Returns:
+        Managed config diagnostic row.
+    """
+    from deepagents_code.configuration.service import managed_config_status
+
+    status = managed_config_status(refresh=True)
+    path = status.path or "(unknown)"
+    suffix = status.health.value.lower()
+    return DiagnosticItem(
+        "Managed config",
+        f"{path} ({suffix})",
+        ok=status.usable,
+    )
+
+
 def _collect_configuration() -> DiagnosticSection:
     """Collect on-disk configuration and data locations.
 
@@ -523,6 +541,7 @@ def _collect_configuration() -> DiagnosticSection:
         title="Configuration",
         items=[
             _path_status("Data directory", DEFAULT_CONFIG_DIR),
+            _managed_config_diagnostic(),
             _path_status("Config file", DEFAULT_CONFIG_PATH),
         ],
     )

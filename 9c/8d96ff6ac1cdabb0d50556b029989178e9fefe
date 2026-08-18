@@ -1,0 +1,22 @@
+libs/evals/Makefile
+  s_b999aac40ef9b3::t_b0090c8c4e7d3b 59
+.github/workflows/_harbor_run.yml
+  s_b999aac40ef9b3::t_dfaf1d333d22b7 651-661
+  s_b999aac40ef9b3::t_67d509cf1268c1 584
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9c8d96ff6ac1cdabb0d50556b029989178e9fefe",
+  "prompts": {},
+  "sessions": {
+    "s_b999aac40ef9b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ceea9ef2-dc4c-4d62-b5ce-0f30811e7d7f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

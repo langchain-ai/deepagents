@@ -1,0 +1,19 @@
+libs/evals/pyproject.toml
+  s_2e8ed06e9e712f::t_fa9d8ca62fe923 128-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "d44ea78ddf45dcfe11fa39bcd76333e1ab48b883",
+  "prompts": {},
+  "sessions": {
+    "s_2e8ed06e9e712f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a75a9ce7-e4c6-4ae8-910c-df6a3de3d353",
+        "model": "claude-opus-5"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

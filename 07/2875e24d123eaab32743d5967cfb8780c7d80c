@@ -1,0 +1,20 @@
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_427b8b2e2ce745::t_561e279c048a57 348-350
+  s_427b8b2e2ce745::t_1c071cbe1f6b91 347,351
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "072875e24d123eaab32743d5967cfb8780c7d80c",
+  "prompts": {},
+  "sessions": {
+    "s_427b8b2e2ce745": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f9a7dd1-d2c2-4f68-a70e-6ee16c83d1bb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -1,0 +1,36 @@
+libs/evals/UNIFIED_EVALS.md
+  s_9a4d764d7b2b9b::t_cea265ab939a87 68-74,87-88
+  s_9a4d764d7b2b9b::t_986d5a36c2f7f5 22
+  s_9a4d764d7b2b9b::t_18a14d1346c773 77,85-86
+  s_9a4d764d7b2b9b::t_5f854bdc41c268 80-83
+  s_9a4d764d7b2b9b::t_d332f2772628cf 135
+  s_9a4d764d7b2b9b::t_e21f31cb30b7b0 24-39,49-64,66-67,75-76,78-79,84,89,92
+  s_9a4d764d7b2b9b::t_69d3c4af7fe77f 40-48
+  s_9a4d764d7b2b9b::t_5395de11f14b15 65
+  s_9a4d764d7b2b9b::t_a12742adc3ced9 90-91
+  s_f9a06a0659e578::t_e08e07fc3adf1d 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "7c85bb750b3f4fb069b1b1724cb0f8eb98c19b9f",
+  "prompts": {},
+  "sessions": {
+    "s_9a4d764d7b2b9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "967c92cf-199c-4155-a4f8-752473a43df1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    },
+    "s_f9a06a0659e578": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc2ff-b948-7c22-a76d-eb11c6bda1d3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

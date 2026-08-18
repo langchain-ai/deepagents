@@ -2709,13 +2709,13 @@ class TestBuildBaseBody:
         assert body.index("Internal maintainers") < body.index("Released by")
         assert body.count("---") == 1
         assert (
-            "- @carol — [#101]"
-            f"(https://github.com/{REPOSITORY}/issues/101)"
+            "@carol ([#101]"
+            f"(https://github.com/{REPOSITORY}/issues/101))"
         ) in body
         assert (
-            "- @dave — [#201]"
+            "@dave ([#201]"
             f"(https://github.com/{REPOSITORY}/issues/201), "
-            f"[#202](https://github.com/{REPOSITORY}/issues/202)"
+            f"[#202](https://github.com/{REPOSITORY}/issues/202))"
         ) in body
 
     def test_special_thanks_opens_the_separator_when_alone(self) -> None:

@@ -1284,6 +1284,14 @@ def _build_contributor_entry(contributor: Contributor) -> str:
     return f"@{contributor.login}"
 
 
+def _build_reporter_entry(reporter: IssueReporter, repository: str) -> str:
+    """Format a single issue-reporter entry with links to their issues."""
+    links = ", ".join(
+        f"[#{n}](https://github.com/{repository}/issues/{n})" for n in reporter.issues
+    )
+    return f"@{reporter.login} ({links})"
+
+
 def build_base_body(
     *,
     pkg_name: str,
@@ -1323,17 +1331,12 @@ def build_base_body(
         if not separator_added:
             body += "\n\n---"
             separator_added = True
-        lines = "\n".join(
-            f"- @{r.login} — "
-            + ", ".join(
-                f"[#{n}](https://github.com/{repository}/issues/{n})"
-                for n in r.issues
-            )
-            for r in issue_reporters
+        entries = ", ".join(
+            _build_reporter_entry(r, repository) for r in issue_reporters
         )
         body += (
             "\n\n**Special thanks** to everyone who reported the issues addressed"
-            f" in this release:\n\n{lines}"
+            f" in this release: {entries}"
         )
 
     if internal:

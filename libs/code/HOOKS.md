@@ -50,11 +50,12 @@ Native tools are matched by their wire names (for example `execute` → `Bash`, 
 | --- | --- | --- | --- |
 | `SessionStart` | client | `cause` | A session starts (`startup`, `resume`, `clear`, `compact`) |
 | `UserPromptSubmit` | client | _(none)_ | The user submits a prompt |
-| `SessionEnd` | client | `cause` | A session ends |
+| `SessionEnd` | client | `cause` | A session ends (`clear`, `resume`, `prompt_input_exit`, `other`) |
 | `PermissionRequest` | client | `tool_name` | The client is about to ask for tool permission |
 | `Notification` | client | `notification_type` | A client lifecycle notification is emitted |
 | `PreToolUse` | server | `tool_name` | Before a tool call runs |
-| `PostToolUse` | server | `tool_name` | After a tool call completes |
+| `PostToolUse` | server | `tool_name` | After a tool call succeeds |
+| `PostToolUseFailure` | server | `tool_name` | After a tool call fails |
 | `PreCompact` | server | `trigger` | Before conversation compaction |
 | `Stop` | server | _(none)_ | After an agent stop turn |
 | `SubagentStart` | server | `agent_name` | When a subagent starts |
@@ -127,7 +128,7 @@ Matchers use wire tool names. `execute` is exposed as `Bash`. Exit code `2` (or 
 
 Handlers communicate through:
 
-- **Exit code `2`**: treated as a synthetic `decision: "block"`. Interpretation depends on the event (for example deny on `PreToolUse` / `PermissionRequest`, block further processing on `UserPromptSubmit` / `PreCompact`, feedback on `PostToolUse`).
+- **Exit code `2`**: treated as a synthetic `decision: "block"`. Interpretation depends on the event (for example deny on `PreToolUse` / `PermissionRequest`, block further processing on `UserPromptSubmit` / `PreCompact`, feedback on `PostToolUse` / `PostToolUseFailure`).
 - **Other non-zero exits**: recorded as diagnostics; they do not apply a block decision.
 - **JSON stdout** (`HookWireOutput`): may set `continue` / `stopReason`, `systemMessage` (user-visible notice), `additionalContext` via `hookSpecificOutput`, and event-specific fields such as `permissionDecision` on `PreToolUse`.
 - **Non-JSON stdout**: becomes additional context for events whose plain-output policy is context (`SessionStart`, `UserPromptSubmit`); otherwise it is a diagnostic.

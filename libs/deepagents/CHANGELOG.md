@@ -2,6 +2,30 @@
 
 # Deep Agents Changelog
 
+## [0.7.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.5...deepagents==0.7.6) (2026-08-13)
+
+### Bug Fixes
+
+- Offload conversation history to a distinct session ID when summarizing. ([#5470](https://github.com/langchain-ai/deepagents/issues/5470))
+
+## [0.7.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.4...deepagents==0.7.5) (2026-08-06)
+
+### Bug Fixes
+
+- Identify SDK provider classes that support files. ([#5326](https://github.com/langchain-ai/deepagents/issues/5326))
+
+## [0.7.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.3...deepagents==0.7.4) (2026-08-04)
+
+### Features
+
+- Exposed the `execute` exit code in SDK artifacts. ([#5300](https://github.com/langchain-ai/deepagents/issues/5300))
+
+## [0.7.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.2...deepagents==0.7.3) (2026-08-03)
+
+### Bug Fixes
+
+- Fixed exact-file `delete` target resolution in the SDK using first-match-wins behavior. ([#5229](https://github.com/langchain-ai/deepagents/issues/5229))
+
 ## [0.7.2](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.1...deepagents==0.7.2) (2026-08-03)
 
 ### Bug Fixes

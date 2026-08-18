@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
+    from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
     from deepagents_code.mcp_tools import MCPServerInfo
@@ -2200,8 +2201,10 @@ def create_cli_agent(
     enable_interpreter: bool = False,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int | None = None,
+    auto_classifier_model: str | BaseChatModel | None = None,
     recursion_limit: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    store: BaseStore | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
@@ -2253,8 +2256,8 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
-        auto_mode_enabled: Install classifier-backed Auto for the local Textual
-            runtime. Callers must leave this disabled for headless, remote, and
+        auto_mode_enabled: Install classifier-backed Auto for local TUI or ACP
+            runtimes. Callers must leave this disabled for headless and
             sandbox-backed graphs.
         interrupt_shell_only: If `True`, all HITL interrupts are disabled;
             shell commands are validated inline by `ShellAllowListMiddleware`
@@ -2325,12 +2328,23 @@ def create_cli_agent(
         rubric_max_iterations: Explicit grader iterations per rubric attempt
             before the agent terminates with `'max_iterations_reached'`; `None`
             uses the SDK default.
+        auto_classifier_model: Model the Auto approval classifier reviews with.
+
+            A `'provider:model'` string or `BaseChatModel`.
+
+            When `None`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` is consulted,
+            then `[models].auto_classifier`, and the main `model` is reused when
+            both are unset. A blank string is *not* the same as `None`: it means
+            "inherit the main model" directly and, unlike `None`, does not
+            consult the env var or `config.toml`. Only meaningful when
+            `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
             in `config.toml`, then the default via `resolve_recursion_limit`.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
+        store: Optional LangGraph Store for runtime approval state.
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
@@ -2361,10 +2375,9 @@ def create_cli_agent(
     """
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
-    if auto_mode_enabled and (not interactive or sandbox is not None):
+    if auto_mode_enabled and sandbox is not None:
         logger.warning(
-            "Classifier-backed Auto is unavailable outside the local interactive "
-            "runtime; using Manual HITL"
+            "Classifier-backed Auto is unavailable with a sandbox; using Manual HITL"
         )
         auto_mode_enabled = False
     effective_cwd = (
@@ -2463,21 +2476,17 @@ def create_cli_agent(
         # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
         # ToolUse only fire on the parent graph. Disable Stop so finishing a
         # subagent does not emit the main-agent Stop event (SubagentStop still
-        # fires from the parent wrap around `task`). Hooks v2 stays off unless
-        # experimental mode is on.
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+        # fires from the parent wrap around `task`).
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-        if is_env_truthy(EXPERIMENTAL):
-            from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
-
-            hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-            middleware.append(
-                ServerHooksMiddleware(
-                    cwd=hooks_cwd,
-                    emit_stop=False,
-                    mcp_tools=mcp_tools,
-                )
+        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+        middleware.append(
+            ServerHooksMiddleware(
+                cwd=hooks_cwd,
+                emit_stop=False,
+                mcp_tools=mcp_tools,
             )
+        )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when
@@ -2844,13 +2853,25 @@ def create_cli_agent(
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config import resolve_auto_classifier_model
+        from deepagents_code.config_manifest import resolve_auto_classifier_timeout
 
         trusted_root, narrow_allow_list = auto_mode_config
+        # An explicit argument wins; otherwise the env var / `config.toml`
+        # preference is read here, where agent construction already runs off the
+        # blockbuster-guarded server loop (see `server_graph._make_graph`).
+        classifier_model = (
+            auto_classifier_model
+            if auto_classifier_model is not None
+            else resolve_auto_classifier_model()
+        )
         agent_middleware.append(
             AutoModeHITLMiddleware(
                 resolved_interrupt_on,
                 worktree_root=trusted_root,
                 shell_allow_list=narrow_allow_list,
+                classifier_model=classifier_model,
+                classifier_timeout_seconds=resolve_auto_classifier_timeout(),
                 trusted_ask_user_tool=trusted_ask_user_tool,
                 trusted_compaction_tool=compaction_middleware.tools[0],
             )
@@ -2862,19 +2883,13 @@ def create_cli_agent(
         agent_middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
 
     # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
-    # Mounted only in experimental mode; when mounted, also gated at runtime by
-    # `hooks_server_events` on the per-run context so idle sessions without
-    # configured handlers pay no interrupt round-trip. Appended after the HITL
-    # middleware so `PreToolUse` resolves before approval routing.
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    # Gated at runtime by `hooks_server_events` on the per-run context so idle
+    # sessions without configured handlers pay no interrupt round-trip. Appended
+    # after the HITL middleware so `PreToolUse` resolves before approval routing.
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-    if is_env_truthy(EXPERIMENTAL):
-        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
-
-        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        agent_middleware.append(
-            ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
-        )
+    hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an
@@ -3058,6 +3073,7 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         context_schema=CLIContextSchema,
         checkpointer=checkpointer,
+        store=store,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
     ).with_config({**config, "recursion_limit": effective_recursion_limit})

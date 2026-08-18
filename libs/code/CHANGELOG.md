@@ -2,6 +2,94 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.56](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.55...deepagents-code==0.1.56) (2026-08-14)
+
+### Features
+
+- Personalized external editor hints to better match your setup ([#5445](https://github.com/langchain-ai/deepagents/issues/5445))
+
+### Bug Fixes
+
+- Improved dependency warning, Auto classifier, and paste expansion messages for clearer, more concise prompts and toasts ([#5489](https://github.com/langchain-ai/deepagents/issues/5489), [#5446](https://github.com/langchain-ai/deepagents/issues/5446), [#5443](https://github.com/langchain-ai/deepagents/issues/5443))
+- Queued `/copy` commands while generation is active so they run at the right time ([#5447](https://github.com/langchain-ai/deepagents/issues/5447))
+- Hid invalid cache metrics from the UI ([#5475](https://github.com/langchain-ai/deepagents/issues/5475))
+- Fixed forced-compaction forks by preserving the `session_id` ([#5492](https://github.com/langchain-ai/deepagents/issues/5492))
+- Stopped passing the removed `checkpoint_metadata` field ([#5473](https://github.com/langchain-ai/deepagents/issues/5473))
+
+## [0.1.55](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.54...deepagents-code==0.1.55) (2026-08-12)
+
+### Features
+
+- Added a `/context` usage report for inspecting context consumption ([#5407](https://github.com/langchain-ai/deepagents/issues/5407)).
+- Added a cache and context status row for at-a-glance session state ([#5408](https://github.com/langchain-ai/deepagents/issues/5408)).
+- Added configurable warnings when a session exceeds the configured cost threshold ([#5405](https://github.com/langchain-ai/deepagents/issues/5405)).
+- Added support for persisting and reconfiguring ACP sessions ([#5366](https://github.com/langchain-ai/deepagents/issues/5366)).
+- Added automatic updates for installed plugins ([#5368](https://github.com/langchain-ai/deepagents/issues/5368)).
+- Added a toggle for diff line numbers ([#5427](https://github.com/langchain-ai/deepagents/issues/5427)).
+- `Ctrl+S` in `/auto model` now stores `[models].auto_classifier` ([#5313](https://github.com/langchain-ai/deepagents/issues/5313)).
+
+### Fixes
+
+- Restored edit diffs in resumed threads ([#5391](https://github.com/langchain-ai/deepagents/issues/5391)).
+- Added a resume hint after crashes ([#5412](https://github.com/langchain-ai/deepagents/issues/5412)).
+- Clarified the project hooks trust prompt and stopped prompting for user hooks ([#5426](https://github.com/langchain-ai/deepagents/issues/5426)).
+- Cleared dynamic subagents on the next turn ([#5437](https://github.com/langchain-ai/deepagents/issues/5437)).
+- Improved grouped tool summaries by counting distinct targets ([#5409](https://github.com/langchain-ai/deepagents/issues/5409)).
+- Improved ask-user choice wrapping and selection styling ([#5442](https://github.com/langchain-ai/deepagents/issues/5442)).
+- Serialized `dcode` self-upgrades across processes ([#5252](https://github.com/langchain-ai/deepagents/issues/5252)).
+- Added warnings for stale dependencies in editable installs ([#5386](https://github.com/langchain-ai/deepagents/issues/5386)).
+- Hid incomplete extras from version output ([#5352](https://github.com/langchain-ai/deepagents/issues/5352)).
+- Removed the optional-provider startup tip ([#5421](https://github.com/langchain-ai/deepagents/issues/5421)).
+- Removed the “Message restored to input” toast ([#5253](https://github.com/langchain-ai/deepagents/issues/5253)).
+
+## [0.1.54](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.53...deepagents-code==0.1.54) (2026-08-07)
+
+### Features
+
+- Added Meta `muse-spark-1.2` to the model switcher ([#5389](https://github.com/langchain-ai/deepagents/issues/5389)).
+- Improved diff readability with quieter hunks and word-level highlights ([#5106](https://github.com/langchain-ai/deepagents/issues/5106)).
+
+### Bug Fixes
+
+- Hid startup tips when resuming threads ([#5349](https://github.com/langchain-ai/deepagents/issues/5349)).
+- Prevented post-tool hook replay ([#5376](https://github.com/langchain-ai/deepagents/issues/5376)).
+- Stored update logs under the OS cache directory ([#5363](https://github.com/langchain-ai/deepagents/issues/5363)).
+
+## [0.1.53](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.52...deepagents-code==0.1.53) (2026-08-06)
+
+### Features
+
+- Added pricing coverage with Baseten built-in overrides and local fallback overrides when `genai-prices` is missing data ([#5312](https://github.com/langchain-ai/deepagents/issues/5312), [#5304](https://github.com/langchain-ai/deepagents/issues/5304)).
+- Suggest compacting large resumed threads ([#5318](https://github.com/langchain-ai/deepagents/issues/5318)).
+- Added terminal program trace metadata ([#5329](https://github.com/langchain-ai/deepagents/issues/5329)).
+
+### Bug Fixes
+
+- Preserved runtime offload archive routing ([#5328](https://github.com/langchain-ai/deepagents/issues/5328)).
+- Always restart after a successful startup auto-update ([#5317](https://github.com/langchain-ai/deepagents/issues/5317)).
+- Fixed leaked turn coroutines and SQLite handles ([#5218](https://github.com/langchain-ai/deepagents/issues/5218)).
+- Keep MCP shutdown-race tracebacks from appearing in the terminal ([#5325](https://github.com/langchain-ai/deepagents/issues/5325)).
+- Open the `/auto model` selector immediately while connecting ([#5341](https://github.com/langchain-ai/deepagents/issues/5341)).
+- Route failures to `PostToolUseFailure` ([#5315](https://github.com/langchain-ai/deepagents/issues/5315)).
+- Use dismissed copy for ask-user prompts ([#5331](https://github.com/langchain-ai/deepagents/issues/5331)).
+
+## [0.1.52](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.51...deepagents-code==0.1.52) (2026-08-04)
+
+### Features
+
+- Hooks v2 is now generally available, with support for loading hooks from installed plugins. ([#5307](https://github.com/langchain-ai/deepagents/issues/5307), [#5198](https://github.com/langchain-ai/deepagents/issues/5198))
+- Auto approval classifier configuration now supports selecting the classifier model and setting a review timeout. ([#5205](https://github.com/langchain-ai/deepagents/issues/5205), [#5302](https://github.com/langchain-ai/deepagents/issues/5302))
+- HITL rejection reasons are now framed for the model, and the approval menu makes reject-with-feedback easier to discover. ([#5259](https://github.com/langchain-ai/deepagents/issues/5259), [#5260](https://github.com/langchain-ai/deepagents/issues/5260))
+- Added a tri-state `DEEPAGENTS_CODE_ONBOARDING` environment variable. ([#5301](https://github.com/langchain-ai/deepagents/issues/5301))
+- The `/model` footer Ctrl+N hint now follows the current display mode. ([#5247](https://github.com/langchain-ai/deepagents/issues/5247))
+- The price catalog now refreshes hourly in the background. ([#5264](https://github.com/langchain-ai/deepagents/issues/5264))
+- Updated recommendations to include DeepSeek V4 Flash 0731. ([#5244](https://github.com/langchain-ai/deepagents/issues/5244))
+
+### Bug Fixes
+
+- Fixed several Hooks v2 lifecycle issues: session-end teardown is now bounded, hooks refresh after cwd switches, malformed hook resumes are handled, hook stops surface without agent errors, and unused `SessionEndCause` members were removed. ([#5248](https://github.com/langchain-ai/deepagents/issues/5248), [#5249](https://github.com/langchain-ai/deepagents/issues/5249), [#5233](https://github.com/langchain-ai/deepagents/issues/5233), [#5276](https://github.com/langchain-ai/deepagents/issues/5276), [#5240](https://github.com/langchain-ai/deepagents/issues/5240))
+- `PreCompact` now fires before auto-compaction. ([#5277](https://github.com/langchain-ai/deepagents/issues/5277))
+
 ## [0.1.51](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.50...deepagents-code==0.1.51) (2026-07-31)
 
 ### Features

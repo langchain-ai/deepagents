@@ -15,7 +15,6 @@ import importlib.util
 import json
 import logging
 import os
-import shlex
 import shutil
 import signal
 import sys
@@ -27,8 +26,11 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
     from deepagents import FsToolName
+    from deepagents_acp.server import AgentSessionContext
+    from langgraph.pregel import Pregel
     from rich.console import Console
 
+    from deepagents_code._dep_floor_check import _FloorViolation
     from deepagents_code.app import AppResult
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
+from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
 from deepagents_code._version import __version__
 
 logger = logging.getLogger(__name__)
@@ -53,15 +56,16 @@ _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
 
 
 class _TrustAction(Enum):
-    """Actions available in any project-scope trust prompt.
+    """Actions available in the shared pre-TUI decision picker.
 
-    Shared by the project MCP server and project hook prompts; both offer the
-    same allow-once / remember / deny choice over a different subject.
+    Project trust prompts use allow-once / remember / deny. The editable
+    dependency-floor prompt also offers an explicit environment refresh.
     """
 
     ALLOW_ONCE = "allow_once"
     REMEMBER = "remember"
     DENY = "deny"
+    REFRESH = "refresh"
 
 
 class _TrustPromptOutcome(Enum):
@@ -107,11 +111,6 @@ def _install_termination_signal_handlers() -> None:
     if sys.platform != "win32":
         for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
             signal.signal(signum, _handle_termination_signal)
-
-
-def _tail_log_command(log_path: Path | str) -> str:
-    """Return a copy-pasteable command for following a log file."""
-    return f"tail -f {shlex.quote(str(log_path))}"
 
 
 def build_version_text() -> str:
@@ -192,8 +191,18 @@ def build_version_text() -> str:
     return text
 
 
-def _restart_current_process() -> NoReturn:
+def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
     """Replace the current process with a fresh `deepagents_code` invocation.
+
+    Propagates `OSError` from `os.execv` when the process cannot be replaced
+    (e.g. the target is missing, not executable, or the mount is `noexec`). It
+    is not listed under `Raises:` because it is not raised explicitly here, but
+    callers depend on it: the startup auto-update treats both it and the
+    `RuntimeError` below as "the upgrade landed but is not loaded".
+
+    Args:
+        restart_path: The upgraded console-script shim to execute. When omitted,
+            re-executes the current interpreter's `deepagents_code` module.
 
     Raises:
         RuntimeError: If process replacement unexpectedly returns.
@@ -201,15 +210,24 @@ def _restart_current_process() -> NoReturn:
     from deepagents_code._env_vars import INVOKED_AS
     from deepagents_code._invocation import invoked_name
 
-    argv = [sys.executable, "-m", "deepagents_code", *sys.argv[1:]]
+    if restart_path is None:
+        executable = sys.executable
+        argv = [executable, "-m", "deepagents_code", *sys.argv[1:]]
+    else:
+        # The PATH winner can be a shim into another uv tool environment.
+        # `perform_upgrade` updates uv's configured shim, not necessarily the
+        # interpreter that launched this process, so restart through that shim.
+        executable = str(restart_path)
+        argv = [executable, *sys.argv[1:]]
     # `-m` discards argv[0], so the launch name would be lost across the exec
     # and post-update resume hints would fall back to `dcode`. Hand it to the
     # next generation explicitly.
     os.environ[INVOKED_AS] = invoked_name()
-    # Re-exec the trusted interpreter with the user's own argv verbatim; the
-    # only "input" is the command the user already ran, so S606's concern
-    # (untrusted/unsanitized args to a spawned executable) does not apply.
-    os.execv(sys.executable, argv)  # noqa: S606
+    # Re-exec the trusted current interpreter or uv-managed shim with the
+    # user's own argv verbatim; the only "input" is the command the user
+    # already ran, so S606's concern (untrusted/unsanitized args to a spawned
+    # executable) does not apply.
+    os.execv(executable, argv)  # noqa: S606
     msg = "os.execv returned unexpectedly"
     raise RuntimeError(msg)
 
@@ -247,6 +265,36 @@ def _should_check_teardown_thread(
     return bool(thread_id)
 
 
+def _resume_term_program() -> str | None:
+    """Return a `TERM_PROGRAM` value safe to echo inside the resume hint.
+
+    The value is read from `LAUNCH_TERM_PROGRAM` — the snapshot `cli_main`
+    takes at process entry — rather than live `TERM_PROGRAM`, so only a value
+    the launch environment supplied (inline prefix, terminal export, or shell
+    alias) is echoed back. A `TERM_PROGRAM` that appears later, from a project
+    or global `.env` file, never reaches the hint.
+
+    Returns:
+        The launch-time value when it is set and fully printable, else `None`.
+        A value carrying control characters is dropped rather than stripped:
+        stripping would both write raw escape sequences into teardown output
+        and name a terminal the environment never actually contained. Native
+        Windows shells also return `None`: VS Code and WezTerm set
+        `TERM_PROGRAM` on every platform, so its presence under `win32` does
+        not imply a POSIX shell, and the `VAR=value` prefix would be executed
+        as a command by `cmd.exe`/PowerShell. POSIX markers (`SHELL` from
+        git-bash/MSYS, `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
+    """
+    raw = os.environ.get(LAUNCH_TERM_PROGRAM, "").strip()
+    if not raw or not raw.isprintable():
+        return None
+    if sys.platform == "win32" and not any(
+        os.environ.get(marker) for marker in ("SHELL", "MSYSTEM", "WSL_DISTRO_NAME")
+    ):
+        return None
+    return raw
+
+
 def _render_teardown_thread_hints(
     console: "Console",
     thread_id: str,
@@ -263,9 +311,10 @@ def _render_teardown_thread_hints(
     Args:
         console: Console to print the hints to.
         thread_id: Thread whose checkpoints back the hints.
-        return_code: Process exit code; the resume hint is shown only on a clean
-            exit (`0`).
+        return_code: Process exit code; failed sessions add a resume safety caveat.
     """
+    import shlex
+
     from rich.style import Style
     from rich.text import Text
 
@@ -298,15 +347,30 @@ def _render_teardown_thread_hints(
             exc_info=True,
         )
 
-    if return_code == 0:
-        console.print()
-        console.print("[dim]Resume this thread with:[/dim]")
-        # Echo the command the user actually launched (a shim or the
-        # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
-        hint = Text(invoked_name(), style="cyan")
-        hint.append(" -r ", style="cyan")
-        hint.append(str(thread_id), style="cyan")
-        console.print(hint)
+    console.print()
+    console.print("[dim]Resume this thread with:[/dim]")
+    # Echo the command the user actually launched (a shim or the
+    # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
+    resume_command = shlex.join([invoked_name(), "-r", str(thread_id)])
+    # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
+    # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
+    # the bare command would resume without it. Carry the launch-time value as
+    # an env prefix to keep the line pasteable as-is; the launch snapshot (not
+    # the live variable) is what keeps a `.env`-supplied `TERM_PROGRAM` out of
+    # the hint. The prefix uses POSIX syntax, so `_resume_term_program`
+    # withholds it on native Windows, where terminals (VS Code, WezTerm) set
+    # the variable even under `cmd.exe`/PowerShell and those shells cannot
+    # parse a `VAR=value` command prefix.
+    term_program = _resume_term_program()
+    if term_program is not None:
+        resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"
+    console.print(Text(resume_command, style="cyan"))
+
+    if return_code != 0:
+        console.print(
+            "[dim]Note: the session exited with a non-zero status. Attempting "
+            "to resume this thread may fail.[/dim]"
+        )
 
 
 def _confirm_update_after_restart(console: "Console", version: str) -> None:
@@ -350,17 +414,126 @@ def _confirm_update_after_restart(console: "Console", version: str) -> None:
     console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
+def _mark_startup_auto_update_failed_safe(version: str) -> None:
+    """Record the auto-update cooldown for *version*, never raising.
+
+    Used by the paths that exit after a successful install, where the reason for
+    exiting can itself be an unwritable state directory — exactly what
+    `mark_startup_auto_update_failed` would trip over. A raise here would replace
+    the relaunch hint with an uncaught traceback, so the cooldown is best-effort:
+    it exists to break a retry loop, not to gate correctness.
+
+    Args:
+        version: Version whose upgrade should not be retried immediately.
+    """
+    from deepagents_code.update_check import mark_startup_auto_update_failed
+
+    try:
+        mark_startup_auto_update_failed(version)
+    except Exception:
+        logger.warning("Could not record auto-update cooldown", exc_info=True)
+
+
+def _exit_after_unrestartable_update(
+    console: "Console",
+    version: str,
+    *,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    """Report an installed-but-not-reloaded update and exit instead of launching.
+
+    Reached only when the startup auto-update installed *successfully* and the
+    re-exec that would load it did not happen — either because `os.execv` failed
+    (`cause` is `None`), or because an error after the install aborted the path
+    before the restart was reached (`cause` is that error). The install already
+    replaced the site-packages this process imports from, so launching now would
+    build the TUI out of the new code while keeping every already-imported module
+    (`_version` among them) on the old release. Exiting with a relaunch hint is
+    the only honest outcome.
+
+    Exit code follows whether anything actually broke. Without a `cause` the
+    install worked and the user need only run the command again, so this exits
+    `0`; a wrapper script should not see that as a failure. With a `cause` an
+    unexpected error was swallowed and will very likely recur next launch, so
+    exiting `0` would leave the failure invisible to the user, the terminal, the
+    log *and* the exit status at once — that path exits `1`.
+
+    Args:
+        console: Console to print the notice to.
+        version: Version that was installed but is not loaded in this process.
+        cause: Error that prevented the restart from being attempted, when the
+            caller has one. Summarized in the notice, since this process is
+            about to exit and the buffered traceback dies with it.
+
+    Raises:
+        SystemExit: Always, to stop the launch.
+    """
+    # Both are `sys.modules` cache hits by the time this runs — `_debug` from
+    # the package `__init__`, `_invocation` from `cli_main` — so neither pulls
+    # post-upgrade code into this mixed-version process. Anything imported here
+    # must keep that property; a fresh import could load the new release and
+    # raise the very `ImportError` this exit exists to avoid.
+    from rich.markup import escape
+
+    from deepagents_code._debug import installed_debug_log_path
+    from deepagents_code._invocation import invoked_name
+
+    if cause is None:
+        detail = (
+            "The automatic restart could not run, so this session would keep "
+            "using the previous version."
+        )
+    else:
+        detail = (
+            "The install succeeded, but an error afterwards stopped the restart, "
+            f"so this session would keep using the previous version: "
+            f"{escape(str(cause) or type(cause).__name__)}"
+        )
+    console.print(
+        f"[green]Updated to v{version}.[/green] {detail} Run "
+        f"[cyan]{invoked_name()}[/cyan] again to start on v{version}.",
+        highlight=False,
+        markup=True,
+    )
+    if cause is not None:
+        # The traceback went to the in-memory debug buffer, which is drained by
+        # the TUI's Debug Console — and this process never starts one. Point at
+        # the file log if one is attached, and at how to get one if not.
+        log_path = installed_debug_log_path()
+        console.print(
+            f"Full error: {log_path}"
+            if log_path is not None
+            else "For the full error, re-run with DEEPAGENTS_CODE_DEBUG=1.",
+            highlight=False,
+            markup=False,
+            style="dim",
+        )
+    raise SystemExit(0 if cause is None else 1)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
-    On a successful upgrade the process is re-exec'd so the new version is
-    loaded. Any failure is fail-soft: the installed version is launched and
+    On a successful upgrade the process is *always* re-exec'd so the new version
+    is loaded, and the process exits rather than launching when the re-exec
+    cannot happen. Continuing in-process is not fail-soft once the install has
+    landed: the upgrade rewrote the site-packages this process imports from, and
+    because startup deliberately defers most imports, the TUI would be loaded
+    from the new code while already-imported modules (including `_version`,
+    which the splash reads) stay on the old release. That mixed-version process
+    reports the pre-upgrade version at best and raises `ImportError` on a
+    renamed constant at worst.
+
+    A *failed* install stays fail-soft: the installed version is launched and
     the error is surfaced, never blocking startup.
 
     Raises:
-        SystemExit: Re-raised rather than suppressed by the fail-soft handler,
-            so a process-exit request is never swallowed (the `os.execv`
-            re-exec is simulated this way under test).
+        SystemExit: Raised after a successful install that could not re-exec, so
+            the user relaunches instead of running a mixed-version process —
+            with code `0` when only the re-exec failed and `1` when an error
+            after the install caused it. Also re-raised rather than suppressed
+            by the fail-soft handler, so a process-exit request is never
+            swallowed (the `os.execv` re-exec is simulated this way under test).
     """
     from rich.markup import escape
 
@@ -369,8 +542,9 @@ def _run_startup_auto_update(console: "Console") -> None:
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
         clear_startup_auto_update_failure,
-        create_update_log_path,
+        create_update_log_file,
         detect_shadowed_dcode_safe,
+        format_log_follow_command,
         format_release_age_parenthetical,
         format_shadowed_dcode_warning,
         get_cached_update_available,
@@ -383,6 +557,7 @@ def _run_startup_auto_update(console: "Console") -> None:
         release_requires_prereleases,
         should_announce_auto_update_default,
         should_skip_startup_auto_update_after_failure,
+        update_install_lock,
         upgrade_command,
     )
 
@@ -391,6 +566,10 @@ def _run_startup_auto_update(console: "Console") -> None:
     # failure, the fail-soft handler below records the cooldown from this so the
     # same broken target is not retried — and re-stalled — on every launch.
     pending_failure_version: str | None = None
+    # Set once the install has landed. From that point the on-disk code no
+    # longer matches the modules this process already imported, so the fail-soft
+    # handler must exit instead of launching a mixed-version TUI.
+    installed_version: str | None = None
     try:
         if (
             _is_editable_install()
@@ -485,36 +664,55 @@ def _run_startup_auto_update(console: "Console") -> None:
                 )
             console.print(message, highlight=False)
             return
-        release_age = format_release_age_parenthetical(latest)
-        console.print(
-            f"Updating dcode from v{cli_version} to v{latest}{release_age}..."
-        )
-        if os.environ.get(DEBUG_UPDATE):
-            console.print("Skipped update install (debug mode).", style="dim")
-            return
-        log_path = create_update_log_path()
-        console.print(
-            f"Update log: {_tail_log_command(log_path)}",
-            style="dim",
-            highlight=False,
-            markup=False,
-        )
-        pending_failure_version = latest
-        success, output = asyncio.run(
-            perform_upgrade(log_path=log_path, target_version=latest)
-        )
+        # Everything below installs into the shared tool environment, so only
+        # the process holding the cross-process lock may proceed.
+        #
+        # The lock is scoped to the install and released before the re-exec
+        # below. `os.execv` would in fact drop it on its own — filelock opens
+        # its lock file with `os.open`, and PEP 446 makes that fd
+        # non-inheritable, so exec closes it — but relying on that would make
+        # correctness here hinge on the fd-inheritance behavior of a dependency
+        # we do not control. Releasing explicitly also covers the path where
+        # `_restart_current_process` raises and this process keeps running.
+        with update_install_lock() as holding_update_lock:
+            if not holding_update_lock:
+                console.print(
+                    f"Another dcode session is updating to v{latest}; "
+                    f"continuing with v{cli_version}.",
+                    style="dim",
+                    highlight=False,
+                )
+                return
+            release_age = format_release_age_parenthetical(latest)
+            console.print(
+                f"Updating dcode from v{cli_version} to v{latest}{release_age}..."
+            )
+            if os.environ.get(DEBUG_UPDATE):
+                console.print("Skipped update install (debug mode).", style="dim")
+                return
+            log_path = create_update_log_file()
+            if log_path is not None:
+                console.print(
+                    f"Update log: {format_log_follow_command(log_path)}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+            pending_failure_version = latest
+            success, output, _installed = asyncio.run(
+                perform_upgrade(log_path=log_path, target_version=latest)
+            )
         if success:
             pending_failure_version = None
+            installed_version = latest
             clear_startup_auto_update_failure(latest)
-            # If a stale `dcode` is earlier on PATH, the auto-restart would
-            # re-exec into the old binary and the user would silently keep
-            # running the pre-upgrade version. Detect that *before* the
-            # re-exec so the warning isn't immediately wiped by the new
-            # process's startup, and skip the restart — re-exec'ing into
-            # an unchanged version would also trip the `restarted_for`
-            # no-op loop guard on the next launch. Use the never-raises
-            # wrapper so a detector defect can't crash startup after an
-            # otherwise-successful upgrade.
+            # A stale PATH winner can be backed by a different uv tool
+            # environment than this process. In that case restart through the
+            # shim uv just upgraded, rather than this process's interpreter.
+            # Warn before the restart so the notice lands above the
+            # `Launching...` line that `_confirm_update_after_restart` rewrites.
+            # Use the never-raises wrapper so a detector defect can't crash
+            # startup after an otherwise-successful upgrade.
             shadow = detect_shadowed_dcode_safe()
             if shadow is not None:
                 # The warning embeds filesystem paths from `shutil.which`,
@@ -525,12 +723,10 @@ def _run_startup_auto_update(console: "Console") -> None:
                 # escapes its uv output the same way.
                 warning = format_shadowed_dcode_warning(shadow)
                 console.print(
-                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}\n"
-                    f"Continuing with v{cli_version}.",
+                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}",
                     highlight=False,
                     markup=True,
                 )
-                return
             console.print(
                 f"[green]Updated to v{latest}. Launching...[/green]",
                 highlight=False,
@@ -539,20 +735,25 @@ def _run_startup_auto_update(console: "Console") -> None:
             # no-op upgrade and break the loop (see the `restarted_for` guard).
             os.environ[RESTARTED_AFTER_UPDATE] = latest
             try:
-                _restart_current_process()
+                if shadow is None:
+                    _restart_current_process()
+                else:
+                    _restart_current_process(restart_path=shadow.upgraded_bin)
             except (OSError, RuntimeError):
                 # Upgrade succeeded but the re-exec did not happen (`os.execv`
-                # raised, or returned unexpectedly). Drop the sentinel and
-                # continue on the old in-memory code; the user must restart
-                # manually to load the new version.
+                # raised, or returned unexpectedly). Drop the sentinel and stop:
+                # this process can no longer launch safely, since the install
+                # replaced the code it imports from.
                 os.environ.pop(RESTARTED_AFTER_UPDATE, None)
                 logger.warning("Restart after update failed", exc_info=True)
-                console.print(
-                    f"[bold yellow]Warning:[/bold yellow] Updated to v{latest} but "
-                    "the automatic restart failed. Restart dcode manually to use "
-                    "the new version.",
-                    highlight=False,
-                )
+                # Exiting instead of re-exec'ing means the `restarted_for`
+                # sentinel never reaches a next generation, so the restart-loop
+                # guard cannot fire. Record the cooldown so a *successful but
+                # no-op* upgrade paired with a persistently failing `os.execv`
+                # can't re-upgrade and re-exit on every launch, leaving the TUI
+                # permanently unreachable.
+                _mark_startup_auto_update_failed_safe(latest)
+                _exit_after_unrestartable_update(console, latest)
             return
         persisted = mark_startup_auto_update_failed(latest)
         update_needs_prereleases = release_requires_prereleases(latest)
@@ -574,11 +775,21 @@ def _run_startup_auto_update(console: "Console") -> None:
             message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
         console.print(message, markup=True, highlight=False)
     except SystemExit:
-        # Process replacement (and test doubles that simulate it) must not be
-        # swallowed by the fail-soft handler below.
+        # Process replacement (and test doubles that simulate it), plus the
+        # deliberate post-install exit raised by
+        # `_exit_after_unrestartable_update`, must not be swallowed by the
+        # fail-soft handler below.
         raise
-    except Exception:
+    except Exception as exc:
         logger.warning("Startup auto-update failed", exc_info=True)
+        if installed_version is not None:
+            # The install landed and something after it raised, so this process
+            # is already mixed-version. Exit rather than describe the successful
+            # install as a failure and launch anyway. Record the cooldown for
+            # the same reason the re-exec failure path does: no sentinel reaches
+            # a next generation, so the restart-loop guard cannot cover this.
+            _mark_startup_auto_update_failed_safe(installed_version)
+            _exit_after_unrestartable_update(console, installed_version, cause=exc)
         message = (
             "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
             "continuing with the installed version."
@@ -1916,6 +2127,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--auto-classifier-model",
+        dest="auto_classifier_model",
+        metavar="MODEL",
+        help="Model the Auto approval classifier reviews actions with "
+        "(e.g. anthropic:claude-haiku-4-5). Local TUI or ACP only. Defaults to "
+        "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
+        "then the main agent model. A weaker model weakens Auto's review.",
+    )
+
+    parser.add_argument(
         "--default-model",
         metavar="MODEL",
         nargs="?",
@@ -2060,14 +2281,14 @@ def parse_args() -> argparse.Namespace:
         "--auto-approve",
         action="store_true",
         default=None,
-        help="Interactive local TUI only: enable classifier-backed Auto mode.",
+        help="Enable classifier-backed Auto mode in the local TUI or ACP server.",
     )
     approval_group.add_argument(
         "--yolo",
         action="store_true",
         help=(
-            "Interactive mode only: run gated actions without review after the "
-            "one-time local risk acknowledgement."
+            "Run gated actions without review after the one-time local risk "
+            "acknowledgement (interactive TUI or ACP mode)."
         ),
     )
 
@@ -2228,6 +2449,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
+    # distinct from an absent flag (just trimmed): an explicit blank is the
+    # "inherit the main agent model" instruction and must override a classifier
+    # configured via env var or `config.toml`, which collapsing it to `None`
+    # here would silently re-enable.
+    if getattr(args, "auto_classifier_model", None) is not None:
+        args.auto_classifier_model = args.auto_classifier_model.strip()
     _resolve_and_validate_sandbox(args, parser)
     return args
 
@@ -2316,6 +2544,55 @@ def _resolve_and_validate_sandbox(
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
+def _auto_classifier_spec_problem(spec: str) -> str | None:
+    """Return why a configured Auto classifier spec looks unusable, if it does.
+
+    `/auto model` validates by constructing the model and refuses a spec it
+    cannot build. The startup surfaces — `--auto-classifier-model`, the env var,
+    `[models].auto_classifier` — reached the middleware unchecked, so a typo was
+    announced as the active reviewer and only surfaced as a denied tool call
+    mid-turn.
+
+    This is the cheap half of what the slash command does: parse the spec and
+    check the provider's credentials. It deliberately does not call
+    `create_model`, which would pull LangChain onto the launch path (see
+    `AGENTS.md`), so it catches the two common mistakes — unknown provider and
+    missing credential — and leaves the rest to the middleware's fail-closed
+    path.
+
+    Args:
+        spec: Resolved `provider:model` specification.
+
+    Returns:
+        A one-line problem description, or `None` when the spec looks usable.
+    """
+    from deepagents_code.config import detect_provider
+    from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+    parsed = ModelSpec.try_parse(spec)
+    provider = parsed.provider if parsed else detect_provider(spec)
+    if not provider:
+        return (
+            f"Auto classifier model {spec!r} has no recognizable provider; "
+            "Auto will deny gated actions until it is fixed. Use "
+            "provider:model, e.g. anthropic:claude-haiku-4-5."
+        )
+    try:
+        status = get_provider_auth_status(provider)
+    except Exception:
+        # Advisory check only — a probe failure must never block startup.
+        logger.debug("Auto classifier provider auth probe failed", exc_info=True)
+        return None
+    if status.blocks_start:
+        env_var = f" Set {status.env_var}." if status.env_var else ""
+        return (
+            f"Auto classifier model {spec!r} has no credentials for provider "
+            f"{provider!r}; Auto will deny gated actions until it is "
+            f"fixed.{env_var}"
+        )
+    return None
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -2343,6 +2620,7 @@ async def run_textual_cli_async(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     allow_fs_tools: "list[FsToolName] | None" = None,
+    auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
@@ -2412,6 +2690,13 @@ async def run_textual_cli_async(
             from `--allow-fs-tools`.
 
             `None` leaves the SDK default (all tools).
+        auto_classifier_model: Model spec the Auto approval classifier reviews
+            with, from `--auto-classifier-model`.
+
+            `None` resolves from env / `config.toml` and then reuses the main
+            agent model. A blank string means the flag was explicitly supplied
+            with no value: it overrides any env / `config.toml` classifier so
+            reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
 
@@ -2425,6 +2710,7 @@ async def run_textual_cli_async(
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
+        resolve_auto_classifier_model_with_problem,
         settings,
     )
     from deepagents_code.model_config import (
@@ -2470,6 +2756,43 @@ async def run_textual_cli_async(
         settings.model_provider = ""
         settings.model_name = ""
 
+    # Distinguish "flag absent" from "flag explicitly blank": `--auto-classifier-
+    # model ""` is the "inherit the main agent model" instruction and overrides
+    # any env / `config.toml` classifier, while an absent flag defers to those
+    # sources. Map the explicit blank to `INHERIT_CLASSIFIER_MODEL`, the sentinel
+    # the server and Auto middleware already understand as inherit, so the
+    # override survives the trip to the agent server (a bare `""` would collapse
+    # to `None` in `ServerConfig.from_env` and silently re-enable a configured
+    # classifier there).
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+    flag_supplied = auto_classifier_model is not None
+    flag_classifier_model = (auto_classifier_model or "").strip() or None
+    auto_classifier_problem: str | None = None
+    if flag_classifier_model is not None:
+        resolved_auto_classifier_model = flag_classifier_model
+    elif flag_supplied:
+        resolved_auto_classifier_model = INHERIT_CLASSIFIER_MODEL
+    else:
+        (
+            resolved_auto_classifier_model,
+            auto_classifier_problem,
+        ) = resolve_auto_classifier_model_with_problem()
+    if (
+        resolved_auto_classifier_model is not None
+        and resolved_auto_classifier_model != INHERIT_CLASSIFIER_MODEL
+    ):
+        auto_classifier_problem = _auto_classifier_spec_problem(
+            resolved_auto_classifier_model
+        )
+    if auto_classifier_problem is not None:
+        from rich.console import Console as _WarnConsole
+        from rich.markup import escape
+
+        _WarnConsole(stderr=True).print(
+            f"[bold yellow]Warning:[/bold yellow] {escape(auto_classifier_problem)}"
+        )
+
     model_kwargs: dict[str, Any] | None = None
     if not defer_server_start:
         model_kwargs = {
@@ -2494,6 +2817,7 @@ async def run_textual_cli_async(
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
         "allow_fs_tools": allow_fs_tools,
+        "auto_classifier_model": resolved_auto_classifier_model,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -2533,6 +2857,7 @@ async def run_textual_cli_async(
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
+        from deepagents_code.app import TextualAppError
         from deepagents_code.config import console
 
         error_text = Text("Application error: ", style="red")
@@ -2540,7 +2865,13 @@ async def run_textual_cli_async(
         console.print(error_text)
         if logger.isEnabledFor(logging.DEBUG):
             console.print(Text(traceback.format_exc(), style="dim"))
-        return AppResult(return_code=1, thread_id=None)
+        # The app resolves resume intent and `/threads` switches asynchronously,
+        # so the crashed session's final thread ID only exists on the exception.
+        # Returning its snapshot lets the caller's teardown print a resume hint
+        # for the thread that was actually active when the session died.
+        if isinstance(e, TextualAppError):
+            return e.result
+        return AppResult(return_code=1, thread_id=thread_id)
 
     return result
 
@@ -2558,6 +2889,9 @@ async def _run_acp_cli_async(
     trust_project_mcp: bool | None = None,
     allow_fs_tools: "list[FsToolName] | None" = None,
     recursion_limit: int | None = None,
+    auto: bool = False,
+    yolo: bool = False,
+    auto_classifier_model: str | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2578,6 +2912,9 @@ async def _run_acp_cli_async(
             `None` leaves the SDK default (all tools).
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env/`config.toml`/default at agent-build time.
+        auto: Enable classifier-backed approval routing.
+        yolo: Disable approval prompts for this ACP server.
+        auto_classifier_model: Optional model for Auto approval classification.
 
     Returns:
         Exit code for ACP mode.
@@ -2590,6 +2927,7 @@ async def _run_acp_cli_async(
     )
     from deepagents_code.model_config import (
         ModelConfigError,
+        get_available_models,
         save_recent_model,
         touch_recent_model,
     )
@@ -2624,6 +2962,19 @@ async def _run_acp_cli_async(
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
+    models = [
+        {"value": spec, "name": spec}
+        for spec in dict.fromkeys(
+            [
+                resolved_spec,
+                *(
+                    f"{provider}:{model}"
+                    for provider, available in get_available_models().items()
+                    for model in available
+                ),
+            ]
+        )
+    ]
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
@@ -2662,31 +3013,64 @@ async def _run_acp_cli_async(
         return 1
 
     async_subagents = load_async_subagents() or None
-
-    try:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        agent_graph, _backend = create_cli_agent(
-            model=model_result.model,
-            assistant_id=assistant_id,
-            tools=tools,
-            mcp_server_info=mcp_server_info,
-            checkpointer=InMemorySaver(),
-            async_subagents=async_subagents,
-            fs_tools=allow_fs_tools,
-            recursion_limit=recursion_limit,
-            memory_auto_save=is_memory_auto_save_enabled(),
-        )
-    except Exception as exc:
-        sys.stderr.write(f"Error: failed to create agent: {exc}\n")
-        sys.stderr.flush()
-        logger.debug("ACP agent creation failed", exc_info=True)
-        return 1
-
-    server = agent_server_cls(agent_graph)  # Pregel is a CompiledStateGraph at runtime
     exit_code = 0
     try:
-        await run_acp_agent(server)
+        from deepagents_code.sessions import get_checkpointer
+
+        async with get_checkpointer() as checkpointer:
+            await checkpointer.setup()
+            from langgraph.store.memory import InMemoryStore
+
+            store = InMemoryStore() if auto else None
+
+            def build_agent(
+                context: "AgentSessionContext",
+            ) -> "Pregel[Any, Any, Any, Any]":
+                selected_model = context.model or resolved_spec
+                session_model = (
+                    model_result
+                    if selected_model == resolved_spec
+                    else create_model(
+                        selected_model,
+                        extra_kwargs=model_params,
+                        profile_overrides=profile_override,
+                    )
+                )
+                session_model.apply_to_settings()
+                agent_graph, _backend = create_cli_agent(
+                    model=session_model.model,
+                    assistant_id=assistant_id,
+                    tools=tools,
+                    mcp_server_info=mcp_server_info,
+                    checkpointer=checkpointer,
+                    async_subagents=async_subagents,
+                    fs_tools=allow_fs_tools,
+                    recursion_limit=recursion_limit,
+                    auto_approve=yolo,
+                    auto_mode_enabled=auto,
+                    auto_classifier_model=auto_classifier_model,
+                    memory_auto_save=is_memory_auto_save_enabled(),
+                    store=store,
+                    cwd=context.cwd,
+                    project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
+                )
+                return agent_graph
+
+            if auto:
+                from deepagents_code.acp import AgentServerACP
+
+                server_cls = AgentServerACP
+                server_kwargs = {"store": cast("Any", store)}
+            else:
+                server_cls = agent_server_cls
+                server_kwargs = {}
+            server = server_cls(
+                build_agent,
+                models=models,
+                load_sessions=True,
+                **server_kwargs,
+            )
+            await run_acp_agent(server)
     except KeyboardInterrupt:
         pass
     except Exception as exc:
@@ -2966,16 +3350,28 @@ def _run_trust_action_picker(
     console: "Console",
     *,
     remember_label: str = "Allow for this project — until changed",
+    allow_label: str = "Allow once",
+    deny_label: str = "Deny",
+    refresh_label: str | None = None,
+    deny_first: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome | None:
-    """Show the inline allow-once / remember / deny picker for a trust prompt.
+    """Show the inline decision picker shared by pre-TUI prompts.
 
-    Subject-agnostic: callers describe what is being trusted before calling and
-    supply the label for the persistent option.
+    Subject-agnostic: callers describe the decision before calling and supply
+    labels that match what each action does. Trust prompts omit `refresh_label`
+    and keep their existing three choices.
 
     Args:
         console: Console to print fallback notices to (stderr).
         remember_label: Label for the persistent-trust option. Set this to match
             what the caller actually persists, since scope differs by subject.
+        allow_label: Label for the session-scoped allow option.
+        deny_label: Label for the refuse option.
+        refresh_label: Label for an explicit environment refresh, when offered.
+        deny_first: When `True`, list the deny option first; callers whose
+            "deny" reads as a safe default (e.g. aborting a launch) put it in
+            the leading position. The picker starts highlighted on the deny
+            option in either ordering, so a bare Enter refuses.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
@@ -3007,11 +3403,36 @@ def _run_trust_action_picker(
 
     glyphs = get_glyphs()
     actions = [
-        (_TrustAction.ALLOW_ONCE, "Allow once"),
+        (_TrustAction.ALLOW_ONCE, allow_label),
         (_TrustAction.REMEMBER, remember_label),
-        (_TrustAction.DENY, "Deny"),
+        (_TrustAction.DENY, deny_label),
     ]
-    selected_index = len(actions) - 1
+    if refresh_label is not None:
+        actions = (
+            [
+                (_TrustAction.DENY, deny_label),
+                (_TrustAction.REFRESH, refresh_label),
+                (_TrustAction.ALLOW_ONCE, allow_label),
+                (_TrustAction.REMEMBER, remember_label),
+            ]
+            if deny_first
+            else [
+                (_TrustAction.ALLOW_ONCE, allow_label),
+                (_TrustAction.REMEMBER, remember_label),
+                (_TrustAction.REFRESH, refresh_label),
+                (_TrustAction.DENY, deny_label),
+            ]
+        )
+    elif deny_first:
+        actions.reverse()
+    # Highlight the refusing option by identity, not position: `deny_first`
+    # moves it to the front, so a positional index would silently default to
+    # "allow" for exactly the callers that asked for a safer ordering.
+    selected_index = next(
+        index
+        for index, (action, _) in enumerate(actions)
+        if action is _TrustAction.DENY
+    )
 
     def _rows() -> FormattedText:
         rows: list[tuple[str, str]] = [
@@ -3094,12 +3515,72 @@ def _run_trust_action_picker(
         return None
 
 
+def prompt_for_dep_floor_mismatch(
+    console: "Console",
+    violations: "Sequence[_FloorViolation]",
+) -> _TrustAction | _TrustPromptOutcome:
+    """Block on a refresh / continue / mute / abort picker for stale dependencies.
+
+    Lives here (not in `_dep_floor_check`) beside the other pre-TUI trust
+    prompts so the picker implementation is shared. The prompt prints to
+    stderr and runs before the Textual alternate screen mounts, so it stays
+    visible.
+
+    Args:
+        console: Console printing to stderr.
+        violations: The detected below-floor dependencies.
+
+    Returns:
+        `REFRESH` to update the active environment, `ALLOW_ONCE` to continue
+        this session, `REMEMBER` to mute this exact mismatch for this checkout,
+        `CANCELLED` to abort the launch (chosen "Abort launch", Esc, or Ctrl+D —
+        `abort_on_deny` collapses all three into one outcome, so `DENY` is never
+        returned), or `INTERRUPTED` on Ctrl+C.
+    """
+    console.print()
+    console.print(
+        "[bold yellow]This editable dcode install is behind the checkout's "
+        "dependency floors:[/bold yellow]",
+        highlight=False,
+    )
+    from rich.markup import escape
+
+    from deepagents_code._dep_floor_check import refresh_command
+
+    for v in violations:
+        console.print(f"  - {escape(v.describe())}", highlight=False)
+    refresh = refresh_command()
+    console.print(
+        f"\nRefresh the active environment:\n  {escape(refresh)}", highlight=False
+    )
+    console.print(
+        "[yellow]\nRunning stale source against older dependencies can break "
+        "behavior in hard-to-diagnose ways.[/yellow]",
+        highlight=False,
+    )
+    console.print()
+    return _select_trust_action(
+        console,
+        remember_label="Continue and hide until versions change",
+        allow_label="Continue this session only",
+        deny_label="Abort launch",
+        refresh_label="Refresh environment now",
+        deny_first=True,
+        abort_on_deny=True,
+    )
+
+
 def _select_trust_action(
     console: "Console",
     *,
     remember_label: str = "Allow for this project — until changed",
+    allow_label: str = "Allow once",
+    deny_label: str = "Deny",
+    refresh_label: str | None = None,
+    deny_first: bool = False,
+    abort_on_deny: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome:
-    """Choose whether to allow once, remember, or deny a project-scoped subject.
+    """Choose an action for a project trust or dependency-floor prompt.
 
     Falls back to a text prompt when the inline picker cannot run. Every failure
     mode resolves to a decision the caller can act on without knowing which
@@ -3111,31 +3592,69 @@ def _select_trust_action(
         console: Console used by the text fallback.
         remember_label: Label for the persistent-trust option forwarded to the
             inline picker.
+        allow_label: Label for the session-scoped allow option.
+        deny_label: Label for the refuse option.
+        refresh_label: Label for an explicit environment refresh, when offered.
+        deny_first: Forwarded to the picker to list the deny option first.
+        abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
+            on every input path (picker, typed answer, and EOF), so prompts
+            whose refuse option aborts the launch report exactly one outcome
+            and callers cannot mistake a deny for a decision to proceed.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
-        Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
+        Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
+        user presses Ctrl+C.
     """
     selected = _run_trust_action_picker(
         console,
         remember_label=remember_label,
+        allow_label=allow_label,
+        deny_label=deny_label,
+        refresh_label=refresh_label,
+        deny_first=deny_first,
     )
     if selected is not None:
+        if selected is _TrustAction.DENY and abort_on_deny:
+            return _TrustPromptOutcome.CANCELLED
         return selected
 
-    try:
-        answer = (
-            input("Choose [y] allow once / [r] remember / [N] deny: ").strip().lower()
+    # Mirror the caller's labels: for the dep-floor prompt the choices are
+    # refresh / continue / mute / abort, and a hardcoded "allow once / deny" would
+    # misdescribe what the default does. Both lines go to stderr, where the
+    # rest of the prompt already went; passing the question to `input()`
+    # instead would split it onto stdout, so `dcode 2>log` would show a bare
+    # question with all of its context redirected away.
+    if refresh_label is None:
+        choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
+        prompt = "Choose [y/r/N]: "
+    elif deny_first:
+        choices = (
+            f"{deny_label} [N] · {refresh_label} [u] · "
+            f"{allow_label} [y] · {remember_label} [r]"
         )
+        prompt = "Choose [N/u/y/r]: "
+    else:
+        choices = (
+            f"{allow_label} [y] · {remember_label} [r] · "
+            f"{refresh_label} [u] · {deny_label} [N]"
+        )
+        prompt = "Choose [y/r/u/N]: "
+    console.print(f"[dim]{choices}[/dim]", highlight=False)
+    console.print(prompt, end="", highlight=False)
+    try:
+        answer = input().strip().lower()
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _TrustAction.DENY
+        return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
         return _TrustAction.REMEMBER
-    return _TrustAction.DENY
+    if refresh_label is not None and answer in {"u", "update", "f", "refresh"}:
+        return _TrustAction.REFRESH
+    return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
 
 
 def _run_project_mcp_server_checkbox_picker(
@@ -3582,7 +4101,7 @@ def _check_mcp_project_trust(
     return True
 
 
-_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this project"
 
 
 def _check_project_hooks_trust(
@@ -3601,15 +4120,11 @@ def _check_project_hooks_trust(
     Returns:
         The trust policy to run the session under, `INTERRUPTED` when the user
         presses Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to
-        abort startup. Nothing is trusted, and no prompt is shown, unless
-        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy, since hooks stay off without
-        it.
+        abort startup.
     """
     from rich.console import Console
-    from rich.text import Text
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-    from deepagents_code.hooks.loading import project_hooks_path
+    from deepagents_code.hooks.loading import project_hooks_path, user_hooks_path
     from deepagents_code.hooks.trust import (
         WorkspaceTrust,
         is_project_hooks_trusted,
@@ -3617,12 +4132,15 @@ def _check_project_hooks_trust(
     )
     from deepagents_code.project_utils import ProjectContext
 
-    if not is_env_truthy(EXPERIMENTAL):
-        return WorkspaceTrust.none()
     try:
         context = ProjectContext.from_user_cwd(Path.cwd())
         project_root = context.project_root or context.user_cwd
         config_path = project_hooks_path(project_root)
+        if config_path.resolve(strict=False) == user_hooks_path().resolve(strict=False):
+            # Running from the user config's parent makes the user hooks path
+            # look project-scoped. It needs no trust decision and must not be
+            # granted project trust under the wrong provenance.
+            return WorkspaceTrust.none()
         if not config_path.is_file():
             return WorkspaceTrust.none()
     except OSError:
@@ -3633,14 +4151,20 @@ def _check_project_hooks_trust(
     if trust_flag or is_project_hooks_trusted(project_root):
         return granted
 
+    from rich.markup import escape
+
     prompt_console = Console(stderr=True)
     prompt_console.print()
-    title = Text("Project hooks can execute commands from ", style="bold yellow")
-    title.append(str(config_path))
-    prompt_console.print(title, highlight=False)
     prompt_console.print(
-        "Only allow hooks for projects you trust. Future edits to this file "
-        "will run without asking again if you always allow.",
+        "[bold yellow]Project hooks can run arbitrary shell commands on your "
+        "machine.[/bold yellow]",
+        highlight=False,
+    )
+    prompt_console.print(f"Hooks file: {escape(str(config_path))}", highlight=False)
+    prompt_console.print(
+        "Only trust projects you control. Allow once runs this file as it is "
+        f'now; always allow trusts "{escape(str(project_root))}" for future '
+        "sessions and future edits.",
         style="yellow",
         highlight=False,
     )
@@ -3667,7 +4191,8 @@ def _check_project_hooks_trust(
             )
         else:
             prompt_console.print(
-                "[dim]Project hooks trusted for this workspace.[/dim]",
+                f'[dim]Hooks for "{escape(str(project_root))}" will run without '
+                "asking from now on.[/dim]",
                 highlight=False,
             )
         return granted
@@ -3701,11 +4226,27 @@ def _verify_interpreter_or_exit() -> None:
 
 
 def cli_main() -> None:
-    """Entry point for console script."""
+    """Entry point for console script.
+
+    Raises:
+        SystemExit: On shutdown, with the session's exit code (0 on success,
+            1 on error, 128+signum when a terminating signal unwound the
+            process).
+        KeyboardInterrupt: Re-raised out of the TUI teardown block so the
+            outer handler can print the interruption notice and exit 130.
+    """
     # Fix for gRPC fork issue on macOS
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
+    # Snapshot `TERM_PROGRAM` before settings bootstrap loads any `.env` file,
+    # so the resume hint echoes the variable only when the launch environment
+    # (inline prefix, terminal export, or shell alias) supplied it. The app
+    # itself never sets `TERM_PROGRAM`, and the update re-exec inherits this
+    # sentinel, so a set value here always marks an explicit launch value.
+    if "TERM_PROGRAM" in os.environ and LAUNCH_TERM_PROGRAM not in os.environ:
+        os.environ[LAUNCH_TERM_PROGRAM] = os.environ["TERM_PROGRAM"]
 
     # Note: LANGSMITH_PROJECT override is handled lazily by config.py's
     # _ensure_bootstrap() (triggered on first access of `settings`).
@@ -3750,6 +4291,11 @@ def cli_main() -> None:
         # subcommands only. ACP/root-mode invocations may not define `command`,
         # and should fall through to the later handlers instead of raising here.
         command = getattr(args, "command", None)
+        if command is not None:
+            from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
+
+            warn_if_editable_deps_stale()
+
         if command == "config":
             from deepagents_code.client.commands.config import run_config_command
 
@@ -3847,10 +4393,21 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
-                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+            if getattr(args, "yolo", False):
+                from deepagents_code.approval_mode import has_yolo_acknowledgement
+
+                if not has_yolo_acknowledgement():
+                    sys.stderr.write(
+                        "Error: acknowledge YOLO in the interactive TUI before "
+                        "using it in ACP mode.\n"
+                    )
+                    sys.exit(2)
+            if getattr(args, "auto_classifier_model", None) is not None and not getattr(
+                args, "auto_approve", False
+            ):
                 sys.stderr.write(
-                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
+                    "Error: --auto-classifier-model requires --auto-approve "
+                    "in ACP mode.\n"
                 )
                 sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
@@ -3891,6 +4448,9 @@ def cli_main() -> None:
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
                     allow_fs_tools=allow_fs_tools,
                     recursion_limit=getattr(args, "recursion_limit", None),
+                    auto=getattr(args, "auto_approve", False),
+                    yolo=getattr(args, "yolo", False),
+                    auto_classifier_model=getattr(args, "auto_classifier_model", None),
                 )
             )
             sys.exit(exit_code)
@@ -3902,6 +4462,46 @@ def cli_main() -> None:
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         apply_stdin_pipe(args)
+
+        # Gate on stale editable-install dependencies. Choose the channel from
+        # the launch mode, not from `sys.stdout.isatty()`: a TTY does not imply
+        # the interactive TUI. This runs after `apply_stdin_pipe` so
+        # `non_interactive_message` is final. An interactive launch that can
+        # actually answer a prompt gets a blocking pre-TUI continue/mute/abort
+        # prompt (printed to stderr before the alternate screen mounts);
+        # headless (`-n`) launches and subcommands print the full warning to
+        # stderr once instead — they have no TUI to prompt in and must never
+        # block. Subcommands are warned earlier, before the `config`/`update`
+        # fast paths exit. (ACP exits above, before this point.)
+        #
+        # `_trust_picker_has_terminal()` is part of the condition because a
+        # piped-stdin interactive launch still mounts the TUI: per
+        # `apply_stdin_pipe`, `cat x | dcode -m ...` and `cat x | dcode
+        # --skill ...` set `initial_prompt`, not `non_interactive_message`.
+        # Prompting there would find no TTY for the picker, read EOF from the
+        # text fallback, and abort the launch outright — with no way to answer
+        # the prompt and mute it. Those launches get the warning instead.
+        interactive_tui = (
+            not getattr(args, "command", None) and not args.non_interactive_message
+        )
+        if interactive_tui and _trust_picker_has_terminal():
+            from deepagents_code._dep_floor_check import prompt_if_editable_deps_stale
+
+            dep_floor_outcome = prompt_if_editable_deps_stale()
+            if dep_floor_outcome is _TrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if dep_floor_outcome is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; refresh the environment and relaunch.[/dim]",
+                    highlight=False,
+                )
+                return
+        elif command is None:
+            from deepagents_code._dep_floor_check import warn_if_editable_deps_stale
+
+            warn_if_editable_deps_stale()
 
         # Validated here, before mode dispatch and any heavy session setup:
         # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
@@ -4039,6 +4639,28 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        # Auto approval mode (and therefore its classifier) requires the
+        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
+        # Auto for either. Accepting the flag in those runs would silently do
+        # nothing to a setting that governs action authorization.
+        if getattr(args, "auto_classifier_model", None) is not None and (
+            args.non_interactive_message or args.sandbox not in {"none", None}
+        ):
+            from rich.console import Console as _Console
+
+            unavailable_because = (
+                "a sandbox is in use"
+                if not args.non_interactive_message
+                else "it runs headlessly"
+            )
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --auto-classifier-model is only "
+                "supported in the interactive TUI, where Auto approval mode "
+                f"runs; {unavailable_because}.\n"
+                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -4077,14 +4699,16 @@ def cli_main() -> None:
                 from deepagents_code.config import _is_editable_install
                 from deepagents_code.update_check import (
                     _PRERELEASE_UNSUPPORTED_MESSAGE,
-                    create_update_log_path,
+                    create_update_log_file,
                     format_age_suffix,
                     format_installed_age_suffix,
+                    format_log_follow_command,
                     format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
                     prerelease_upgrade_supported,
                     release_requires_prereleases,
+                    update_install_lock,
                     upgrade_command,
                 )
 
@@ -4143,30 +4767,44 @@ def cli_main() -> None:
                         )
                         sys.exit(1)
 
-                release_age = format_release_age_parenthetical(latest)
-                installed_age = format_installed_age_suffix(cli_version)
-                console.print(
-                    f"Update available: v{latest}{release_age}. "
-                    f"Currently installed: {cli_version}{installed_age}. "
-                    "Upgrading..."
-                )
-                if os.environ.get(DEBUG_UPDATE):
-                    console.print("Skipped update install (debug mode).", style="dim")
-                    sys.exit(0)
-                log_path = create_update_log_path()
-                console.print(
-                    f"Update log: {_tail_log_command(log_path)}",
-                    style="dim",
-                    highlight=False,
-                    markup=False,
-                )
-                success, output = asyncio.run(
-                    perform_upgrade(
-                        log_path=log_path,
-                        include_prereleases=include_prereleases,
-                        target_version=latest,
+                # The install mutates the shared tool environment, so an
+                # explicit headless update must use the same cross-process
+                # guard as startup and in-session updates.
+                with update_install_lock() as holding_update_lock:
+                    if not holding_update_lock:
+                        console.print(
+                            "Another dcode session is currently updating. "
+                            "Try again after it finishes.",
+                            style="dim",
+                        )
+                        sys.exit(1)
+                    release_age = format_release_age_parenthetical(latest)
+                    installed_age = format_installed_age_suffix(cli_version)
+                    console.print(
+                        f"Update available: v{latest}{release_age}. "
+                        f"Currently installed: {cli_version}{installed_age}. "
+                        "Upgrading..."
                     )
-                )
+                    if os.environ.get(DEBUG_UPDATE):
+                        console.print(
+                            "Skipped update install (debug mode).", style="dim"
+                        )
+                        sys.exit(0)
+                    log_path = create_update_log_file()
+                    if log_path is not None:
+                        console.print(
+                            f"Update log: {format_log_follow_command(log_path)}",
+                            style="dim",
+                            highlight=False,
+                            markup=False,
+                        )
+                    success, output, _installed = asyncio.run(
+                        perform_upgrade(
+                            log_path=log_path,
+                            include_prereleases=include_prereleases,
+                            target_version=latest,
+                        )
+                    )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
@@ -4631,6 +5269,7 @@ def cli_main() -> None:
 
             # Run Textual TUI
             return_code = 0
+            request_count = 0
             try:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
@@ -4686,6 +5325,9 @@ def cli_main() -> None:
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                         allow_fs_tools=allow_fs_tools,
+                        auto_classifier_model=getattr(
+                            args, "auto_classifier_model", None
+                        ),
                         recursion_limit=getattr(args, "recursion_limit", None),
                     )
                 )
@@ -4693,26 +5335,39 @@ def cli_main() -> None:
                 # The user may have switched threads via /threads during the
                 # session; use the final thread ID for teardown messages.
                 thread_id = result.thread_id or thread_id
+                request_count = result.session_stats.request_count
                 _print_session_stats(result.session_stats, console)
             except Exception as e:  # noqa: BLE001  # Top-level error handler for the application
+                return_code = 1
                 error_msg = Text("\nApplication error: ", style="red")
                 error_msg.append(str(e))
                 console.print(error_msg)
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
-
-            # Show LangSmith thread link and resume hint for threads with
-            # checkpointed content. The `thread_id is not None` check narrows the
-            # type to `str` for the helper; `_should_check_teardown_thread` gates
-            # whether the teardown lookup runs at all.
-            if thread_id is not None and _should_check_teardown_thread(
-                thread_id,
-                request_count=result.session_stats.request_count,
-                resume_thread=args.resume_thread,
-            ):
-                _render_teardown_thread_hints(
-                    console, thread_id, return_code=return_code
-                )
+            except KeyboardInterrupt:
+                # Ctrl+C; the outer handler prints "Interrupted" and exits 130.
+                # Mark non-zero so the teardown hint carries the safety caveat.
+                return_code = 130
+                raise
+            except SystemExit as e:
+                # The termination-signal handler raises SystemExit(128+signum);
+                # forward non-zero codes so the teardown hint adds the caveat.
+                if isinstance(e.code, int) and e.code != 0:
+                    return_code = e.code
+                raise
+            finally:
+                # Show LangSmith thread link and resume hint for threads with
+                # checkpointed content. The `thread_id is not None` check narrows the
+                # type to `str` for the helper; `_should_check_teardown_thread` gates
+                # whether the teardown lookup runs at all.
+                if thread_id is not None and _should_check_teardown_thread(
+                    thread_id,
+                    request_count=request_count,
+                    resume_thread=args.resume_thread,
+                ):
+                    _render_teardown_thread_hints(
+                        console, thread_id, return_code=return_code
+                    )
 
             # Warn about available update on exit
             try:

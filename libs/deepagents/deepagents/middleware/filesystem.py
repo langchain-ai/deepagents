@@ -41,7 +41,9 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     EditResult,
+    ExecuteArtifact,
     ExecuteOffloadResult,
+    ExecuteResponse,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
@@ -88,6 +90,24 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
+# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
+# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
+# support today, so these providers get a hard-coded pass until profiles can
+# describe support for other office and document formats.
+try:
+    from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
+except ImportError:
+    _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
+else:
+    _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
+
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI as _ChatGoogleGenerativeAI
+except ImportError:
+    _GOOGLE_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
+else:
+    _GOOGLE_FILE_MODEL_TYPES = (_ChatGoogleGenerativeAI,)
+
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
 
@@ -125,17 +145,6 @@ since it's `_get_file_type`'s default for unmapped extensions).
 """
 
 _PDF_MIME_TYPE: Final = "application/pdf"
-
-_NON_PDF_FILE_TOLERANT_LLM_TYPES: Final = frozenset({"openai-chat", "azure-openai-chat", "chat-google-generative-ai"})
-"""Exact `_llm_type` values for chat models known to accept non-PDF `file`
-blocks (e.g. `.docx`, `.pptx`) today: `ChatOpenAI`, `AzureChatOpenAI`, and
-`ChatGoogleGenerativeAI`.
-
-[`ModelProfile`][langchain_core.language_models.model_profile.ModelProfile] only
-encodes PDF support (`pdf_inputs`/`pdf_tool_message`); it has no field yet for
-other office/document formats. Until it does, these providers get a hard-coded
-pass for non-PDF `file` blocks instead of being blocked by that profile gap.
-"""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -181,20 +190,15 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
 
 _PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
 """`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
-file types have no field yet and are handled separately via `_NON_PDF_FILE_TOLERANT_LLM_TYPES`."""
+file types have no field yet and are handled separately via provider class checks."""
 
 _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
 def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
-    """Whether `model` is known to accept non-PDF `file` blocks.
-
-    Checks `_llm_type`, a property every `BaseChatModel` implements
-    """
-    if model is None:
-        return False
-    return model._llm_type in _NON_PDF_FILE_TOLERANT_LLM_TYPES
+    """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
+    return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
 
 
 def _multimodal_block_supported(
@@ -1156,7 +1160,16 @@ class DeleteSchema(BaseModel):
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
-    pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+    pattern: str = Field(
+        description=(
+            "Glob pattern to match files (e.g., '*.py', '**/*.py', '/subdir/**/*.md'). "
+            "A pattern without '/' matches the file name at any depth; a pattern containing "
+            "'/' matches the search-root-relative path; a leading '/' anchors to the search "
+            "root ('/*.py' matches only top-level files). Leading-dot names are excluded "
+            "unless the pattern segment starts with '.', so prefer the bare form '*.py' over "
+            "'**/*.py' -- '**' will not descend into dot-directories like '.github'."
+        )
+    )
 
     path: str | None = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
@@ -1264,7 +1277,11 @@ Usage:
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern, returning absolute paths.
 
-Supports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`."""
+Supports `*` (any characters within a path segment), `**` (any directories), `?` (single character), `[abc]` (one character from a set), and `{a,b}` (alternatives), e.g. `*.py`, `src/**/*.py`, `*.{yml,yaml}`.
+
+A pattern without `/` matches the file name at any depth under the search root (`*.py` matches `src/app/main.py`). A pattern containing `/` matches the search-root-relative path (`src/**/*.py`). A leading `/` anchors to the search root (`/*.py` matches only top-level Python files).
+
+Leading-dot names are only matched when the pattern segment itself starts with `.` (use `.env`, or `.github/**/*.yml`). Because `**` will not descend into dot-directories, the bare form `*.yml` is *broader* than `**/*.yml` and is usually what you want."""
 
 # Carries its own leading newline so the empty-string substitution below drops
 # the whole line cleanly, with no blank line left behind.
@@ -1538,7 +1555,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     If the backend implements
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol],
-    an `execute` tool is also added for running shell commands.
+    an `execute` tool is also added for running shell commands. Its results carry
+    [`ExecuteArtifact`][deepagents.backends.protocol.ExecuteArtifact] metadata on
+    `ToolMessage.artifact`.
 
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
@@ -2763,6 +2782,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             parts.append("\n[Output was truncated due to size limits]")
         return "".join(parts)
 
+    @staticmethod
+    def _execute_artifact(response: ExecuteResponse) -> ExecuteArtifact:
+        """Build the `ExecuteArtifact` for an execute result.
+
+        See `ExecuteArtifact` for why an unknown exit code is omitted rather
+        than published as `None`.
+        """
+        if response.exit_code is None:
+            return {}
+        return {"exit_code": response.exit_code}
+
     def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
         """Build `ToolMessage` content from an `execute_with_offload` result."""
         response = offload.response
@@ -2847,10 +2877,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
+                    response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
-                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
+                    response = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -2870,6 +2901,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
+                artifact=self._execute_artifact(response),
                 status="success",
             )
 
@@ -2933,10 +2965,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
+                    response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
-                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
+                    response = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -2956,6 +2989,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
+                artifact=self._execute_artifact(response),
                 status="success",
             )
 

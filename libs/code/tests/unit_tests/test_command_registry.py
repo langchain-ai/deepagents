@@ -13,6 +13,7 @@ from deepagents_code.command_registry import (
     COMMANDS,
     HIDDEN_COMMANDS,
     IMMEDIATE_UI,
+    IMMEDIATE_UI_ARG_FORMS,
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
     STARTUP_RECOVERY_COMMANDS,
@@ -98,6 +99,21 @@ class TestBypassTiers:
     def test_startup_recovery_commands_are_known(self) -> None:
         names = {cmd.name for cmd in COMMANDS}
         assert names >= STARTUP_RECOVERY_COMMANDS
+
+    def test_immediate_ui_arg_forms_extend_immediate_ui_commands(self) -> None:
+        """Every whitelisted argument form must name an IMMEDIATE_UI command.
+
+        `_can_bypass_queue` checks these forms only after the base command
+        matches `IMMEDIATE_UI`; an entry under a command in any other tier
+        would be dead config. The whitelist must also stay narrow — every
+        entry is an exact no-further-arguments form whose handler defers all
+        mutation to the modal's dismiss callback.
+        """
+        for form in IMMEDIATE_UI_ARG_FORMS:
+            base = form.split(maxsplit=1)[0]
+            assert base in IMMEDIATE_UI, (
+                f"{form!r} is whitelisted but {base!r} is not IMMEDIATE_UI"
+            )
 
 
 class TestSlashCommands:
@@ -284,8 +300,8 @@ class TestCopyCommand:
         # assert the entry is registered with a non-empty description.
         assert copy_entry.description
 
-    def test_copy_classified_as_side_effect_free(self) -> None:
-        assert "/copy" in SIDE_EFFECT_FREE
+    def test_copy_classified_as_queue_bound(self) -> None:
+        assert "/copy" in QUEUE_BOUND
 
 
 class TestCommandsCatalogDrift:

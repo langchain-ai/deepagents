@@ -10,6 +10,12 @@ from deepagents_code.extensions.models import (
     UnitScope,
 )
 from deepagents_code.extensions.registry import ExtensionRegistry
+from deepagents_code.extensions.runtime import (
+    ExtensionLoadResult,
+    load_extensions,
+    project_extensions_trusted,
+    shutdown_extensions,
+)
 from deepagents_code.extensions.settings import (
     ExtensionSettings,
     TrustPolicy,
@@ -24,6 +30,7 @@ __all__ = [
     "ExtensionAPI",
     "ExtensionError",
     "ExtensionFile",
+    "ExtensionLoadResult",
     "ExtensionRegistry",
     "ExtensionSettings",
     "LoadedExtension",
@@ -33,5 +40,8 @@ __all__ = [
     "UnitScope",
     "is_project_extensions_trusted",
     "load_extension_settings",
+    "load_extensions",
+    "project_extensions_trusted",
+    "shutdown_extensions",
     "trust_project_extensions",
 ]

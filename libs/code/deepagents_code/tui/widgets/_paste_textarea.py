@@ -150,6 +150,43 @@ class PasteBurstTextArea(TextArea):
         # terminal-emitted shift+enter. See `_BACKSLASH_ENTER_GAP_SECONDS`.
         self._backslash_pending_time = None
 
+    # -- Cursor blink ---------------------------------------------------------
+
+    def _restart_blink(self) -> None:
+        """Keep the cursor hidden while the text area is unfocused.
+
+        Outside read-only mode Textual's `TextArea._draw_cursor` is
+        `(has_focus and not cursor_blink) or (cursor_blink and _cursor_visible)`,
+        so with blinking on (the default) it paints the cursor from
+        `_cursor_visible` alone and never consults focus. Any `_restart_blink()`
+        on an unfocused text area therefore shows a blinking cursor in a field
+        that cannot accept keys.
+
+        `TextArea._on_mouse_down` sets `_selecting` unconditionally, so the
+        matching mouse-up reaches `_restart_blink()` through
+        `_end_mouse_selection` unless a subclass gates the handler first (as
+        `ChatTextArea` does for refocus clicks). That covers clicks landing
+        while a focus-trapping widget is open: the `edit_file` approval menu
+        re-grabs focus on blur between mouse-down and mouse-up, so the click
+        left a phantom blinking cursor in the chat input. Programmatic
+        multi-character `insert()` into an unfocused input has the same
+        effect.
+
+        `_pause_blink(visible=False)` also parks the blink timer. Textual's
+        `_watch_has_focus` re-arms it when focus returns, so the cursor resumes
+        blinking rather than coming back solid.
+
+        Deliberately overrides Textual's private `_restart_blink`; verified
+        against Textual 8.2.8. Re-verify these attribute names on every Textual
+        bump — the `TestCursorHiddenWhileUnfocused` classes in
+        `test_chat_input.py` and `test_inline_prompt.py` fail if this stops
+        holding.
+        """
+        if not self.has_focus:
+            self._pause_blink(visible=False)
+            return
+        super()._restart_blink()
+
     # -- Policy hooks (override in subclasses) --------------------------------
 
     def _in_slash_command_context(self) -> bool:  # noqa: PLR6301  # overridable hook

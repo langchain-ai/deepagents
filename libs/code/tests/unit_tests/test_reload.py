@@ -18,11 +18,13 @@ from deepagents_code.config import Settings
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Callable, Coroutine
     from pathlib import Path
 
     from deepagents_code.app import _PluginFingerprint
     from deepagents_code.plugins.models import PluginInstance
+    from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+    from deepagents_code.tui.modals.plugin_manager.models import PluginManagerResult
 
 # Capture before any monkeypatching replaces it on the module.
 _real_load_dotenv = _dotenv_module.load_dotenv
@@ -32,6 +34,12 @@ def _test_plugin_fingerprint(version: str) -> _PluginFingerprint:
     from deepagents_code.app import _PluginFingerprint
 
     return _PluginFingerprint(version=version, manifest=None, components=())
+
+
+async def _check_plugin_reload(screen: PluginManagerScreen) -> bool | None:
+    check_reload_required = screen._check_reload_required
+    assert check_reload_required is not None
+    return await check_reload_required()
 
 
 _RELOAD_ENV_KEYS = (
@@ -1816,8 +1824,7 @@ class TestReloadPluginsViaReload:
         )
         enabled_ids = iter((enabled_before, enabled_after))
         app = DeepAgentsApp()
-        offer_reload = AsyncMock()
-        scheduled: list[Coroutine[object, object, None]] = []
+        pushed: list[PluginManagerScreen] = []
         ui_thread = threading.get_ident()
         fingerprint_threads: list[int] = []
 
@@ -1841,26 +1848,17 @@ class TestReloadPluginsViaReload:
         monkeypatch.setattr(
             app,
             "push_screen",
-            lambda _screen, callback: callback(None),
+            lambda screen, _callback: pushed.append(screen),
         )
-        monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
-        monkeypatch.setattr(
-            app,
-            "run_worker",
-            lambda coroutine, **_kwargs: scheduled.append(coroutine),
-        )
-        monkeypatch.setattr(app, "_offer_plugin_reload", offer_reload)
 
         await app._show_plugin_manager()
-        await scheduled[0]
+        screen = pushed[0]
+        reload_required = await _check_plugin_reload(screen)
 
         assert app._plugin_fingerprints == before
         assert len(fingerprint_threads) == 2
         assert all(thread != ui_thread for thread in fingerprint_threads)
-        if change != "none":
-            offer_reload.assert_awaited_once()
-        else:
-            offer_reload.assert_not_awaited()
+        assert reload_required is (change != "none")
 
     async def test_plugin_manager_state_error_schedules_reminder(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1877,6 +1875,8 @@ class TestReloadPluginsViaReload:
         )
         app = DeepAgentsApp()
         mount = AsyncMock()
+        pushed: list[PluginManagerScreen] = []
+        callbacks: list[Callable[[PluginManagerResult], None]] = []
         scheduled: list[Coroutine[object, object, None]] = []
 
         monkeypatch.setattr("deepagents_code.plugins.discover_plugins", discovery)
@@ -1887,7 +1887,10 @@ class TestReloadPluginsViaReload:
         monkeypatch.setattr(
             app,
             "push_screen",
-            lambda _screen, callback: callback(None),
+            lambda screen, callback: (
+                pushed.append(screen),
+                callbacks.append(callback),
+            ),
         )
         monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
         monkeypatch.setattr(
@@ -1898,6 +1901,9 @@ class TestReloadPluginsViaReload:
         monkeypatch.setattr(app, "_mount_message", mount)
 
         await app._show_plugin_manager()
+        reload_required = await _check_plugin_reload(pushed[0])
+        assert reload_required is None
+        callbacks[0]("check_failed")
         await scheduled[0]
 
         mount.assert_awaited_once()
@@ -1924,30 +1930,23 @@ class TestReloadPluginsViaReload:
             )
         )
         app = DeepAgentsApp()
-        offer_reload = AsyncMock()
-        scheduled: list[Coroutine[object, object, None]] = []
+        pushed: list[PluginManagerScreen] = []
 
         monkeypatch.setattr(app, "_snapshot_plugin_state", lambda: next(snapshots))
         monkeypatch.setattr(
             app,
             "push_screen",
-            lambda _screen, callback: callback(None),
+            lambda screen, _callback: pushed.append(screen),
         )
-        monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
-        monkeypatch.setattr(
-            app,
-            "run_worker",
-            lambda coroutine, **_kwargs: scheduled.append(coroutine),
-        )
-        monkeypatch.setattr(app, "_offer_plugin_reload", offer_reload)
 
         await app._show_plugin_manager()
-        await scheduled[0]
+        first_reload_required = await _check_plugin_reload(pushed[0])
         await app._show_plugin_manager()
-        await scheduled[1]
+        second_reload_required = await _check_plugin_reload(pushed[1])
 
         assert app._plugin_fingerprints == before
-        offer_reload.assert_awaited_once()
+        assert first_reload_required is True
+        assert second_reload_required is False
 
     async def test_plugin_manager_warns_when_snapshot_fails(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1956,7 +1955,8 @@ class TestReloadPluginsViaReload:
         from deepagents_code.app import DeepAgentsApp
 
         app = DeepAgentsApp()
-        pushed: list[object] = []
+        pushed: list[PluginManagerScreen] = []
+        callbacks: list[Callable[[PluginManagerResult], None]] = []
         scheduled: list[Coroutine[object, object, None]] = []
         mount = AsyncMock()
 
@@ -1968,7 +1968,10 @@ class TestReloadPluginsViaReload:
         monkeypatch.setattr(
             app,
             "push_screen",
-            lambda screen, callback: (pushed.append(screen), callback(None)),
+            lambda screen, callback: (
+                pushed.append(screen),
+                callbacks.append(callback),
+            ),
         )
         monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
         monkeypatch.setattr(
@@ -1979,6 +1982,9 @@ class TestReloadPluginsViaReload:
         monkeypatch.setattr(app, "_mount_message", mount)
 
         await app._show_plugin_manager()
+        reload_required = await _check_plugin_reload(pushed[0])
+        assert reload_required is None
+        callbacks[0]("check_failed")
         await scheduled[0]
 
         assert len(pushed) == 1
@@ -1989,77 +1995,66 @@ class TestReloadPluginsViaReload:
         assert "Couldn't check plugin state" in str(mount_call.args[0]._content)
         assert app._plugin_fingerprints is None
 
-    @pytest.mark.parametrize("choice", ["reload", "later", None])
-    async def test_plugin_reload_prompt_choice(
+    @pytest.mark.parametrize(
+        "result",
+        ["reload", "later", "check_failed", None],
+    )
+    async def test_plugin_manager_close_result(
         self,
         monkeypatch: pytest.MonkeyPatch,
         *,
-        choice: str | None,
+        result: PluginManagerResult,
     ) -> None:
-        """Reload runs the command; deferral leaves one transcript reminder."""
+        """Manager outcomes reload, defer, warn, or close without feedback."""
         from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.tui.widgets.messages import AppMessage
 
         app = DeepAgentsApp()
+        callbacks: list[Callable[[PluginManagerResult], None]] = []
+        scheduled: list[Coroutine[object, object, None]] = []
         submit = AsyncMock()
         mount = AsyncMock()
         monkeypatch.setattr(
             app,
-            "_push_screen_wait",
-            AsyncMock(return_value=choice),
+            "_snapshot_plugin_state",
+            lambda: (frozenset[str](), {}),
+        )
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda _screen, callback: callbacks.append(callback),
+        )
+        monkeypatch.setattr(app, "call_after_refresh", lambda callback: callback())
+        monkeypatch.setattr(
+            app,
+            "run_worker",
+            lambda coroutine, **_kwargs: scheduled.append(coroutine),
         )
         monkeypatch.setattr(app, "_submit_input", submit)
         monkeypatch.setattr(app, "_mount_message", mount)
 
-        await app._offer_plugin_reload()
+        await app._show_plugin_manager()
+        callbacks[0](result)
+        if result is not None:
+            await scheduled[0]
 
-        if choice == "reload":
+        if result == "reload":
             submit.assert_awaited_once_with("/reload", "command")
             mount.assert_not_awaited()
+        elif result is None:
+            submit.assert_not_awaited()
+            mount.assert_not_awaited()
+            assert scheduled == []
         else:
             submit.assert_not_awaited()
             mount.assert_awaited_once()
             mount_call = mount.await_args
             assert mount_call is not None
-            message = mount_call.args[0]
-            assert isinstance(message, AppMessage)
-            assert "/reload" in str(message._content)
-
-    @pytest.mark.parametrize(
-        "error",
-        [TimeoutError(), RuntimeError("prompt mount failed")],
-        ids=["timeout", "unexpected-error"],
-    )
-    async def test_plugin_reload_prompt_error_leaves_reminder(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        error: Exception,
-    ) -> None:
-        """Prompt failures should retain a manual `/reload` recovery path."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.tui.widgets.messages import AppMessage
-
-        app = DeepAgentsApp()
-        submit = AsyncMock()
-        mount = AsyncMock()
-        monkeypatch.setattr(
-            app,
-            "_push_screen_wait",
-            AsyncMock(side_effect=error),
-        )
-        monkeypatch.setattr(app, "_submit_input", submit)
-        monkeypatch.setattr(app, "_mount_message", mount)
-
-        await app._offer_plugin_reload()
-
-        submit.assert_not_awaited()
-        mount.assert_awaited_once()
-        mount_call = mount.await_args
-        assert mount_call is not None
-        message = mount_call.args[0]
-        assert isinstance(message, AppMessage)
-        assert "/reload" in str(message._content)
+            message = str(mount_call.args[0]._content)
+            assert "/reload" in message
+            if result == "check_failed":
+                assert "Couldn't check plugin state" in message
+            else:
+                assert "Plugin changes are pending" in message
 
     async def test_reports_plugin_summary(
         self, monkeypatch: pytest.MonkeyPatch

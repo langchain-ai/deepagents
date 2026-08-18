@@ -882,3 +882,45 @@ class TestInlinePromptCompletion:
         assert completion.resolve("first") is True
         assert completion.resolve("second") is False
         assert await future == "first"
+
+
+class TestCursorHiddenWhileUnfocused:
+    """The unfocused-cursor fix lives on the shared `PasteBurstTextArea` base.
+
+    `test_chat_input.py` covers the chat input; this pins the same guarantee for
+    inline prompts, so moving `_restart_blink` down into `ChatTextArea` cannot
+    silently reintroduce the phantom cursor here.
+    """
+
+    async def test_programmatic_insert_while_unfocused_shows_no_cursor(self) -> None:
+        """Text inserted into an unfocused inline prompt must not raise a cursor."""
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            app.set_focus(None)
+            await pilot.pause()
+
+            ta.insert("dropped path")
+            await pilot.pause()
+
+            assert ta._draw_cursor is False
+            # The parked timer, not just the drawn state: a regression that
+            # leaves the blink running reads False for half of every cycle.
+            assert ta.blink_timer._active.is_set() is False
+
+    async def test_refocus_restores_cursor(self) -> None:
+        """Focus returning to an inline prompt brings the blinking cursor back."""
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            app.set_focus(None)
+            await pilot.pause()
+            assert ta._draw_cursor is False
+
+            ta.focus()
+            await pilot.pause()
+
+            assert ta.has_focus is True
+            # `_draw_cursor` oscillates once the timer is re-armed; assert the
+            # timer instead, which also catches a cursor frozen solid.
+            assert ta.blink_timer._active.is_set() is True

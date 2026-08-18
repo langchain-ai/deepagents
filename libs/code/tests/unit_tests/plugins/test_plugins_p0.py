@@ -922,6 +922,48 @@ async def test_plugin_manager_opens_add_marketplace_input(
         assert "Esc to cancel" in help_text
 
 
+async def test_plugin_manager_blocks_option_selection_while_checking_close_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close snapshot cannot miss a plugin change made from an option row."""
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def check_reload_required() -> bool:
+        started.set()
+        await release.wait()
+        return False
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen(check_reload_required=check_reload_required)
+        app.push_screen(screen)
+        await pilot.pause()
+
+        await pilot.press("escape")
+        await started.wait()
+        assert screen._close_phase == "checking"
+
+        # Enter normally opens the selected plugin's details, from which it can
+        # be installed. It must be ignored while the close snapshot is pending.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._mode == "list"
+        assert screen._selected_plugin is None
+
+        release.set()
+        await pilot.pause()
+
+
 async def test_plugin_manager_add_marketplace_runs_in_background(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

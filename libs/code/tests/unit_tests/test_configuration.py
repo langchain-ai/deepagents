@@ -455,6 +455,34 @@ def test_managed_models_survive_an_unreadable_default_user_config(
         model_config.clear_caches()
 
 
+def test_managed_skill_dirs_outrank_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed skill containment roots cannot be replaced through the environment."""
+    from deepagents_code import config, model_config
+    from deepagents_code._env_vars import EXTRA_SKILLS_DIRS
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    managed = tmp_path / "managed.toml"
+    managed_dir = tmp_path / "managed-skills"
+    env_dir = tmp_path / "env-skills"
+    managed.write_text(
+        f'[skills]\nextra_allowed_dirs = ["{managed_dir}"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    monkeypatch.setenv(EXTRA_SKILLS_DIRS, str(env_dir))
+    service.invalidate_config_sources()
+    try:
+        settings = config.Settings.from_environment(start_path=tmp_path)
+        assert settings.extra_skills_dirs == [managed_dir]
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_managed_scalar_enforced_over_user_table_shape_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

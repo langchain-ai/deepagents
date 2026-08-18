@@ -2693,10 +2693,17 @@ class Settings:
         # Parse extra skill containment roots from env var or config.toml.
         # These extend the path allowlist for load_skill_content but do not
         # add new skill discovery locations.
-        extra_skills_dirs = _parse_extra_skills_dirs(
-            os.environ.get(EXTRA_SKILLS_DIRS),
-            _read_config_toml_skills_dirs(),
-        )
+        skills_option = get_option("skills.extra_allowed_dirs")
+        if skills_option is None:
+            extra_skills_dirs = _parse_extra_skills_dirs(
+                os.environ.get(EXTRA_SKILLS_DIRS),
+                _read_config_toml_skills_dirs(),
+            )
+        else:
+            extra_skills_dirs, _ = resolve_scalar(
+                skills_option,
+                toml_data=load_config_toml(),
+            )
 
         from deepagents_code.config_manifest import resolve_interpreter_kwargs
 
@@ -2763,6 +2770,17 @@ class Settings:
             if managed_source == "managed config":
                 shell_allow_list = managed_shell
 
+        skills_option = get_option("skills.extra_allowed_dirs")
+        managed_skills: list[Path] | None = None
+        if skills_option is not None:
+            resolved_skills, skills_source = resolve_scalar(
+                skills_option,
+                toml_data={},
+                managed_toml_data=managed_data,
+            )
+            if skills_source == "managed config":
+                managed_skills = resolved_skills
+
         try:
             from deepagents_code.project_utils import find_project_root
 
@@ -2774,9 +2792,13 @@ class Settings:
             project_root = previous["project_root"]
 
         try:
-            extra_skills_dirs = _parse_extra_skills_dirs(
-                env.get(EXTRA_SKILLS_DIRS),
-                _read_config_toml_skills_dirs(),
+            extra_skills_dirs = (
+                managed_skills
+                if managed_skills is not None
+                else _parse_extra_skills_dirs(
+                    env.get(EXTRA_SKILLS_DIRS),
+                    _read_config_toml_skills_dirs(),
+                )
             )
         except (OSError, ValueError):
             # Path resolution can fail (e.g. broken symlink loop). Keep the

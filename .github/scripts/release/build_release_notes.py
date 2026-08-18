@@ -645,10 +645,15 @@ MAX_SUBJECT_LENGTH = 200
 # Kept separate from MAX_COMMITS even though the values match: this one bounds
 # the GitHub API budget, so raising the git-log cap must not silently multiply
 # the number of API calls. Budget per scanned commit is 2 calls (commit->PR,
-# then `gh pr view`) plus one per *distinct* closed issue the PR references --
-# issue authors are memoized, so a repeated issue costs nothing extra.
+# then `gh pr view`). Closed-issue author lookups have their own global cap
+# below, because a single PR can reference arbitrarily many issues.
 
 MAX_CONTRIBUTOR_COMMITS = 100
+
+# A PR can close an unbounded number of distinct issues. Keep those follow-up
+# requests bounded independently from the commit walk so release-note creation
+# cannot stall on a large closing-reference payload or rate-limit retries.
+MAX_ISSUE_AUTHOR_LOOKUPS = 100
 
 
 def generate_git_log(
@@ -1018,6 +1023,8 @@ def collect_contributors(
     # Two PRs in one release can close the same issue; memoizing the author
     # keeps that to one API call and keeps the budget statable.
     issue_authors: dict[ClosedIssue, str] = {}
+    issue_author_lookups = 0
+    issue_author_lookup_limit_reached = False
     seen_prs: set[str] = set()
     failed_lookups = 0
     failed_issue_lookups = 0
@@ -1080,11 +1087,21 @@ def collect_contributors(
             continue
         consecutive_view_failures = 0
 
-        issue_failures, issue_error = _collect_issue_reporters(
-            pr_num, pr_data, repository, reporters, issue_authors, warnings
+        issue_failures, issue_error, issue_lookups, lookup_limit_reached = (
+            _collect_issue_reporters(
+                pr_num,
+                pr_data,
+                repository,
+                reporters,
+                issue_authors,
+                MAX_ISSUE_AUTHOR_LOOKUPS - issue_author_lookups,
+                warnings,
+            )
         )
         failed_issue_lookups += issue_failures
         first_issue_error = first_issue_error or issue_error
+        issue_author_lookups += issue_lookups
+        issue_author_lookup_limit_reached |= lookup_limit_reached
 
         author = pr_data.get("author")
         if not isinstance(author, dict):
@@ -1167,6 +1184,13 @@ def collect_contributors(
             f" lookups failed{detail}; the Special thanks section is INCOMPLETE"
         )
 
+    if issue_author_lookup_limit_reached:
+        warnings.append(
+            "contributor lookup: stopped after"
+            f" {MAX_ISSUE_AUTHOR_LOOKUPS} closed-issue author lookups; the"
+            " Special thanks section is INCOMPLETE"
+        )
+
     # Internal contributors are org members regardless of what labels their
     # other PRs carry, so they are credited only in the internal list.
     for user in internal_users:
@@ -1190,13 +1214,15 @@ def _collect_issue_reporters(
     repository: str,
     reporters: dict[str, set[ClosedIssue]],
     author_cache: dict[ClosedIssue, str],
+    remaining_author_lookups: int,
     warnings: list[str],
-) -> tuple[int, str]:
+) -> tuple[int, str, int, bool]:
     """Fold a PR's closed-issue authors into *reporters*.
 
-    Returns the number of author lookups that failed and the first such error,
-    so :func:`collect_contributors` can report an aggregate rather than leaving
-    the section quietly short.
+    Returns the number of author lookups that failed, the first such error, the
+    number of author API calls made, and whether the global lookup budget was
+    exhausted. :func:`collect_contributors` uses these to report an aggregate
+    rather than leaving the section quietly short.
 
     Runs before the author/labels gates in :func:`collect_contributors`, so a
     bot-authored or `internal`-labeled PR still credits the human who filed the
@@ -1215,6 +1241,7 @@ def _collect_issue_reporters(
     """
     failures = 0
     first_error = ""
+    author_lookups = 0
     if pr_data.get("closingIssuesReferences") is None:
         warnings.append(
             f"contributor lookup: PR #{pr_num} returned no"
@@ -1228,7 +1255,7 @@ def _collect_issue_reporters(
             " closingIssuesReferences payload; its closed issues will not be"
             " credited"
         )
-        return failures, first_error
+        return failures, first_error, author_lookups, False
     for issue in issues:
         if not isinstance(issue, dict):
             warnings.append(
@@ -1242,10 +1269,13 @@ def _collect_issue_reporters(
             continue
         login = author_cache.get(closed)
         if login is None:
+            if author_lookups >= remaining_author_lookups:
+                return failures, first_error, author_lookups, True
             login, error = _gh_api(
                 f"/repos/{closed.repository}/issues/{closed.number}",
                 jq=".user.login // empty",
             )
+            author_lookups += 1
             if error:
                 failures += 1
                 first_error = first_error or error
@@ -1265,7 +1295,7 @@ def _collect_issue_reporters(
         if login.endswith("[bot]"):
             continue
         reporters.setdefault(login, set()).add(closed)
-    return failures, first_error
+    return failures, first_error, author_lookups, False
 
 
 def _resolve_closed_issue(

@@ -4152,6 +4152,35 @@ class TestFetchThreadHistoryData:
 
         assert payload.model_spec == ""
 
+    async def test_extracts_cache_endpoint_identity(self) -> None:
+        """Persisted cache endpoint should propagate to the restore payload."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {
+            "messages": raw_messages,
+            "_last_model_request_at": "2026-08-11T12:30:00+00:00",
+            "_last_cache_endpoint": "https://api.anthropic.com/v1",
+        }
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_code.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.cache_state is not None
+        assert (
+            payload.cache_state["_last_cache_endpoint"]
+            == "https://api.anthropic.com/v1"
+        )
+
     async def test_none_context_tokens_coerced_to_zero(self) -> None:
         """`_context_tokens: None` in checkpoint should coerce to 0."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
@@ -4268,6 +4297,31 @@ class TestLoadThreadHistory:
         assert app._thread_restored_cost_usd == pytest.approx(1.25)
         assert app._displayed_cost_usd == pytest.approx(1.25)
         assert app._thread_stats.request_count == 0
+
+    async def test_resume_restores_cache_endpoint_identity(self) -> None:
+        """Resumed threads retain the endpoint used for their cached prefix."""
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp(thread_id="tid-1")
+        preloaded = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=8500,
+            model_spec="anthropic:claude-sonnet-4-6",
+            cache_state={
+                "_last_model_request_at": "2026-08-11T12:30:00+00:00",
+                "_last_cache_model_spec": "anthropic:claude-sonnet-4-6",
+                "_last_cache_endpoint": "https://api.anthropic.com/v1",
+                "_model_spec": "anthropic:claude-sonnet-4-6",
+                "_model_params": None,
+            },
+        )
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=preloaded,
+        )
+
+        assert app._last_cache_endpoint == "https://api.anthropic.com/v1"
 
     async def test_zero_context_tokens_does_not_overwrite_cache(self) -> None:
         """Loading a payload with 0 tokens should not reset an existing cache."""

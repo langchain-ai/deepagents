@@ -349,6 +349,8 @@ class TestOffloadSuccess:
                 "6 messages (3 conversation turns) kept" in str(widget._content)
                 for widget in msgs
             )
+            # No provider total was persisted, so the report is conversation-only.
+            assert any("Conversation: ~" in str(w._content) for w in msgs)
 
     async def test_kept_turns_ignore_tools_and_internal_messages(self) -> None:
         """Turn counts should skip AI/tool rows and internal humans on both sides."""
@@ -619,6 +621,170 @@ class TestOffloadSuccess:
                 await pilot.pause()
 
             assert app._context_tokens == expected
+
+    async def test_offload_preserves_fixed_overhead_in_context_report(self) -> None:
+        """Provider totals should keep fixed overhead in the post-offload estimate."""
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        from deepagents_code.app import _effective_conversation
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = _make_dict_messages(10)
+            after_event = _summary_event(4)
+            conversation_before = count_tokens_approximately(before_messages)
+            conversation_after = count_tokens_approximately(
+                _effective_conversation(before_messages, after_event)
+            )
+            fixed_tokens = 50_000
+            reported_before = conversation_before + fixed_tokens
+            expected_after = conversation_after + fixed_tokens
+            before = _state_values(before_messages)
+            before["_context_tokens"] = reported_before
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], after_event
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            expected_report = (
+                f"Context: {format_token_count(reported_before)} → "
+                f"~{format_token_count(expected_after)} tokens"
+            )
+            assert any(
+                expected_report in str(widget._content)
+                for widget in app.query(AppMessage)
+            )
+            assert app._context_tokens == expected_after
+            assert app._tokens_approximate is True
+
+    async def test_offload_report_stays_on_provider_scale_when_total_is_low(
+        self,
+    ) -> None:
+        """A provider total below the local estimate must not free fixed overhead.
+
+        When `_context_tokens` is stale (or the approximation overshoots), the
+        reported total can fall below `conversation_tokens_before`. The report must
+        still subtract only the conversation *delta*, keeping both figures on the
+        provider's scale -- rebuilding the after-figure as
+        `max(0, reported - conversation_before) + conversation_after` would collapse
+        the overhead to zero and credit the offload with freeing the whole system
+        prompt and tool schema.
+        """
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        from deepagents_code.app import _effective_conversation
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = _make_dict_messages(10)
+            after_event = _summary_event(4)
+            conversation_before = count_tokens_approximately(before_messages)
+            conversation_after = count_tokens_approximately(
+                _effective_conversation(before_messages, after_event)
+            )
+            # Stale/low provider total: below the local conversation estimate.
+            reported_before = conversation_before // 2
+            expected_after = reported_before - (
+                conversation_before - conversation_after
+            )
+            assert expected_after > 0, "fixture should not exercise the zero floor"
+            before = _state_values(before_messages)
+            before["_context_tokens"] = reported_before
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], after_event
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            expected_report = (
+                f"Context: {format_token_count(reported_before)} → "
+                f"~{format_token_count(expected_after)} tokens"
+            )
+            assert any(expected_report in content for content in contents)
+            # The overhead was never treated as freed, so the reduction stays
+            # modest rather than approaching 100%.
+            assert not any("(100% decrease)" in content for content in contents)
+            assert app._context_tokens == expected_after
+
+    async def test_offload_reports_oversized_summary_as_increase(self) -> None:
+        """A summary larger than what it replaced is reported as an increase."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = _make_dict_messages(10)
+            # A summary far longer than the four messages it replaces, so
+            # `tokens_after` exceeds `tokens_before`.
+            after_event = _summary_event(4)
+            after_event["summary_message"]["content"] = "verbose summary " * 500
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], after_event
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert any("Offloaded " in content for content in contents)
+            assert any("(increase)" in content for content in contents)
+            assert not any(
+                "freeing up context window space" in content for content in contents
+            )
+            assert any("context increased" in content for content in contents)
 
     async def test_no_ui_clear_reload(self) -> None:
         """Should NOT clear/reload UI since messages stay in state."""
@@ -981,7 +1147,8 @@ class TestOffloadErrorHandling:
             # ErrorMessage. The turn parenthetical and the trailing stats line are
             # asserted too, so the error path cannot silently keep older wording.
             assert any(
-                "Offloaded 4 older messages (2 conversation turns) and freed context"
+                "Offloaded 4 older messages (2 conversation turns), "
+                "freeing up context window space."
                 in str(widget._content)
                 and "could not be saved to storage" in str(widget._content)
                 and "conversation turns) kept." in str(widget._content)

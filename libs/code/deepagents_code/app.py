@@ -49,7 +49,7 @@ from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
 from textual.worker import NoActiveWorker, get_current_worker
-from typing_extensions import override
+from typing_extensions import Protocol, override, runtime_checkable
 
 # Applied as an import-time side effect; must come before any App is created.
 from deepagents_code import (
@@ -80,6 +80,7 @@ from deepagents_code._session_stats import (
     SpinnerStatus,
     finalize_recorded_requests,
     format_cost,
+    format_cost_estimate,
     format_token_count,
     record_message_usage,
 )
@@ -140,6 +141,26 @@ from deepagents_code.tui.widgets.welcome import WelcomeBanner
 logger = logging.getLogger(__name__)
 _GRACEFUL_EXIT_WAIT_SECONDS = 2.0
 _monotonic = time.monotonic
+
+
+@runtime_checkable
+class _SupportsReverseNav(Protocol):
+    """Cursor-style modal that can step its selection up on `shift+tab`.
+
+    The app's priority `shift+tab -> toggle_auto_approve` binding consumes the
+    key before any screen binding fires, so `action_toggle_auto_approve`
+    routes the key to every active screen matching this protocol. A new modal
+    that implements `action_move_up` is routed automatically.
+
+    `runtime_checkable` protocols match on method *presence* only, so this is
+    opt-out, not opt-in: a screen that defines `action_move_up` for its own
+    arrow keys is enrolled in reverse-nav whether or not it was written with
+    `shift+tab` in mind. A screen that wants different behavior -- or none --
+    needs an explicit branch ahead of the protocol check in
+    `action_toggle_auto_approve`.
+    """
+
+    def action_move_up(self) -> None: ...
 
 
 async def _wait_for_session_end(
@@ -318,6 +339,43 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """
     path = Path(path_arg).expanduser()
     return path, path.read_text(encoding="utf-8")
+
+
+def _load_float_option(
+    key: str,
+    default: float,
+    *,
+    label: str,
+    toml_data: dict[str, Any],
+    minimum: float | None = None,
+) -> float:
+    """Resolve a float config option, falling back to *default* when unusable.
+
+    Args:
+        key: Manifest option key.
+        default: Value used when the option is absent or fails validation.
+        label: Human-readable option name for the invalid-value warning.
+        toml_data: Pre-loaded config data, so callers reading several options
+            parse `config.toml` once.
+        minimum: Lowest accepted value, or `None` to accept any finite float.
+
+    Returns:
+        The configured value, or *default* when it is missing or invalid.
+    """
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+
+    option = get_option(key)
+    value: object = default
+    if option is not None:
+        value, _ = resolve_scalar(option, toml_data=toml_data)
+    if (
+        not isinstance(value, float)
+        or not math.isfinite(value)
+        or (minimum is not None and value < minimum)
+    ):
+        logger.warning("Invalid %s %r; using the default", label, value)
+        return default
+    return value
 
 
 def _coerce_session_cost_usd(value: object) -> float:
@@ -1010,6 +1068,7 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.cold_cache import ColdCacheReason, ColdCacheWarning
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
@@ -2249,6 +2308,10 @@ escape hatch. Tight enough that a deliberate copy-then-interrupt sequence,
 which has much larger gaps, never trips it."""
 
 
+SubmissionOrigin = Literal["interactive", "external"]
+"""Source policy controlling whether a normal message may open a cost modal."""
+
+
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
     """Represents a queued user message awaiting processing."""
@@ -2258,6 +2321,9 @@ class QueuedMessage:
 
     mode: InputMode
     """The input mode that determines message routing."""
+
+    origin: SubmissionOrigin = "interactive"
+    """Submission source retained until dispatch for advisory warning policy."""
 
 
 class ExternalInput(Message):
@@ -2350,6 +2416,20 @@ class _ThreadHistoryPayload:
 
     model_params: dict[str, Any] | None = None
     """Persisted `_model_params` from the checkpoint, if any."""
+
+    cache_state: Mapping[str, Any] | None = None
+    """Prompt-cache channels from the checkpoint, or `None` when absent.
+
+    One field rather than a presence flag beside nullable values: absence and
+    content are the same fact, so the "flag set, values missing" skew is not
+    representable. `None` means the checkpoint predates cold-cache tracking.
+
+    Values are deliberately unvalidated: `_sync_cache_state_from_state` owns
+    the parsing and logs each discard, so pre-filtering here would drop
+    malformed values (a non-string written by a newer build, say) without a
+    trace. The log names the discarded type, not the reason, so every
+    malformed string reports identically.
+    """
 
     session_cost_usd: float = 0.0
     """Persisted cumulative `_session_cost_usd` from the checkpoint."""
@@ -2649,9 +2729,6 @@ provider key is *not* a LangSmith gateway key. Only the prefix is inspected —
 the secret value is never logged or otherwise introspected.
 """
 
-_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
-"""Host substring identifying the LangSmith gateway endpoint."""
-
 
 def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     """Detect a non-LangSmith key being routed through the LangSmith gateway.
@@ -2674,15 +2751,18 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     if not provider:
         return None
     try:
+        from urllib.parse import urlsplit
+
         from deepagents_code.model_config import (
             ModelConfig,
             get_credential_env_var,
+            is_langsmith_gateway_host,
             resolve_env_var,
             resolved_env_var_name,
         )
 
         base_url = ModelConfig.load().get_base_url(provider)
-        if not base_url or _LANGSMITH_GATEWAY_HOST not in base_url:
+        if not base_url or not is_langsmith_gateway_host(urlsplit(base_url).hostname):
             return None
         key_env = get_credential_env_var(provider)
         if not key_env:
@@ -3721,7 +3801,10 @@ class DeepAgentsApp(App):
         """
 
         self._modal_command_tasks: dict[str, asyncio.Task[None]] = {}
-        """Detached slash-command continuations that drive a confirmation modal.
+        """Detached continuations that drive a confirmation modal.
+
+        Mostly slash commands, but not exclusively: the cold-cache
+        confirmation is admitted here from ordinary message dispatch.
 
         Only one continuation may run at a time, regardless of its context, so
         installs and updates cannot mutate the tool environment concurrently.
@@ -4335,6 +4418,18 @@ class DeepAgentsApp(App):
         copy for the status bar.
         """
 
+        self._last_model_request_at: str | None = None
+        """Latest successful main-model request start restored from graph state."""
+
+        self._last_cache_model_spec: str = ""
+        """Model spec associated with `_last_model_request_at`."""
+
+        self._last_cache_model_params: dict[str, Any] | None = None
+        """Model params associated with `_last_model_request_at`."""
+
+        self._last_cache_endpoint: str | None = None
+        """Endpoint identity associated with `_last_model_request_at`."""
+
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
 
@@ -4347,28 +4442,47 @@ class DeepAgentsApp(App):
         """
 
         from deepagents_code.config_manifest import (
+            COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
             SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
-            get_option,
             load_config_toml,
-            resolve_scalar,
         )
 
-        cost_warning_option = get_option("warnings.session_cost_threshold_usd")
-        cost_warning_threshold: object = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
-        if cost_warning_option is not None:
-            cost_warning_threshold, _ = resolve_scalar(
-                cost_warning_option, toml_data=load_config_toml()
-            )
-        if not isinstance(cost_warning_threshold, float) or not math.isfinite(
-            cost_warning_threshold
-        ):
-            logger.warning(
-                "Invalid session cost warning threshold %r; using the default",
-                cost_warning_threshold,
-            )
-            cost_warning_threshold = SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT
-        self._session_cost_warning_threshold_usd = cost_warning_threshold
+        toml_data = load_config_toml()
+        self._session_cost_warning_threshold_usd = _load_float_option(
+            "warnings.session_cost_threshold_usd",
+            SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT,
+            label="session cost warning threshold",
+            toml_data=toml_data,
+        )
         """Configured soft limit for the active thread's estimated cost."""
+
+        # Negative is rejected here but accepted above: the manifest documents
+        # a negative session-cost threshold as "disabled", while a negative
+        # cold-cache delta has no meaning -- every delta would clear it.
+        self._cold_cache_warning_threshold_usd = _load_float_option(
+            "warnings.cold_cache_min_delta_usd",
+            COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
+            label="cold-cache warning threshold",
+            toml_data=toml_data,
+            minimum=0.0,
+        )
+        """Minimum estimated cold-versus-warm cost delta that opens the modal."""
+
+        self._cold_cache_degraded_notified = False
+        """Whether this session already reported that the warning failed open.
+
+        Latched so a persistent cause cannot toast on every send; see
+        `_notify_cold_cache_degraded_once`.
+        """
+
+        self._cold_cache_suppressed_for_session = False
+        """Whether the user muted the cold-cache warning until app restart.
+
+        Set from the warning modal's "don't warn again this session" choice.
+        Unlike the persisted `[warnings].suppress` entry this is in-memory
+        only; the debug env var (`DEEPAGENTS_CODE_DEBUG_COLD_CACHE`) still
+        bypasses it so the modal stays reachable while developing.
+        """
 
         self._session_cost_warning_shown = False
         """Whether the active thread has already crossed its cost soft limit."""
@@ -8247,6 +8361,10 @@ class DeepAgentsApp(App):
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
         self._thread_has_completed_turn = False
+        self._last_model_request_at = None
+        self._last_cache_model_spec = ""
+        self._last_cache_model_params = None
+        self._last_cache_endpoint = None
         self._session_cost_warning_shown = False
         self._set_session_cost(self._thread_restored_cost_usd)
 
@@ -8501,8 +8619,126 @@ class DeepAgentsApp(App):
             _coerce_session_cost_usd(state_values.get("_session_cost_usd"))
         )
 
+    def _sync_cache_state_from_state(self, state_values: Mapping[str, Any]) -> None:
+        """Adopt the latest successful model request's prompt-cache identity.
+
+        A snapshot without `_last_model_request_at` is a no-op: the three
+        in-memory cache fields are preserved rather than cleared, so a partial
+        state read (a post-compaction refresh, say) cannot silently disable
+        cold-cache warnings for the rest of the session.
+
+        Raw checkpoint values are validated here rather than by callers, so
+        every entry point logs the same discards. The warnings name the
+        discarded value's type rather than why it failed, so a garbage string
+        and a naive datetime report identically.
+
+        `_last_cache_model_spec` falls back to `_model_spec` because threads
+        checkpointed before cold-cache tracking carry only the latter. The two
+        channels hold the same value on every write since; the fallback exists
+        for those older checkpoints, not for a case where they diverge.
+        """
+        if "_last_model_request_at" not in state_values:
+            return
+        from deepagents_code.cold_cache import parse_cache_timestamp
+
+        raw_timestamp = state_values.get("_last_model_request_at")
+        timestamp = parse_cache_timestamp(raw_timestamp)
+        if timestamp is None:
+            # Without a parseable request time the age cannot be computed, so
+            # the next send is treated as `age_unknown` -- which warns rather
+            # than staying silent. It self-heals once any model request
+            # checkpoints a fresh timestamp.
+            logger.warning(
+                "Discarding checkpointed _last_model_request_at (%s); the next "
+                "send is treated as unknown cache age and will warn",
+                type(raw_timestamp).__name__,
+            )
+        self._last_model_request_at = timestamp.isoformat() if timestamp else None
+
+        def _usable_spec(value: object) -> str | None:
+            # Blank is as unusable as a non-string here, and both must reach
+            # the warning below: an empty spec never matches the current model,
+            # so it silently pins every later send to "model changed".
+            return value.strip() if isinstance(value, str) and value.strip() else None
+
+        def _usable_endpoint_identity(value: object) -> str | None:
+            # Shape-checked, not merely non-empty: `endpoint_cache_identity`
+            # only ever mints `"default"`, `"invalid:<digest>"`, or a value
+            # containing `"://"`. Anything else (a hand-edited row, a future
+            # format) can never equal a freshly computed identity, so accepting
+            # it would report `identity_changed` on the next send while the
+            # discard warning below stayed silent. Discarding is the quieter
+            # wrong answer and it self-heals on the next checkpoint write.
+            usable = _usable_spec(value)
+            if usable is None:
+                return None
+            if usable == "default" or usable.startswith("invalid:") or "://" in usable:
+                return usable
+            return None
+
+        raw_spec = _usable_spec(
+            state_values.get("_last_cache_model_spec")
+        ) or _usable_spec(state_values.get("_model_spec"))
+        if raw_spec is None:
+            # Neither `_last_cache_model_spec` nor the `_model_spec` fallback
+            # gave us a usable spec. Storing "" means the next send never
+            # matches the current model, so it is treated as a model change --
+            # and the modal then shows its "model changed" copy even though the
+            # real cause is unreadable checkpoint state.
+            logger.warning(
+                "Discarding checkpointed _last_cache_model_spec (%s) and "
+                "_model_spec (%s); the next send is treated as a model change "
+                "for cold-cache warnings",
+                type(state_values.get("_last_cache_model_spec")).__name__,
+                type(state_values.get("_model_spec")).__name__,
+            )
+        self._last_cache_model_spec = raw_spec or ""
+        raw_params = state_values.get("_last_cache_params")
+        self._last_cache_model_params = (
+            dict(raw_params) if isinstance(raw_params, dict) else None
+        )
+        raw_endpoint = state_values.get("_last_cache_endpoint")
+        self._last_cache_endpoint = _usable_endpoint_identity(raw_endpoint)
+        if raw_endpoint is not None and self._last_cache_endpoint is None:
+            # Unlike a bad spec, a discarded endpoint fails *quietly*: `None`
+            # reads back as "never recorded", which suppresses endpoint-change
+            # detection instead of over-warning. It self-heals once any model
+            # call re-checkpoints, but nothing else would surface the gap, so it
+            # is logged here.
+            logger.warning(
+                "Discarding checkpointed _last_cache_endpoint (%s); endpoint "
+                "changes will not be detected until the next successful model "
+                "request records a fresh one",
+                type(raw_endpoint).__name__,
+            )
+
+    def _stamp_cache_identity_locally(self) -> None:
+        """Record the just-run model as the cache identity, without a checkpoint.
+
+        Used when a turn reached the model but ended without a readable
+        checkpoint (an interrupt, say). The timestamp is "now" rather than the
+        turn's last request time, which the client does not track: within a
+        long turn that slightly understates the true age, and the next
+        checkpoint read corrects it. Understating age is the safe direction
+        here only because the alternative -- leaving the field unset -- warns
+        on every subsequent send with a reason that is plainly false.
+        """
+        from datetime import UTC, datetime
+
+        from deepagents_code.cold_cache import cache_identity_params
+
+        self._last_model_request_at = datetime.now(UTC).isoformat()
+        self._last_cache_model_spec = self._effective_model_spec() or ""
+        # Record only the cache-identity projection of the session overrides,
+        # matching what the middleware checkpoints in `_last_cache_params`:
+        # the comparison side filters through `cache_identity_params` too, so
+        # unrelated knobs must not read as a cache change here either.
+        self._last_cache_model_params = (
+            cache_identity_params(self._model_params_override) or None
+        )
+
     async def _sync_session_cost_from_checkpoint(self) -> None:
-        """Reconcile the displayed cost with the thread's committed total.
+        """Reconcile displayed cost and prompt-cache state from the checkpoint.
 
         The streamed totals already track spend during a turn; this settles the
         display at the end of one, and covers a turn whose final events were
@@ -8514,11 +8750,12 @@ class DeepAgentsApp(App):
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception:
             logger.debug(
-                "Could not load thread state while reconciling cost",
+                "Could not load thread state while reconciling cost and cache state",
                 exc_info=True,
             )
             return
         self._sync_session_cost_from_state(state_values)
+        self._sync_cache_state_from_state(state_values)
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.
@@ -11002,12 +11239,504 @@ class DeepAgentsApp(App):
             return value == cmd or " ".join(value.split()) in IMMEDIATE_UI_ARG_FORMS
         return cmd in SIDE_EFFECT_FREE
 
+    async def _cold_cache_warning_for(
+        self,
+        message: QueuedMessage,
+    ) -> ColdCacheWarning | None:
+        """Build a warning when an interactive turn may miss a material cache.
+
+        Returns:
+            Validated warning data, or `None` when dispatch should proceed.
+        """
+        from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
+
+        debug_forced = is_env_truthy(DEBUG_COLD_CACHE)
+        threshold = self._cold_cache_warning_threshold_usd
+        model_spec = self._effective_model_spec() or ""
+        timestamp_value = self._last_model_request_at
+        context_tokens = self._context_tokens
+        # Cheap structural skips first; these are the overwhelmingly common
+        # path (every slash command, every ACP prompt) and warrant no logging.
+        if (
+            message.mode != "normal"
+            or message.origin != "interactive"
+            or not model_spec
+            or (self._cold_cache_suppressed_for_session and not debug_forced)
+        ):
+            return None
+        # Each remaining skip is a decision to spend without asking, so each
+        # says why. Silence here was previously indistinguishable from the
+        # feature working correctly.
+        if not debug_forced and threshold <= 0:
+            logger.debug(
+                "Skipping cold-cache warning: threshold %.4f disables the warning",
+                threshold,
+            )
+            return None
+        if not debug_forced and context_tokens <= 0:
+            logger.debug(
+                "Skipping cold-cache warning: no context tokens recorded yet",
+            )
+            return None
+
+        last_spec = self._last_cache_model_spec
+        last_params = self._last_cache_model_params
+        last_endpoint = self._last_cache_endpoint
+
+        def _evaluate() -> ColdCacheWarning | None:
+            from datetime import UTC, datetime
+
+            from deepagents_code.cold_cache import (
+                COLD_CACHE_WARNING_KEY,
+                ColdCacheWarning,
+                RewarmEstimate,
+                cache_identity_params,
+                debug_stand_in_policy,
+                endpoint_cache_identity,
+                estimate_rewarm_cost,
+                load_trusted_cache_endpoints,
+                parse_cache_timestamp,
+                resolve_prompt_cache_policy,
+            )
+            from deepagents_code.model_config import (
+                ModelConfig,
+                is_warning_suppressed,
+            )
+
+            # Normalized to match `resolve_prompt_cache_policy`, which lowers
+            # the provider before matching. `get_base_url` does exact-key
+            # lookups against lowercase keys, so an unnormalized
+            # `Anthropic:claude-opus-5` would report no custom endpoint and
+            # price a gateway user at official-API rates.
+            provider = model_spec.split(":", 1)[0].strip().lower()
+            config = ModelConfig.load()
+            _, _, model_name = model_spec.partition(":")
+            configured_params = config.get_effective_kwargs(
+                provider,
+                model_name=model_name,
+                overrides=self._model_params_override,
+            )
+            # Test doubles and third-party config implementations created
+            # before `get_effective_kwargs` existed may not implement it.
+            # Retain the old endpoint-only behavior for those objects while
+            # production `ModelConfig` always supplies the complete mapping.
+            current_params = (
+                configured_params if isinstance(configured_params, dict) else {}
+            )
+            if not current_params:
+                current_params = dict(self._model_params_override or {})
+                fallback_base_url = config.get_base_url(provider)
+                if isinstance(fallback_base_url, str):
+                    current_params["base_url"] = fallback_base_url
+            # Endpoint changes have their own normalized identity. Keeping
+            # `base_url` out of this mapping avoids treating the same endpoint
+            # as two independent identity changes.
+            params_for_policy = {
+                key: value for key, value in current_params.items() if key != "base_url"
+            } or None
+            resolved_base_url = current_params.get("base_url")
+            base_url = resolved_base_url if isinstance(resolved_base_url, str) else None
+            endpoint = endpoint_cache_identity(base_url)
+            policy = resolve_prompt_cache_policy(
+                model_spec,
+                params_for_policy,
+                base_url=base_url,
+                # Only consulted for a custom endpoint: with no `base_url`,
+                # `_official_endpoint` short-circuits to `True` and the trust
+                # set is provably unused. Loading it eagerly would re-read and
+                # re-parse `config.toml` from disk on every turn of the common
+                # official-API path, which is the very cost the comment below
+                # is about.
+                trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
+            )
+            # Resolved before the suppression lookup so the common
+            # no-policy case skips re-reading and re-parsing config.toml.
+            if policy is None and not debug_forced:
+                logger.debug(
+                    "Skipping cold-cache warning: no documented cache policy "
+                    "for %s (custom base URL: %s)",
+                    model_spec,
+                    base_url is not None,
+                )
+                return None
+            # `debug_forced` bypasses persistent suppression too, so the env
+            # var stays a true override rather than silently no-opping for
+            # anyone who once chose "Send and never warn again".
+            if not debug_forced and is_warning_suppressed(COLD_CACHE_WARNING_KEY):
+                return None
+            if debug_forced:
+                if policy is None:
+                    policy = debug_stand_in_policy()
+                tokens = max(context_tokens, policy.minimum_tokens)
+                estimate = estimate_rewarm_cost(tokens, model_spec, policy)
+                if estimate is None:
+                    estimate = RewarmEstimate(
+                        cold_cost_usd=0.0,
+                        incremental_cost_usd=0.0,
+                    )
+                return ColdCacheWarning(
+                    policy=policy,
+                    estimate=estimate,
+                    context_tokens=tokens,
+                    age_seconds=float(policy.window_seconds) + 60,
+                    reason="idle",
+                )
+            if policy is None:
+                return None
+            if context_tokens < policy.minimum_tokens:
+                logger.debug(
+                    "Skipping cold-cache warning: %d context tokens is below "
+                    "%s's %d-token cache minimum",
+                    context_tokens,
+                    policy.provider_name,
+                    policy.minimum_tokens,
+                )
+                return None
+
+            # An unusable request time means the age cannot be computed, not
+            # that the cache is warm. Treat it as cold, matching how an
+            # unreadable model spec is treated as a model change -- both are
+            # "checkpoint state we cannot trust", and assuming warm is the one
+            # assumption that silently bills the user. This is the normal state
+            # for a thread checkpointed before cold-cache tracking existed; it
+            # self-heals once any model call re-checkpoints a fresh timestamp.
+            timestamp = parse_cache_timestamp(timestamp_value)
+            age_seconds: float | None = None
+            elapsed = (
+                None
+                if timestamp is None
+                else (datetime.now(UTC) - timestamp).total_seconds()
+            )
+            if timestamp is None:
+                reason: ColdCacheReason = "age_unknown"
+                logger.debug(
+                    "Cold-cache warning: no usable model-request time (%s); "
+                    "treating the cache as cold",
+                    type(timestamp_value).__name__,
+                )
+            elif elapsed is not None and elapsed < 0:
+                # A request time in the future (clock correction, a thread
+                # synced from a skewed machine) is as untrustworthy as an
+                # unparseable one. Clamping it to zero instead would read as
+                # maximally warm and suppress the warning outright, which is
+                # the one reading that silently bills the user.
+                reason = "age_unknown"
+                logger.warning(
+                    "Checkpointed model-request time is %.0fs in the future "
+                    "(clock skew?); treating the cache age as unknown",
+                    -elapsed,
+                )
+            else:
+                age_seconds = max(elapsed or 0.0, 0.0)
+                if (
+                    model_spec != last_spec
+                    # Only cache-participating params are compared: `/effort`
+                    # and friends rewrite `model_params` without touching the
+                    # prefix, and must not read as a cache identity change.
+                    or cache_identity_params(current_params)
+                    != cache_identity_params(last_params)
+                    # `None` means no endpoint was ever recorded -- e.g. a
+                    # thread checkpointed before this field existed, or one
+                    # whose stored value was unreadable and discarded on load.
+                    # Treating "unrecorded" as "changed" would fire a spurious
+                    # warning on the first turn of each such thread, so only a
+                    # recorded value that actually differs counts.
+                    or (last_endpoint is not None and endpoint != last_endpoint)
+                ):
+                    reason = "identity_changed"
+                elif age_seconds > policy.window_seconds:
+                    reason = "idle"
+                else:
+                    return None
+            estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
+            if estimate is None:
+                logger.debug(
+                    "Skipping cold-cache warning: no price available for %s",
+                    model_spec,
+                )
+                return None
+            if estimate.incremental_cost_usd <= 0 < estimate.cold_cost_usd:
+                # A priced cold request with a zero delta means the catalog
+                # published no cache-read rate, so `estimate_cost` left those
+                # tokens in the ordinary input total and warm == cold. That is
+                # missing pricing data, not a genuinely free re-warm -- report
+                # it as such instead of letting it read as "below threshold".
+                logger.warning(
+                    "Skipping cold-cache warning: %s has no cache-read rate in "
+                    "the pricing catalog, so the warm/cold delta cannot be "
+                    "computed",
+                    model_spec,
+                )
+                return None
+            if estimate.incremental_cost_usd < threshold:
+                logger.debug(
+                    "Skipping cold-cache warning: re-warm delta %.4f is below "
+                    "the %.4f threshold",
+                    estimate.incremental_cost_usd,
+                    threshold,
+                )
+                return None
+            return ColdCacheWarning(
+                policy=policy,
+                estimate=estimate,
+                context_tokens=context_tokens,
+                age_seconds=age_seconds,
+                reason=reason,
+            )
+
+        try:
+            return await asyncio.to_thread(_evaluate)
+        except Exception:
+            logger.warning(
+                "Could not evaluate the cold prompt-cache warning; sending normally",
+                exc_info=True,
+            )
+            # A failure here sends at full cold-cache price without asking, so
+            # it cannot stay in the log alone: the person paying is the one who
+            # needs to know the protection stopped working. Once per session,
+            # because a persistent cause (a corrupt config file, say) would
+            # otherwise toast on every single send.
+            self._notify_cold_cache_degraded_once()
+            return None
+
+    def _notify_cold_cache_degraded_once(self) -> None:
+        """Warn once per session that cold-cache checks are failing open."""
+        if self._cold_cache_degraded_notified:
+            return
+        self._cold_cache_degraded_notified = True
+        self.notify(
+            "Cold prompt-cache cost warnings are unavailable this session; "
+            "messages will send without a cost check. See the log for details.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    def _restore_cold_cache_draft(self, text: str) -> None:
+        """Restore a canceled cold-cache submission to an empty chat input."""
+        if (
+            self._chat_input
+            and not self._chat_input.value.strip()
+            and self._chat_input.set_value_at_end(text)
+        ):
+            self.call_after_refresh(self._chat_input.focus_input)
+            return
+        self.notify(
+            "Message canceled. Its text could not be restored to the chat "
+            "input, but pressing Up recalls it from history.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    async def _emit_cold_cache_warning_hook(
+        self,
+        warning: ColdCacheWarning,
+    ) -> None:
+        """Notify Hooks v2 before displaying a cold-cache confirmation.
+
+        The notification describes the potential cost without including the
+        queued prompt, which may contain sensitive user input. A hook may not
+        suppress the confirmation: the modal remains the user's decision.
+
+        Formats with `format_cost_estimate`, matching the modal: the figure is
+        a worst-case estimate, and `format_cost` would render the same number
+        exactly, so a hook consumer and the modal would disagree about one
+        value.
+        """
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.hooks.models.domain import DcodeNotificationKind
+
+        try:
+            await self._hooks.notify(
+                DcodeNotificationKind.COLD_CACHE_WARNING,
+                "Prompt cache may be cold: re-warming this context could add "
+                f"{format_cost_estimate(warning.estimate.incremental_cost_usd)}.",
+                title="Warning: cache may be cold",
+            )
+        except ClientHookStopError:
+            logger.info("Cold-cache warning notification was stopped by a hook")
+
+    async def _confirm_cold_cache_message(
+        self,
+        message: QueuedMessage,
+        warning: ColdCacheWarning,
+        thread_id: str | None,
+    ) -> None:
+        """Resolve a detached cold-cache confirmation and continue safely.
+
+        Raises:
+            asyncio.CancelledError: When app shutdown cancels the continuation.
+        """
+        from deepagents_code.tui.modals.cold_cache import (
+            SEND_CHOICES,
+            ColdCacheChoice,
+            ColdCacheWarningScreen,
+        )
+
+        screen = ColdCacheWarningScreen(warning)
+        try:
+            # Watchdog-bounded like every other confirmation modal: this
+            # continuation holds the single `_schedule_off_message_pump` slot,
+            # so an await that never resolves (compose crash, programmatic
+            # teardown that skips the dismiss callback) would leave
+            # `_modal_command_running()` true forever and stop the pending
+            # queue from draining for the rest of the session.
+            choice = await asyncio.wait_for(
+                self._push_screen_wait(screen),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            # Fail closed, matching the modal's documented contract: an
+            # abandoned confirmation must not become an affirmative
+            # authorization to spend.
+            logger.warning(
+                "Cold prompt-cache confirmation timed out; treating as cancel",
+            )
+            self._dismiss_orphaned_screen(screen)
+            self.notify(
+                "The cold prompt-cache prompt timed out, so the message was "
+                "not sent. Press Up to recall it.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+            choice = ColdCacheChoice.CANCEL
+        except Exception:
+            # Same fail-closed contract for a modal that could not be shown at
+            # all. The draft is restored below, so nothing is dropped.
+            logger.exception("Failed to show the cold prompt-cache warning")
+            self._dismiss_orphaned_screen(screen)
+            self.notify(
+                "Could not show the cold prompt-cache warning, so the message "
+                "was not sent. Your draft has been restored.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+            choice = ColdCacheChoice.CANCEL
+
+        if self._exiting:
+            # Intentionally dropped: there is nowhere to restore a draft to
+            # mid-shutdown. Logged so "my last message vanished when I quit"
+            # has an explanation.
+            logger.debug(
+                "Dropping a cold-cache-gated message because the app is exiting",
+            )
+            return
+        if self._lc_thread_id != thread_id:
+            # The draft is deliberately not restored: it belongs to the thread
+            # the user left, and dropping it into a different thread's input is
+            # its own surprise. Say so plainly -- "canceled" alone reads as
+            # deferred rather than discarded -- and point at history, where
+            # `ChatInput` recorded the text at submit time.
+            self.notify(
+                "Canceled a pending send because the active thread changed. "
+                "The message was not sent; press Up to recall its text.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+            return
+        # `_schedule_off_message_pump` runs this outside the caller's
+        # `try/except`, so the dispatch below must mount its own failure
+        # message. Without it a post-authorization failure would reach only
+        # `_log_task_exception`, and a user who deliberately approved the spend
+        # would watch the message vanish with no error anywhere in the UI.
+        try:
+            # `None` (programmatic pop) is not a member, so it fails closed
+            # into the restore branch. Membership lives on the enum so a new
+            # variant does not silently become a send.
+            if choice in SEND_CHOICES:
+                if choice is ColdCacheChoice.SEND_SUPPRESS_SESSION:
+                    self._cold_cache_suppressed_for_session = True
+                elif choice is ColdCacheChoice.SEND_SUPPRESS_ALWAYS:
+                    await self._suppress_cold_cache_warning()
+                await self._process_message(message.text, message.mode)
+            else:
+                self._restore_cold_cache_draft(message.text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Cold-cache continuation failed after choice %r",
+                choice,
+            )
+            await self._mount_message(
+                ErrorMessage(f"Failed to process queued message: {message.text[:60]}"),
+            )
+
+    async def _suppress_cold_cache_warning(self) -> None:
+        """Persistently suppress the cold-cache warning in `config.toml`.
+
+        Used by the warning modal's "Send and never warn again" choice. The
+        setting can be reverted from the `/notifications` settings screen.
+        """
+        from deepagents_code.cold_cache import COLD_CACHE_WARNING_KEY
+        from deepagents_code.model_config import suppress_warning_reason
+
+        # Guarded like the `/notifications` settings persistence: this runs in
+        # a detached continuation ahead of `_process_message`, so an
+        # unexpected raise here would silently drop the submitted message.
+        try:
+            reason = await asyncio.to_thread(
+                suppress_warning_reason, COLD_CACHE_WARNING_KEY
+            )
+        except Exception:
+            logger.warning("Failed to persist cold-cache suppression", exc_info=True)
+            reason = "the config file could not be written"
+        if reason is None:
+            self.notify(
+                "Won't warn about cold prompt caches again. "
+                "Re-enable from /notifications.",
+                severity="information",
+                timeout=6,
+                markup=False,
+            )
+        else:
+            # Names the actual cause: a malformed `[warnings]` table and an
+            # unwritable file need different fixes, and a generic "check
+            # permissions" sends the first case to `chmod` a file that was
+            # never the problem.
+            self.notify(
+                f"Could not save notification preference: {reason}.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+
+    async def _dispatch_queued_message(self, message: QueuedMessage) -> None:
+        """Dispatch one queue-head message, interposing an advisory warning."""
+        warning = await self._cold_cache_warning_for(message)
+        if warning is None:
+            await self._process_message(message.text, message.mode)
+            return
+        await self._emit_cold_cache_warning_hook(warning)
+        task = self._schedule_off_message_pump(
+            self._confirm_cold_cache_message(
+                message,
+                warning,
+                self._lc_thread_id,
+            ),
+            context="cold-cache:confirm",
+        )
+        if task is None:
+            # Admission failed because another continuation owns the modal
+            # slot, and `_schedule_off_message_pump` has already told the user
+            # to answer that prompt first. Sending anyway would bill the turn
+            # the warning exists to gate while that toast claims the action was
+            # blocked, so keep the draft and let them resend.
+            self._restore_cold_cache_draft(message.text)
+
     async def _submit_input(
         self,
         value: str,
         mode: InputMode,
         *,
         force_bypass: bool = False,
+        origin: SubmissionOrigin = "interactive",
     ) -> None:
         """Submit input, fast-pathing always-immediate commands.
 
@@ -11022,6 +11751,7 @@ class DeepAgentsApp(App):
                 immediately. External callers use this to mirror the
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
+            origin: Submission source used by advisory warning policy.
         """
         if self._exiting:
             return
@@ -11083,7 +11813,9 @@ class DeepAgentsApp(App):
             if mode == "command" and self._can_bypass_queue(value.lower().strip()):
                 await self._process_message(value, mode)
                 return
-            self._pending_messages.append(QueuedMessage(text=value, mode=mode))
+            self._pending_messages.append(
+                QueuedMessage(text=value, mode=mode, origin=origin)
+            )
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
             await self._mount_message(queued_widget)
@@ -11092,7 +11824,9 @@ class DeepAgentsApp(App):
                 self._reveal_connection_status()
             return
 
-        await self._process_message(value, mode)
+        await self._dispatch_queued_message(
+            QueuedMessage(text=value, mode=mode, origin=origin)
+        )
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
@@ -11189,7 +11923,12 @@ class DeepAgentsApp(App):
 
         mode: InputMode = "command" if external.kind == "command" else "normal"
         force_bypass = external.bypass is not BypassTier.QUEUED
-        await self._submit_input(external.payload, mode, force_bypass=force_bypass)
+        await self._submit_input(
+            external.payload,
+            mode,
+            force_bypass=force_bypass,
+            origin="external",
+        )
 
     async def _handle_external_signal(self, payload: str) -> None:
         """Dispatch an external signal payload to the corresponding action.
@@ -12467,6 +13206,20 @@ class DeepAgentsApp(App):
             context_tokens,
             model_spec,
             model_params,
+            cache_state=(
+                {
+                    "_last_model_request_at": state_values["_last_model_request_at"],
+                    "_last_cache_model_spec": state_values.get(
+                        "_last_cache_model_spec"
+                    ),
+                    "_last_cache_endpoint": state_values.get("_last_cache_endpoint"),
+                    "_last_cache_params": state_values.get("_last_cache_params"),
+                    "_model_spec": model_spec,
+                    "_model_params": model_params,
+                }
+                if "_last_model_request_at" in state_values
+                else None
+            ),
             session_cost_usd=session_cost_usd,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
@@ -15757,9 +16510,10 @@ class DeepAgentsApp(App):
             prior_event = state_values.get("_summarization_event")
             before_messages = state_values.get("messages", [])
             prior_cutoff = _summarization_cutoff(prior_event)
-            tokens_before = count_tokens_approximately(
+            conversation_tokens_before = count_tokens_approximately(
                 _effective_conversation(before_messages, prior_event)
             )
+            reported_tokens_before = _persisted_context_tokens(state_values)
 
             # Own the seeded tool-call id here so a failed run can clean up the
             # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
@@ -15818,6 +16572,7 @@ class DeepAgentsApp(App):
             # The compaction run's summary model spend is priced and committed by
             # the graph, so the state just read is the complete total.
             self._sync_session_cost_from_state(new_state)
+            self._sync_cache_state_from_state(new_state)
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)
 
@@ -15859,27 +16614,54 @@ class DeepAgentsApp(App):
                 if isinstance(new_event, dict)
                 else getattr(new_event, "file_path", None)
             )
-            # Recompute the post-offload size from the ORIGINAL pre-seed
-            # messages plus the new event. `_effective_conversation` yields
-            # `[summary, *before_messages[new_cutoff:]]` — the compacted
-            # conversation without the tool's own machinery (the seeded tool
-            # call, the tool result, and the trailing model turn), all of which
-            # land in `new_state["messages"]` at/after `new_cutoff`. Counting
-            # `before_messages` keeps this token figure consistent with the
-            # message counts below and avoids understating the reduction.
-            #
-            # This is a client-side approximation for the status bar and is
-            # deliberately not the persisted `_context_tokens` (refreshed from
-            # the trailing turn's real provider usage, which includes
-            # system/tool overhead and the machinery messages). The two can
-            # differ, and if the trailing turn failed `_context_tokens` keeps
-            # its pre-offload value.
-            tokens_after = count_tokens_approximately(
+            # Recompute the post-offload conversation from the original pre-seed
+            # messages plus the new event. This excludes the compact tool's own
+            # machinery while preserving the provider-reported system/tool overhead
+            # from the last ordinary turn when that total is available.
+            conversation_tokens_after = count_tokens_approximately(
                 _effective_conversation(before_messages, new_event)
             )
-            # Message and turn counts are likewise derived purely from the
-            # absolute cutoffs, so those same machinery artifacts are never
-            # mistaken for kept conversation.
+            if reported_tokens_before:
+                # Subtract the *delta* from the provider total rather than
+                # rebuilding the total as `overhead + conversation_after`. The two
+                # are algebraically equal, but only this form keeps both figures on
+                # the provider's scale: `count_tokens_approximately` need only
+                # overshoot the provider count by a token for an
+                # `overhead = max(0, reported - conversation_before)` clamp to
+                # collapse the overhead to zero, which would silently report the
+                # whole system prompt and tool schema as freed context.
+                #
+                # The estimator's error appears with opposite signs in the two
+                # conversation counts and largely cancels in the difference, which
+                # is why `before` prints exact and only `after` carries a `~`.
+                tokens_before = reported_tokens_before
+                tokens_after = max(
+                    0,
+                    reported_tokens_before
+                    - (conversation_tokens_before - conversation_tokens_after),
+                )
+                usage_label = "Context"
+                before = format_token_count(tokens_before)
+                after = f"~{format_token_count(tokens_after)}"
+            else:
+                # No usable provider total (never set, or a checkpoint value
+                # `_persisted_context_tokens` rejected), so fall back to a
+                # conversation-only estimate. `usage_label` is what tells the user
+                # which metric they are reading: "Conversation" excludes the
+                # system/tool overhead that "Context" includes, so the two
+                # percentages are not comparable across offloads.
+                tokens_before = conversation_tokens_before
+                tokens_after = conversation_tokens_after
+                usage_label = "Conversation"
+                before = f"~{format_token_count(tokens_before)}"
+                after = f"~{format_token_count(tokens_after)}"
+
+            # Message and turn counts are derived purely from the absolute cutoffs
+            # into the ORIGINAL pre-seed `before_messages`, never from the post-run
+            # `new_state["messages"]`. The compact tool's own machinery (the seeded
+            # tool call, its result, and the trailing model turn) lands at/after
+            # `new_cutoff` in the post-run list, so slicing that list instead would
+            # count those artifacts as kept conversation.
             messages_offloaded = max(0, new_cutoff - prior_cutoff)
             messages_kept = max(0, len(before_messages) - new_cutoff)
             turns_offloaded = sum(
@@ -15896,23 +16678,39 @@ class DeepAgentsApp(App):
             kept_message_label = "message" if messages_kept == 1 else "messages"
             offloaded_turn_label = "turn" if turns_offloaded == 1 else "turns"
             kept_turn_label = "turn" if turns_kept == 1 else "turns"
+            # Floored at zero: a summary can come out larger than the messages it
+            # replaced, and in the reported branch `tokens_after` mixes an exact
+            # provider total with an estimated delta. Neither should ever render as
+            # a negative "decrease".
             pct = (
-                round((tokens_before - tokens_after) / tokens_before * 100)
+                max(0, round((tokens_before - tokens_after) / tokens_before * 100))
                 if tokens_before > 0
                 else 0
             )
 
-            before = format_token_count(tokens_before)
-            after = format_token_count(tokens_after)
             offloaded_counts = (
                 f"{messages_offloaded} older {offloaded_message_label} "
                 f"({turns_offloaded} conversation {offloaded_turn_label})"
             )
-            stats_line = (
-                f"Context: {before} → {after} tokens ({pct}% decrease), "
-                f"{messages_kept} {kept_message_label} "
-                f"({turns_kept} conversation {kept_turn_label}) kept."
-            )
+            if tokens_after <= tokens_before:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                    f"{messages_kept} {kept_message_label} "
+                    f"({turns_kept} conversation {kept_turn_label}) kept."
+                )
+                outcome = (
+                    f"Offloaded {offloaded_counts}, freeing up context window space."
+                )
+            else:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens (increase), "
+                    f"{messages_kept} {kept_message_label} "
+                    f"({turns_kept} conversation {kept_turn_label}) kept."
+                )
+                outcome = (
+                    f"Offloaded {offloaded_counts}, but the summary was larger "
+                    "than the messages it replaced, so context increased."
+                )
             if archive_path:
                 from deepagents_code.offload import offload_storage_is_ephemeral
 
@@ -15929,8 +16727,7 @@ class DeepAgentsApp(App):
                 )
                 await self._mount_message(
                     AppMessage(
-                        f"Offloaded {offloaded_counts}, freeing up context window "
-                        f"space.\n{stats_line}{caveat}",
+                        f"{outcome}\n{stats_line}{caveat}",
                     ),
                 )
             else:
@@ -15940,7 +16737,7 @@ class DeepAgentsApp(App):
                 # separate warning immediately followed by a success line.
                 await self._mount_message(
                     ErrorMessage(
-                        f"Offloaded {offloaded_counts} and freed context, but the "
+                        f"{outcome} The "
                         "conversation history could not "
                         "be saved to storage, so those messages are not "
                         f"recoverable. Check logs for details.\n{stats_line}",
@@ -17208,6 +18005,14 @@ class DeepAgentsApp(App):
             # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
                 await self._sync_session_cost_from_checkpoint()
+            elif turn_stats.request_count > 0:
+                # An interrupted turn never reads the checkpoint back (its
+                # writes may have been dropped), but the model *was* reached,
+                # and the checkpoint read is the only other thing that advances
+                # the in-memory request time. Leaving it stale would make the
+                # very next send report "no record of when this thread last
+                # reached the model" seconds after a turn that plainly did.
+                self._stamp_cache_identity_locally()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the
@@ -17244,7 +18049,10 @@ class DeepAgentsApp(App):
         """
         if (
             self._processing_pending
+            or self._agent_running
+            or self._agent_reconciling
             or self._goal_state_mutating
+            or self._shell_running
             or self._modal_command_running()
             or not self._pending_messages
             or self._exit
@@ -17264,7 +18072,7 @@ class DeepAgentsApp(App):
                 widget = self._queued_widgets.popleft()
                 await widget.remove()
 
-            await self._process_message(msg.text, msg.mode)
+            await self._dispatch_queued_message(msg)
         except Exception:
             logger.exception("Failed to process queued message")
             await self._mount_message(
@@ -18018,6 +18826,12 @@ class DeepAgentsApp(App):
                 payload.session_cost_usd,
                 has_restored_model_usage=payload.has_model_usage,
             )
+            if payload.cache_state is not None:
+                # Raw values on purpose: `_sync_cache_state_from_state` is the
+                # single validator, so a malformed checkpoint logs the same
+                # discard warning here as it does on the live-sync path. Runs
+                # after `_reset_thread_usage`, which clears these fields.
+                self._sync_cache_state_from_state(payload.cache_state)
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 
@@ -20189,18 +21003,11 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
-        from deepagents_code.tui.widgets.notification_center import (
-            NotificationCenterScreen,
-        )
-        from deepagents_code.tui.widgets.notification_detail import (
-            NotificationDetailScreen,
-        )
         from deepagents_code.tui.widgets.notification_settings import (
             NotificationSettingsScreen,
         )
         from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
-        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
@@ -20217,20 +21024,27 @@ class DeepAgentsApp(App):
             # never fires because this priority binding consumes the key first).
             self.screen.focus_previous()
             return
-        if isinstance(
-            self.screen,
-            (UpdateAvailableScreen, NotificationCenterScreen, NotificationDetailScreen),
-        ):
-            self.screen.action_move_up()
-            return
         if isinstance(self.screen, MCPViewerScreen):
             self.screen.action_jump_up()
             return
         if isinstance(self.screen, PluginManagerScreen):
             self.screen.action_previous_tab()
             return
-        # shift+tab is reused for navigation inside modal screens (e.g.
-        # ModelSelectorScreen); skip the toggle so it doesn't fire through.
+        if isinstance(self.screen, _SupportsReverseNav):
+            # Membership is by `action_move_up` presence, not an enumerated
+            # list: this catches the cursor-style modals (update-available,
+            # cold-cache, notification center/detail, model selector) whose
+            # rows have no focusable children, and picks up new ones
+            # automatically. Without this branch a screen's own priority
+            # `shift+tab -> move_up` binding would never fire, because this
+            # app-level priority binding wins dispatch.
+            #
+            # Screens wanting shift+tab to do something else, or nothing, need
+            # an explicit branch *above* this one.
+            self.screen.action_move_up()
+            return
+        # Any remaining modal swallows the key rather than letting the approval
+        # toggle fire behind it.
         if isinstance(self.screen, ModalScreen):
             return
         # Delegate shift+tab to ask_user navigation when interview is active.
@@ -22516,12 +23330,14 @@ class DeepAgentsApp(App):
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
             binding for the key; stepping aside lets it fall through to the
             console's `key_shift_tab` reverse-focus traversal. Without this the
-            binding fires `action_toggle_auto_approve`, which no-ops under a
-            `ModalScreen` that lacks dedicated `shift+tab` handling (as
-            `DebugConsoleScreen` does), so the key would be silently swallowed.
-            Note this keys on the action, and `toggle_auto_approve` is
-            also bound to `ctrl+t`, so that (harmless, already a no-op
-            under modals) binding is stepped aside too while the console is open.
+            binding fires `action_toggle_auto_approve`, which routes
+            cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
+            under a `ModalScreen` that lacks dedicated `shift+tab` handling
+            (as `DebugConsoleScreen` does), so the key would be silently
+            swallowed. Note this keys on the action, and `toggle_auto_approve`
+            is also bound to `ctrl+t`, so that (harmless, already a no-op
+            under modals) binding is stepped aside too while the console is
+            open.
         - `approval_reject_with_reason` (`tab`): unlike the other approval keys
             this one must be `priority=True` to beat `Screen`'s
             `tab -> app.focus_next`, which means it would otherwise swallow
@@ -24927,7 +25743,7 @@ class DeepAgentsApp(App):
     def _schedule_off_message_pump(
         self, coro: Coroutine[Any, Any, None], *, context: str
     ) -> asyncio.Task[None] | None:
-        """Run a slash-command continuation that opens a modal off the pump.
+        """Run a continuation that opens a modal off the App message pump.
 
         Slash commands are dispatched from `on_chat_input_submitted`, which is
         awaited inline on the App message pump. Awaiting a confirmation modal
@@ -24936,6 +25752,12 @@ class DeepAgentsApp(App):
         Detaching the continuation lets the command handler return so the pump
         can route keys to the modal — the same reason the post-install restart
         offer is scheduled rather than awaited (see `_schedule_restart_offer`).
+
+        Not limited to slash commands: the cold-cache confirmation
+        (`_confirm_cold_cache_message`) reaches the same pump via ordinary
+        message dispatch. The admission-failure toast still says "Another
+        command is waiting on a prompt", which is the wording a user sees when
+        a cold-cache confirmation holds the slot.
 
         Because the command handler now returns while the modal is still open,
         the continuation participates in the app's busy state until it ends.

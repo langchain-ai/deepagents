@@ -51,6 +51,7 @@ class WireNotificationType(StrEnum):
     ELICITATION_RESPONSE = "elicitation_response"
     AGENT_NEEDS_INPUT = "agent_needs_input"
     AGENT_COMPLETED = "agent_completed"
+    COLD_CACHE_WARNING = "cold_cache_warning"
 
 
 class Effort(_WireModel):

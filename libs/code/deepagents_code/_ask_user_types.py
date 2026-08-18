@@ -167,6 +167,11 @@ class AskUserRequest(TypedDict):
 
 ASK_USER_AUTHORIZATION_METADATA_KEY = "deepagents_code_ask_user_authorization"
 MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS = 4000
+# These limits bound the receipt-anchored question/answer evidence copied into
+# Auto's classifier prompt. Questions are model-generated and otherwise have no
+# schema length constraint, so they must not be able to exhaust that context.
+MAX_ASK_USER_AUTHORIZATION_QUESTION_CHARS = 4000
+MAX_ASK_USER_AUTHORIZATION_QUESTION_TOTAL_CHARS = 8000
 
 
 class AskUserAuthorizationReceipt(TypedDict):

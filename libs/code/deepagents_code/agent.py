@@ -1085,7 +1085,9 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
             f"[bold yellow]Warning:[/bold yellow] Could not read async subagents "
             f"from {config_path}: {detail}",
         )
-        return []
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
     data, _ = sources.merged()
     section = data.get("async_subagents")
     if not isinstance(section, dict):

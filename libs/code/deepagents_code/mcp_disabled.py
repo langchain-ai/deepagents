@@ -68,20 +68,29 @@ def _load_config(config_path: Path) -> dict[str, Any]:
         raise _ConfigLoadError(msg) from exc
 
 
-def _save_config(data: dict[str, Any], config_path: Path) -> bool:
-    """Atomically replace user TOML through the shared writer.
+def _save_disabled_entries(entries: set[str], config_path: Path) -> bool:
+    """Persist the disabled-server set through the shared writer.
+
+    The edit runs against the parse the writer performs inside its lock, not
+    against a snapshot read before the lock was taken, so a concurrent
+    `[ui]` or `[models]` write to the same file is not clobbered.
 
     Returns:
         Whether the transaction succeeded.
     """
     from deepagents_code.configuration.writer import update_user_config
 
-    def replace(current: dict[str, Any]) -> bool:
-        current.clear()
-        current.update(data)
-        return True
+    def apply(current: dict[str, Any]) -> bool:
+        section = current.get(_SECTION)
+        if not isinstance(section, dict):
+            section = {}
+        before = (section.get(_KEY), _LEGACY_SECTION in current)
+        section[_KEY] = sorted(entries)
+        current[_SECTION] = section
+        _remove_legacy_disabled_section(current)
+        return (section[_KEY], _LEGACY_SECTION in current) != before
 
-    result = update_user_config(replace, config_path=config_path)
+    result = update_user_config(apply, config_path=config_path)
     if not result.ok:
         logger.error("Failed to save config to %s: %s", config_path, result.error)
     return result.ok
@@ -132,14 +141,15 @@ def _remove_legacy_disabled_section(data: dict[str, Any]) -> None:
 
 
 def get_disabled_servers(*, config_path: Path | None = None) -> set[str]:
-    """Return the set of server names the user has disabled.
+    """Return the server names disabled by the user or by managed config.
 
     Args:
         config_path: Override the default config location; intended for tests.
 
     Returns:
-        Set of server names. Empty when nothing is disabled or the config
-        cannot be read.
+        Union of the user and managed deny sets. Managed denies survive an
+        unreadable or corrupt user config, so the result is empty only when
+        nothing is denied at either layer.
     """
     is_default = config_path is None
     if config_path is None:
@@ -188,9 +198,11 @@ def set_server_disabled(
         config_path: Override the default config location; intended for tests.
 
     Returns:
-        Tuple of `(ok, error_detail)`. `ok` is `True` on success; on
-        failure `error_detail` is a short user-facing string suitable
-        for a toast.
+        Tuple of `(ok, detail)`. `detail` is a short user-facing string
+        suitable for a toast, and its meaning depends on `ok`: on failure it
+        is the error, and on success it is either `None` or a notice that
+        managed config keeps the saved preference from taking effect. Check
+        `ok` first — a non-`None` `detail` does not by itself mean failure.
     """
     is_default = config_path is None
     if config_path is None:
@@ -216,12 +228,6 @@ def set_server_disabled(
     if current == previous and _LEGACY_SECTION not in data:
         return True, shadowed_detail
 
-    section = data.get(_SECTION)
-    if not isinstance(section, dict):
-        section = {}
-    section[_KEY] = sorted(current)
-    data[_SECTION] = section
-    _remove_legacy_disabled_section(data)
-    if _save_config(data, config_path):
+    if _save_disabled_entries(current, config_path):
         return True, shadowed_detail
     return False, f"could not write {config_path}"

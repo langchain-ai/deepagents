@@ -519,9 +519,14 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     status = managed_config_status(refresh=True)
     path = status.path or "(unknown)"
     suffix = status.health.value.lower()
+    detail = f" - {status.detail}" if status.detail else ""
+    # Doctor exists to explain a failure, so it must carry the parse detail and
+    # say who can fix it. Without this a user who just saw exit 78 learns
+    # nothing new here.
+    hint = "" if status.usable else "; ask your administrator to repair or remove it"
     return DiagnosticItem(
         "Managed config",
-        f"{path} ({suffix})",
+        f"{path} ({suffix}){detail}{hint}",
         ok=status.usable,
     )
 

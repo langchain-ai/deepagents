@@ -1317,7 +1317,9 @@ def _load_terminal_default() -> str | None:
             "Could not read config for terminal theme default: %s",
             sources.user.status.detail or sources.user.status.health.value,
         )
-        return None
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
     data, _ = sources.merged()
     ui = data.get("ui")
     if not isinstance(ui, dict):

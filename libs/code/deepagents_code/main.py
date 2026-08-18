@@ -4429,6 +4429,9 @@ def cli_main() -> None:
         from deepagents_code.config import console, settings
 
         if command is None:
+            # Gate before applying policy: an unreadable managed file must stop
+            # the launch rather than let early-exit paths below run unpoliced.
+            _require_managed_config_or_exit()
             _apply_managed_runtime_policy(args)
 
         if command == "auth":
@@ -5048,9 +5051,6 @@ def cli_main() -> None:
             sys.exit(0)
 
         output_format = getattr(args, "output_format", "text")
-
-        if command is None:
-            _require_managed_config_or_exit()
 
         if args.command == "help":
             from deepagents_code.ui import show_help

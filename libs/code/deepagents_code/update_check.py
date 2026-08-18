@@ -3672,7 +3672,17 @@ async def perform_install_package(
 
 
 def _managed_update_value(key: str) -> tuple[bool, bool]:
-    """Return one valid managed update boolean without masking type errors."""
+    """Return one valid managed update boolean without masking type errors.
+
+    An unreadable or corrupt managed file reports `(True, False)`, which turns
+    the setting off. Policy that cannot be read must not be treated as absent,
+    and this is the safe direction for a feature that reaches the network. The
+    condition is logged, because "disabled by policy" and "policy unreadable"
+    are otherwise indistinguishable to the user.
+
+    Returns:
+        Whether managed config decides the value, and the value.
+    """
     from deepagents_code.configuration.service import get_managed_snapshot
     from deepagents_code.configuration.types import ProviderHealth
 
@@ -3681,6 +3691,13 @@ def _managed_update_value(key: str) -> tuple[bool, bool]:
         ProviderHealth.UNREADABLE,
         ProviderHealth.CORRUPT,
     }:
+        logger.error(
+            "Managed config %s is %s (%s); disabling [update].%s until it is repaired",
+            snapshot.status.path,
+            snapshot.status.health.value,
+            snapshot.status.detail or "no detail",
+            key,
+        )
         return True, False
     section = snapshot.data.get("update")
     if not isinstance(section, dict) or key not in section:

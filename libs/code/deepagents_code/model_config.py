@@ -916,7 +916,9 @@ def _load_effective_config_data(
         Effective data and resolved user path.
 
     Raises:
-        OSError: If the user TOML is present but unusable.
+        OSError: If an explicitly requested user TOML is present but unusable.
+            A default-path read never raises for a bad user file, because
+            administrator policy must still apply.
     """
     is_default = config_path is None
     resolved_path = DEFAULT_CONFIG_PATH if config_path is None else config_path
@@ -932,7 +934,18 @@ def _load_effective_config_data(
         ProviderHealth.UNREADABLE,
     }:
         detail = sources.user.status.detail or sources.user.status.health.value
-        raise OSError(detail)
+        if not is_default:
+            raise OSError(detail)
+        # The user owns `config.toml`, so raising here would let anyone drop
+        # administrator policy by writing one invalid byte into their own
+        # file. Keep the managed layer, which parsed cleanly, and report the
+        # user-side problem instead of failing the whole read.
+        logger.warning(
+            "Ignoring unusable config file %s (%s); managed policy still applies",
+            resolved_path,
+            detail,
+        )
+        return dict(sources.managed.data), resolved_path
     data = sources.merged()[0] if is_default else sources.user.data
     return data, resolved_path
 
@@ -2689,10 +2702,13 @@ class ModelConfig:
             config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
 
         Returns:
-            Parsed `ModelConfig` instance.
-                Returns empty config if file is missing, unreadable, contains
-                invalid TOML syntax, or is structurally invalid (valid TOML of
-                the wrong shape, e.g. a scalar `[models]`).
+            Parsed `ModelConfig` instance. A user file that is missing,
+                unreadable, contains invalid TOML syntax, or is structurally
+                invalid (valid TOML of the wrong shape, e.g. a scalar
+                `[models]`) drops only the user layer: managed values still
+                apply on the default path. The result is empty only when
+                neither layer supplies values. An explicit `config_path` reads
+                that file alone, with no managed layer.
         """
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
@@ -2750,6 +2766,10 @@ class ModelConfig:
                 providers=models_section.get("providers", {}),
             )
         except (AttributeError, TypeError) as e:
+            # Syntactically valid TOML can still have the wrong shape (e.g. a
+            # scalar `[models]`). Treat it like any other unreadable config
+            # rather than letting it crash callers (e.g. the /auth modal on
+            # Ctrl+R) that assume load() is total and never raises.
             logger.warning(
                 "Config file %s is structurally invalid: %s. "
                 "Ignoring config file. Fix the file or delete it to reset.",
@@ -4458,6 +4478,11 @@ def load_mcp_server_trust_lists(
 
     Source resolution differs by list, matching each one's security direction:
 
+    - managed config (highest precedence): an administrator `[mcp]` table
+        outranks every source below. An explicit managed
+        `enabled_project_server_approvals` list replaces both the env-enabled
+        names and the user's remembered approvals. Managed denies union with
+        the rest.
     - `enabled` (permissive): the env var is an explicit process-wide name
         allowlist.
     - `approvals` (permissive): TOML approvals bind fixed remote URLs to one
@@ -4465,7 +4490,8 @@ def load_mcp_server_trust_lists(
         and interpolated remote URLs bind to an exact worktree. All include a
         server-definition fingerprint and remain active alongside env-enabled names,
         so setting the process-wide escape hatch does not discard choices remembered
-        by the interactive prompt.
+        by the interactive prompt. An explicit managed approvals list is the one
+        exception: it replaces both.
         Legacy flat TOML
         `enabled_project_servers` entries are ignored because they cannot be safely
         scoped.
@@ -4489,6 +4515,8 @@ def load_mcp_server_trust_lists(
             the file exists but cannot be read/parsed, when `[mcp]` is not a
             table, or when `disabled_project_servers` is a wrong type that cannot
             be read as a deny list; env-sourced names still apply in that case.
+            The same three conditions in the managed file set it too, because a
+            deny list an administrator set must never fail open.
     """
     is_default = config_path is None
     if config_path is None:
@@ -4512,6 +4540,8 @@ def load_mcp_server_trust_lists(
         ProviderHealth.UNREADABLE,
         ProviderHealth.CORRUPT,
     }:
+        # The file exists but is unreadable/unparseable. Record it so callers
+        # fail closed rather than silently proceeding with an empty deny list.
         read_error = (
             f"Could not read MCP trust lists from {config_path}: "
             f"{sources.user.status.detail or sources.user.status.health.value}"
@@ -4547,12 +4577,16 @@ def load_mcp_server_trust_lists(
                 config_path=config_path,
             )
             if disabled_malformed:
+                # A wrong-typed deny list cannot be read, so proceeding as if
+                # nothing were denied would be a fail-open.
                 read_error = (
                     f"[mcp].disabled_project_servers in {config_path} must be "
                     "a list of strings; refusing to proceed with an "
                     "unenforced deny list"
                 )
         else:
+            # An `[mcp]` value that is not a table means the deny list is
+            # unreadable too; fail closed rather than leave it unenforced.
             read_error = (
                 f"[mcp] in {config_path} must be a table, got "
                 f"{type(mcp_section).__name__}"
@@ -4587,14 +4621,36 @@ def load_mcp_server_trust_lists(
                 if isinstance(raw_managed_approvals, list):
                     managed_approvals_explicit = True
                     toml_approvals = parsed_approvals
-            managed_disabled, _ = _toml_str_list(
+            managed_disabled, managed_malformed = _toml_str_list(
                 managed_mcp.get("disabled_project_servers"),
                 key="disabled_project_servers",
                 config_path=managed_status.path or config_path,
             )
+            if managed_malformed:
+                # A wrong-typed deny list cannot be read, so proceeding as if
+                # nothing were denied would be a fail-open. Administrator
+                # policy must fail closed at least as hard as user config.
+                read_error = (
+                    "[mcp].disabled_project_servers in "
+                    f"{managed_status.path or config_path} must be a list of "
+                    "strings; refusing to proceed with an unenforced managed "
+                    "deny list"
+                )
+                logger.warning(
+                    "Malformed [mcp].disabled_project_servers in managed config "
+                    "%s; treating project configs as untrusted",
+                    managed_status.path or config_path,
+                )
         elif managed_mcp is not None:
+            # An `[mcp]` value that is not a table means the managed deny list
+            # is unreadable too; fail closed rather than leave it unenforced.
+            read_error = (
+                f"[mcp] in managed config {managed_status.path or config_path} "
+                f"must be a table, got {type(managed_mcp).__name__}"
+            )
             logger.warning(
-                "[mcp] in managed config should be a table, got %s; ignoring it",
+                "[mcp] in managed config should be a table, got %s; treating "
+                "project configs as untrusted",
                 type(managed_mcp).__name__,
             )
 

@@ -30,7 +30,7 @@ def _program_data_from_registry() -> str | None:
 
 
 def _windows_program_data(environ: Mapping[str, str] | None) -> str:
-    r"""Resolve the real ProgramData directory without trusting process env vars.
+    r"""Resolve the real ProgramData directory, ignoring process env vars.
 
     `%ProgramData%` can be redefined by any unprivileged user in their own
     shell, which would redirect the managed-config lookup to a user-controlled
@@ -54,7 +54,18 @@ def _windows_program_data(environ: Mapping[str, str] | None) -> str:
 def managed_config_path(
     *, platform: str | None = None, environ: Mapping[str, str] | None = None
 ) -> Path:
-    """Return the fixed managed-config path for the current operating system."""
+    """Return the fixed managed-config path for the current operating system.
+
+    Args:
+        platform: Override the detected platform; intended for tests.
+        environ: Test-only injection point for the Windows branch. Production
+            passes `None` so the ProgramData directory comes from the
+            registry. Passing a real environment restores the redirection this
+            module exists to prevent.
+
+    Returns:
+        The managed-config path for the platform.
+    """
     active_platform = sys.platform if platform is None else platform
     if active_platform == "darwin":
         return Path("/Library/Application Support/dcode/managed_config.toml")

@@ -586,7 +586,9 @@ def _load_user_themes(
             config_path,
             sources.user.status.detail or sources.user.status.health.value,
         )
-        return
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
     data, _ = sources.merged()
     themes_section: Any = data.get("themes")
     if not isinstance(themes_section, dict) or not themes_section:

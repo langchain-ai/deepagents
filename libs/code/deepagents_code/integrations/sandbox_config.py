@@ -116,8 +116,9 @@ class SandboxConfig:
                 `~/.deepagents/config.toml`.
 
         Returns:
-            Parsed `SandboxConfig`. Returns an empty config if the file is
-                missing, unreadable, or contains invalid TOML.
+            Parsed `SandboxConfig`. A missing user file yields managed values
+                alone. An unreadable or invalid user file is reported through
+                `parse_error`, and managed values still apply.
         """
         is_default = config_path is None
         if config_path is None:
@@ -130,23 +131,27 @@ class SandboxConfig:
             user_path=config_path,
             include_managed=is_default,
         )
+        # A bad user file is reported through `parse_error` but must not
+        # discard administrator policy, which parsed cleanly on its own.
+        parse_error: str | None = None
         if sources.user.status.health is ProviderHealth.CORRUPT:
             detail = sources.user.status.detail or "unknown parse error"
             logger.warning(
-                "Config file %s has invalid TOML syntax: %s. Ignoring sandbox config.",
+                "Config file %s has invalid TOML syntax: %s. "
+                "Ignoring user sandbox config.",
                 config_path,
                 detail,
             )
-            return cls(parse_error=f"invalid TOML syntax: {detail}")
-        if sources.user.status.health is ProviderHealth.UNREADABLE:
+            parse_error = f"invalid TOML syntax: {detail}"
+        elif sources.user.status.health is ProviderHealth.UNREADABLE:
             detail = sources.user.status.detail or "unknown read error"
             logger.warning("Could not read config file %s: %s", config_path, detail)
-            return cls(parse_error=f"could not read config file: {detail}")
+            parse_error = f"could not read config file: {detail}"
         data, _ = sources.merged()
         section = data.get("sandboxes", {})
         if not isinstance(section, dict):
             logger.warning("[sandboxes] is not a table; ignoring sandbox config")
-            return cls(parse_error="[sandboxes] is not a table")
+            return cls(parse_error=parse_error or "[sandboxes] is not a table")
 
         providers = section.get("providers", {})
         if not isinstance(providers, dict):
@@ -158,6 +163,7 @@ class SandboxConfig:
         config = cls(
             default=section.get("default"),
             providers=_normalize_provider_configs(providers),
+            parse_error=parse_error,
         )
         config._validate()
         return config

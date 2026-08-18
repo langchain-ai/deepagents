@@ -2219,7 +2219,8 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
             "Could not read retries config from %s",
             sources.user.status.path,
         )
-        return None
+    # Managed policy parsed cleanly and must still apply, so keep going
+    # with the merged data (managed-only when the user file failed).
     data, _ = sources.merged()
     section = data.get("retries")
     if not isinstance(section, dict):
@@ -2427,7 +2428,8 @@ def _read_config_toml_skills_dirs() -> list[str] | None:
             "Could not read skills config from %s",
             sources.user.status.path,
         )
-        return None
+    # Managed policy parsed cleanly and must still apply, so keep going
+    # with the merged data (managed-only when the user file failed).
     data, _ = sources.merged()
     skills_section = data.get("skills", {})
     dirs = skills_section.get("extra_allowed_dirs")
@@ -2742,11 +2744,21 @@ class Settings:
             SHELL_ALLOW_LIST,
         )
         from deepagents_code.configuration.service import (
+            ManagedConfigError,
             get_managed_snapshot,
             invalidate_config_sources,
+            require_healthy_managed_config,
         )
 
         invalidate_config_sources()
+        # A managed file that breaks after startup must not silently drop
+        # policy for the rest of the session: keep the previous values, which
+        # were resolved while the file was still readable.
+        try:
+            require_healthy_managed_config()
+        except ManagedConfigError as exc:
+            logger.error("Keeping previous settings: %s", exc)  # noqa: TRY400
+            return dict(previous)
         managed_data = get_managed_snapshot().data
 
         try:

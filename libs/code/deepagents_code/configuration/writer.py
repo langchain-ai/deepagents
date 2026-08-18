@@ -31,7 +31,14 @@ def update_user_config(
     *,
     config_path: Path | None = None,
 ) -> WriteResult:
-    """Atomically mutate only the user config while preserving sibling tables.
+    """Serialize a read-modify-write of the user config and replace it atomically.
+
+    Args:
+        mutate: Edit applied to the table parsed inside the write lock. It must
+            edit that table in place and return whether anything changed;
+            overwriting it wholesale discards concurrent edits to sibling
+            tables, which is the hazard the shared lock exists to prevent.
+        config_path: Override the default config location; intended for tests.
 
     Returns:
         Transaction success, changed state, and safe error detail.

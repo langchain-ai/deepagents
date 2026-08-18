@@ -112,6 +112,21 @@ def merge_toml_tables(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Deep-merge TOML tables with higher-precedence leaf provenance.
 
+    Args:
+        lower: Lower-precedence table.
+        higher: Higher-precedence table, whose leaves win.
+        lower_source: Source label recorded for surviving `lower` leaves.
+        higher_source: Source label recorded for surviving `higher` leaves.
+        union_paths: Paths whose lists accumulate instead of being replaced.
+            Deny lists must union, because replacing one would be a fail-open.
+        lower_provenance: Provenance for `lower`, already scoped to `_path`.
+            Passing an unscoped mapping produces wrong provenance.
+        higher_leaf_is_valid: Optional check applied to a `higher` scalar
+            before it displaces a `lower` value. Return `False` to keep the
+            lower value, which stops a wrong-typed higher scalar from
+            discarding a valid lower subtree.
+        _path: Internal key path used by the recursion.
+
     Returns:
         Merged table and dotted leaf-to-source mapping.
     """
@@ -121,16 +136,21 @@ def merge_toml_tables(
         path = (*_path, key)
         dotted = ".".join(path)
         existing = merged.get(key)
-        # A higher scalar must replace a lower table that only holds scalars:
+        # A higher scalar must replace a lower table whatever the table holds:
         # keeping the table lets a shape-colliding lower entry (e.g. a user
         # `[threads.relative_time]` table against a managed
         # `relative_time = false`) defeat the higher value, after which typed
-        # readers reject the table and fall back to the built-in default. A
-        # lower table with nested tables still survives a wrong-typed higher
-        # scalar so valid lower subtrees are not discarded.
+        # readers reject the table and fall back to the built-in default.
+        # Nesting the table deeper must not restore that bypass, so depth is
+        # not consulted. When the caller supplies `higher_leaf_is_valid`, the
+        # replacement is gated on it below, which keeps a wrong-typed higher
+        # scalar from discarding valid lower subtrees. Without a validator
+        # there is no type information here, so only a table that holds no
+        # nested table is displaced.
         if (
             isinstance(existing, dict)
             and not isinstance(value, dict)
+            and higher_leaf_is_valid is None
             and not _overriding_table_is_scalar_only(existing)
         ):
             continue

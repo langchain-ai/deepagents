@@ -727,12 +727,20 @@ def _coerce_toml(
     elif kind is OptionKind.SHELL_LIST_DELEGATE:
         from deepagents_code.config import parse_shell_allow_list
 
+        # A TOML array is the natural spelling for this key, so it must honor
+        # the same `all`/`recommended` sentinels and the same "`all` cannot be
+        # combined" rule as the string form. Joining and reusing one parser
+        # keeps the two spellings from drifting apart.
+        text: str | None = None
         if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-            return list(raw)
-        if isinstance(raw, str):
+            text = ",".join(cast("list[str]", raw))
+        elif isinstance(raw, str):
+            text = raw
+        if text is not None:
             try:
-                return parse_shell_allow_list(raw)
-            except ValueError:
+                return parse_shell_allow_list(text)
+            except ValueError as exc:
+                logger.warning("Ignoring %s in %s: %s", label, source, exc)
                 return _INVALID
     # Any other (future) kind falls through to the warning below, so a missing
     # branch logs and falls back rather than passing a raw value through.
@@ -886,6 +894,8 @@ def resolve_scalar(
     if option.toml_keys:
         found, raw = _toml_lookup(toml_data, option.toml_keys)
         if option.kind is OptionKind.STRUCTURED and managed_found:
+            from deepagents_code.configuration.service import UNION_PATHS
+
             if found and isinstance(raw, dict) and isinstance(managed_raw, dict):
                 from deepagents_code.configuration.resolver import merge_toml_tables
 
@@ -894,12 +904,12 @@ def resolve_scalar(
                     managed_raw,
                     lower_source="config.toml",
                     higher_source="managed config",
+                    union_paths=UNION_PATHS,
                 )
                 return merged, "managed config + config.toml"
             if (
                 found
-                and option.key
-                in {"mcp.disabled_project_servers", "mcp.disabled_servers"}
+                and option.toml_keys in UNION_PATHS
                 and isinstance(raw, list)
                 and isinstance(managed_raw, list)
             ):
@@ -1842,8 +1852,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="shell.allow_list",
         group="Tools",
         summary=(
-            "Shell commands allowed without approval (comma-separated, or "
-            "'recommended'/'all')."
+            "Shell commands allowed without approval (comma-separated string "
+            "or TOML array, or 'recommended'/'all')."
         ),
         kind=OptionKind.SHELL_LIST_DELEGATE,
         env_var=_env_vars.SHELL_ALLOW_LIST,

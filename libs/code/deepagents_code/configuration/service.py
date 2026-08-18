@@ -20,12 +20,19 @@ from deepagents_code.configuration.types import (
 
 _MANAGED_RANK = 100
 _USER_RANK = 500
-_UNION_PATHS = frozenset(
+UNION_PATHS = frozenset(
     {
         ("mcp", "disabled_project_servers"),
         ("mcp", "disabled_servers"),
     }
 )
+"""Paths whose lists accumulate instead of being replaced.
+
+Deny lists must union across layers: replacing a managed deny list with a
+user one would be a fail-open. Every merge path must read this one set, so a
+third deny list cannot get union semantics in one place and replace in
+another.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,13 +43,22 @@ class ConfigSources:
     user: TomlSnapshot
 
     def merged(self) -> tuple[dict[str, Any], dict[str, str]]:
-        """Return a deep merge where managed leaves outrank user leaves."""
+        """Return a deep merge where managed leaves outrank user leaves.
+
+        Lists at `UNION_PATHS` accumulate instead of being replaced. A managed
+        scalar replaces a colliding user table whatever its depth, but only
+        when the value matches the type the manifest declares; a wrong-typed
+        managed value leaves the user value in place.
+
+        Returns:
+            Merged table and dotted leaf-to-source mapping.
+        """
         return merge_toml_tables(
             self.user.data,
             self.managed.data,
             lower_source="config.toml",
             higher_source="managed config",
-            union_paths=_UNION_PATHS,
+            union_paths=UNION_PATHS,
             higher_leaf_is_valid=_is_valid_managed_scalar,
         )
 

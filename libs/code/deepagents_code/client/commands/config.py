@@ -462,7 +462,9 @@ def _option_provenance(
     Returns:
         Effective or dotted leaf-to-source mapping.
     """
-    if option.redacted or option.kind.value != "structured":
+    from deepagents_code.config_manifest import OptionKind
+
+    if option.redacted or option.kind is not OptionKind.STRUCTURED:
         return {"effective": source}
     user_found, user_value = _nested_value(toml_data or {}, option.toml_keys)
     managed_found, managed_value = _nested_value(

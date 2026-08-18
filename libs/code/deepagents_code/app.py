@@ -1359,11 +1359,10 @@ def _load_theme_preference() -> str:
         if resolved is not None:
             return resolved
         logger.warning(
-            "Unknown theme '%s' in %s; falling back to default",
+            "Unknown theme '%s' in %s; falling through to config.toml",
             env_name,
             THEME,
         )
-        return theme.DEFAULT_THEME
     user = _resolve_theme(load_config_toml(), source="config.toml")
     return user[0] if user is not None else theme.DEFAULT_THEME
 

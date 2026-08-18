@@ -1,4 +1,4 @@
-# Close issues and PRs ten days after a maintainer applies `needs-response`,
+# Close issues and PRs ten days after a maintainer applies `waiting-on-author`,
 # unless the original author explicitly replies. The timeout is measured from
 # the latest label event, so unrelated activity never resets it. Maintainers
 # can therefore ask their question before or after applying the label.
@@ -8,13 +8,15 @@
 # replies (`pull_request_review_comment`), and submitted reviews
 # (`pull_request_review`). Pushing commits does not clear the label: a
 # maintainer must decide whether the change addressed their question.
+# Bot-authored items, draft PRs, and anything carrying `do-not-close` are
+# never closed.
 #
 # The follow-up workflow runs under `workflow_run` in the base-branch context,
 # which grants a write token for fork PRs. It validates the response against the
 # GitHub API before mutating a label; neither workflow checks out or executes PR
 # code.
 
-name: Needs Response
+name: Waiting On Author
 
 on:
   issue_comment:
@@ -38,9 +40,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Fork-origin comment and review events receive a read-only token, so they
-  # cannot remove a label directly. Store only the immutable response ID for
-  # the trusted `workflow_run` consumer; it re-fetches and verifies everything.
+  # This job always runs with the workflow's read-only token — fork-origin
+  # events could not be granted write anyway — so it cannot remove a label
+  # itself. It records only immutable identifiers for the trusted
+  # `workflow_run` consumer, which re-fetches and verifies everything.
   record-author-response:
     if: >-
       github.repository == 'langchain-ai/deepagents' &&
@@ -98,16 +101,18 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
+            const waitingOnAuthorLabel = 'waiting-on-author';
             const timeoutMs = 10 * 24 * 60 * 60 * 1000;
             const closeMessage =
               'This item has been automatically closed because we have not received a response from the original author. Please comment with any additional information if you would like us to reopen it.';
 
-            function latestNeedsResponseEvent(events) {
+            // Mirrored inline in waiting_on_author_reply.yml; keep both in step.
+            function findLatestLabelEvent(events, label) {
               return events
                 .filter(
                   (event) =>
                     event.event === 'labeled' &&
-                    event.label?.name === 'needs-response' &&
+                    event.label?.name === label &&
                     event.created_at,
                 )
                 .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
@@ -151,7 +156,7 @@ jobs:
               owner,
               repo,
               state: 'open',
-              labels: 'needs-response',
+              labels: waitingOnAuthorLabel,
               per_page: 100,
             });
 
@@ -180,11 +185,11 @@ jobs:
                 issue_number: item.number,
                 per_page: 100,
               });
-              const latestLabelEvent = latestNeedsResponseEvent(events);
+              const latestLabelEvent = findLatestLabelEvent(events, waitingOnAuthorLabel);
 
               if (!latestLabelEvent) {
                 core.warning(
-                  `No needs-response label event found for #${item.number}; leaving it open.`,
+                  `No ${waitingOnAuthorLabel} label event found for #${item.number}; leaving it open.`,
                 );
                 continue;
               }
@@ -204,7 +209,7 @@ jobs:
               ).data;
               if (
                 currentItem.state !== 'open' ||
-                !currentItem.labels.some((label) => label.name === 'needs-response') ||
+                !currentItem.labels.some((label) => label.name === waitingOnAuthorLabel) ||
                 currentItem.labels.some((label) => label.name === 'do-not-close')
               ) {
                 continue;
@@ -219,13 +224,13 @@ jobs:
                   per_page: 100,
                 },
               );
-              const currentLabelEvent = latestNeedsResponseEvent(currentEvents);
+              const currentLabelEvent = findLatestLabelEvent(currentEvents, waitingOnAuthorLabel);
 
               if (
                 !currentLabelEvent ||
                 currentLabelEvent.created_at !== latestLabelEvent.created_at
               ) {
-                console.log(`needs-response was reapplied to #${item.number}; skipping.`);
+                console.log(`${waitingOnAuthorLabel} was reapplied to #${item.number}; skipping.`);
                 continue;
               }
 
@@ -235,9 +240,11 @@ jobs:
                   owner,
                   repo,
                   issue_number: item.number,
-                  name: 'needs-response',
+                  name: waitingOnAuthorLabel,
                 });
-                console.log(`Removed needs-response from #${item.number} after an author reply.`);
+                console.log(
+                  `Removed ${waitingOnAuthorLabel} from #${item.number} after an author reply.`,
+                );
                 continue;
               }
 
@@ -247,8 +254,11 @@ jobs:
               // the label afterward. Re-fetch once at the mutation boundary and
               // treat any changed state (reply, close, relabel, do-not-close,
               // or a PR flipped to draft) as a signal to leave the item alone.
-              // A same-author `updated_at` bump can only mean new activity; a
-              // false positive just defers closure to the next scheduled run.
+              // `updated_at` moves on anyone's activity, not just the author's,
+              // so this is deliberately coarse: a false positive only defers
+              // closure to the next scheduled run. It is not a complete guard
+              // either — activity that leaves `updated_at` untouched (review-
+              // thread replies may not bump it) still slips through the window.
               const finalItem = (
                 await github.rest.issues.get({
                   owner,
@@ -259,7 +269,7 @@ jobs:
               if (
                 finalItem.state !== 'open' ||
                 finalItem.updated_at !== currentItem.updated_at ||
-                !finalItem.labels.some((label) => label.name === 'needs-response') ||
+                !finalItem.labels.some((label) => label.name === waitingOnAuthorLabel) ||
                 finalItem.labels.some((label) => label.name === 'do-not-close')
               ) {
                 console.log(`#${item.number} changed during the scan; skipping.`);

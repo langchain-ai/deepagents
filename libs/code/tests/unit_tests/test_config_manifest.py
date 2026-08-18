@@ -8,8 +8,9 @@ and that secret-flagged options are never rendered by value.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -39,6 +40,9 @@ from deepagents_code.config_manifest import (
     resolve_scalar,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` to avoid accidental
 # PyPI/DNS work. This module checks whether update settings came from the env,
@@ -111,6 +115,13 @@ def test_option_keys_unique() -> None:
     """Manifest keys must be unique so `config get` lookups are unambiguous."""
     keys = option_keys()
     assert len(keys) == len(set(keys))
+
+
+def test_cold_cache_warning_threshold_default() -> None:
+    """Cold-cache warning uses the material incremental-cost default."""
+    option = get_option("warnings.cold_cache_min_delta_usd")
+    assert option is not None
+    assert resolve_scalar(option, toml_data={}) == (0.50, "default")
 
 
 def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
@@ -3088,3 +3099,26 @@ def test_delegate_static_defaults_are_parseable() -> None:
             continue
         if opt.kind is OptionKind.PTC_DELEGATE:
             assert _parse_interpreter_ptc(opt.default) == opt.default
+
+
+def test_load_config_toml_tolerates_an_undecodable_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A mis-encoded config falls back to defaults instead of raising.
+
+    `UnicodeDecodeError` subclasses `ValueError`, so it is neither `OSError`
+    nor `TOMLDecodeError`. Without explicit handling, a config saved as UTF-16
+    raises out of every caller that reads an option.
+    """
+    from deepagents_code.config_manifest import load_config_toml
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(b"\xff\xfe[warnings]\n")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path)
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert load_config_toml() == {}
+
+    assert "using defaults" in caplog.text

@@ -117,6 +117,27 @@ Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
 as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
+DEBUG_COLD_CACHE = "DEEPAGENTS_CODE_DEBUG_COLD_CACHE"
+"""Force the cold prompt-cache warning modal on every interactive send.
+
+Set to a truthy value when launching the interactive TUI to make
+`_cold_cache_warning_for` synthesize a warning from the current model and
+context, bypassing the provider-policy, token-floor, cache-window, and
+cost-threshold gates as well as both session and persisted suppression. Lets
+the modal be exercised without waiting out a provider cache window.
+
+The flag is re-read on every send and nothing clears it, so the modal fires
+for the life of the process, not just once.
+
+When the active model has no documented cache policy, `debug_stand_in_policy`
+supplies an Anthropic-shaped placeholder. On a non-Anthropic model the modal
+will therefore cite Anthropic's retention window, and the dollar figures are
+illustrative rather than real estimates.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
 DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
 r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
 
@@ -282,6 +303,18 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LAUNCH_TERM_PROGRAM = "DEEPAGENTS_CODE_LAUNCH_TERM_PROGRAM"
+"""Internal sentinel recording the `TERM_PROGRAM` present when `dcode` started.
+
+Not user-facing. The resume hint echoes `TERM_PROGRAM` only when the launch
+environment supplied it (an inline `TERM_PROGRAM=x dcode`, a terminal's own
+export, or a shell alias), so the value set by a project or global `.env` file
+*after* launch must not leak in. The app itself never sets `TERM_PROGRAM`, so
+`cli_main` snapshotting the variable here at entry means a set sentinel always
+marks an explicit launch value; the update re-exec inherits it unchanged,
+which is correct because the relaunch runs the command the user typed.
 """
 
 LEGACY_ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"

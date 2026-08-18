@@ -66,6 +66,7 @@ from deepagents_code.tui.textual_adapter import (
     _handle_interrupt_cleanup,
     _interrupt_owned_tool_rows,
     _is_auto_mode_classifier_chunk,
+    _is_renderable_auto_mode_event,
     _is_summarization_chunk,
     _read_mentioned_file,
     _session_cost_pricing_ok,
@@ -1515,6 +1516,22 @@ class TestIsAutoModeClassifierChunk:
         assert _is_auto_mode_classifier_chunk(None) is False
         assert _is_auto_mode_classifier_chunk({}) is False
         assert _is_auto_mode_classifier_chunk({"lc_source": "summarization"}) is False
+
+
+class TestIsRenderableAutoModeEvent:
+    """Tests for standalone Auto control-state notice filtering."""
+
+    @pytest.mark.parametrize("event", ["fallback", "warning"])
+    def test_accepts_control_state_notice(self, event: str) -> None:
+        payload = {"type": "auto_mode", "event": event, "reason": "state changed"}
+
+        assert _is_renderable_auto_mode_event(payload, is_main_agent=True) is True
+
+    @pytest.mark.parametrize("event", ["denial", "unavailable"])
+    def test_rejects_tool_outcome_event(self, event: str) -> None:
+        payload = {"type": "auto_mode", "event": event, "reason": "tool was denied"}
+
+        assert _is_renderable_auto_mode_event(payload, is_main_agent=True) is False
 
 
 class TestFormatRubricEvent:

@@ -117,6 +117,9 @@ Zero or negative disables the suggestion.
 SESSION_COST_WARNING_THRESHOLD_USD_DEFAULT = 50.0
 """Default warning threshold in USD; zero or negative disables the warning."""
 
+COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT = 0.50
+"""Default incremental re-warm cost that triggers a cold-cache warning."""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -418,7 +421,12 @@ def load_config_toml() -> dict[str, Any]:
             return tomllib.load(f)
     except FileNotFoundError:
         return {}
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # `UnicodeDecodeError` is neither of the other two (it subclasses
+        # `ValueError`), but a file saved as UTF-16 or holding a stray byte is
+        # unreadable TOML in exactly the same way -- without it, a config that
+        # is merely mis-encoded raises out of every caller instead of falling
+        # back to defaults.
         # `exc_info=True` preserves the TOML line/column (or permission cause):
         # a corrupt file makes every option fall back to its default, so the
         # log must say *why*, not just that the read failed.
@@ -1552,6 +1560,31 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.cold_cache_min_delta_usd",
+        group="Warnings",
+        summary=(
+            "Warn before a cold prompt-cache turn whose estimated extra cost "
+            "reaches this amount (0 disables)."
+        ),
+        kind=OptionKind.FLOAT,
+        default=COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
+        toml_keys=("warnings", "cold_cache_min_delta_usd"),
+    ),
+    ConfigOption(
+        key="warnings.trusted_cache_endpoints",
+        group="Warnings",
+        summary=(
+            "Alternate endpoint hosts assumed to forward cache settings and "
+            "honor provider cache retention "
+            '(e.g. ["smith.langchain.com"]). Matched per exact host, so list '
+            "each subdomain you actually connect to; trusting a host trusts it "
+            "on every port. Bare hostnames or http(s) URLs; entries carrying a "
+            "user:password prefix or a non-default port are rejected."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("warnings", "trusted_cache_endpoints"),
+    ),
+    ConfigOption(
         key="warnings.session_cost_threshold_usd",
         group="Warnings",
         summary=(
@@ -1788,6 +1821,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.DEBUG_UPDATE,
     ),
     ConfigOption(
+        key="debug.cold_cache",
+        group="Debug",
+        summary=(
+            "Force the cold prompt-cache warning modal on every interactive "
+            "send, overriding suppression."
+        ),
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_COLD_CACHE,
+    ),
+    ConfigOption(
         key="debug.mcp_project_trust",
         group="Debug",
         summary="Force the project MCP approval prompt for manual UI testing.",
@@ -1820,6 +1864,10 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set by the self-update restart to carry the launched command name into
         # the re-exec'd process; never user-configured.
         _env_vars.INVOKED_AS,
+        # Launch-time snapshot of `TERM_PROGRAM` recorded by `cli_main` so the
+        # resume hint can distinguish an explicit launch value from a `.env`
+        # file that sets `TERM_PROGRAM` after launch; never user-configured.
+        _env_vars.LAUNCH_TERM_PROGRAM,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

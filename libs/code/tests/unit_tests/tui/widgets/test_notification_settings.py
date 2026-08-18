@@ -72,6 +72,11 @@ async def test_help_footer_documents_both_toggle_keys() -> None:
         assert "Esc close" in help_text
 
 
+def test_cold_cache_warning_is_listed() -> None:
+    """The advisory spend gate can be disabled from `/notifications`."""
+    assert any(key == "cold-cache" for key, _ in WARNING_TOGGLES)
+
+
 async def test_yolo_warning_is_toggleable() -> None:
     """Toggling the YOLO row round-trips the suppression key in `config.toml`.
 

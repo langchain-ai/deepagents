@@ -1830,6 +1830,160 @@ class TestRefocusClickSuppression:
         assert text_area._consume_refocus_click() is True
 
 
+class TestCursorHiddenWhileUnfocused:
+    """The chat input must never blink a cursor it cannot type into.
+
+    Textual's `TextArea._draw_cursor` ignores `has_focus` while blinking is on,
+    and mouse-down sets `_selecting`, so the matching mouse-up always restarts
+    the blink through `_end_mouse_selection`. Clicking the chat input while a
+    focus-trapping widget (e.g. the `edit_file` approval menu, which re-focuses
+    itself on blur) owns the keyboard therefore left a blinking cursor in a
+    field that could neither receive keystrokes nor be typed into.
+    """
+
+    async def test_click_while_approval_traps_focus_shows_no_cursor(self) -> None:
+        """Clicking the chat input under an `edit_file` approval draws no cursor."""
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        class _ApprovalApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {
+                        "name": "edit_file",
+                        "args": {
+                            "file_path": "main.py",
+                            "old_string": "a",
+                            "new_string": "b",
+                        },
+                    }
+                )
+                yield ChatInput(id="chat-input")
+
+        app = _ApprovalApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            menu = app.query_one(ApprovalMenu)
+            menu.focus()
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            # Relies on `pilot.click` pausing before each event, so the menu's
+            # deferred `on_blur` refocus lands before the mouse-up restarts the
+            # blink; the phantom cursor is settled by the time `click` returns.
+            await pilot.click(ChatTextArea)
+            await pilot.pause()
+
+            # Pin the precondition. Without this, a `pilot` that stopped
+            # interleaving would leave the input focused, `_watch_has_focus`
+            # would hide the cursor on the later refocus, and the assertion
+            # below would pass for a reason unrelated to the fix.
+            assert text_area.has_focus is False
+
+            assert app.focused is menu
+            assert text_area._draw_cursor is False
+            # `_draw_cursor` alone is a 50/50 read against a regression that
+            # leaves the timer running, since it is False for half of every
+            # blink cycle. The parked timer is the deterministic signal.
+            assert text_area.blink_timer._active.is_set() is False
+
+    async def test_click_without_focus_trap_shows_cursor(self) -> None:
+        """A normal click still focuses the input and blinks its cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("hello world")
+            app.set_focus(None)
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            await pilot.click(ChatTextArea, offset=(3, 0))
+            await pilot.pause()
+
+            assert text_area.has_focus is True
+            # Assert the blink timer is live rather than `_draw_cursor`. Once
+            # the timer is re-armed it toggles `_cursor_visible` every
+            # `cursor_blink` interval, so `_draw_cursor` oscillates and only
+            # reads True inside a visible half-cycle. The timer state is the
+            # stable property, and it is also the only thing that distinguishes
+            # a blinking cursor from one that came back frozen solid: unfocusing
+            # ran `_pause_blink` → `blink_timer.pause()`, and `_restart_blink` →
+            # `reset()` is what re-arms it on this path. Setting `_cursor_visible`
+            # by hand would not catch a frozen timer, because
+            # `_watch__cursor_visible` only refreshes the row and never touches
+            # the timer.
+            assert text_area.blink_timer._active.is_set() is True
+
+    async def test_keyboard_refocus_shows_cursor(self) -> None:
+        """Focusing without a click restores the cursor.
+
+        `_watch_has_focus` flips `has_focus` before calling `_restart_blink()`,
+        so the override sees the focused state and defers to Textual. If that
+        ordering ever inverts, the cursor would never come back on Tab focus.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            app.set_focus(None)
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            chat.focus_input()
+            await pilot.pause()
+
+            assert text_area.has_focus is True
+            # The blink timer, not `_draw_cursor` — see
+            # `test_click_without_focus_trap_shows_cursor` for why the drawn
+            # state oscillates once the timer is re-armed.
+            assert text_area.blink_timer._active.is_set() is True
+
+    async def test_unfocused_insert_with_blink_disabled_shows_no_cursor(self) -> None:
+        """The override stays correct when blinking is turned off.
+
+        `ChatInput.set_cursor_blink(blink=False)` takes `_draw_cursor` down the
+        `has_focus and not cursor_blink` branch, where stock `_restart_blink`
+        returns early. The override calls `_pause_blink` instead; that must not
+        change what is drawn in either focus state.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            chat.set_cursor_blink(blink=False)
+            app.set_focus(None)
+            await pilot.pause()
+
+            text_area.insert("pasted path")
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            chat.focus_input()
+            await pilot.pause()
+            assert text_area._draw_cursor is True
+
+    async def test_programmatic_insert_while_unfocused_shows_no_cursor(self) -> None:
+        """Text inserted into an unfocused input must not raise a cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            app.set_focus(None)
+            await pilot.pause()
+
+            text_area.insert("pasted path")
+            await pilot.pause()
+
+            assert text_area._draw_cursor is False
+            assert text_area.blink_timer._active.is_set() is False
+
+
 class TestHistoryBoundaryNavigation:
     """Test that history navigation only triggers at input boundaries."""
 

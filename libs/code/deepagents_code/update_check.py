@@ -1972,6 +1972,56 @@ def create_update_log_path() -> Path:
     return UPDATE_LOG_DIR / f"{stamp}-update.log"
 
 
+def create_update_log_file() -> Path | None:
+    """Create an empty update log file and return its path.
+
+    Callers that *advertise* the log to a user — "Update log: tail -f <path>" —
+    must use this rather than `create_update_log_path`, which only computes a
+    path. `perform_upgrade` refuses some upgrades before ever spawning an
+    installer (unknown or unsupported install method, `brew` missing from
+    `PATH`, the pre-release gate), and `_run_install_subprocess` degrades to
+    not persisting output when the log cannot be opened. In all of those cases
+    the path alone would name a file that never comes into existence, leaving
+    the user tailing an `ENOENT`.
+
+    Returns:
+        The created log path, or `None` if it could not be created — callers
+            should then omit the log hint rather than point at a missing file.
+    """
+    log_path = create_update_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch()
+    except OSError:
+        logger.warning(
+            "Could not create update log at %s; not advertising it",
+            log_path,
+            exc_info=True,
+        )
+        return None
+    return log_path
+
+
+def format_log_follow_command(log_path: Path | str) -> str:
+    """Return a copy-pasteable command for following a log file as it is written.
+
+    Args:
+        log_path: Log file to follow.
+
+    Returns:
+        A `tail -f` invocation on POSIX, or its PowerShell equivalent on
+            Windows, where `tail` is not available.
+    """
+    if sys.platform == "win32":
+        # PowerShell, the default Windows shell. Single-quote the literal path
+        # so `$`, `$()`, and backticks in it are not expanded, doubling any
+        # embedded quote as PowerShell requires. `-LiteralPath` additionally
+        # keeps `[`/`]` in a cache path from being read as wildcards.
+        quoted = str(log_path).replace("'", "''")
+        return f"Get-Content -Wait -LiteralPath '{quoted}'"
+    return f"tail -f {shlex.quote(str(log_path))}"
+
+
 async def _emit_progress(callback: UpgradeProgressCallback | None, line: str) -> None:
     """Send a progress line to *callback*, supporting sync or async callbacks."""
     if callback is None:

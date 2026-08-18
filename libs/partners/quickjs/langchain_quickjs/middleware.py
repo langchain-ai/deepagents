@@ -127,8 +127,17 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     Args:
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
-        timeout: Per-call wall-clock timeout in seconds. Applied to every
+        timeout: Per-call timeout in seconds. Applied to every
             `eval` on every context. Default 5.
+
+            !!! warning
+
+                This budget measures QuickJS VM execution time, not Python
+                wall-clock time. Time spent outside the VM (notably while
+                awaiting `tools.*` host calls which run as Python coroutines)
+                is not counted against it. A slow or blocking host call can
+                therefore stall an `eval` for longer than `timeout` seconds, so
+                do not rely on it to bound total wall-clock duration.
         max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.

@@ -2248,6 +2248,48 @@ class TestIssueReporters:
         issue_calls = [c for c in calls if c[0] == "api" and "/issues/101" in c[1]]
         assert len(issue_calls) == 1
 
+    def test_issue_author_lookups_respect_the_global_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unusually large closing-reference list cannot fan out unboundedly."""
+        head = self._repo(tmp_path)
+        monkeypatch.setattr(brn, "MAX_ISSUE_AUTHOR_LOOKUPS", 2)
+        calls: list[list[str]] = []
+        inner = _pr_handler(
+            "7",
+            json.dumps(
+                self._payload([{"number": 101}, {"number": 102}, {"number": 103}])
+            ),
+            {
+                (REPOSITORY, 101): "carol",
+                (REPOSITORY, 102): "dave",
+                (REPOSITORY, 103): "eve",
+            },
+        )
+
+        def recording(args: list[str]):
+            calls.append(args)
+            return inner(args)
+
+        monkeypatch.setattr(brn, "_run_gh", recording)
+        warnings: list[str] = []
+        result = brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings,
+        )
+        issue_calls = [call for call in calls if call[0] == "api" and "/issues/" in call[1]]
+        assert len(issue_calls) == 2
+        assert [reporter.login for reporter in result.issue_reporters] == ["carol", "dave"]
+        assert any(
+            "stopped after 2 closed-issue author lookups" in warning
+            and "Special thanks section is INCOMPLETE" in warning
+            for warning in warnings
+        )
+
     def test_failed_issue_lookups_are_reported_as_incomplete(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

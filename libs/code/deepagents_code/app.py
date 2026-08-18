@@ -15902,14 +15902,28 @@ class DeepAgentsApp(App):
                 before = f"~{format_token_count(tokens_before)}"
                 after = f"~{format_token_count(tokens_after)}"
 
-            # Message counts are derived purely from the absolute cutoffs into
-            # the ORIGINAL pre-seed `before_messages`, never from the post-run
+            # Message and turn counts are derived purely from the absolute cutoffs
+            # into the ORIGINAL pre-seed `before_messages`, never from the post-run
             # `new_state["messages"]`. The compact tool's own machinery (the seeded
             # tool call, its result, and the trailing model turn) lands at/after
             # `new_cutoff` in the post-run list, so slicing that list instead would
             # count those artifacts as kept conversation.
             messages_offloaded = max(0, new_cutoff - prior_cutoff)
             messages_kept = max(0, len(before_messages) - new_cutoff)
+            turns_offloaded = sum(
+                is_human_message(message) and not is_internal_message(message)
+                for message in before_messages[prior_cutoff:new_cutoff]
+            )
+            turns_kept = sum(
+                is_human_message(message) and not is_internal_message(message)
+                for message in before_messages[new_cutoff:]
+            )
+            offloaded_message_label = (
+                "message" if messages_offloaded == 1 else "messages"
+            )
+            kept_message_label = "message" if messages_kept == 1 else "messages"
+            offloaded_turn_label = "turn" if turns_offloaded == 1 else "turns"
+            kept_turn_label = "turn" if turns_kept == 1 else "turns"
             # Floored at zero: a summary can come out larger than the messages it
             # replaced, and in the reported branch `tokens_after` mixes an exact
             # provider total with an estimated delta. Neither should ever render as
@@ -15920,9 +15934,14 @@ class DeepAgentsApp(App):
                 else 0
             )
 
+            offloaded_counts = (
+                f"{messages_offloaded} older {offloaded_message_label} "
+                f"({turns_offloaded} conversation {offloaded_turn_label})"
+            )
             stats_line = (
-                f"{usage_label}: {before} → {after} tokens "
-                f"({pct}% decrease), {messages_kept} messages kept."
+                f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                f"{messages_kept} {kept_message_label} "
+                f"({turns_kept} conversation {kept_turn_label}) kept."
             )
             if archive_path:
                 from deepagents_code.offload import offload_storage_is_ephemeral
@@ -15940,8 +15959,8 @@ class DeepAgentsApp(App):
                 )
                 await self._mount_message(
                     AppMessage(
-                        f"Offloaded {messages_offloaded} older messages, "
-                        f"freeing up context window space.\n{stats_line}{caveat}",
+                        f"Offloaded {offloaded_counts}, freeing up context window "
+                        f"space.\n{stats_line}{caveat}",
                     ),
                 )
             else:
@@ -15951,8 +15970,8 @@ class DeepAgentsApp(App):
                 # separate warning immediately followed by a success line.
                 await self._mount_message(
                     ErrorMessage(
-                        f"Offloaded {messages_offloaded} older messages and "
-                        "freed context, but the conversation history could not "
+                        f"Offloaded {offloaded_counts} and freed context, but the "
+                        "conversation history could not "
                         "be saved to storage, so those messages are not "
                         f"recoverable. Check logs for details.\n{stats_line}",
                     )
@@ -22729,14 +22748,18 @@ class DeepAgentsApp(App):
             )
 
         def _messages() -> str:
-            # The store is cleared on every thread switch/reset, so its count is
+            # The store is cleared on every thread switch/reset, so its counts are
             # scoped to the current thread. Reads in-memory state only, keeping
             # the snapshot free of I/O.
             store = self._message_store
             total = store.total_count
-            if total == 0:
-                return "0"
-            return f"{total} ({store.visible_count} rendered)"
+            turns = store.turn_count
+            message_label = "message" if total == 1 else "messages"
+            turn_label = "turn" if turns == 1 else "turns"
+            return (
+                f"{total} {message_label} "
+                f"({store.visible_count} rendered), {turns} {turn_label}"
+            )
 
         def _log_path() -> str:
             path = installed_debug_log_path()

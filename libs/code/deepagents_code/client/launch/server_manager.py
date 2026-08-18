@@ -318,6 +318,7 @@ async def start_server_and_get_agent(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    trust_project_extensions: bool = False,
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
@@ -356,6 +357,7 @@ async def start_server_and_get_agent(
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
+        trust_project_extensions: Allow project extension execution.
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
@@ -409,6 +411,7 @@ async def start_server_and_get_agent(
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
         interactive=interactive,
+        trust_project_extensions=trust_project_extensions,
     )
     _apply_server_config(config)
 
@@ -492,6 +495,7 @@ async def server_session(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    trust_project_extensions: bool = False,
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
@@ -533,6 +537,7 @@ async def server_session(
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
+        trust_project_extensions: Allow project extension execution.
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
@@ -570,6 +575,7 @@ async def server_session(
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
             interactive=interactive,
             host=host,
             port=port,

@@ -928,14 +928,26 @@ def _parse_socials(pr_body: str) -> Socials:
     return Socials(twitter_match.group(1) if twitter_match else "", linkedin)
 
 
+class ClosedIssue(NamedTuple):
+    """A linked issue resolved to the repository it actually lives in.
+
+    `repository` is normally identical to the released repo, but a
+    `closingIssuesReferences` entry can point at another repository, and the
+    lookup and rendered link must target that one.
+    """
+
+    repository: str
+    number: int
+
+
 class IssueReporter(NamedTuple):
     """An issue author thanked in the Special thanks section.
 
-    `issues` holds closed-issue numbers, ascending and deduped.
+    `issues` holds the closed issues, deduped.
     """
 
     login: str
-    issues: list[int]
+    issues: list[ClosedIssue]
 
 
 class Contributors(NamedTuple):
@@ -993,7 +1005,7 @@ def collect_contributors(
     internal_users: set[str] = set()
     # Insertion order mirrors the newest-first commit walk, so reporters render
     # in the same order convention as community contributors.
-    reporters: dict[str, set[int]] = {}
+    reporters: dict[str, set[ClosedIssue]] = {}
     seen_prs: set[str] = set()
     failed_lookups = 0
     consecutive_failures = 0
@@ -1117,6 +1129,7 @@ def collect_contributors(
         contributors.pop(user, None)
         reporters.pop(user, None)
 
+    # NamedTuples compare element-wise, so this sorts by repository then number.
     issue_reporters = [
         IssueReporter(login, sorted(issues)) for login, issues in reporters.items()
     ]
@@ -1129,7 +1142,7 @@ def _collect_issue_reporters(
     pr_num: str,
     pr_data: dict,
     repository: str,
-    reporters: dict[str, set[int]],
+    reporters: dict[str, set[ClosedIssue]],
     warnings: list[str],
 ) -> None:
     """Fold a PR's closed-issue authors into *reporters*.
@@ -1165,20 +1178,18 @@ def _collect_issue_reporters(
     for issue in issues:
         if not isinstance(issue, dict):
             continue
-        number = issue.get("number")
-        if not isinstance(number, int):
-            warnings.append(
-                f"contributor lookup: PR #{pr_num} closes an issue with no"
-                " usable number; reporter will not appear in release notes"
-            )
+        closed = _resolve_closed_issue(issue, repository, pr_num, warnings)
+        if closed is None:
             continue
         login, error = _gh_api(
-            f"/repos/{repository}/issues/{number}", jq=".user.login // empty"
+            f"/repos/{closed.repository}/issues/{closed.number}",
+            jq=".user.login // empty",
         )
         if error:
             warnings.append(
-                f"contributor lookup: issue #{number} author lookup failed"
-                f" ({error}); reporter will not appear in release notes"
+                f"contributor lookup: issue {closed.repository}#{closed.number}"
+                f" author lookup failed ({error}); reporter will not appear in"
+                " release notes"
             )
             continue
         if not login:
@@ -1189,7 +1200,48 @@ def _collect_issue_reporters(
             continue
         if login.endswith("[bot]"):
             continue
-        reporters.setdefault(login, set()).add(number)
+        reporters.setdefault(login, set()).add(closed)
+
+
+def _resolve_closed_issue(
+    issue: dict, default_repo: str, pr_num: str, warnings: list[str]
+) -> ClosedIssue | None:
+    """Resolve one `closingIssuesReferences` entry to its repository and number.
+
+    A closing reference can belong to another repository (a PR here closing an
+    issue filed against another LangChain repo), so the released repo is only
+    the fallback: the reference's own `repository.nameWithOwner` is
+    authoritative, with its `url` as backup when the repository object is
+    missing or malformed.
+    """
+    number = issue.get("number")
+    if not isinstance(number, int):
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} closes an issue with no"
+            " usable number; reporter will not appear in release notes"
+        )
+        return None
+
+    issue_repo = issue.get("repository")
+    if issue_repo is None:
+        # A present-but-null repository field is the one shape that falls
+        # through the URL parse below unnoticed, so it gets its own warning.
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} closes issue #{number} with no"
+            f" repository field; assuming {default_repo}"
+        )
+    repo = issue_repo.get("nameWithOwner") if isinstance(issue_repo, dict) else None
+    if not repo:
+        # The URL carries `/{owner}/{name}/issues/{number}`, so it identifies
+        # the owning repository even when the repository object does not.
+        url = issue.get("url")
+        match = (
+            re.search(r"github\.com/([^/]+/[^/]+)/issues/", url)
+            if isinstance(url, str)
+            else None
+        )
+        repo = match.group(1) if match else default_repo
+    return ClosedIssue(repo, number)
 
 
 def _merged_by(repository: str, pr_num: str, warnings: list[str]) -> str:
@@ -1297,10 +1349,16 @@ def _build_contributor_entry(contributor: Contributor) -> str:
 
 def _build_reporter_entry(reporter: IssueReporter, repository: str) -> str:
     """Format a single issue-reporter entry with links to their issues."""
-    links = ", ".join(
-        f"[#{n}](https://github.com/{repository}/issues/{n})" for n in reporter.issues
-    )
+    links = ", ".join(_build_issue_link(i, repository) for i in reporter.issues)
     return f"@{reporter.login} ({links})"
+
+
+def _build_issue_link(issue: ClosedIssue, default_repo: str) -> str:
+    """Link a closed issue, labeling it when it lives outside the released repo."""
+    url = f"https://github.com/{issue.repository}/issues/{issue.number}"
+    if issue.repository == default_repo:
+        return f"[#{issue.number}]({url})"
+    return f"[{issue.repository}#{issue.number}]({url})"
 
 
 def build_base_body(

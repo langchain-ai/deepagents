@@ -1496,6 +1496,32 @@ class TestGetSystemPromptModelIdentity:
         assert "may not be available" not in prompt
 
 
+class TestGetSystemPromptWebSearch:
+    """Tests for conditional web-search guidance."""
+
+    def test_omits_guidance_without_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = False
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" not in prompt
+        assert "{web_search_tool_guidance}" not in prompt
+
+    def test_includes_guidance_with_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = True
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" in prompt
+        assert "When you use the web_search tool:" in prompt
+
+
 class TestGetSystemPromptNonInteractive:
     """Tests for interactive vs non-interactive system prompt."""
 

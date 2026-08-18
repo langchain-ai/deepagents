@@ -8,6 +8,8 @@ version = "0.1.57"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
+authors = [{ name = "LangChain" }]
+maintainers = [{ name = "LangChain" }]
 requires-python = ">=3.12,<4.0"
 keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
@@ -151,8 +153,8 @@ deepagents-code = "deepagents_code:cli_main"
 dcode = "deepagents_code:cli_main"
 
 [project.urls]
-Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
-Documentation = "https://reference.langchain.com/python/deepagents/"
+Homepage = "https://www.langchain.com/dcode"
+Documentation = "https://docs.langchain.com/oss/deepagents/code/overview"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md"

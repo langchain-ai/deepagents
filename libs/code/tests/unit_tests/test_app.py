@@ -6877,6 +6877,10 @@ class TestTraceCommand:
             await pilot.pause()
             app._session_state = TextualSessionState()
 
+            # Clear the sibling tracing vars so the real helper reaches the
+            # canonical-env shadow branch deterministically.
+            for var in ("LANGCHAIN_API_KEY", "DEEPAGENTS_CODE_LANGCHAIN_API_KEY"):
+                monkeypatch.delenv(var, raising=False)
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "")
             monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
 

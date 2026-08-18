@@ -25,6 +25,7 @@ def test_project_dotenv_loads_api_key_but_ignores_endpoint(
     )
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
     monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", tmp_path / "missing")
 
     assert _load_dotenv(start_path=project)
@@ -80,6 +81,7 @@ def test_global_dotenv_can_set_endpoint_after_project_endpoint_is_ignored(
     global_dotenv = tmp_path / "global.env"
     global_dotenv.write_text("LANGSMITH_ENDPOINT=https://global.example\n")
     monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
     monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", global_dotenv)
 
     _load_dotenv(start_path=project)

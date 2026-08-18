@@ -544,6 +544,7 @@ def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Pat
             "LANGSMITH_TENANT_ID": "tenant",
             "LANGSMITH_ORGANIZATION_ID": "org",
             "LANGSMITH_USER_ID": "user",
+            "LANGCHAIN_API_KEY": "legacy-langsmith-key",
             "OPENAI_API_KEY": "openai-key",
             "ANTHROPIC_API_KEY": "anthropic-key",
             "FLEET_OAUTH_ACCESS_TOKEN": "oauth-token",
@@ -555,11 +556,12 @@ def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Pat
     backend = cast("LocalShellBackend", runtime.backend)
 
     result = backend.execute(
-        "printf '<%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s>' "
+        "printf '<%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s>' "
         '"$LANGSMITH_API_KEY" '
         '"$LANGSMITH_TENANT_ID" '
         '"$LANGSMITH_ORGANIZATION_ID" '
         '"$LANGSMITH_USER_ID" '
+        '"$LANGCHAIN_API_KEY" '
         '"$OPENAI_API_KEY" '
         '"$ANTHROPIC_API_KEY" '
         '"$FLEET_OAUTH_ACCESS_TOKEN" '
@@ -570,7 +572,7 @@ def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Pat
     )
 
     assert result.exit_code == 0
-    assert result.output == "<><><><><><><><><><><>"
+    assert result.output == "<><><><><><><><><><><><>"
 
 
 def test_runtime_default_backend_hardens_shell_env(tmp_path: Path) -> None:

@@ -125,8 +125,9 @@ class RemoteAgent:
             graph_name: Name of the graph on the server.
             api_key: API key for authenticated deployments.
 
-                When `None`, `RemoteGraph` auto-reads `LANGGRAPH_API_KEY` or
-                `LANGSMITH_API_KEY` from the environment.
+                When `None`, `RemoteGraph` auto-reads `LANGGRAPH_API_KEY`,
+                `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY` from
+                the environment.
             headers: Extra HTTP headers to include in every request
                 (e.g. bearer tokens, proxy headers).
         """

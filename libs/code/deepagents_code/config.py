@@ -75,9 +75,9 @@ class _BootstrapState:
     )
     """Caller's tracing API keys before Deep Agents Code overwrites them.
 
-    Two bootstrap steps can overwrite the canonical `LANGSMITH_API_KEY`: the
-    `DEEPAGENTS_CODE_`-prefixed override and the `/auth`-stored key bridged on by
-    `apply_stored_langsmith_auth`. Both run
+    Two bootstrap steps can overwrite the canonical `LANGSMITH_API_KEY` (and
+    its `LANGCHAIN_API_KEY` alias): the `DEEPAGENTS_CODE_`-prefixed override and
+    the `/auth`-stored key bridged on by `apply_stored_langsmith_auth`. Both run
     after this snapshot is captured. Without saving the originals, shell
     subprocesses inherit the agent's session key and the caller's own value is
     irrecoverable in-process. This mirrors the save/restore pattern used for
@@ -449,13 +449,18 @@ def _load_dotenv(
     return loaded
 
 
-_TRACING_ENABLE_ENV_VARS = ("LANGSMITH_TRACING",)
+_TRACING_ENABLE_ENV_VARS = (
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING_V2",
+    "LANGSMITH_TRACING",
+    "LANGCHAIN_TRACING",
+)
 """Env vars LangChain/LangSmith read to decide whether tracing is enabled."""
 
-_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY",)
+_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Env vars that hold the LangSmith API key used for trace ingestion."""
 
-_TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT",)
+_TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
 
 LANGSMITH_US_ENDPOINT = "https://api.smith.langchain.com"
@@ -885,8 +890,8 @@ def _disable_orphaned_tracing() -> None:
     at the atexit flush). When a tracing flag is set but no credentials are
     resolvable, unset the flags so tracing never starts.
 
-    A custom endpoint (`LANGSMITH_ENDPOINT` or a profile `api_url`) or replica
-    endpoints (`LANGSMITH_RUNS_ENDPOINTS`/
+    A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`, or a profile
+    `api_url`) or replica endpoints (`LANGSMITH_RUNS_ENDPOINTS`/
     `LANGCHAIN_RUNS_ENDPOINTS`) signal tracing can upload without a top-level
     API key, so those explicitly configured targets are trusted and left alone.
     The SDK loggers are quieted separately by `_quiet_sdk_logging`, so
@@ -1071,9 +1076,17 @@ def _stored_langsmith_key_is_suppressed(stored_key: str) -> bool:
 def _apply_stored_langsmith_endpoint(endpoint: str | None, *, replace: bool) -> None:
     """Apply a `/auth`-stored LangSmith endpoint to `LANGSMITH_ENDPOINT`.
 
-    A replacement from the immediate `/auth` save path overwrites the current
-    value, while startup preserves an explicitly configured environment endpoint.
-    A stored credential without an endpoint never clears an existing value.
+    Writes a stored endpoint to the canonical `LANGSMITH_ENDPOINT` and clears the
+    `LANGCHAIN_ENDPOINT` alternate so the SDK can't read a stale value through it.
+    Precedence mirrors the stored project:
+
+    - `replace` (the immediate `/auth` save): the stored endpoint replaces the
+        current value, and a blank endpoint (the US default) clears both names so
+        ingestion falls back to the LangSmith SaaS default.
+    - Startup (`replace=False`): a non-empty `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`
+        already in the environment stays authoritative, so a stored endpoint is
+        applied only when neither is set. A stored credential without an endpoint
+        never clears an existing env value (self-hosted setups keep working).
 
     Like a stored key, a stored endpoint is trusted by *presence*, not
     reachability: this never connects to it. A wrong-but-well-formed endpoint (a
@@ -1087,14 +1100,23 @@ def _apply_stored_langsmith_endpoint(endpoint: str | None, *, replace: bool) -> 
         replace: Whether the stored value should overwrite the current
             environment (the immediate `/auth` save path).
     """
+    canonical, alternate = _TRACING_ENDPOINT_ENV_VARS
     if replace:
         if endpoint:
-            os.environ["LANGSMITH_ENDPOINT"] = endpoint
+            os.environ[canonical] = endpoint
         else:
-            os.environ.pop("LANGSMITH_ENDPOINT", None)
+            os.environ.pop(canonical, None)
+        os.environ.pop(alternate, None)
         return
-    if endpoint and not os.environ.get("LANGSMITH_ENDPOINT"):
-        os.environ["LANGSMITH_ENDPOINT"] = endpoint
+    if not endpoint:
+        return
+    if any(os.environ.get(var) for var in _TRACING_ENDPOINT_ENV_VARS):
+        return
+    os.environ[canonical] = endpoint
+    # Past the guard above both endpoint vars are falsy, so this only clears an
+    # empty-string `LANGCHAIN_ENDPOINT`; it keeps canonical as the one name the
+    # SDK reads and mirrors the `replace` branch's alternate-clearing.
+    os.environ.pop(alternate, None)
 
 
 def _ensure_bootstrap() -> None:
@@ -1168,7 +1190,12 @@ def _ensure_bootstrap() -> None:
 
             suppress_override_warning = is_env_truthy(SUPPRESS_ENV_OVERRIDE_WARNING)
 
-            for canonical in ("LANGSMITH_API_KEY", "LANGSMITH_TRACING"):
+            for canonical in (
+                "LANGSMITH_API_KEY",
+                "LANGCHAIN_API_KEY",
+                "LANGSMITH_TRACING",
+                "LANGCHAIN_TRACING_V2",
+            ):
                 prefixed = f"{_ENV_PREFIX}{canonical}"
                 if prefixed not in os.environ:
                     continue
@@ -3315,8 +3342,12 @@ def get_langsmith_project_name() -> str | None:
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
     from deepagents_code.model_config import resolve_env_var
 
-    langsmith_key = resolve_env_var("LANGSMITH_API_KEY")
-    langsmith_tracing = resolve_env_var("LANGSMITH_TRACING")
+    langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
+        "LANGCHAIN_API_KEY"
+    )
+    langsmith_tracing = resolve_env_var("LANGSMITH_TRACING") or resolve_env_var(
+        "LANGCHAIN_TRACING_V2"
+    )
     if not (langsmith_key and langsmith_tracing):
         return None
 
@@ -3360,9 +3391,9 @@ def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
     `/auth`.
 
     Only an override that actually gates the *effective* key is reported. If a
-    key already resolves under the normal `LANGSMITH_API_KEY` lookup, tracing is
-    off for some other reason (a missing tracing flag), no override is to blame,
-    and nothing is reported.
+    key already resolves under the normal `LANGSMITH_API_KEY`-before-
+    `LANGCHAIN_API_KEY` precedence, tracing is off for some other reason (a
+    missing tracing flag), no override is to blame, and nothing is reported.
     Otherwise each override is checked against the specific key it suppresses, so
     the returned name is one that, once unset, actually lets a key resolve: its
     canonical variant carries a value, or -- for `LANGSMITH_API_KEY`, the var
@@ -3380,7 +3411,7 @@ def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
         resolved_env_var_name,
     )
 
-    if resolve_env_var("LANGSMITH_API_KEY"):
+    if resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY"):
         # A key already resolves (matching `get_langsmith_project_name`'s key
         # precedence), so no empty override is what's keeping tracing off, and
         # unsetting one would change nothing. Defer to the generic hint.
@@ -3652,7 +3683,10 @@ def configure_langsmith_secret_redaction() -> bool:
         from langsmith import Client, configure
         from langsmith.anonymizer import create_secret_anonymizer
 
-        api_key = _resolve_env_var_from(env, "LANGSMITH_API_KEY")
+        api_key = _resolve_env_var_from(
+            env,
+            "LANGSMITH_API_KEY",
+        ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
         api_url = _tracing_endpoint_from(env)
         kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
         if api_key:
@@ -3786,7 +3820,7 @@ def _get_first_langsmith_replica_project(extras: list[str]) -> str | None:
     return extras[0]
 
 
-_TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING",)
+_TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
 """Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
 
 `dcode doctor` runs before `_ensure_bootstrap` bridges these to their canonical
@@ -4220,7 +4254,9 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
 
             # Explicit api_key because Client() reads os.environ directly
             # and doesn't know about the DEEPAGENTS_CODE_ prefix.
-            api_key = resolve_env_var("LANGSMITH_API_KEY")
+            api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
+                "LANGCHAIN_API_KEY"
+            )
             project = Client(api_key=api_key).read_project(project_name=project_name)
             result = project.url or None
         except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable

@@ -61,12 +61,14 @@ class TestResolveLangsmithApiKey:
     def test_returns_none_when_no_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
         monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
         assert resolve_langsmith_api_key() is None
 
     def test_ignores_sandbox_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # LANGSMITH_SANDBOX_API_KEY is intentionally NOT used; LANGSMITH_API_KEY wins.
         monkeypatch.setenv("LANGSMITH_SANDBOX_API_KEY", "sandbox-key")
         monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
         value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
         assert value == "ls-key"
         assert name == "LANGSMITH_API_KEY"
@@ -74,13 +76,26 @@ class TestResolveLangsmithApiKey:
     def test_falls_back_to_langsmith_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
         monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
         value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
         assert value == "ls-key"
         assert name == "LANGSMITH_API_KEY"
 
+    def test_falls_back_to_langchain_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
+        value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
+        assert value == "lc-key"
+        assert name == "LANGCHAIN_API_KEY"
+
     def test_skips_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LANGSMITH_API_KEY", "")
-        assert resolve_langsmith_api_key() is None
+        monkeypatch.setenv("LANGSMITH_SANDBOX_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+        value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
+        assert value == "ls-key"
+        assert name == "LANGSMITH_API_KEY"
 
 
 class TestHeaders:
@@ -89,11 +104,13 @@ class TestHeaders:
     def test_returns_api_key_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
         assert _headers() == {"x-api-key": "test-key"}
 
     def test_raises_when_no_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
         monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
         with pytest.raises(ValueError, match="No LangSmith API key found"):
             _headers()
 

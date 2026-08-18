@@ -47,12 +47,21 @@ def pytest_configure(config: pytest.Config) -> None:
         "repl(*allowed): declare optional REPL backends allowed for a test/module; used with --repl quickjs",
     )
 
-    tracing_enabled = os.environ.get("LANGSMITH_TRACING", "").lower() == "true"
+    tracing_enabled = any(
+        os.environ.get(var, "").lower() == "true"
+        for var in (
+            "LANGSMITH_TRACING_V2",
+            "LANGCHAIN_TRACING_V2",
+            "LANGSMITH_TRACING",
+            "LANGCHAIN_TRACING",
+        )
+    )
     if not tracing_enabled:
         pytest.exit(
             "Aborting: LangSmith tracing is not enabled. "
             "All eval tests require LangSmith tracing. "
-            "Set LANGSMITH_TRACING to 'true' and ensure a valid "
+            "Set one of LANGSMITH_TRACING / LANGSMITH_TRACING_V2 / "
+            "LANGCHAIN_TRACING_V2 to 'true' and ensure a valid "
             "LANGSMITH_API_KEY is set, then re-run.",
             returncode=1,
         )

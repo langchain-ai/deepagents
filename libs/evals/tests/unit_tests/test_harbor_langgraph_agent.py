@@ -71,8 +71,9 @@ def _untraced(monkeypatch: pytest.MonkeyPatch) -> None:
     Invoking a LangChain tool starts a run, so a developer or runner with tracing
     configured in its environment would have these tests attempt real egress.
     """
-    monkeypatch.setenv("LANGSMITH_TRACING", "false")
-    for name in ("LANGSMITH_ENDPOINT", "LANGSMITH_API_KEY"):
+    for name in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"):
+        monkeypatch.setenv(name, "false")
+    for name in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT", "LANGSMITH_API_KEY"):
         monkeypatch.delenv(name, raising=False)
 
 

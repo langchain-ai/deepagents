@@ -107,6 +107,7 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
         eval_job.count("harbor_package_override: ${{ inputs.harbor_package_override }}")
         == 1
     )
+    assert "research_judge_models" not in workflow
 
     prep_job = _indented_block(workflow, "  prep:")
     assert "UNIFIED_CATEGORIES: ${{ inputs.categories }}" in prep_job
@@ -795,6 +796,48 @@ def test_credential_check_rejects_unsupported_model_providers() -> None:
         assert all(
             f"${key}" not in line and f"${{{key}}}" not in line for line in log_lines
         )
+
+
+def test_suite_judge_controls_research_credentials_and_fallback() -> None:
+    """Use the suite judge for research and resolve unsupported values before rollout."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    harbor_job = _indented_block(workflow, "  harbor:")
+
+    job_env = _indented_block(harbor_job, "    env:")
+    assert "HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}" in job_env
+    assert "HARBOR_DRBENCH_JUDGE: ${{ inputs.judge_models || 'gpt-5.6-luna' }}" in job_env
+
+    for marker in (
+        '      - name: "🔑 Verify sandbox credentials"',
+        '      - name: "⚓ Run Harbor"',
+    ):
+        step = _indented_block(harbor_job, marker)
+        step_env = _indented_block(step, "        env:")
+        key_line = next(
+            line for line in step_env.splitlines() if "OPENROUTER_API_KEY:" in line
+        )
+        assert "startsWith(inputs.judge_models, 'openrouter/')" in key_line
+        assert "secrets.OPENROUTER_API_KEY" in key_line
+
+    credentials = _indented_block(
+        harbor_job, '      - name: "🔑 Verify sandbox credentials"'
+    )
+    script = _step_script(credentials)
+    assert 'case "$HARBOR_DRBENCH_JUDGE" in' in script
+    assert "gpt-4o|gpt-4o-mini|gpt-5.6-luna)" in script
+    assert "openrouter/*)" in script
+    assert (
+        '[ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY")'
+        in script
+    )
+    assert (
+        '[[ ! "$HARBOR_DRBENCH_JUDGE" =~ '
+        "^openrouter/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+"
+        "(:[A-Za-z0-9._-]+)?$ ]]"
+        in script
+    )
+    assert "HARBOR_DRBENCH_JUDGE_EXPLICIT" not in script
+    assert "HARBOR_DRBENCH_JUDGE_RESOLVED=gpt-5.6-luna" in script
 
 
 def test_harbor_job_preserves_override_without_project_resync() -> None:

@@ -340,6 +340,33 @@ class TestCostDisplayCallbacks:
         assert app._session_cost_usd == pytest.approx(1.25)
         assert app._displayed_cost_usd == pytest.approx(1.25)
 
+    def test_cost_threshold_warns_once_per_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_config_toml",
+            lambda: {"warnings": {"session_cost_threshold_usd": 1.0}},
+        )
+        app = DeepAgentsApp()
+        notifications: list[str] = []
+        monkeypatch.setattr(
+            app,
+            "notify",
+            lambda message, **_: notifications.append(message),
+        )
+
+        app._set_session_cost(1.0)
+        app._set_session_cost(1.01)
+        app._set_session_cost(2.0)
+
+        assert len(notifications) == 1
+        assert "$1.01" in notifications[0]
+        assert "/offload" in notifications[0]
+        assert "/clear" in notifications[0]
+
+        app._reset_thread_usage(1.5)
+        assert len(notifications) == 2
+
     def test_streamed_estimate_shows_ahead_of_the_server_total(self) -> None:
         """Spend the graph has not reported yet still moves the display."""
         app = DeepAgentsApp()
@@ -576,13 +603,14 @@ class TestCostDisplayCallbacks:
 
         summary = app._format_cost_summary()
 
-        assert "Estimated thread cost: $0.42" in summary
-        assert "By type since this thread was loaded:" in summary
-        assert "Assistant: $0.32" in summary
-        assert "Offload: $0.10" in summary
-        assert "openai:gpt-5.5: $0.42" in summary
-        assert "claude-sonnet-4-6" not in summary
-        assert "detailed usage metadata was unavailable" not in summary
+        assert summary == (
+            "Estimated thread cost: $0.42\n\n"
+            "By type since this thread was loaded:\n"
+            "- Assistant: $0.32\n"
+            "- Offload: $0.10\n\n"
+            "By model since this thread was loaded:\n"
+            "- openai:gpt-5.5: $0.42"
+        )
 
     def test_cost_summary_warns_when_current_details_are_incomplete(self) -> None:
         """Checkpoint spend missing from streamed stats is called out."""
@@ -656,12 +684,17 @@ class TestCostDisplayCallbacks:
 
         summary = app._format_cost_summary()
 
-        assert "Estimated cost for priced requests: $0.00" in summary
-        assert "1 of 2 recorded requests is included." in summary
-        assert "example:unknown-model — 1 request" in summary
-        assert "The full thread cost may be higher." in summary
-        assert "example:free-model: $0.00" in summary
-        assert "The recorded request was priced at $0.00." not in summary
+        assert summary == (
+            "Estimated cost for priced requests: $0.00\n\n"
+            "1 of 2 recorded requests is included.\n\n"
+            "Pricing was unavailable for:\n"
+            "- example:unknown-model — 1 request\n"
+            "The full thread cost may be higher.\n\n"
+            "By type since this thread was loaded:\n"
+            "- Assistant: $0.00\n\n"
+            "By model since this thread was loaded:\n"
+            "- example:free-model: $0.00"
+        )
 
     @pytest.mark.parametrize(
         ("request_count", "expected"),

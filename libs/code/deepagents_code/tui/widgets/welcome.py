@@ -235,6 +235,7 @@ class WelcomeBanner(Static):
         self._show_cwd = is_env_truthy(SPLASH_SHOW_CWD)
         self._hide_cwd = is_env_truthy(HIDE_CWD)
         self._hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
+        self._version = __version__
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id = thread_id
         self._mcp_tool_count = mcp_tool_count
@@ -356,6 +357,21 @@ class WelcomeBanner(Static):
         if self._show_thread_id:
             self.update(self._build_banner())
 
+    def update_version(self, version: str) -> None:
+        """Track a new version and re-render when it is displayed.
+
+        The banner then advertises a version installed on disk rather than the
+        one this process is running, until the user relaunches.
+
+        Args:
+            version: The newly installed `deepagents-code` version.
+        """
+        # Tracked even when hidden, so the value stays truthful if the row is
+        # ever re-enabled — matching the other `update_*` methods above.
+        self._version = version
+        if not self._hide_version:
+            self.update(self._build_banner())
+
     def set_connected(
         self,
         mcp_tool_count: int = 0,
@@ -448,7 +464,7 @@ class WelcomeBanner(Static):
             ("dcode", "bold"),
         ]
         if not self._hide_version:
-            parts.append((f"  v{__version__}", "dim"))
+            parts.append((f"  v{self._version}", "dim"))
         if self._debug_enabled:
             parts.append(
                 (

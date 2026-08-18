@@ -18,7 +18,7 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from deepagents_code.tui.widgets.loading import Spinner
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence, Set as AbstractSet
+    from collections.abc import Callable, Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
     from textual.events import Key
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.model_config import _save_toml_field
 from deepagents_code.plugins import (
     add_marketplace_source,
     install_plugin,
@@ -41,6 +42,7 @@ from deepagents_code.plugins import (
     set_installed_plugin_enabled,
     uninstall_plugin,
 )
+from deepagents_code.plugins.discovery import plugin_auto_update_setting
 from deepagents_code.plugins.marketplace import MarketplaceError
 from deepagents_code.tui.modals.plugin_manager.content import (
     _confirm_marketplace_removal_options,
@@ -106,6 +108,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         "installed",
         "marketplaces",
         "errors",
+        "settings",
     )
 
     def __init__(
@@ -113,6 +116,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
         loaded_plugin_ids: AbstractSet[str] | None = None,
+        on_auto_update_enabled: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the plugin manager.
 
@@ -124,12 +128,14 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 Plugins whose enabled state differs from this set (enabled but
                 not loaded, or disabled but still loaded) are shown as pending
                 reload.
+            on_auto_update_enabled: Called after auto-update is enabled.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
         self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
         self._loaded_plugin_ids: frozenset[str] = frozenset(loaded_plugin_ids or ())
+        self._on_auto_update_enabled = on_auto_update_enabled
         self._state = _ManagerState((), (), (), ())
         self._status: str | None = None
         self._error: str | None = None
@@ -139,6 +145,8 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._marketplace_spinner = Spinner()
         self._marketplace_spinner_timer: Timer | None = None
         self._search_query = ""
+        self._auto_update_enabled = False
+        self._auto_update_source = "default"
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -317,6 +325,17 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                     )
                 )
             return options
+        if self._tab == "settings":
+            label = "enabled" if self._auto_update_enabled else "disabled"
+            env_override = self._auto_update_source.startswith("env (")
+            suffix = " (set by environment)" if env_override else ""
+            return [
+                Option(
+                    f"Auto-update plugins: {label}{suffix}",
+                    id="action:toggle-auto-update",
+                    disabled=env_override,
+                )
+            ]
         if not self._state.errors:
             return [Option("No plugin errors.", id="empty")]
         return [Option(Content(error), id="empty") for error in self._state.errors]
@@ -537,6 +556,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             _load_manager_state,
             self._mcp_server_info,
             loaded_plugin_ids=self._loaded_plugin_ids,
+        )
+        self._auto_update_enabled, self._auto_update_source = await asyncio.to_thread(
+            plugin_auto_update_setting
         )
         if self._selected_plugin is not None:
             refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
@@ -770,6 +792,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._status = None
             self._refresh_view()
             return
+        if option_id == "action:toggle-auto-update":
+            await self._toggle_auto_update()
+            return
         if option_id == "action:install":
             await self._install_selected_plugin()
             return
@@ -824,6 +849,23 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             None,
         )
 
+    async def _toggle_auto_update(self) -> None:
+        enabled = not self._auto_update_enabled
+        if not await asyncio.to_thread(
+            _save_toml_field, "plugins", "auto_update", enabled
+        ):
+            self._error = "Could not save the plugin auto-update setting."
+            self._status = None
+            self._refresh_view()
+            return
+        self._auto_update_enabled = enabled
+        self._auto_update_source = "config.toml"
+        self._status = f"Plugin auto-updates {'enabled' if enabled else 'disabled'}."
+        self._error = None
+        self._refresh_view()
+        if enabled and self._on_auto_update_enabled is not None:
+            self._on_auto_update_enabled()
+
     async def _install_selected_plugin(self) -> None:
         row = self._selected_plugin
         if row is None:
@@ -859,13 +901,14 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if row is None:
             return
         try:
+            await asyncio.to_thread(
+                set_installed_plugin_enabled, row.plugin_id, enabled=not row.enabled
+            )
             if row.enabled:
-                set_installed_plugin_enabled(row.plugin_id, enabled=False)
                 self._status = f"Disabled {row.label}. Run /reload to unload."
                 self._mode = "list"
                 self._selected_plugin = None
             else:
-                set_installed_plugin_enabled(row.plugin_id, enabled=True)
                 self._status = f"Enabled {row.label}. Run /reload to activate."
                 self._mode = "list"
                 self._tab = "installed"

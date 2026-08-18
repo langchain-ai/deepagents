@@ -13,7 +13,7 @@ import re
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -35,6 +35,7 @@ from deepagents.backends.sandbox import (
     _build_read_cmd,
     _check_preflight_result,
     _map_edit_error,
+    _parse_glob_output,
     _parse_grep_output,
     _parse_read_output,
 )
@@ -1723,7 +1724,7 @@ def test_glob_script_keeps_absolute_pattern_under_search_root(tmp_path: Path) ->
     output = _run_glob_script(workspace, "/src/*.py")
     records = [json.loads(line) for line in output.strip().split("\n") if line]
 
-    assert [record["path"] for record in records] == [str(Path("src") / "ok.py")]
+    assert [record["path"] for record in records] == [str(PurePosixPath("src") / "ok.py")]
     assert str(outside / "secret.py") not in output
 
 
@@ -1958,6 +1959,104 @@ def test_glob_empty_returns_empty_matches() -> None:
 
     assert result.error is None
     assert result.matches == []
+
+
+# -- glob output parsing: partial and malformed results ------------------------
+
+
+def test_glob_absolutizes_search_root_relative_paths() -> None:
+    """The script reports relative paths; `deny` rules only match absolute ones."""
+    resp = ExecuteResponse(output=json.dumps({"path": "sub/b.py", "is_dir": False}), exit_code=0)
+
+    result = _parse_glob_output(resp, "/workspace")
+
+    assert result.matches == [{"path": "/workspace/sub/b.py", "is_dir": False}]
+
+
+def test_glob_absolutizes_against_root_search_path() -> None:
+    """A `/` search root must not produce a doubled slash."""
+    resp = ExecuteResponse(output=json.dumps({"path": "a.py", "is_dir": False}), exit_code=0)
+
+    result = _parse_glob_output(resp, "/")
+
+    assert result.matches == [{"path": "/a.py", "is_dir": False}]
+
+
+def test_glob_propagates_transport_truncation() -> None:
+    """`ExecuteResponse.truncated` must reach `GlobResult`, or a clipped list reads as complete."""
+    resp = ExecuteResponse(
+        output=json.dumps({"path": "a.py", "is_dir": False}),
+        exit_code=0,
+        truncated=True,
+    )
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.truncated is True
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
+def test_glob_keeps_complete_matches_before_transport_clipped_line() -> None:
+    """A clipped final JSONL record must not discard its complete predecessors."""
+    resp = ExecuteResponse(
+        output='{"path": "a.py", "is_dir": false}\n{"path": "b.py", "is_d',
+        exit_code=0,
+        truncated=True,
+    )
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.error is None
+    assert result.truncated is True
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
+def test_glob_walk_warning_marks_result_truncated() -> None:
+    """A budget-exhausted or partial walk is valid but incomplete."""
+    lines = [
+        json.dumps({"path": "a.py", "is_dir": False}),
+        json.dumps({"warning": "truncated"}),
+    ]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.truncated is True
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        pytest.param("Traceback (most recent call last):\nRecursionError: boom", id="traceback"),
+        pytest.param("sh: 1: python3: not found", id="no_interpreter"),
+        pytest.param('{"path": "a.py", "is_dir": false}\n{"path": "b.py", "is_d', id="clipped_line"),
+        pytest.param("5", id="non_dict_json"),
+        pytest.param('{"is_dir": false}', id="missing_path"),
+    ],
+)
+def test_glob_unparseable_output_is_an_error_not_an_empty_search(output: str) -> None:
+    """Silently skipping unreadable lines turns any remote crash into "no files found".
+
+    `2>&1` merges stderr into stdout, so a traceback, a missing interpreter or a
+    transport-clipped line all arrive here as non-JSON.
+    """
+    resp = ExecuteResponse(output=output, exit_code=0)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "unexpected output" in result.error
+
+
+def test_glob_pattern_too_broad_is_distinct_from_traversal() -> None:
+    """Over-broad and rejected patterns need different codes to be actionable."""
+    too_broad = _parse_glob_output(ExecuteResponse(output=json.dumps({"error": "pattern_too_broad"}), exit_code=0), "/w")
+    traversal = _parse_glob_output(ExecuteResponse(output=json.dumps({"error": "invalid_pattern"}), exit_code=0), "/w")
+
+    assert too_broad.error == "Path '/w': pattern_too_broad"
+    assert traversal.error == "Path '/w': invalid_pattern"
 
 
 # -- _map_edit_error coverage for new codes -----------------------------------

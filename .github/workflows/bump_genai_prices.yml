@@ -16,13 +16,17 @@
 # monthly sweep does not race this workflow for the same lock entry.
 #
 # Notes:
-# - Only the lockfile moves: `uv lock --upgrade-package` re-resolves
-#   genai-prices within the range already declared in
-#   `libs/code/pyproject.toml`, so the manifest stays untouched. Staleness is
-#   defined as "`uv lock` moved the pin", never as "PyPI has something
+# - The lockfile and the manifest floor move together: `uv lock
+#   --upgrade-package` re-resolves genai-prices within the range declared in
+#   `libs/code/pyproject.toml`, then the manifest's `>=` floor is raised to
+#   the resolved version so fresh installs keep pace with the pin. Staleness
+#   is defined as "`uv lock` moved the pin", never as "PyPI has something
 #   newer" — otherwise a release above the declared ceiling (or a yanked or
 #   pre-release version uv correctly refuses) would fail this job every day
-#   forever with nothing a bump could fix.
+#   forever with nothing a bump could fix. The flip side — a release above
+#   the ceiling making every run a green no-op forever — is caught by a
+#   PyPI check that files a tracking issue when the newest release is one
+#   the manifest excludes.
 # - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
 #   files inside the managed `libs/code` package would make release-please
 #   open a separate `release(deepagents-code)` PR (multi-component fan-out).
@@ -72,7 +76,18 @@ jobs:
       # For the failure-tracking issue in the final step.
       issues: write
     steps:
+      # The clone is anonymous on purpose. The default `persist-credentials`
+      # would store the read-only `GITHUB_TOKEN` as an
+      # `http.https://github.com/.extraheader` credential, and git sends that
+      # `Authorization` header while ignoring the app token embedded in the
+      # push URL — git cannot send two `Authorization` headers, so the config
+      # credential wins and the push runs as `github-actions[bot]` with
+      # `contents: read` and is denied (403). The only write in this job
+      # authenticates explicitly with the app token below, so nothing is
+      # lost; the fetch path in the push step also uses that app-token URL.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
@@ -87,8 +102,9 @@ jobs:
 
           # Read the single genai-prices pin out of the lockfile. Kept as a
           # function because it is called on both sides of `uv lock`, and the
-          # post-lock read is what the commit message and PR body quote — so
-          # they can never claim a version the lockfile does not contain.
+          # post-lock read is what the commit message, PR title, and PR body
+          # quote — so they can never claim a version the lockfile does not
+          # contain.
           read_pin() {
             uv run --no-project python - <<'PY'
           import sys
@@ -123,39 +139,97 @@ jobs:
 
           latest=$(read_pin)
 
-          # `uv run` should keep progress output on stderr, but a polluted
-          # value here would silently poison the commit message and PR title,
-          # so reject anything that is not a bare version.
+          # Reject anything that is not a bare version before it is used:
+          # `read_pin` output also feeds the sed pattern below, where a
+          # polluted value would corrupt pyproject.toml. The post-lock check
+          # then guarantees sed and the PR title quote the version the
+          # lockfile actually contains.
           version_re='^[0-9]+(\.[0-9]+)*([a-z0-9.+-]*)$'
-          for value in "$locked" "$latest"; do
-            if [[ ! "$value" =~ $version_re ]]; then
-              echo "::error::Could not parse a genai-prices version from the lockfile (got '$value')"
-              exit 1
-            fi
-          done
+          if [[ ! "$latest" =~ $version_re ]]; then
+            echo "::error::Could not parse a genai-prices version from the lockfile (got '$latest')"
+            exit 1
+          fi
 
-          # Compare the two pins rather than diffing the lockfile: `uv lock`
-          # can touch unrelated lines (a lock revision bump, a re-resolved
-          # transitive), and a "bump genai-prices" PR that does not move
-          # genai-prices is worse than no PR. Nothing is lost by dropping a
-          # diff check here — if the pin moved, the lockfile necessarily
-          # changed, and an empty `git commit` in the push step would fail
-          # loudly anyway.
-          if [ "$locked" = "$latest" ]; then
+          # Raise the declared floor to the resolved version. Tracking the
+          # newest compatible release only works if the manifest's minimum
+          # keeps pace — otherwise older releases stay installable and the
+          # pin's protection against an outdated parser does not hold for
+          # fresh resolves. `.` and `+` are regex metacharacters that can
+          # appear in versions, so the substitution escapes them. The floor
+          # is read *before* the rewrite: a floor already behind the pin is
+          # itself stale (the rewrite would otherwise be silently discarded
+          # by the staleness check below whenever the lock pin did not move).
+          floor=$(sed -n -E 's/.*"genai-prices>=([0-9]+(\.[0-9]+)*([a-z0-9.+-]*)).*/\1/p' libs/code/pyproject.toml)
+          if [[ ! "$floor" =~ $version_re ]]; then
+            echo "::error::Could not parse the genai-prices floor from libs/code/pyproject.toml (got '$floor')"
+            exit 1
+          fi
+          escaped=$(printf '%s' "$latest" | sed 's/[.+]/\\&/g')
+          sed -i -E "s/\"genai-prices>=[0-9]+(\\.[0-9]+)*([a-z0-9.+-]*)/\"genai-prices>=$escaped/" libs/code/pyproject.toml
+
+          # Re-lock so the lockfile's recorded `requires-dist` specifier for
+          # genai-prices is rewritten to the floor just written above. The
+          # earlier `uv lock --upgrade-package` ran against the *old* floor, so
+          # it leaves the stale `>=<old>` specifier embedded in `uv.lock`, and
+          # `check_lockfiles` (`uv lock --check`) then fails the bump PR for an
+          # out-of-sync lockfile. A plain `uv lock` re-resolves only what the
+          # manifest change requires: the pin stays at $latest (already the
+          # newest the range permits) and only the specifier line moves.
+          uv lock --directory libs/code --python 3.12
+
+          # Staleness is the pin moving or the floor lagging the pin, not
+          # files changing: `uv lock` can touch unrelated lines (a lock
+          # revision bump, a re-resolved transitive), and a "bump
+          # genai-prices" PR that does not move genai-prices is worse than
+          # no PR. Nothing is lost by dropping a diff check here — if either
+          # moved, the lockfile or the manifest necessarily changed, and an
+          # empty `git commit` in the push step would fail loudly anyway.
+          if [ "$locked" = "$latest" ] && [ "$floor" = "$latest" ]; then
             stale=false
           else
             stale=true
+          fi
+
+          # Detect a release the manifest ceiling excludes. "Not stale" is
+          # ambiguous on its own — it means either "nothing newer exists" or
+          # "the newest release is above the declared ceiling", and the
+          # second case is silently permanent until someone raises the
+          # ceiling by hand. A newer-than-allowed PyPI release flips
+          # `capped` so a later step can file a tracking issue. Pre-release
+          # and dev versions are excluded to match the uv resolution above:
+          # uv refuses them by default, so one of them being newest on PyPI
+          # is not the ceiling's fault and must not file the issue.
+          pypi_latest=$(uv run --no-project --with packaging python - <<'PY'
+          import json
+          import urllib.request
+
+          from packaging.version import Version
+
+          with urllib.request.urlopen("https://pypi.org/pypi/genai-prices/json") as r:
+              data = json.load(r)
+          versions = [Version(v) for v, files in data["releases"].items() if files and not any(f.get("yanked") for f in files)]
+          stable = [v for v in versions if not v.is_prerelease and not v.is_devrelease]
+          print(max(stable))
+          PY
+          )
+          capped=false
+          if [ "$stale" = false ] && [ "$pypi_latest" != "$latest" ]; then
+            capped=true
           fi
 
           {
             echo "locked=$locked"
             echo "latest=$latest"
             echo "stale=$stale"
+            echo "capped=$capped"
+            echo "pypi_latest=$pypi_latest"
             echo "branch=chore/bump-genai-prices"
           } >> "$GITHUB_OUTPUT"
-          echo "Locked: $locked"
-          echo "Latest: $latest"
-          echo "Stale:  $stale"
+          echo "Locked:  $locked"
+          echo "Latest:  $latest"
+          echo "Stale:   $stale"
+          echo "PyPI:    $pypi_latest"
+          echo "Capped:  $capped"
 
       - name: Log if nothing to do
         # The actual skip is implemented by the `if:` guards on the steps that
@@ -189,7 +263,20 @@ jobs:
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+
+          # The push and PR calls authenticate as the Org Membership App
+          # installation, not `github-actions[bot]` (whose `GITHUB_TOKEN` is
+          # `contents: read` here and whose PRs would not trigger
+          # `pull_request` workflows). With checkout credentials no longer
+          # persisted, an empty app token would now degrade these to an
+          # anonymous 403; fail fast instead so the cause is obvious.
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
+            exit 1
+          fi
+
           lockfile="libs/code/uv.lock"
+          manifest="libs/code/pyproject.toml"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           # Scope to head branches in this repository: `gh pr list --head`
@@ -222,16 +309,16 @@ jobs:
 
             # `main` still carries the old pin while a bump PR is open, so
             # staleness alone would be true every day. Compare against what
-            # the branch already has: an identical lockfile means a
+            # the branch already has: identical manifest and lockfile mean a
             # force-push would only churn CI and dismiss approvals.
             # `git diff --quiet` exits 1 for "differs" but >1 for a real
             # error, so capture the code instead of branching on truthiness.
             set +e
-            git diff --quiet "refs/remotes/bump/${BRANCH}" -- "$lockfile"
+            git diff --quiet "refs/remotes/bump/${BRANCH}" -- "$lockfile" "$manifest"
             diff_rc=$?
             set -e
             if [ "$diff_rc" -gt 1 ]; then
-              echo "::error::git diff failed comparing $lockfile against $BRANCH (exit=$diff_rc)"
+              echo "::error::git diff failed comparing $lockfile and $manifest against $BRANCH (exit=$diff_rc)"
               exit 1
             fi
             if [ "$diff_rc" -eq 0 ]; then
@@ -252,7 +339,7 @@ jobs:
             git config --local user.name "github-actions[bot]"
             git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git checkout -b "$BRANCH"
-            git add "$lockfile"
+            git add "$lockfile" "$manifest"
             git commit -m "chore(deps): bump genai-prices in deepagents-code to $LATEST"
 
             # The bump branch is rebuilt on top of `main` every run, so there
@@ -271,10 +358,7 @@ jobs:
           fi
 
           body_file="$(mktemp)"
-          {
-            printf 'Bumps `genai-prices` in `libs/code/uv.lock` from `%s` to `%s` — the newest version permitted by the range declared in `libs/code/pyproject.toml`, which is unchanged — via `uv lock --upgrade-package genai-prices`.\n\n' "$LOCKED" "$LATEST"
-            printf 'Opened automatically by `bump_genai_prices.yml`. It runs daily because dcode fetches the genai-prices catalog at runtime, so the pinned package needs to stay new enough to parse a freshly fetched snapshot. If a newer compatible version lands before this PR merges, the next daily run force-pushes it onto this branch and rewrites this description.\n'
-          } > "$body_file"
+          printf 'Bumps `genai-prices` from `%s` to `%s`.\n\nOpened automatically by `bump_genai_prices.yml`.\n' "$LOCKED" "$LATEST" > "$body_file"
 
           title="chore(deps): bump genai-prices in deepagents-code to $LATEST"
 
@@ -294,6 +378,58 @@ jobs:
             echo "Opened genai-prices bump PR: $new_url"
             echo "::notice::Opened genai-prices bump PR: $new_url"
           fi
+
+      - name: File a tracking issue when the ceiling caps the bump
+        # A "not stale" green run is ambiguous: either nothing newer exists
+        # or the newest release sits above the declared ceiling and the
+        # bump can never move again. The second case is invisible without
+        # this — surface it exactly once, deduplicated by marker like the
+        # failure issue below. Not failure()-gated: a capped bump is a
+        # green run.
+        if: steps.versions.outputs.capped == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PYPI_LATEST: ${{ steps.versions.outputs.pypi_latest }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+        with:
+          script: |
+            const marker = '<!-- bump-genai-prices-capped -->';
+            const { owner, repo } = context.repo;
+            const pypiLatest = process.env.PYPI_LATEST;
+            const latest = process.env.LATEST;
+            const title = 'genai-prices bump is capped by the declared ceiling';
+            const body = [
+              marker,
+              `PyPI has genai-prices ${pypiLatest}, but the ceiling in \`libs/code/pyproject.toml\` caps the daily bump at ${latest}.`,
+              '',
+              'The bump cannot move again until the ceiling is raised. Review the upstream changelog for breaking changes, bump the ceiling, and close this issue.',
+              '',
+              'This issue is reused by later capped runs rather than duplicated.',
+            ].join('\n');
+
+            try {
+              const existing = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', per_page: 100 },
+              );
+              const found = existing.find(
+                i => !i.pull_request && (i.body ?? '').startsWith(marker),
+              );
+              if (found) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: found.number,
+                  body: `Still capped: PyPI has ${pypiLatest}, ceiling allows ${latest}.`,
+                });
+                core.info(`Commented on existing tracking issue #${found.number}.`);
+              } else {
+                const created = await github.rest.issues.create({ owner, repo, title, body });
+                core.info(`Filed tracking issue #${created.data.number}.`);
+              }
+            } catch (err) {
+              // A green capped run must not turn red because the report
+              // failed — the cap itself is the signal, not a CI failure.
+              core.warning(`Could not file the genai-prices ceiling tracking issue: ${err.message}`);
+            }
 
       - name: File a tracking issue on failure
         # Nobody watches a green cron, and nobody watches a red one either

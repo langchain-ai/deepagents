@@ -18,6 +18,7 @@ from deepagents_code.plugins.models import (
 logger = logging.getLogger(__name__)
 
 _MANIFEST_RELATIVE_PATHS = (
+    Path("plugin.json"),
     Path(".claude-plugin") / "plugin.json",
     Path(".codex-plugin") / "plugin.json",
 )
@@ -188,7 +189,7 @@ def _inline_hooks(value: object) -> JsonObject:
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
-    """Load a Claude/Codex plugin manifest.
+    """Load an Agent Plugins, Claude, or Codex plugin manifest.
 
     Args:
         root: Plugin root directory.
@@ -232,6 +233,9 @@ def load_manifest(
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
     display_name_value = raw.get("displayName")
+    auto_update_settings = raw.get("extensions")
+    if isinstance(auto_update_settings, dict):
+        auto_update_settings = auto_update_settings.get("com.langchain.deepagents.code")
     manifest = PluginManifest(
         name=name,
         version=version,
@@ -240,6 +244,10 @@ def load_manifest(
         inline_hooks=_inline_hooks(raw.get("hooks")),
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
+        ),
+        auto_update=(
+            isinstance(auto_update_settings, dict)
+            and auto_update_settings.get("autoUpdate") is True
         ),
     )
     return manifest, manifest_path, tuple(warnings)

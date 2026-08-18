@@ -1,7 +1,8 @@
 # Project Notes
 
-This file is for tracking project-specific context as you work.
-You can update this file to remember decisions, patterns, and context about this project.
+This file contains user-authored instructions and project context.
+Treat it as read-only during agent execution. Store learned decisions, patterns,
+and context in the appropriate user or project `MEMORY.md` file instead.
 
 ## Architecture Notes
 

@@ -4356,7 +4356,8 @@ def get_default_coding_instructions() -> str:
     """Get the default coding agent instructions.
 
     These are the immutable base instructions that cannot be modified by the agent.
-    Long-term memory (AGENTS.md) is handled separately by the middleware.
+    User instructions (AGENTS.md) and long-term memory (MEMORY.md) are handled
+    separately by the middleware.
 
     Returns:
         The default agent instructions as a string.

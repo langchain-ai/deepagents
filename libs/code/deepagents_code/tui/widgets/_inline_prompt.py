@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections import Counter
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from textual.containers import Horizontal
 from textual.content import Content
@@ -25,8 +25,6 @@ from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.tui.widgets._paste_textarea import CollapsingPasteTextArea
 
 logger = logging.getLogger(__name__)
-
-ResultT = TypeVar("ResultT")
 
 _UNSET: Any = object()
 
@@ -64,7 +62,7 @@ def _media_unsupported_toast(paths: list[Path]) -> str:
     return f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; {noun} not inserted: {listing}."
 
 
-class InlinePromptCompletion(Generic[ResultT]):
+class InlinePromptCompletion[ResultT]:
     """Resolve an inline prompt result at most once.
 
     `set_future` and `resolve` may be called in either order: a result

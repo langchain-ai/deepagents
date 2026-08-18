@@ -77,7 +77,6 @@ on:
           (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
-  PYTHON_VERSION: "3.11"
   UV_NO_SYNC: "true"
   UV_FROZEN: "true"
 
@@ -95,6 +94,7 @@ jobs:
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
+      python-version: ${{ steps.parse.outputs.python-version }}
       release-sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Parse package input
@@ -110,6 +110,17 @@ jobs:
             PACKAGE="$PACKAGE_INPUT"
           fi
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+
+          # deepagents-code requires Python 3.12 or newer, and deepagents-talon
+          # depends on it. Other packages keep the baseline interpreter.
+          case "$PACKAGE" in
+            deepagents-code|deepagents-talon)
+              echo "python-version=3.12" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "python-version=3.11" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
           # Map package name to working directory
           case "$PACKAGE" in
@@ -358,7 +369,7 @@ jobs:
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       # We want to keep this build stage *separate* from the release stage,
@@ -496,7 +507,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
 
       # The release target checkout (above) uses the release SHA, which may
       # predate the notes script. Check out the workflow's own revision into
@@ -624,7 +635,7 @@ jobs:
         uses: "./.github/actions/uv_setup"
         id: setup-python
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -788,7 +799,7 @@ jobs:
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -845,7 +856,7 @@ jobs:
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

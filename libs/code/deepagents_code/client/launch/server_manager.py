@@ -175,7 +175,7 @@ def _write_pyproject(work_dir: Path) -> None:
     content = f"""[project]
 name = "deepagents-server-runtime"
 version = "0.0.1"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "{_runtime_package_dependency()}",
 ]

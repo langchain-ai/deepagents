@@ -50,9 +50,9 @@ file are just imports.
 resources. `d.cwd`, `d.mode`, and `d.path` describe the session the factory is
 running in.
 
-Registration also works after startup — calling `register_tool` from inside a
-command handler is supported, and new tools are picked up on the next model
-request.
+Registrations are accepted only while `extension(d)` is running. The agent graph
+is compiled from that completed registry, so retaining `d` and calling a
+registration verb later raises `ExtensionError`.
 
 Collisions resolve by load order, never by scope: the first registration of a
 tool name wins (later ones are logged and dropped), and a duplicate command name

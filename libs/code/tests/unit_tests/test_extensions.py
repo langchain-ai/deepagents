@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path  # noqa: TC003  # used at runtime (Path.cwd() in tests)
-from typing import TYPE_CHECKING
+import asyncio
+import os
+import threading
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -16,6 +19,11 @@ from deepagents_code.extensions import (
 from deepagents_code.extensions.discovery import scan_extension_dir
 from deepagents_code.extensions.models import UnitOrigin
 from deepagents_code.extensions.trust import trust_project_extensions
+
+if TYPE_CHECKING:
+    from types import FunctionType
+
+    from deepagents.backends.protocol import BackendProtocol
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +77,48 @@ def extension(d):
     d.register_backend_route("memories", FilesystemBackend(virtual_mode=False))
 """
 
+_PARTIAL_EXTENSION = """
+from deepagents.backends import FilesystemBackend
+
+
+def extension(d):
+    def partial_tool(value: str) -> str:
+        \"\"\"Return a value.\"\"\"
+        return value
+
+    d.register_middleware(object())
+    d.register_tool(partial_tool)
+    d.register_command("partial", lambda ctx: None, description="partial command")
+    d.register_backend_route("/partial/", FilesystemBackend(virtual_mode=False))
+    d.on_shutdown(lambda: None)
+    raise RuntimeError("factory failed")
+"""
+
+_RETAINED_API_EXTENSION = """
+def extension(d):
+    def register_late(ctx):
+        d.register_command("too-late", lambda inner: None)
+
+    d.register_command("register-late", register_late)
+"""
+
+_ASYNC_RESOURCE_EXTENSION = """
+import asyncio
+import threading
+
+events = []
+import_thread = threading.get_ident()
+
+
+async def extension(d):
+    events.append(("start", id(asyncio.get_running_loop())))
+
+    async def shutdown():
+        events.append(("stop", id(asyncio.get_running_loop())))
+
+    d.on_shutdown(shutdown)
+"""
+
 
 def test_route_prefixes_must_be_absolute_and_slash_terminated() -> None:
     """A malformed route prefix is rejected with an ExtensionError."""
@@ -99,7 +149,8 @@ def test_route_prefixes_must_be_absolute_and_slash_terminated() -> None:
     with pytest.raises(ExtensionError):
         api.register_backend_route("/../etc/", FilesystemBackend(virtual_mode=False))
     with pytest.raises(ExtensionError):
-        api.register_backend_route("/memories/", object())
+        # A wrong runtime type is intentional: this exercises API validation.
+        api.register_backend_route("/memories/", cast("BackendProtocol", object()))
 
 
 async def test_registers_backend_routes_in_load_order(tmp_path: Path) -> None:
@@ -201,6 +252,99 @@ async def test_broken_extension_is_isolated(tmp_path: Path) -> None:
     assert len(result.errors) == 1
     assert "a_broken.py" in result.errors[0]
     assert [unit.name for unit in result.registry.tools] == ["echo"]
+
+
+async def test_failed_factory_rolls_back_every_registration(tmp_path: Path) -> None:
+    """A failed factory cannot leave partially initialized units active."""
+    extensions_dir = tmp_path / "extensions"
+    _write(extensions_dir, "partial.py", _PARTIAL_EXTENSION)
+
+    result = await load_extensions(
+        cwd=tmp_path,
+        settings=ExtensionSettings(paths=(extensions_dir,)),
+    )
+
+    assert len(result.errors) == 1
+    assert result.registry.middleware == []
+    assert result.registry.tools == []
+    assert result.registry.commands == []
+    assert result.registry.backend_routes == []
+    assert result.registry.shutdown_hooks == []
+    assert result.registry.command_description("partial") == ""
+
+
+async def test_registration_closes_when_factory_returns(tmp_path: Path) -> None:
+    """An API retained by a command cannot mutate the compiled registry."""
+    from deepagents_code.extensions.models import CommandContext, ExtensionError
+
+    extensions_dir = tmp_path / "extensions"
+    _write(extensions_dir, "retained.py", _RETAINED_API_EXTENSION)
+    result = await load_extensions(
+        cwd=tmp_path,
+        settings=ExtensionSettings(paths=(extensions_dir,)),
+    )
+
+    command = result.registry.find_command("register-late")
+    assert command is not None
+    with pytest.raises(ExtensionError, match="only while their factory is running"):
+        command.unit(CommandContext(args="", cwd=tmp_path, mode="interactive"))
+    assert [unit.name for unit in result.registry.commands] == ["register-late"]
+
+
+async def test_server_extensions_initialize_and_shutdown_on_same_loop(
+    tmp_path: Path,
+) -> None:
+    """Server factories and teardown share the persistent server event loop."""
+    from deepagents_code.extensions.runtime import (
+        bind_server_extensions,
+        load_extensions_blocking,
+        reset_server_extensions,
+    )
+    from deepagents_code.server_lifespan import _lifespan, app
+
+    extensions_dir = tmp_path / "extensions"
+    _write(extensions_dir, "resource.py", _ASYNC_RESOURCE_EXTENSION)
+    result = await load_extensions(
+        cwd=tmp_path,
+        settings=ExtensionSettings(paths=(extensions_dir,)),
+    )
+    hook = result.registry.shutdown_hooks[0].unit
+    globals_ = cast("FunctionType", hook).__globals__
+    events = globals_["events"]
+    assert globals_["import_thread"] != threading.get_ident()
+
+    token = bind_server_extensions(result)
+    try:
+        async with _lifespan(app):
+            reused = await asyncio.to_thread(
+                load_extensions_blocking,
+                settings=ExtensionSettings(enabled=False),
+            )
+            assert reused is result
+            assert events == [("start", id(asyncio.get_running_loop()))]
+    finally:
+        reset_server_extensions(token)
+
+    assert events == [
+        ("start", id(asyncio.get_running_loop())),
+        ("stop", id(asyncio.get_running_loop())),
+    ]
+
+
+def test_extension_paths_use_platform_separator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows drive letters are preserved when `;` separates path entries."""
+    from deepagents_code._env_vars import EXTENSIONS_PATHS
+    from deepagents_code.extensions import settings as settings_module
+
+    monkeypatch.setattr(os, "pathsep", ";")
+    monkeypatch.setenv(EXTENSIONS_PATHS, r"C:\work\one.py;D:\work\two.py")
+    monkeypatch.setattr(settings_module, "_read_config_section", dict)
+
+    settings = settings_module.load_extension_settings()
+
+    assert settings.paths == (Path(r"C:\work\one.py"), Path(r"D:\work\two.py"))
 
 
 async def test_project_extensions_load_only_once_trusted(tmp_path: Path) -> None:

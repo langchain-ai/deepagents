@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,9 @@ logger = logging.getLogger(__name__)
 INTERACTIVE_MODE = "interactive"
 HEADLESS_MODE = "headless"
 
+_server_extension_result: ContextVar[ExtensionLoadResult | None]
+_server_shutdown_registry: ExtensionRegistry | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class ExtensionLoadResult:
@@ -50,6 +54,40 @@ class ExtensionLoadResult:
 
     errors: tuple[str, ...] = ()
     """One message per extension that failed to load."""
+
+
+_server_extension_result = ContextVar("server_extension_result", default=None)
+
+
+def bind_server_extensions(
+    result: ExtensionLoadResult,
+) -> Token[ExtensionLoadResult | None]:
+    """Expose a server-loop result to synchronous graph construction.
+
+    `asyncio.to_thread` copies the current context, so `create_cli_agent` can
+    consume this exact registry without reloading extensions on a temporary
+    event loop. Registries with teardown hooks are also retained for the HTTP
+    server lifespan.
+
+    Args:
+        result: Extensions initialized on the server event loop.
+
+    Returns:
+        Context token used to restore the caller after graph construction.
+    """
+    global _server_shutdown_registry  # noqa: PLW0603
+    if result.registry.shutdown_hooks:
+        _server_shutdown_registry = result.registry
+    return _server_extension_result.set(result)
+
+
+def reset_server_extensions(token: Token[ExtensionLoadResult | None]) -> None:
+    """Restore the extension context after graph construction.
+
+    Args:
+        token: Token returned by `bind_server_extensions`.
+    """
+    _server_extension_result.reset(token)
 
 
 def project_extensions_trusted(
@@ -158,10 +196,9 @@ def load_extensions_blocking(
 ) -> ExtensionLoadResult:
     """Run `load_extensions` from synchronous code.
 
-    Extension factories may be `async def`, so loading is inherently async while
-    the agent construction path (`create_cli_agent`) is synchronous. When a loop
-    is already running in this thread, the work is handed to a short-lived worker
-    thread rather than touching the caller's loop.
+    A result initialized by the server loop is reused through its copied thread
+    context. Other synchronous callers run loading on a private temporary loop;
+    when their thread already owns a loop, loading moves to a worker thread.
 
     Args:
         cwd: Working directory of the session.
@@ -173,6 +210,9 @@ def load_extensions_blocking(
     Returns:
         The same result `load_extensions` produces.
     """
+    server_result = _server_extension_result.get()
+    if server_result is not None:
+        return server_result
 
     def run() -> ExtensionLoadResult:
         return asyncio.run(
@@ -211,3 +251,12 @@ async def shutdown_extensions(registry: ExtensionRegistry) -> None:
             logger.warning(
                 "Shutdown hook from %s failed", hook.source.label, exc_info=True
             )
+
+
+async def shutdown_server_extensions() -> None:
+    """Tear down the server-owned extension registry on its event loop."""
+    global _server_shutdown_registry  # noqa: PLW0603
+    registry = _server_shutdown_registry
+    _server_shutdown_registry = None
+    if registry is not None:
+        await shutdown_extensions(registry)

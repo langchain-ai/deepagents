@@ -47,6 +47,36 @@ class ExtensionRegistry:
         self._shutdown_hooks: list[RegisteredUnit[Callable[[], Any]]] = []
         self._descriptions: dict[str, str] = {}
 
+    def _snapshot(self) -> tuple[int, int, int, int, int]:
+        """Capture list lengths so a failed factory can be rolled back.
+
+        Returns:
+            Per-kind registration counts for the current registry state.
+        """
+        return (
+            len(self._middleware),
+            len(self._tools),
+            len(self._commands),
+            len(self._backend_routes),
+            len(self._shutdown_hooks),
+        )
+
+    def _rollback(self, snapshot: tuple[int, int, int, int, int]) -> None:
+        """Remove every registration made after `snapshot`.
+
+        Args:
+            snapshot: Per-kind list lengths returned by `_snapshot`.
+        """
+        middleware, tools, commands, backend_routes, shutdown_hooks = snapshot
+        removed_commands = self._commands[commands:]
+        del self._middleware[middleware:]
+        del self._tools[tools:]
+        del self._commands[commands:]
+        del self._backend_routes[backend_routes:]
+        del self._shutdown_hooks[shutdown_hooks:]
+        for command in removed_commands:
+            self._descriptions.pop(command.name, None)
+
     @property
     def middleware(self) -> list[RegisteredUnit[AgentMiddleware[Any, Any]]]:
         """Registered middleware in load order."""

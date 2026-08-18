@@ -12,7 +12,8 @@ trust = "ask"  # ask | always | never
 ```
 
 - `DEEPAGENTS_CODE_EXTENSIONS=0` disables loading entirely.
-- `DEEPAGENTS_CODE_EXTENSIONS_PATHS` is a colon-separated list of extra paths.
+- `DEEPAGENTS_CODE_EXTENSIONS_PATHS` uses the platform path separator (`:` on
+  POSIX and `;` on Windows).
 - `DEEPAGENTS_CODE_EXTENSIONS_TRUST` overrides the project-trust policy.
 """
 
@@ -102,7 +103,9 @@ def load_extension_settings() -> ExtensionSettings:
 
     env_paths = os.environ.get(EXTENSIONS_PATHS)
     if env_paths:
-        raw_paths: list[str] = [part for part in env_paths.split(":") if part.strip()]
+        raw_paths: list[str] = [
+            part for part in env_paths.split(os.pathsep) if part.strip()
+        ]
     else:
         configured = section.get("paths")
         raw_paths = (

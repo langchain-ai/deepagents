@@ -65,6 +65,21 @@ class ExtensionAPI:
         self._source = source
         self._cwd = cwd
         self._mode = mode
+        self._closed = False
+
+    def _close(self) -> None:
+        """Close the factory-scoped registration window."""
+        self._closed = True
+
+    def _ensure_open(self) -> None:
+        """Reject registrations made after factory initialization.
+
+        Raises:
+            ExtensionError: If the extension factory has already returned.
+        """
+        if self._closed:
+            msg = "Extensions may register units only while their factory is running"
+            raise ExtensionError(msg)
 
     @property
     def cwd(self) -> Path:
@@ -98,6 +113,7 @@ class ExtensionAPI:
         Raises:
             ExtensionError: If a class cannot be instantiated without arguments.
         """
+        self._ensure_open()
         instance: AgentMiddleware[Any, Any]
         if isinstance(middleware, type):
             try:
@@ -125,6 +141,7 @@ class ExtensionAPI:
         Raises:
             ExtensionError: If a callable cannot be converted into a tool.
         """
+        self._ensure_open()
         # Deferred: LangChain is heavy on the startup path.
         from langchain_core.tools import (
             BaseTool,
@@ -157,6 +174,7 @@ class ExtensionAPI:
         Raises:
             ExtensionError: If the hook is not callable.
         """
+        self._ensure_open()
         if not callable(hook):
             msg = "Shutdown hook is not callable"
             raise ExtensionError(msg)
@@ -184,6 +202,7 @@ class ExtensionAPI:
             ExtensionError: If the name is not a lowercase slug or the handler
                 is not callable.
         """
+        self._ensure_open()
         normalized = name.lstrip("/").strip().lower()
         if not _COMMAND_NAME.match(normalized):
             msg = (
@@ -226,6 +245,7 @@ class ExtensionAPI:
             ExtensionError: If the prefix is malformed or the backend is not a
                 `BackendProtocol`.
         """
+        self._ensure_open()
         # Deferred: LangChain is heavy on the startup path.
         from deepagents.backends.protocol import BackendProtocol
 

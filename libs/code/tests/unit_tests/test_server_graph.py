@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._env_vars import EXTENSIONS, SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 
 
@@ -27,6 +27,12 @@ def _module_with_attrs(name: str, **attrs: object) -> ModuleType:
     for key, value in attrs.items():
         setattr(module, key, value)
     return module
+
+
+@pytest.fixture(autouse=True)
+def _disable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep server bootstrap tests independent of user extension files."""
+    monkeypatch.setenv(EXTENSIONS, "0")
 
 
 class TestServerGraph:

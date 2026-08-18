@@ -13,6 +13,7 @@ directories) are trusted by definition; project-scoped sources are resolved by
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import logging
@@ -27,7 +28,9 @@ from deepagents_code.extensions.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
+    from typing import Any
 
     from deepagents_code.extensions.models import ExtensionFile
     from deepagents_code.extensions.registry import ExtensionRegistry
@@ -62,27 +65,19 @@ def _module_name(path: Path, origin: UnitOrigin) -> str:
     return f"{_MODULE_PREFIX}{sanitized}_{digest}"
 
 
-async def load_extension(
+def _import_factory(
     file: ExtensionFile,
-    registry: ExtensionRegistry,
-    *,
-    cwd: Path,
-    mode: str,
-) -> LoadedExtension:
-    """Import one extension file and run its factory.
+) -> tuple[str, Callable[[ExtensionAPI], Any]]:
+    """Import an extension module and return its factory.
 
     Args:
-        file: Discovered entry file and the provenance its units will carry.
-        registry: Registry receiving the factory's registrations.
-        cwd: Working directory of the session.
-        mode: Runtime mode: `interactive` or `headless`.
+        file: Discovered extension entry file.
 
     Returns:
-        A record of what the extension registered.
+        Synthesized module name and its callable factory.
 
     Raises:
-        ExtensionError: If the file cannot be imported, exposes no `extension`
-            factory, or the factory raises.
+        ExtensionError: If the module cannot be imported or has no factory.
     """
     is_package = file.source.origin is UnitOrigin.PACKAGE
     name = _module_name(file.path, file.source.origin)
@@ -109,16 +104,56 @@ async def load_extension(
         sys.modules.pop(name, None)
         msg = f"{file.path} does not define a callable {FACTORY_NAME!r} factory"
         raise ExtensionError(msg)
+    return name, factory
 
-    before = _snapshot(registry)
+
+async def load_extension(
+    file: ExtensionFile,
+    registry: ExtensionRegistry,
+    *,
+    cwd: Path,
+    mode: str,
+) -> LoadedExtension:
+    """Import one extension file and run its factory.
+
+    Args:
+        file: Discovered entry file and the provenance its units will carry.
+        registry: Registry receiving the factory's registrations.
+        cwd: Working directory of the session.
+        mode: Runtime mode: `interactive` or `headless`.
+
+    Returns:
+        A record of what the extension registered.
+
+    Raises:
+        asyncio.CancelledError: If extension initialization is cancelled.
+        ExtensionError: If the file cannot be imported, exposes no `extension`
+            factory, or the factory raises.
+        KeyboardInterrupt: If the extension factory interrupts the process.
+        SystemExit: If the extension factory exits the process.
+    """
+    name, factory = await asyncio.to_thread(_import_factory, file)
+
+    before = registry._snapshot()
     api = ExtensionAPI(registry, file.source, cwd=cwd, mode=mode)
     try:
-        result = factory(api)
+        # Synchronous factories stay off the server event loop. An async factory
+        # returns its coroutine here without running it; awaiting below binds
+        # its resources to the caller's loop.
+        result = await asyncio.to_thread(factory, api)
         if inspect.isawaitable(result):
             await result
+    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+        registry._rollback(before)
+        sys.modules.pop(name, None)
+        raise
     except Exception as exc:
+        registry._rollback(before)
+        sys.modules.pop(name, None)
         msg = f"Extension factory in {file.path} failed: {exc}"
         raise ExtensionError(msg) from exc
+    finally:
+        api._close()
 
     return LoadedExtension(
         path=file.path,
@@ -129,19 +164,4 @@ async def load_extension(
         backend_routes=tuple(
             unit.name for unit in registry.backend_routes[before[3] :]
         ),
-    )
-
-
-def _snapshot(registry: ExtensionRegistry) -> tuple[int, int, int, int]:
-    """Return the registry's per-kind counts.
-
-    Returns:
-        Counts of middleware, tools, commands, and backend routes currently
-            registered.
-    """
-    return (
-        len(registry.middleware),
-        len(registry.tools),
-        len(registry.commands),
-        len(registry.backend_routes),
     )

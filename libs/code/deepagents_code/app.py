@@ -15938,11 +15938,25 @@ class DeepAgentsApp(App):
                 f"{messages_offloaded} older {offloaded_message_label} "
                 f"({turns_offloaded} conversation {offloaded_turn_label})"
             )
-            stats_line = (
-                f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
-                f"{messages_kept} {kept_message_label} "
-                f"({turns_kept} conversation {kept_turn_label}) kept."
-            )
+            if tokens_after <= tokens_before:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                    f"{messages_kept} {kept_message_label} "
+                    f"({turns_kept} conversation {kept_turn_label}) kept."
+                )
+                outcome = (
+                    f"Offloaded {offloaded_counts}, freeing up context window space."
+                )
+            else:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens (increase), "
+                    f"{messages_kept} {kept_message_label} "
+                    f"({turns_kept} conversation {kept_turn_label}) kept."
+                )
+                outcome = (
+                    f"Offloaded {offloaded_counts}, but the summary was larger "
+                    "than the messages it replaced, so context increased."
+                )
             if archive_path:
                 from deepagents_code.offload import offload_storage_is_ephemeral
 
@@ -15959,8 +15973,7 @@ class DeepAgentsApp(App):
                 )
                 await self._mount_message(
                     AppMessage(
-                        f"Offloaded {offloaded_counts}, freeing up context window "
-                        f"space.\n{stats_line}{caveat}",
+                        f"{outcome}\n{stats_line}{caveat}",
                     ),
                 )
             else:
@@ -15970,7 +15983,7 @@ class DeepAgentsApp(App):
                 # separate warning immediately followed by a success line.
                 await self._mount_message(
                     ErrorMessage(
-                        f"Offloaded {offloaded_counts} and freed context, but the "
+                        f"{outcome} The "
                         "conversation history could not "
                         "be saved to storage, so those messages are not "
                         f"recoverable. Check logs for details.\n{stats_line}",

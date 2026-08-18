@@ -744,8 +744,8 @@ class TestOffloadSuccess:
             assert not any("(100% decrease)" in content for content in contents)
             assert app._context_tokens == expected_after
 
-    async def test_offload_never_reports_a_negative_decrease(self) -> None:
-        """A summary larger than what it replaced floors the percentage at zero."""
+    async def test_offload_reports_oversized_summary_as_increase(self) -> None:
+        """A summary larger than what it replaced is reported as an increase."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -780,8 +780,11 @@ class TestOffloadSuccess:
 
             contents = [str(widget._content) for widget in app.query(AppMessage)]
             assert any("Offloaded " in content for content in contents)
-            assert not any("(-" in content for content in contents)
-            assert any("(0% decrease)" in content for content in contents)
+            assert any("(increase)" in content for content in contents)
+            assert not any(
+                "freeing up context window space" in content for content in contents
+            )
+            assert any("context increased" in content for content in contents)
 
     async def test_no_ui_clear_reload(self) -> None:
         """Should NOT clear/reload UI since messages stay in state."""
@@ -1144,7 +1147,8 @@ class TestOffloadErrorHandling:
             # ErrorMessage. The turn parenthetical and the trailing stats line are
             # asserted too, so the error path cannot silently keep older wording.
             assert any(
-                "Offloaded 4 older messages (2 conversation turns) and freed context"
+                "Offloaded 4 older messages (2 conversation turns), "
+                "freeing up context window space."
                 in str(widget._content)
                 and "could not be saved to storage" in str(widget._content)
                 and "conversation turns) kept." in str(widget._content)

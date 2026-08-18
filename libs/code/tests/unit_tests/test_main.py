@@ -18,7 +18,13 @@ from rich.console import Console
 if TYPE_CHECKING:
     from prompt_toolkit.layout import Layout
 
-from deepagents_code._env_vars import INVOKED_AS, LAUNCH_TERM_PROGRAM
+from deepagents_code._env_vars import (
+    DEBUG,
+    EXPERIMENTAL,
+    INVOKED_AS,
+    LAUNCH_TERM_PROGRAM,
+    RESUME_TERM_PROGRAM,
+)
 from deepagents_code._invocation import invoked_name
 from deepagents_code.app import (
     AppResult,
@@ -1918,39 +1924,45 @@ class TestRenderTeardownThreadHints:
         launch_name: str = "dcode",
         term_program: str = "",
         launch_term_program: str | None = None,
+        resume_term_program: bool | None = None,
+        debug: bool = False,
+        experimental: bool = False,
+        toml_data: dict | None = None,
+        toml_error: Exception | None = None,
     ) -> str:
-        """Render the hints with patched dependencies, returning the output.
-
-        `term_program` is the live variable; `launch_term_program` is the
-        launch snapshot the hint actually reads. Passing only `term_program`
-        exercises the no-snapshot path (hint stays bare); passing both
-        exercises the launch-time-carry path.
-        """
+        """Render teardown hints under controlled feature configuration."""
         buffer = StringIO()
         console = Console(file=buffer, width=200)
         # `launch_name` is resolved (and cached) inside the renderer.
         invoked_name.cache_clear()
-        env = {INVOKED_AS: launch_name, "TERM_PROGRAM": term_program}
+        env = {
+            INVOKED_AS: launch_name,
+            "TERM_PROGRAM": term_program,
+            DEBUG: "1" if debug else "0",
+            EXPERIMENTAL: "1" if experimental else "0",
+        }
         if launch_term_program is not None:
             env[LAUNCH_TERM_PROGRAM] = launch_term_program
+        if resume_term_program is not None:
+            env[RESUME_TERM_PROGRAM] = "1" if resume_term_program else "0"
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
-            # Always set explicitly: an ambient `TERM_PROGRAM` or launch
-            # snapshot from the developer's or CI runner's shell would
-            # otherwise leak into the rendered command and flake assertions.
+            patch(
+                "deepagents_code.config_manifest.load_config_toml",
+                side_effect=toml_error,
+                return_value={} if toml_data is None else toml_data,
+            ),
             patch.dict(os.environ, env),
-            # These cases describe POSIX behavior; pin the platform so they do
-            # not take the native-Windows path when run on a Windows machine.
             patch.object(sys, "platform", "darwin"),
         ):
-            # `patch.dict` only merges, so drop an inherited launch snapshot
-            # when the case wants no snapshot at all.
             if launch_term_program is None:
                 os.environ.pop(LAUNCH_TERM_PROGRAM, None)
+            if resume_term_program is None:
+                os.environ.pop(RESUME_TERM_PROGRAM, None)
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
 
@@ -1969,6 +1981,45 @@ class TestRenderTeardownThreadHints:
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
 
+    def test_resume_hint_honors_toml_feature_flag(self) -> None:
+        """`[features] resume_term_program` reaches the hint without an env var.
+
+        The helper otherwise stubs `load_config_toml` to `{}`, so without this
+        case the entire config.toml route to the prefix could break with the
+        suite still green.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_term_program="iTerm.app",
+            toml_data={"features": {"resume_term_program": True}},
+        )
+
+        assert "TERM_PROGRAM=iTerm.app dcode -r test123" in output
+
+    def test_resume_hint_survives_config_read_failure(self) -> None:
+        """A raising config read must not take down the exit path.
+
+        `_render_teardown_thread_hints` runs from a bare `finally` in
+        `cli_main`, so an exception escaping here would replace whatever is
+        already unwinding -- including the `KeyboardInterrupt` that produces
+        exit code 130.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_term_program="iTerm.app",
+            resume_term_program=True,
+            toml_error=RecursionError("deeply nested TOML"),
+        )
+
+        assert "dcode -r test123" in output
+        assert "TERM_PROGRAM=" not in output
+
     @pytest.mark.parametrize("return_code", [0, 1])
     def test_resume_hint_echoes_launch_command(self, return_code: int) -> None:
         """The hint names the shim the user launched, not a hardcoded `dcode`."""
@@ -1985,13 +2036,10 @@ class TestRenderTeardownThreadHints:
         assert "dcode" not in output
 
     @pytest.mark.parametrize("return_code", [0, 1])
-    def test_resume_hint_carries_term_program(self, return_code: int) -> None:
-        """A launch-time `TERM_PROGRAM` rides along as an env prefix.
-
-        A shell alias that exports the variable cannot be recovered from
-        `argv[0]`, so pasting a bare `dcode -r ...` would drop it (and with it
-        anything keyed off it, such as theme selection).
-        """
+    def test_resume_hint_carries_term_program_when_enabled(
+        self, return_code: int
+    ) -> None:
+        """An enabled launch-time `TERM_PROGRAM` rides along as an env prefix."""
         thread_exists_mock = AsyncMock(return_value=True)
 
         output = self._render(
@@ -2000,9 +2048,60 @@ class TestRenderTeardownThreadHints:
             return_code=return_code,
             term_program="WezTerm",
             launch_term_program="WezTerm",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM=WezTerm dcode -r test123" in output
+
+    def test_resume_hint_omits_term_program_by_default(self) -> None:
+        """An ambient launch value is not echoed without an enabling mode or flag."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+            launch_term_program="WezTerm",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
+
+    @pytest.mark.parametrize("mode", ["debug", "experimental"])
+    def test_resume_hint_carries_term_program_in_enabled_modes(self, mode: str) -> None:
+        """Debug and experimental mode each enable the prefix by default."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+            launch_term_program="WezTerm",
+            debug=mode == "debug",
+            experimental=mode == "experimental",
+        )
+
+        assert "TERM_PROGRAM=WezTerm dcode -r test123" in output
+
+    @pytest.mark.parametrize("mode", ["debug", "experimental"])
+    def test_resume_hint_explicit_disable_overrides_enabled_modes(
+        self, mode: str
+    ) -> None:
+        """The feature flag can suppress the mode-dependent opt-in."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            term_program="WezTerm",
+            launch_term_program="WezTerm",
+            resume_term_program=False,
+            debug=mode == "debug",
+            experimental=mode == "experimental",
+        )
+
+        assert "TERM_PROGRAM" not in output
+        assert "dcode -r test123" in output
 
     def test_resume_hint_omits_term_program_without_launch_snapshot(self) -> None:
         """A `TERM_PROGRAM` set only after launch (a `.env` file) stays out."""
@@ -2012,6 +2111,7 @@ class TestRenderTeardownThreadHints:
             thread_exists_mock=thread_exists_mock,
             thread_url=None,
             term_program="WezTerm",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM" not in output
@@ -2021,7 +2121,11 @@ class TestRenderTeardownThreadHints:
         """An unset `TERM_PROGRAM` leaves the command bare, with no empty prefix."""
         thread_exists_mock = AsyncMock(return_value=True)
 
-        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            resume_term_program=True,
+        )
 
         assert "dcode -r test123" in output
         assert "TERM_PROGRAM" not in output
@@ -2036,6 +2140,7 @@ class TestRenderTeardownThreadHints:
             thread_url=None,
             term_program=term_program,
             launch_term_program=term_program,
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM" not in output
@@ -2049,6 +2154,7 @@ class TestRenderTeardownThreadHints:
             thread_url=None,
             term_program="Wez Term&whoami",
             launch_term_program="Wez Term&whoami",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM='Wez Term&whoami' dcode -r test123" in output
@@ -2066,6 +2172,7 @@ class TestRenderTeardownThreadHints:
             thread_url=None,
             term_program="Wez\x1b\nTerm",
             launch_term_program="Wez\x1b\nTerm",
+            resume_term_program=True,
         )
 
         assert "TERM_PROGRAM" not in output
@@ -2092,6 +2199,7 @@ class TestRenderTeardownThreadHints:
             INVOKED_AS: "dcode",
             "TERM_PROGRAM": "vscode",
             LAUNCH_TERM_PROGRAM: "vscode",
+            RESUME_TERM_PROGRAM: "1",
             **(extra_env or {}),
         }
         with (
@@ -2100,6 +2208,7 @@ class TestRenderTeardownThreadHints:
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=None,
             ),
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
             patch.object(sys, "platform", platform),
             patch.dict(os.environ, env),
         ):

@@ -1399,44 +1399,51 @@ def _load_theme_preference() -> str:
     return theme.DEFAULT_THEME
 
 
-def _load_message_timestamps_visible() -> bool:
-    """Load the saved message-timestamp-footer visibility preference.
+def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
+    """Resolve a boolean `Display` option through the config manifest.
 
-    Reads `[ui].show_message_timestamps` from `~/.deepagents/config.toml`.
+    Precedence follows `resolve_scalar`: the option's `DEEPAGENTS_CODE_*` env
+    var wins, then its `[ui]` key in `~/.deepagents/config.toml`, then the
+    option's declared default. Resolution is intentionally forgiving — an
+    unreadable config, a non-table `[ui]`, or a wrong-typed value is logged by
+    the resolver and falls through, so a typo in a cosmetic setting never
+    breaks startup.
+
+    Args:
+        key: Manifest key of the option, e.g. `"display.cursor_blink"`.
+        fallback: Value to use when `key` is not in the manifest at all, which
+            only happens if a caller and the manifest disagree.
 
     Returns:
-        The saved preference, or `False` when it is unset or unreadable.
+        The resolved value.
     """
-    import tomllib
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
 
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+    option = get_option(key)
+    if option is None:
+        logger.warning("Unknown config option %r; falling back to %r", key, fallback)
+        return fallback
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
 
-    if not DEFAULT_CONFIG_PATH.exists():
-        return False
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for timestamp preference: %s", exc)
-        return False
 
-    ui = data.get("ui", {})
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] should be a table; got %s while loading timestamp preference",
-            type(ui).__name__,
-        )
-        return False
+def _load_message_timestamps_visible() -> bool:
+    """Resolve whether chat messages show a timestamp footer.
 
-    value = ui.get("show_message_timestamps")
-    if isinstance(value, bool):
-        return value
-    if value is not None:
-        logger.warning(
-            "[ui].show_message_timestamps should be a boolean; got %s",
-            type(value).__name__,
-        )
-    return False
+    Toggled in-app with `/timestamps`, or preset with
+    `DEEPAGENTS_CODE_SHOW_MESSAGE_TIMESTAMPS` / `[ui].show_message_timestamps`.
+
+    Returns:
+        The resolved preference, or `False` when unset, unreadable, or
+        malformed.
+    """
+    return _load_bool_display_preference(
+        "display.show_message_timestamps", fallback=False
+    )
 
 
 def _load_show_diff_line_numbers() -> bool:
@@ -1463,109 +1470,31 @@ def _load_show_diff_line_numbers() -> bool:
 
 
 def _load_show_scrollbar() -> bool:
-    """Load the chat scrollbar visibility preference.
+    """Resolve whether the chat area shows a vertical scrollbar.
 
-    Reads `DEEPAGENTS_CODE_SHOW_SCROLLBAR` env var, falling back to
-    `[ui].show_scrollbar` from `~/.deepagents/config.toml`, and finally `False`.
+    Toggled in-app with `/scrollbar`, or preset with
+    `DEEPAGENTS_CODE_SHOW_SCROLLBAR` / `[ui].show_scrollbar`.
 
     Returns:
-        The resolved preference.
+        The resolved preference, or `False` when unset, unreadable, or
+        malformed.
     """
-    from deepagents_code._env_vars import SHOW_SCROLLBAR, classify_env_bool
-
-    raw = os.environ.get(SHOW_SCROLLBAR)
-    if raw is not None and raw.strip():
-        env = classify_env_bool(raw)
-        if env is not None:
-            return env
-
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    if not DEFAULT_CONFIG_PATH.exists():
-        return False
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for scrollbar preference: %s", exc)
-        return False
-
-    ui = data.get("ui", {})
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] should be a table; got %s while loading scrollbar preference",
-            type(ui).__name__,
-        )
-        return False
-
-    value = ui.get("show_scrollbar")
-    if isinstance(value, bool):
-        return value
-    if value is not None:
-        logger.warning(
-            "[ui].show_scrollbar should be a boolean; got %s",
-            type(value).__name__,
-        )
-    return False
+    return _load_bool_display_preference("display.show_scrollbar", fallback=False)
 
 
 def _load_debug_console_click_to_copy() -> bool:
-    r"""Load the `Ctrl+\` Debug Console click-to-copy preference.
+    r"""Resolve whether the `Ctrl+\` Debug Console copies a row on click.
 
-    Reads `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` env var, falling back to
-    `[ui].debug_console_click_to_copy` from `~/.deepagents/config.toml`, and
-    finally `False` (click-to-copy off; Enter-to-copy is always available).
+    Preset with `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` or
+    `[ui].debug_console_click_to_copy`. Enter-to-copy is always available.
 
     Returns:
-        The resolved preference.
+        The resolved preference, or `False` when unset, unreadable, or
+        malformed.
     """
-    from deepagents_code._env_vars import (
-        DEBUG_CONSOLE_CLICK_TO_COPY,
-        classify_env_bool,
+    return _load_bool_display_preference(
+        "display.debug_console_click_to_copy", fallback=False
     )
-
-    raw = os.environ.get(DEBUG_CONSOLE_CLICK_TO_COPY)
-    if raw is not None and raw.strip():
-        env = classify_env_bool(raw)
-        if env is not None:
-            return env
-
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    if not DEFAULT_CONFIG_PATH.exists():
-        return False
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning(
-            "Could not read config for debug console click-to-copy preference: %s",
-            exc,
-        )
-        return False
-
-    ui = data.get("ui", {})
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] should be a table; got %s while loading debug console "
-            "click-to-copy preference",
-            type(ui).__name__,
-        )
-        return False
-
-    value = ui.get("debug_console_click_to_copy")
-    if isinstance(value, bool):
-        return value
-    if value is not None:
-        logger.warning(
-            "[ui].debug_console_click_to_copy should be a boolean; got %s",
-            type(value).__name__,
-        )
-    return False
 
 
 def _replace_malformed_ui(
@@ -1666,68 +1595,17 @@ def save_theme_preference(name: str) -> bool:
     return _save_theme_preference_result(name).ok
 
 
-def _load_bool_ui_preference(key: str, *, log_label: str) -> bool:
-    """Load a boolean `[ui]` preference from `~/.deepagents/config.toml`.
-
-    These preferences have no in-app command; the file is edited manually. The
-    loader is intentionally forgiving: any problem reading or parsing the config
-    falls back to `True` (the feature stays on) after logging a warning, so a
-    typo in a cosmetic setting never breaks startup.
-
-    Args:
-        key: The key to read from the `[ui]` table.
-        log_label: Human-readable name of the preference, used in warning logs.
-
-    Returns:
-        The saved `[ui].<key>` value, or `True` when unset, unreadable,
-            or malformed.
-    """
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    if not DEFAULT_CONFIG_PATH.exists():
-        return True
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for %s preference: %s", log_label, exc)
-        return True
-
-    ui = data.get("ui", {})
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] should be a table; got %s while loading %s preference",
-            type(ui).__name__,
-            log_label,
-        )
-        return True
-
-    value = ui.get(key)
-    if isinstance(value, bool):
-        return value
-    if value is not None:
-        logger.warning(
-            "[ui].%s should be a boolean; got %s",
-            key,
-            type(value).__name__,
-        )
-    return True
-
-
 def _load_cursor_blink_preference() -> bool:
-    """Load the saved cursor-blink preference from `~/.deepagents/config.toml`.
+    """Resolve whether the chat input cursor should blink.
 
-    The chat input cursor blink can be turned off by setting
-    `[ui].cursor_blink = false` in the config file. There is no in-app command
-    for this; the file is edited manually.
+    The blink can be turned off with `DEEPAGENTS_CODE_CURSOR_BLINK=0` or
+    `[ui].cursor_blink = false`. There is no in-app command for this.
 
     Returns:
-        The saved `[ui].cursor_blink` value, or `True` (blink on) when unset,
+        The resolved cursor-blink preference, or `True` (blink on) when unset,
         unreadable, or malformed.
     """
-    return _load_bool_ui_preference("cursor_blink", log_label="cursor blink")
+    return _load_bool_display_preference("display.cursor_blink", fallback=True)
 
 
 def _load_cursor_style_preference() -> CursorStyle:
@@ -1758,19 +1636,19 @@ def _load_cursor_style_preference() -> CursorStyle:
 
 
 def _load_terminal_progress_preference() -> bool:
-    """Load the `OSC 9;4` progress preference from `~/.deepagents/config.toml`.
+    """Resolve whether to emit `OSC 9;4` terminal progress.
 
-    The terminal taskbar/dock/tab progress indicator (where supported) can be
-    turned off by setting `[ui].terminal_progress = false` in the config file.
-    There is no in-app command for this; the file is edited manually. The
+    The taskbar/dock/tab progress indicator (where supported) can be turned off
+    with `DEEPAGENTS_CODE_TERMINAL_PROGRESS=0` or
+    `[ui].terminal_progress = false`. There is no in-app command for this. The
     `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` environment variable still disables all
     terminal escapes regardless of this value.
 
     Returns:
-        The saved `[ui].terminal_progress` value, or `True` (progress on) when
+        The resolved terminal-progress preference, or `True` (progress on) when
         unset, unreadable, or malformed.
     """
-    return _load_bool_ui_preference("terminal_progress", log_label="terminal progress")
+    return _load_bool_display_preference("display.terminal_progress", fallback=True)
 
 
 def _save_terminal_theme_mapping_result(
@@ -21957,9 +21835,16 @@ class DeepAgentsApp(App):
     def on_app_blur(self) -> None:
         """Pause the chat input cursor blink when the terminal loses OS focus.
 
-        `TextArea` pauses its own blink when its `has_focus` flips, but
-        `AppBlur` does not change widget focus, so we toggle `cursor_blink`
-        manually.
+        Textual's own `AppBlur` handling already drops screen focus, which stops
+        the blink via `has_focus`; pausing `cursor_blink` here keeps the cursor
+        hidden even in the paths that restore widget focus while the app itself
+        stays blurred.
+
+        Either way this only runs when the terminal reports focus changes. tmux
+        withholds them from its panes unless `focus-events` is on, so an
+        unfocused pane keeps showing a blinking cursor until the user sets
+        `set -g focus-events on`; `[ui].cursor_blink = false` is the in-app
+        workaround.
         """
         if self._chat_input is None:
             return

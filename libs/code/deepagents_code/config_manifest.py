@@ -690,8 +690,8 @@ def resolve_scalar(
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
-        so the next layer (or the typed default) applies. An empty env value is
-        normally treated as unset (mirroring `resolve_env_var`), so it falls
+        so the next layer (or the typed default) applies. An empty or whitespace-only
+        env value is treated as unset (mirroring `resolve_env_var`), so it falls
         through to the next env var, then `config.toml`/`default`, rather than
         counting as set. Options declaring `empty_env_is_false` instead resolve
         an explicitly present empty value to `False`. Theme resolution
@@ -716,7 +716,7 @@ def resolve_scalar(
             raw = os.environ.get(name)
             if raw is None:
                 continue
-            if not raw:
+            if not raw.strip():
                 if option.empty_env_is_false:
                     return False, f"env ({name})"
                 continue
@@ -1146,6 +1146,50 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "cursor_style"),
     ),
     ConfigOption(
+        key="display.cursor_blink",
+        group="Display",
+        summary=(
+            "Blink the chat input cursor (tmux needs 'focus-events on' to hide "
+            "it in unfocused panes)."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.CURSOR_BLINK,
+        toml_keys=("ui", "cursor_blink"),
+    ),
+    ConfigOption(
+        key="display.terminal_progress",
+        group="Display",
+        summary="Report agent activity as terminal taskbar/dock/tab progress.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.TERMINAL_PROGRESS,
+        toml_keys=("ui", "terminal_progress"),
+    ),
+    ConfigOption(
+        key="display.show_message_timestamps",
+        group="Display",
+        summary="Show the timestamp footer under each chat message.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_MESSAGE_TIMESTAMPS,
+        toml_keys=("ui", "show_message_timestamps"),
+    ),
+    ConfigOption(
+        key="display.themes",
+        group="Display",
+        summary="User-defined themes, each a table of theme colors.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("themes",),
+    ),
+    ConfigOption(
+        key="display.terminal_themes",
+        group="Display",
+        summary="Per-`TERM_PROGRAM` default theme, written by the theme picker.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("ui", "terminal_themes"),
+    ),
+    ConfigOption(
         key="display.show_header",
         group="Display",
         summary="Show Textual's native header bar at the top of the TUI.",
@@ -1324,6 +1368,66 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
         env_var=_env_vars.AUTO_CLASSIFIER_TIMEOUT,
         toml_keys=("models", "auto_classifier_timeout"),
+    ),
+    ConfigOption(
+        key="models.providers",
+        group="Models",
+        summary=(
+            "Custom chat-model providers. A `class_path` entry is imported at "
+            "model creation, so its module runs with your privileges."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("models", "providers"),
+    ),
+    ConfigOption(
+        key="retries.max_retries",
+        group="Models",
+        summary=(
+            "Default provider retry count; override per provider with "
+            "`[retries.<provider>]`."
+        ),
+        kind=OptionKind.INT,
+        toml_keys=("retries", "max_retries"),
+    ),
+    # --- Agents ---------------------------------------------------------
+    ConfigOption(
+        key="agents.default",
+        group="Agents",
+        summary="Agent used at launch when `--agent` is omitted.",
+        kind=OptionKind.STR,
+        toml_keys=("agents", "default"),
+    ),
+    ConfigOption(
+        key="agents.recent",
+        group="Agents",
+        summary="Most recently switched-to agent (managed by the app).",
+        kind=OptionKind.STR,
+        toml_keys=("agents", "recent"),
+    ),
+    ConfigOption(
+        key="agents.async_subagents",
+        group="Agents",
+        summary="Remote LangGraph deployments exposed to the agent as subagents.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("async_subagents",),
+    ),
+    # --- Sandboxes ------------------------------------------------------
+    ConfigOption(
+        key="sandboxes.default",
+        group="Sandboxes",
+        summary="Sandbox backend used when none is named on the command line.",
+        kind=OptionKind.STR,
+        toml_keys=("sandboxes", "default"),
+    ),
+    ConfigOption(
+        key="sandboxes.providers",
+        group="Sandboxes",
+        summary=(
+            "Custom sandbox backends. A `class_path` entry is imported at "
+            "sandbox creation, so its module runs with your privileges."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("sandboxes", "providers"),
     ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(

@@ -3548,10 +3548,21 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         load_config_toml,
         resolve_scalar,
     )
+    from deepagents_code.model_config import resolved_env_var_name
 
     option = get_option("models.auto_classifier")
     if option is None:
         return None, None
+    if option.env_var is not None:
+        env_name = resolved_env_var_name(option.env_var)
+        raw_env = os.environ.get(env_name)
+        if raw_env is not None and not raw_env.strip():
+            problem = (
+                f"Ignoring blank env ({env_name}) auto_classifier model; the Auto "
+                "approval classifier will review with the main agent model."
+            )
+            logger.warning("%s", problem)
+            return None, problem
     toml_data = load_config_toml()
     value, source = resolve_scalar(option, toml_data=toml_data)
     if isinstance(value, str) and value.strip():

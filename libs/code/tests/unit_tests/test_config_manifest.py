@@ -111,6 +111,107 @@ def test_manifest_covers_every_provider_credential() -> None:
     )
 
 
+_UI_READER_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # Theme resolution predates the manifest and keeps bespoke semantics
+        # (terminal-program mapping, unknown-name fallback), so these read
+        # `[ui]` directly rather than through `resolve_scalar`.
+        "app.py:_load_terminal_default",
+        "app.py:_load_theme_preference",
+        "config_manifest.py:_resolve_theme",
+        # Reads `[ui]` only to repair and rewrite it; not a value reader.
+        "app.py:_replace_malformed_ui",
+    }
+)
+"""Functions permitted to read the `[ui]` table without using the manifest."""
+
+
+def test_no_hand_rolled_ui_config_readers() -> None:
+    """`[ui]` scalars must be read through the manifest, not re-parsed by hand.
+
+    A bespoke loader re-implements env parsing, the `[ui]` lookup, the type
+    check, and the fallback — which is how the app came to read values that
+    `dcode config` did not report, and vice versa.
+    """
+    import ast
+    from pathlib import Path
+
+    from deepagents_code import config_manifest
+
+    package_root = Path(config_manifest.__file__).parent
+    readers: set[str] = set()
+    for source in sorted(package_root.rglob("*.py")):
+        text = source.read_text(encoding="utf-8")
+        if '.get("ui"' not in text:
+            continue
+        hits = [
+            number
+            for number, line in enumerate(text.splitlines(), start=1)
+            if '.get("ui"' in line
+        ]
+        functions = [
+            node
+            for node in ast.walk(ast.parse(text))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for hit in hits:
+            # Smallest enclosing span, so a nested helper is not attributed to
+            # the function it happens to live in.
+            enclosing = min(
+                (
+                    node
+                    for node in functions
+                    if node.lineno <= hit <= (node.end_lineno or node.lineno)
+                ),
+                key=lambda node: (node.end_lineno or node.lineno) - node.lineno,
+                default=None,
+            )
+            name = enclosing.name if enclosing else "<module>"
+            readers.add(f"{source.name}:{name}")
+
+    assert readers == _UI_READER_ALLOWLIST, (
+        f"Unexpected `[ui]` readers: {sorted(readers - _UI_READER_ALLOWLIST)}. "
+        "Register the option in config_manifest.py and resolve it with "
+        "`resolve_scalar` instead of parsing config.toml by hand."
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "toml_keys"),
+    [
+        ("display.show_message_timestamps", ("ui", "show_message_timestamps")),
+        ("display.themes", ("themes",)),
+        ("display.terminal_themes", ("ui", "terminal_themes")),
+        ("models.providers", ("models", "providers")),
+        ("retries.max_retries", ("retries", "max_retries")),
+        ("agents.default", ("agents", "default")),
+        ("agents.recent", ("agents", "recent")),
+        ("agents.async_subagents", ("async_subagents",)),
+        ("sandboxes.default", ("sandboxes", "default")),
+        ("sandboxes.providers", ("sandboxes", "providers")),
+    ],
+)
+def test_config_toml_sections_are_discoverable(
+    key: str, toml_keys: tuple[str, ...]
+) -> None:
+    """Every `config.toml` section the app reads must be listed by `dcode config`."""
+    option = get_option(key)
+    assert option is not None, f"{key} is missing from the manifest"
+    assert option.toml_keys == toml_keys
+
+
+def test_show_message_timestamps_env_overrides_config(monkeypatch) -> None:
+    """The env var must outrank a persisted `/timestamps` toggle."""
+    option = get_option("display.show_message_timestamps")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.SHOW_MESSAGE_TIMESTAMPS, "1")
+    value, source = resolve_scalar(
+        option, toml_data={"ui": {"show_message_timestamps": False}}
+    )
+    assert value is True
+    assert source == f"env ({_env_vars.SHOW_MESSAGE_TIMESTAMPS})"
+
+
 def test_option_keys_unique() -> None:
     """Manifest keys must be unique so `config get` lookups are unambiguous."""
     keys = option_keys()

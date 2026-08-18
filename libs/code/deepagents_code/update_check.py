@@ -22,6 +22,7 @@ import shlex
 import shutil
 import signal
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -288,6 +289,59 @@ def _latest_from_releases(
             best = ver
             best_str = ver_str
     return best_str
+
+
+def read_installed_distribution_version() -> str | None:
+    """Read the currently installed `deepagents-code` distribution version.
+
+    Unlike `__version__`, this does not come from the module this process
+    imported at launch: it reads the running tool environment's
+    `deepagents_code-*.dist-info` directory name from disk, so it reflects the
+    install even after an in-session upgrade rewrote the environment. Used to
+    report what an upgrade actually installed.
+
+    Returns:
+        The installed version string, or `None` when it cannot be determined
+            (missing/ambiguous dist-info, unreadable directory, or a version
+            this process's `packaging` rejects).
+    """
+    # `sysconfig`'s purelib resolves the per-platform layout (`lib/pythonX.Y/
+    # site-packages` on POSIX, `Lib\site-packages` on Windows), so the
+    # readback works for uv tool environments on every supported OS.
+    site_packages = Path(sysconfig.get_path("purelib"))
+    try:
+        candidates = [
+            entry
+            for entry in site_packages.iterdir()
+            if entry.name.startswith("deepagents_code-")
+            and entry.name.endswith(".dist-info")
+        ]
+    except OSError:
+        logger.debug(
+            "Could not list site-packages at %s to read the installed version",
+            site_packages,
+            exc_info=True,
+        )
+        return None
+    if len(candidates) != 1:
+        # Zero matches means the distribution is missing from this environment;
+        # more than one means leftover dist-infos make the installed version
+        # ambiguous. Neither is actionable from the caller — a successful
+        # upgrade just gets a less precise report — so debug is loud enough.
+        logger.debug(
+            "Expected exactly one deepagents_code dist-info under %s, found %d",
+            site_packages,
+            len(candidates),
+        )
+        return None
+    raw = candidates[0].name[len("deepagents_code-") : -len(".dist-info")]
+    try:
+        return str(_parse_version(raw))
+    except InvalidVersion:
+        # A newer packaging could accept a version this process's copy rejects;
+        # reporting nothing beats reporting an unparseable string.
+        logger.debug("Unparseable installed dist-info version: %s", raw)
+        return None
 
 
 def get_cached_update_available() -> tuple[bool, str | None]:
@@ -1918,6 +1972,56 @@ def create_update_log_path() -> Path:
     return UPDATE_LOG_DIR / f"{stamp}-update.log"
 
 
+def create_update_log_file() -> Path | None:
+    """Create an empty update log file and return its path.
+
+    Callers that *advertise* the log to a user — "Update log: tail -f <path>" —
+    must use this rather than `create_update_log_path`, which only computes a
+    path. `perform_upgrade` refuses some upgrades before ever spawning an
+    installer (unknown or unsupported install method, `brew` missing from
+    `PATH`, the pre-release gate), and `_run_install_subprocess` degrades to
+    not persisting output when the log cannot be opened. In all of those cases
+    the path alone would name a file that never comes into existence, leaving
+    the user tailing an `ENOENT`.
+
+    Returns:
+        The created log path, or `None` if it could not be created — callers
+            should then omit the log hint rather than point at a missing file.
+    """
+    log_path = create_update_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch()
+    except OSError:
+        logger.warning(
+            "Could not create update log at %s; not advertising it",
+            log_path,
+            exc_info=True,
+        )
+        return None
+    return log_path
+
+
+def format_log_follow_command(log_path: Path | str) -> str:
+    """Return a copy-pasteable command for following a log file as it is written.
+
+    Args:
+        log_path: Log file to follow.
+
+    Returns:
+        A `tail -f` invocation on POSIX, or its PowerShell equivalent on
+            Windows, where `tail` is not available.
+    """
+    if sys.platform == "win32":
+        # PowerShell, the default Windows shell. Single-quote the literal path
+        # so `$`, `$()`, and backticks in it are not expanded, doubling any
+        # embedded quote as PowerShell requires. `-LiteralPath` additionally
+        # keeps `[`/`]` in a cache path from being read as wildcards.
+        quoted = str(log_path).replace("'", "''")
+        return f"Get-Content -Wait -LiteralPath '{quoted}'"
+    return f"tail -f {shlex.quote(str(log_path))}"
+
+
 async def _emit_progress(callback: UpgradeProgressCallback | None, line: str) -> None:
     """Send a progress line to *callback*, supporting sync or async callbacks."""
     if callback is None:
@@ -2256,7 +2360,7 @@ async def perform_upgrade(
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
     target_version: str | None = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
     Only tries the detected method — does not fall back to other package
@@ -2273,7 +2377,14 @@ async def perform_upgrade(
             dcode releases that intentionally depend on pre-release packages.
 
     Returns:
-        `(success, output)` — *output* is the combined stdout/stderr.
+        `(success, output, installed_version)` — *output* is the combined
+        stdout/stderr. *installed_version* is the version the successful
+        install actually resolved to, read back from the tool environment on
+        disk, or `None` when the upgrade failed or the installed version
+        could not be determined. Callers should report *installed_version*
+        rather than the version their update check observed: the install
+        command is unpinned, so a release published between check and install
+        is what lands on disk.
 
     Raises:
         OSError: Propagated from building the upgrade command or running the
@@ -2283,13 +2394,17 @@ async def perform_upgrade(
     """
     method = detect_install_method()
     if method == "unknown":
-        return False, "Editable install detected — skipping auto-update."
+        return False, "Editable install detected — skipping auto-update.", None
     if method == "other":
-        return False, (
-            "Unsupported install method detected — cannot auto-update without "
-            "knowing which environment provides `dcode`. Reinstall with "
-            "`uv tool install -U deepagents-code` or upgrade with the package "
-            "manager originally used for this install."
+        return (
+            False,
+            (
+                "Unsupported install method detected — cannot auto-update without "
+                "knowing which environment provides `dcode`. Reinstall with "
+                "`uv tool install -U deepagents-code` or upgrade with the package "
+                "manager originally used for this install."
+            ),
+            None,
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
     # Targeted pre-release admission: a *stable* dcode target that mandates an
@@ -2310,11 +2425,11 @@ async def perform_upgrade(
     if resolved_include_prereleases or targeted_pins:
         supported, reason = prerelease_upgrade_supported(method)
         if not supported:
-            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
+            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE, None
 
     # Skip brew if binary not on PATH (before touching temp files).
     if method == "brew" and not shutil.which("brew"):
-        return False, "brew not found on PATH."
+        return False, "brew not found on PATH.", None
 
     prerelease_strategy = _UV_TARGETED_PRERELEASE_STRATEGY if targeted_pins else None
     constraints_staged = False
@@ -2395,10 +2510,14 @@ async def perform_upgrade(
             target_version,
             exc_info=True,
         )
-        return False, (
-            "Could not prepare the pre-release dependency constraints required "
-            f"to install v{target_version}; the existing installation was left "
-            f"unchanged.\n{type(exc).__name__}: {exc}"
+        return (
+            False,
+            (
+                "Could not prepare the pre-release dependency constraints required "
+                f"to install v{target_version}; the existing installation was left "
+                f"unchanged.\n{type(exc).__name__}: {exc}"
+            ),
+            None,
         )
 
     if success and fell_back_to_bare_command:
@@ -2414,7 +2533,23 @@ async def perform_upgrade(
             "installed extras or extra packages may not carry over. "
             "Re-add them if a feature stops working after relaunch.",
         )
-    return success, output
+    installed_version: str | None = None
+    if success:
+        if pin_target_version is not None:
+            # The install was pinned to the exact target version, so that is
+            # what landed on disk; skip the filesystem readback.
+            installed_version = pin_target_version
+        else:
+            # The install command is unpinned (`uv tool install -U` / `brew
+            # upgrade`), so a release published between the update check and
+            # the install is what actually landed. Read the installed
+            # distribution back rather than reporting the earlier check's
+            # version; when the readback is indeterminate, the caller's
+            # checked version is still the best available answer.
+            installed_version = (
+                await asyncio.to_thread(read_installed_distribution_version)
+            ) or target_version
+    return success, output, installed_version
 
 
 async def perform_dependency_refresh(

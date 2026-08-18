@@ -61,7 +61,9 @@ def _strip_route_from_pattern(pattern: str, route_prefix: str) -> str:
 
     If the pattern (ignoring a leading `/`) starts with the route prefix
     (also ignoring its leading `/`), the overlapping prefix is removed so
-    the pattern is relative to the backend's internal root.
+    the pattern is relative to the backend's internal root. The stripped
+    remainder retains a leading `/` so a formerly slash-containing pattern
+    remains anchored instead of becoming a recursive basename pattern.
 
     Args:
         pattern: The glob pattern, possibly absolute (e.g. `/memories/**/*.md`).
@@ -74,7 +76,7 @@ def _strip_route_from_pattern(pattern: str, route_prefix: str) -> str:
     bare_pattern = pattern.lstrip("/")
     bare_prefix = route_prefix.strip("/") + "/"
     if bare_pattern.startswith(bare_prefix):
-        return bare_pattern[len(bare_prefix) :]
+        return f"/{bare_pattern[len(bare_prefix) :]}"
     return pattern
 
 

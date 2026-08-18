@@ -269,6 +269,35 @@ feedback) are not conversation turns, so they do not get timestamp footers.
 reason.
 """
 
+_SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
+    {MessageType.ASSISTANT, MessageType.TOOL, MessageType.SKILL}
+)
+"""Message types marking a thread the user did conversational work in.
+
+Read via `_store_has_server_output` to decide whether a thread is worth
+offering a way back to. `USER` alone is not enough: local-only flows
+(`/update`, `!shell`, most slash commands) mount a `UserMessage` widget
+without ever invoking the server.
+
+Membership in this set is necessary but not sufficient — non-incognito `!`
+shell output renders through `AssistantMessage`, so `_store_has_server_output`
+also excludes rows flagged `assistant_local_only`.
+
+This is deliberately *stricter* than "has a resumable checkpoint row".
+Non-conversational commands (`/goal`, `/rubric set`) persist thread state
+through `aupdate_state`, and merely registering a thread in server mode
+(`aensure_thread`) writes a row too, so `thread_exists` alone reports a
+brand-new thread as resumable. Threads holding only that state are
+intentionally treated as "nothing happened here" — `/rubric set` with no
+conversation is a config tweak, not work left behind.
+
+`SKILL` is the loosest member: `SkillMessage` mounts just *before*
+`_send_to_agent`, which can bail out without reaching the server, so a
+`SKILL` row means a turn was attempted rather than completed. That
+direction is safe — it only over-offers a hint that
+`_mount_previous_thread_hint` still validates against the checkpoint store.
+"""
+
 
 def _message_timestamp_footer_id(message_id: str) -> str:
     """Return the DOM id for a message timestamp footer."""
@@ -710,6 +739,243 @@ class _ConfigWriteResult:
 
     severity: Literal["warning", "error"] = "warning"
     """Toast severity to use when `message` is shown."""
+
+
+_McpRefreshStatus = Literal["fresh", "disabled", "unavailable"]
+"""Why a `_ServerRespawnResult` carries the MCP metadata it does.
+
+- `fresh`: the post-restart preload returned metadata; `mcp_server_info` is
+    current and non-`None`.
+- `disabled`: MCP is off for this session (`--no-mcp`), so there is nothing
+    to refresh and `mcp_server_info` is `None`.
+- `unavailable`: the preload raised, or the restart failed or was never
+    attempted; `mcp_server_info` is `None`, so the freshness of any
+    previously captured metadata is unknown.
+"""
+
+
+@dataclass(frozen=True)
+class _ServerRespawnResult:
+    """Result of restarting the app-owned server."""
+
+    restarted: bool
+    """Whether the server subprocess was respawned and the agent rebuilt."""
+
+    mcp_server_info: list[MCPServerInfo] | None = None
+    """Post-restart MCP metadata; non-`None` exactly when `mcp_status` is
+    `fresh`.
+
+    Read `mcp_status` rather than testing this for `None`: a `None` here means
+    "disabled" and "refresh failed" alike, and those warrant opposite messages.
+    """
+
+    mcp_status: _McpRefreshStatus = "unavailable"
+    """Whether the MCP metadata is current, and if not, why.
+
+    Only meaningful when `restarted`. Defaults to the pessimistic value so a
+    failed restart never reads as "MCP is fine".
+    """
+
+    mcp_error: str | None = None
+    """Why the preload failed, when `mcp_status` is `unavailable`.
+
+    Carried so `/reload` can name the cause rather than emitting a bare "couldn't
+    be determined" — the underlying errors identify the offending server or
+    config file, and that text otherwise reaches only the log.
+    """
+
+
+def _format_mcp_server_changes(
+    previous: list[MCPServerInfo] | None,
+    current: list[MCPServerInfo] | None,
+    error: str | None = None,
+) -> str:
+    """Format MCP server changes for the `/reload` report.
+
+    Every server in `current` lands in exactly one bucket — loaded, failed,
+    unavailable, recovered, status-changed, reconfigured, or still-broken — so a
+    status the app grows later cannot silently fall through into "no changes".
+    Config files whose parse status changed are flagged separately, since they
+    arrive as synthetic entries rather than as servers.
+
+    Same-name servers are diffed on status, transport, and tool count. A server
+    can keep its name while recovering from an error or switching transport, so
+    reporting that as "no changes" would be actively misleading in the case
+    `/reload` most exists to serve.
+
+    Args:
+        previous: Metadata captured before the reload, or `None` when no
+            baseline was available.
+        current: Metadata captured after the reload, or `None` when the
+            refresh failed.
+        error: Why the refresh failed, when `current` is `None`. Named in the
+            summary so the user gets the offending server or config file
+            instead of a bare "couldn't be determined".
+
+    Returns:
+        A user-facing MCP server change summary.
+    """
+    if current is None:
+        detail = f" ({error})" if error else ""
+        return f"MCP server changes couldn't be determined{detail}; use /mcp to check."
+
+    # Config-load failures arrive as synthetic entries rather than servers;
+    # bucketing them under "Loaded" would announce a parse error as a success.
+    servers = {s.name: s for s in current if s.transport != "config"}
+    config_errors = sorted(s.name for s in current if s.transport == "config")
+
+    if previous is None:
+        # Without a baseline there is no diff to report, but the current state is
+        # still worth stating — filtered by status, since calling an erroring
+        # server "loaded" contradicts the rule the bucketing below applies.
+        usable = sorted(name for name, s in servers.items() if s.status == "ok")
+        unusable = sorted(
+            f"{name} ({s.status})" for name, s in servers.items() if s.status != "ok"
+        )
+        parts = [f"currently loaded: {', '.join(usable) or 'none'}"]
+        if unusable:
+            parts.append(f"unavailable: {', '.join(unusable)}")
+        if config_errors:
+            parts.append(f"config errors: {', '.join(config_errors)}")
+        return (
+            "MCP server changes couldn't be determined (no baseline metadata); "
+            f"{'; '.join(parts)}."
+        )
+
+    before = {s.name: s for s in previous if s.transport != "config"}
+    before_config_errors = {s.name for s in previous if s.transport == "config"}
+
+    # "Loaded" means newly added and actually usable — a new server already
+    # failing its first tool discovery is a failure, not a successful load.
+    loaded = sorted(
+        name for name in servers.keys() - before.keys() if servers[name].status == "ok"
+    )
+    removed = sorted(before.keys() - servers.keys())
+    failing = sorted(
+        name
+        for name, server in servers.items()
+        if server.status == "error"
+        # Unlike `recovered` below, this deliberately avoids a self-default: a
+        # name absent from the baseline is a new server, and a new server
+        # erroring on its first tool discovery is a failed load, not a
+        # self-comparison that would report it as unchanged.
+        and (name not in before or before[name].status != "error")
+    )
+    unavailable = sorted(
+        name
+        for name, server in servers.items()
+        if name not in before and server.status not in {"ok", "error"}
+    )
+    recovered = sorted(
+        name
+        for name, server in servers.items()
+        if server.status == "ok" and before.get(name, server).status != "ok"
+    )
+    status_changed = sorted(
+        name
+        for name, server in servers.items()
+        if (
+            name in before
+            and before[name].status != server.status
+            and name not in failing
+            and name not in recovered
+        )
+    )
+    # A same-name server whose status held steady can still have been edited
+    # underneath the name. `transport` and `tools` are the only other fields
+    # `MCPServerInfo` carries, so they are the whole of what a config edit can
+    # surface here — without them, editing a server's transport and reloading
+    # to apply it answers "no changes detected".
+    reconfigured = sorted(
+        name
+        for name, server in servers.items()
+        if name in before
+        and before[name].status == server.status
+        and (
+            before[name].transport != server.transport
+            or len(before[name].tools) != len(server.tools)
+        )
+    )
+    new_config_errors = [
+        name for name in config_errors if name not in before_config_errors
+    ]
+    resolved_config_errors = sorted(before_config_errors - set(config_errors))
+
+    # A server that was already broken before the reload lands in no bucket — it
+    # did not *change*. Listing only the changes would still read as "all good",
+    # so name it in both branches below rather than only when nothing changed.
+    reported = (
+        set(loaded)
+        | set(failing)
+        | set(unavailable)
+        | set(recovered)
+        | set(status_changed)
+        | set(reconfigured)
+    )
+    stuck = sorted(
+        [
+            name
+            for name, server in servers.items()
+            if name not in reported
+            and (server.status == "error" or server.needs_attention())
+        ]
+        # Unrepaired config errors are excluded from `servers` entirely, and are
+        # the one thing `/reload` most exists to surface.
+        + list(set(config_errors) & before_config_errors),
+    )
+
+    if not (
+        loaded
+        or removed
+        or failing
+        or unavailable
+        or recovered
+        or status_changed
+        or reconfigured
+        or new_config_errors
+        or resolved_config_errors
+    ):
+        if stuck:
+            return (
+                "MCP server changes: no changes detected "
+                f"(still needs attention: {', '.join(stuck)}; use /mcp)."
+            )
+        return "MCP server changes: no changes detected."
+
+    lines = ["MCP server changes:"]
+    if loaded:
+        lines.append(f"  - Loaded: {', '.join(loaded)}")
+    if removed:
+        lines.append(f"  - Removed: {', '.join(removed)}")
+    if failing:
+        lines.append(f"  - Failed to load: {', '.join(failing)} (use /mcp for details)")
+    if unavailable:
+        statuses = ", ".join(f"{name} ({servers[name].status})" for name in unavailable)
+        lines.append(f"  - Unavailable: {statuses} (use /mcp for details)")
+    if recovered:
+        lines.append(f"  - Recovered: {', '.join(recovered)}")
+    if status_changed:
+        transitions = ", ".join(
+            f"{name} ({before[name].status} → {servers[name].status})"
+            for name in status_changed
+        )
+        lines.append(f"  - Status changed: {transitions}")
+    if reconfigured:
+        edits = []
+        for name in reconfigured:
+            was, now = before[name], servers[name]
+            if was.transport != now.transport:
+                edits.append(f"{name} ({was.transport} → {now.transport})")
+            else:
+                edits.append(f"{name} ({len(was.tools)} → {len(now.tools)} tools)")
+        lines.append(f"  - Reconfigured: {', '.join(edits)}")
+    if new_config_errors:
+        lines.append(f"  - Config errors: {', '.join(new_config_errors)}")
+    if resolved_config_errors:
+        lines.append(f"  - Resolved config errors: {', '.join(resolved_config_errors)}")
+    if stuck:
+        lines.append(f"  - Still needs attention: {', '.join(stuck)} (use /mcp)")
+    return "\n".join(lines)
 
 
 ScreenResultT = TypeVar("ScreenResultT")
@@ -4201,6 +4467,25 @@ class DeepAgentsApp(App):
         every invocation.
         """
 
+        self._reload_task: asyncio.Task[None] | None = None
+        """The in-flight detached `/reload` task, if any (see `_schedule_reload`).
+
+        Tests and shutdown await it; production callers fire-and-forget via the
+        `_log_task_exception` done callback.
+        """
+
+        self._reloading = False
+        """Whether `/reload` is refreshing mutable runtime state.
+
+        Keeps submitted prompts queued for the entire reload, including its
+        pre-restart discovery phases. A server restart only protects the final
+        phase, and allowing a prompt to start before it would let that restart
+        cancel the prompt's worker.
+        """
+
+        self._restart_requested_during_reload = False
+        """Whether an explicit `/restart` still needs a reload-owned respawn."""
+
         self._plugin_fingerprints: dict[str, _PluginFingerprint] | None = None
         """Rolling plugin-fingerprint baseline keyed by plugin id.
 
@@ -6514,6 +6799,33 @@ class DeepAgentsApp(App):
             )
             await self._mount_update_failure(exc)
 
+    def _update_splash_version(self, version: str) -> None:
+        """Show the installed version in the splash after an in-session update.
+
+        Call this only once the install is known to be the version a relaunch
+        will actually run: the shadowed-`dcode` paths deliberately leave the
+        old version on the banner, because a stale shim earlier on PATH means
+        relaunching keeps the old binary.
+
+        Repainting the splash is cosmetic, so a missing banner is logged rather
+        than raised — callers emit the authoritative success messaging around
+        this call and must not have it turned into a failure report.
+
+        Args:
+            version: The newly installed `deepagents-code` version.
+        """
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+        except NoMatches:
+            # The banner is composed once and never removed, so a miss here
+            # means it has silently vanished — surface it.
+            logger.warning("Welcome banner not found during splash version sync")
+            return
+        except ScreenStackError:
+            logger.debug("Screen stack empty during splash version sync", exc_info=True)
+            return
+        banner.update_version(version)
+
     async def _perform_app_upgrade(
         self,
         *,
@@ -6571,12 +6883,12 @@ class DeepAgentsApp(App):
         from deepagents_code._env_vars import DEBUG_UPDATE
         from deepagents_code.update_check import (
             _PRERELEASE_UNSUPPORTED_MESSAGE,
+            create_update_log_file,
             detect_shadowed_dcode_safe,
-            format_dependency_changes,
             format_installed_age_suffix,
+            format_log_follow_command,
             format_release_age_parenthetical,
             format_shadowed_dcode_warning,
-            parse_dependency_changes,
             perform_upgrade,
             prerelease_upgrade_supported,
             upgrade_command,
@@ -6610,12 +6922,31 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped update install (debug mode)."),
             )
             return
-        success, output = await perform_upgrade(
+        # Mount the log hint *before* awaiting the upgrade: the whole point of
+        # replacing the post-upgrade dependency summary with a log pointer is
+        # that the user can follow the install while it streams. Creating the
+        # file eagerly (rather than just naming it) keeps that hint honest even
+        # when `perform_upgrade` refuses before spawning an installer. Run it
+        # off the event loop — it globs and unlinks in the cache dir — and
+        # tolerate a `None` so a log-path failure can't turn an otherwise fine
+        # upgrade into an "/update failed" report.
+        log_path = await asyncio.to_thread(create_update_log_file)
+        if log_path is not None:
+            await self._mount_message(
+                AppMessage(f"Update log: {format_log_follow_command(log_path)}"),
+            )
+        success, output, installed = await perform_upgrade(
+            log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
         )
         if success:
             self._update_available = (False, None)
+            # The install command is unpinned, so the installer may have
+            # resolved a release newer than the one the update check observed
+            # (a release published while the session sat open). Report what
+            # actually landed on disk rather than the stale check result.
+            upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
             # `dcode` from a former `pipx` install). Detect that before
@@ -6628,27 +6959,18 @@ class DeepAgentsApp(App):
             if shadow is None:
                 await self._mount_message(
                     AppMessage(
-                        f"Updated to v{latest}. Quit and relaunch dcode "
+                        f"Updated to v{upgraded_to}. Quit and relaunch dcode "
                         "to use the new version."
                     ),
                 )
+                # After the success line: this method runs inside the caller's
+                # `except Exception -> _mount_update_failure`, so a cosmetic
+                # repaint must not be able to precede (and replace) the
+                # success message with an "/update failed" report.
+                self._update_splash_version(upgraded_to)
             else:
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
-                )
-            # The upgrade re-resolves the whole environment, so surface any
-            # dependency bumps that rode along with the dcode release.
-            dep_changes = [
-                change
-                for change in parse_dependency_changes(output)
-                if change.name != "deepagents-code"
-            ]
-            if dep_changes:
-                await self._mount_message(
-                    AppMessage(
-                        "Dependencies updated:\n"
-                        f"{format_dependency_changes(dep_changes)}",
-                    ),
                 )
         else:
             cmd = upgrade_command(
@@ -6656,8 +6978,16 @@ class DeepAgentsApp(App):
                 version=pin_upgrade_version,
             )
             detail = f": {output[:200]}" if output else ""
+            # Repeat the log path here rather than relying on the hint above:
+            # a failed resolution streams hundreds of lines through the TUI in
+            # between, so by now that hint has scrolled away — and `detail` is
+            # truncated, making the full log the only complete record. Matches
+            # the sibling install-failure branches, which all end in `Log:`.
+            log_line = f"\nLog: {log_path}" if log_path is not None else ""
             await self._mount_message(
-                AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
+                AppMessage(
+                    f"Auto-update failed{detail}{log_line}\nRun manually: {cmd}",
+                ),
             )
 
     async def _refresh_dependencies(
@@ -7751,7 +8081,15 @@ class DeepAgentsApp(App):
             inputs += self._inflight_turn_stats.input_tokens
             reads += self._inflight_turn_stats.cache_read_tokens
             writes += self._inflight_turn_stats.cache_write_tokens
-        self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
+        # The usage worker can fire while `/reload` has the status bar
+        # mid-compose or mid-teardown, before `#cache-display` is queryable.
+        # `set_cache_tokens` also touches the DOM, so skip both on that race;
+        # the next usage update (or `_reset_thread_usage` on the new thread)
+        # repaints.
+        with suppress(NoMatches):
+            cache_display = self._status_bar.query_one("#cache-display")
+            cache_display.visible = self._thread_has_completed_turn and writes > 0
+            self._status_bar.set_cache_tokens(reads, writes, input_tokens=inputs)
 
     def _set_session_cost(
         self,
@@ -7952,6 +8290,7 @@ class DeepAgentsApp(App):
                         f"{priced_request_count} of {request_count} recorded requests "
                         f"{included_verb} included."
                     ),
+                    "",
                     *self._unpriced_request_lines(),
                 ]
             )
@@ -7979,7 +8318,7 @@ class DeepAgentsApp(App):
             and self._thread_stats.per_kind[kind].priced_request_count
         ]
         if priced_kinds:
-            lines.append("By type since this thread was loaded:")
+            lines.extend(["", "By type since this thread was loaded:"])
             for kind, kind_stats in priced_kinds:
                 lines.append(
                     f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
@@ -7990,7 +8329,7 @@ class DeepAgentsApp(App):
             if model.priced_request_count
         ]
         if priced_models:
-            lines.append("By model since this thread was loaded:")
+            lines.extend(["", "By model since this thread was loaded:"])
             for model in priced_models:
                 label = (
                     f"{model.provider}:{model.model_name}"
@@ -8409,7 +8748,10 @@ class DeepAgentsApp(App):
 
         if not container.query(f"#{_MESSAGE_TOP_SPACER_ID}"):
             top = Static("", id=_MESSAGE_TOP_SPACER_ID, classes=_MESSAGE_SPACER_CLASS)
-            first = container.children[0] if container.children else None
+            first = next(
+                (child for child in container.children if child.parent is container),
+                None,
+            )
             if first is None:
                 await container.mount(top)
             else:
@@ -10498,6 +10840,13 @@ class DeepAgentsApp(App):
             await self._process_message(value, mode)
             return
 
+        # A second `/reload` must reach `_schedule_reload` immediately so it
+        # can coalesce with the in-flight reload instead of waiting in the
+        # normal queue and starting another destructive refresh afterward.
+        if mode == "command" and normalized == "/reload" and self._reloading:
+            await self._process_message(value, mode)
+            return
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -10518,6 +10867,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or self._shell_running
             or self._modal_command_running()
+            or self._reloading
             or self._connecting
             or self._startup_sequence_running
             or self._server_startup_error is not None
@@ -10788,7 +11138,7 @@ class DeepAgentsApp(App):
                         AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
-                    msg = AssistantMessage(f"```text\n{output}\n```")
+                    msg = AssistantMessage(f"```text\n{output}\n```", local_only=True)
                     await self._mount_message(msg)
                     await msg.write_initial_content()
             else:
@@ -13875,7 +14225,7 @@ class DeepAgentsApp(App):
             self._server_proc.update_env(
                 **{env_key: env_value},
             )
-            restarted = await self._respawn_server(
+            restart_result = await self._respawn_server(
                 log_message=("Server restart failed while changing max iterations"),
                 mcp_failure_log=(
                     "MCP metadata preload after max-iterations change failed"
@@ -13884,7 +14234,7 @@ class DeepAgentsApp(App):
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
                 ),
             )
-            if not restarted:
+            if not restart_result.restarted:
                 self._rubric_max_iterations = previous
                 if self._server_kwargs is not None:
                     self._server_kwargs["rubric_max_iterations"] = previous
@@ -14001,7 +14351,7 @@ class DeepAgentsApp(App):
             self._server_proc.update_env(
                 **{env_key: env_value},
             )
-            restarted = await self._respawn_server(
+            restart_result = await self._respawn_server(
                 log_message=(
                     f"Server restart failed while changing {label.lower()} model"
                 ),
@@ -14012,7 +14362,7 @@ class DeepAgentsApp(App):
                     "MCP tool metadata could not be refreshed. Use /mcp to check."
                 ),
             )
-            if not restarted:
+            if not restart_result.restarted:
                 self._rubric_model = previous
                 if self._server_kwargs is not None:
                     self._server_kwargs["rubric_model"] = previous
@@ -14112,6 +14462,10 @@ class DeepAgentsApp(App):
 
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
+            # Sample before `_clear_messages` below empties the store: this
+            # describes the thread being left, not the fresh one. See
+            # `_store_has_server_output`.
+            outgoing_had_agent_output = self._store_has_server_output()
             await _wait_for_session_end(
                 self._hooks.on_session_end(SessionEndCause.CLEAR)
             )
@@ -14154,7 +14508,8 @@ class DeepAgentsApp(App):
                     thread_id=new_thread_id,
                 )
                 await self._mount_previous_thread_hint(
-                    self._session_state.previous_thread_id
+                    self._session_state.previous_thread_id,
+                    had_agent_output=outgoing_had_agent_output,
                 )
                 await self._reload_hooks()
                 if not await self._run_session_start_hook(SessionStartCause.CLEAR):
@@ -14407,210 +14762,7 @@ class DeepAgentsApp(App):
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
-
-            # Snapshot pre-reload skill names so the report can show diff.
-            old_skill_names = {s["name"] for s in self._discovered_skills}
-
-            try:
-                changes = settings.reload_from_environment()
-
-                from deepagents_code.model_config import clear_caches
-
-                clear_caches()
-                self._sync_status_model()
-            except (OSError, ValueError):
-                logger.exception("Failed to reload configuration")
-                await self._mount_message(
-                    AppMessage(
-                        "Failed to reload configuration. Check your .env "
-                        "file and environment variables for syntax errors, "
-                        "then try again.",
-                    ),
-                )
-                return
-
-            # Reload user themes from config.toml and re-register with Textual
-            theme_reload_ok = True
-            try:
-                theme.reload_registry()
-                self._register_custom_themes()
-            except Exception:
-                theme_reload_ok = False
-                logger.warning("Failed to reload user themes", exc_info=True)
-
-            # Re-resolve and apply the theme preference so a per-terminal or
-            # global default saved by another session is picked up. This
-            # re-syncs to on-disk config using the same resolution as startup
-            # (env -> [ui.terminal_themes][TERM_PROGRAM] -> [ui].theme ->
-            # default), which intentionally overrides an unsaved in-session
-            # `/theme` choice. Guarded on the registry reload succeeding since
-            # the target theme must be registered before it can be applied.
-            theme_switched_to: str | None = None
-            if theme_reload_ok:
-                try:
-                    new_theme = _load_theme_preference()
-                    if new_theme != self.theme and new_theme in theme.get_registry():
-                        self.theme = new_theme
-                        self.sync_terminal_background()
-                        self.refresh_css(animate=False)
-                        theme_switched_to = new_theme
-                except Exception:
-                    logger.warning(
-                        "Failed to re-apply theme preference on reload",
-                        exc_info=True,
-                    )
-
-            # Re-discover skills so autocomplete reflects any new/removed
-            # skills. Run via the same exclusive-group worker used at
-            # startup so any in-flight startup discovery is cancelled
-            # rather than racing this one, then await its completion so
-            # the report can include the diff.
-            skill_worker = self.run_worker(
-                self._discover_skills(),
-                exclusive=True,
-                group="startup-skill-discovery",
-            )
-            await skill_worker.wait()
-            discovery_ok = skill_worker.result is True
-            new_skill_names = {s["name"] for s in self._discovered_skills}
-            added_skills = sorted(new_skill_names - old_skill_names)
-            removed_skills = sorted(old_skill_names - new_skill_names)
-
-            if changes:
-                report = "Configuration reloaded. Changes:\n" + "\n".join(
-                    f"  - {change}" for change in changes
-                )
-            else:
-                report = "Configuration reloaded. No changes detected."
-            report += "\nModel config caches cleared."
-            if theme_reload_ok:
-                report += "\nTheme registry reloaded."
-                if theme_switched_to is not None:
-                    entry = theme.get_registry().get(theme_switched_to)
-                    label = entry.label if entry is not None else theme_switched_to
-                    report += f"\nSwitched theme to {label}."
-            else:
-                report += (
-                    "\nTheme registry reload failed. Check config.toml for errors."
-                )
-            if not discovery_ok:
-                # Diff is meaningless when discovery failed: prior cache
-                # was preserved, so old vs. new is identical and
-                # `Skills reloaded. No changes detected.` would be a lie.
-                report += (
-                    "\nSkill re-discovery failed; existing /skill: list left as-is."
-                )
-            elif added_skills or removed_skills:
-                skill_lines = []
-                if added_skills:
-                    skill_lines.append(f"  - Added: {', '.join(added_skills)}")
-                if removed_skills:
-                    skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
-                report += "\nSkills updated:\n" + "\n".join(skill_lines)
-
-            # Rediscover plugins and restart the owned server so plugin MCP config
-            # is picked up without a separate slash command.
-            from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
-            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
-
-            try:
-                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
-                    self._discover_plugins_with_fingerprints
-                )
-            except Exception:
-                # User and project hooks still reload when plugin discovery fails.
-                await self._reload_hooks(plugins=())
-                logger.exception("Failed to discover plugins during /reload")
-                report += "\nCouldn't read plugin state; run /reload to be safe."
-            else:
-                # Server-owned events are fixed when the server starts, so refresh
-                # hooks from this same plugin snapshot before any restart.
-                plugins = plugin_result.plugins
-                await self._reload_hooks(plugins=plugins)
-                old_plugin_fingerprints = self._plugin_fingerprints
-                self._plugin_fingerprints = new_plugin_fingerprints
-                discovered_plugin_ids = frozenset(
-                    plugin.plugin_id for plugin in plugins
-                )
-                plugin_count = len(plugins)
-                mcp_configs = plugin_mcp_configs(plugins)
-                mcp_count = sum(
-                    len(servers)
-                    for config in mcp_configs
-                    if isinstance((servers := config.get("mcpServers")), dict)
-                )
-                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
-                hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
-                report += (
-                    f"\nPlugins: {plugin_count} plugin"
-                    f"{'s' if plugin_count != 1 else ''} · "
-                    f"{plugin_skill_count} skill"
-                    f"{'s' if plugin_skill_count != 1 else ''} · "
-                    f"{mcp_count} plugin MCP server"
-                    f"{'s' if mcp_count != 1 else ''} · "
-                    f"{hook_count} hook{'s' if hook_count != 1 else ''}"
-                )
-                if old_plugin_fingerprints is not None:
-                    old_ids = set(old_plugin_fingerprints)
-                    new_ids = set(new_plugin_fingerprints)
-                    added_count = len(new_ids - old_ids)
-                    removed_count = len(old_ids - new_ids)
-                    changed_count = sum(
-                        self._plugin_fingerprint_changed(
-                            old_plugin_fingerprints[plugin_id],
-                            new_plugin_fingerprints[plugin_id],
-                        )
-                        for plugin_id in old_ids & new_ids
-                    )
-                    change_parts = []
-                    for count, label in (
-                        (added_count, "added"),
-                        (removed_count, "removed"),
-                        (changed_count, "changed"),
-                    ):
-                        if count:
-                            noun = "plugin" if count == 1 else "plugins"
-                            change_parts.append(f"{count} {noun} {label}")
-                    if change_parts:
-                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
-                    else:
-                        report += "\nPlugin changes: no changes detected."
-                    # Reads each added plugin's MCP config from disk; keep it
-                    # off the UI thread like the discovery scan above.
-                    login_labels = await asyncio.to_thread(
-                        self._plugin_login_labels,
-                        plugins,
-                        new_ids - old_ids,
-                    )
-                    for label in login_labels:
-                        report += f"\nSign in to {label} via `/mcp`."
-                if plugin_result.warnings:
-                    report += (
-                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
-                        "during load."
-                    )
-
-                restarted = False
-                if self._server_proc is not None and self._server_kwargs is not None:
-                    if self._agent_running and self._agent_worker:
-                        self._cancel_worker(self._agent_worker)
-                        # Via `_set_agent_running` so the quiescence event is
-                        # released with the flag; a bare assignment leaves
-                        # `_agent_quiescent` cleared.
-                        self._set_agent_running(False)
-                    else:
-                        self._discard_queue()
-                    restarted = await self._restart_server_manual()
-                    if restarted:
-                        self._session_plugin_ids = discovered_plugin_ids
-                        report += "\nAgent server restarted for plugin MCP."
-                    else:
-                        report += (
-                            "\nAgent server was not restarted; plugin MCP may be stale."
-                        )
-
-            await self._mount_message(AppMessage(report))
-            await self._maybe_start_deferred_server_from_default()
+            self._schedule_reload()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
@@ -14919,6 +15071,359 @@ class DeepAgentsApp(App):
                 "and is saved as UTF-8.",
             )
         return content
+
+    def _schedule_reload(self) -> asyncio.Task[None]:
+        """Run `/reload` off the Textual message pump.
+
+        The reload body awaits workers and `asyncio.to_thread` calls (config,
+        theme, skill, plugin, and hook refreshes, plus a possible server
+        restart), so awaiting it inline in `_handle_command` blocks key events
+        from reaching the chat input for its whole duration. Detaching lets
+        the pump keep routing keys while `_reloading` queues submissions for
+        the entire refresh, before and during any server restart.
+
+        `_schedule_off_message_pump` is deliberately not used: its single
+        global slot is for modal-opening continuations, `/reload` opens no
+        modal, and the "answer the pending prompt first" rejection that slot
+        can produce would be a lie here.
+
+        Returns:
+            The reload task, so tests can await completion.
+        """
+        reload_task = self._reload_task
+        if self._reloading and reload_task is not None and not reload_task.done():
+            self.notify("Reload already in progress.", severity="information")
+            return reload_task
+
+        # Set the guard before scheduling: `create_task` does not run the
+        # coroutine inline, so otherwise a prompt or second reload can enter
+        # in the gap before `_run_reload` starts.
+        self._reloading = True
+        task = asyncio.create_task(self._run_reload_sequence(), name="reload")
+        task.add_done_callback(_log_task_exception)
+        task.add_done_callback(self._finish_reload)
+        self._reload_task = task
+        return task
+
+    def _finish_reload(self, task: asyncio.Task[None]) -> None:
+        """Release the reload guard and resume prompts queued during reload.
+
+        Args:
+            task: The completed reload task.
+        """
+        if task is not self._reload_task:
+            return
+        self._reloading = False
+        if (
+            self._pending_messages
+            and not self._agent_running
+            and self._agent is not None
+        ):
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._process_next_from_queue()),
+            )
+
+    async def _run_reload_sequence(self) -> None:
+        """Run reload work, then honor restart requests it did not satisfy.
+
+        Raises:
+            asyncio.CancelledError: If app teardown cancels the active reload.
+        """
+        try:
+            await self._run_reload()
+        except asyncio.CancelledError:
+            self._restart_requested_during_reload = False
+            raise
+
+        if self._exiting:
+            self._restart_requested_during_reload = False
+            return
+        while self._restart_requested_during_reload:
+            self._restart_requested_during_reload = False
+            await self._run_restart_command(preserve_queue=True)
+
+    async def _run_reload(self) -> None:
+        """Refresh config, themes, skills, plugins, and hooks, then report.
+
+        Runs detached from the message pump (scheduled by `_schedule_reload`),
+        so it mounts its own failure message — the `_handle_command`
+        `try/except` no longer wraps it.
+        """
+        from deepagents_code.config import settings
+
+        try:
+            # Snapshot pre-reload state so the report can show diffs.
+            old_skill_names = {s["name"] for s in self._discovered_skills}
+            old_mcp_server_info = self._mcp_server_info
+
+            try:
+                changes = settings.reload_from_environment()
+
+                from deepagents_code.model_config import clear_caches
+
+                clear_caches()
+                self._sync_status_model()
+            except (OSError, ValueError):
+                logger.exception("Failed to reload configuration")
+                await self._mount_message(
+                    AppMessage(
+                        "Failed to reload configuration. Check your .env "
+                        "file and environment variables for syntax errors, "
+                        "then try again.",
+                    ),
+                )
+                return
+
+            # Reload user themes from config.toml and re-register with Textual
+            theme_reload_ok = True
+            try:
+                theme.reload_registry()
+                self._register_custom_themes()
+            except Exception:
+                theme_reload_ok = False
+                logger.warning("Failed to reload user themes", exc_info=True)
+
+            # Re-resolve and apply the theme preference so a per-terminal or
+            # global default saved by another session is picked up. This
+            # re-syncs to on-disk config using the same resolution as startup
+            # (env -> [ui.terminal_themes][TERM_PROGRAM] -> [ui].theme ->
+            # default), which intentionally overrides an unsaved in-session
+            # `/theme` choice. Guarded on the registry reload succeeding since
+            # the target theme must be registered before it can be applied.
+            theme_switched_to: str | None = None
+            if theme_reload_ok:
+                try:
+                    new_theme = _load_theme_preference()
+                    if new_theme != self.theme and new_theme in theme.get_registry():
+                        self.theme = new_theme
+                        self.sync_terminal_background()
+                        self.refresh_css(animate=False)
+                        theme_switched_to = new_theme
+                except Exception:
+                    logger.warning(
+                        "Failed to re-apply theme preference on reload",
+                        exc_info=True,
+                    )
+
+            # Re-discover skills so autocomplete reflects any new/removed
+            # skills. Run via the same exclusive-group worker used at
+            # startup so any in-flight startup discovery is cancelled
+            # rather than racing this one, then await its completion so
+            # the report can include the diff.
+            skill_worker = self.run_worker(
+                self._discover_skills(),
+                exclusive=True,
+                group="startup-skill-discovery",
+            )
+            await skill_worker.wait()
+            discovery_ok = skill_worker.result is True
+            new_skill_names = {s["name"] for s in self._discovered_skills}
+            added_skills = sorted(new_skill_names - old_skill_names)
+            removed_skills = sorted(old_skill_names - new_skill_names)
+
+            if changes:
+                report = "Configuration reloaded. Changes:\n" + "\n".join(
+                    f"  - {change}" for change in changes
+                )
+            else:
+                report = "Configuration reloaded. No changes detected."
+            report += "\nModel config caches cleared."
+            if theme_reload_ok:
+                report += "\nTheme registry reloaded."
+                if theme_switched_to is not None:
+                    entry = theme.get_registry().get(theme_switched_to)
+                    label = entry.label if entry is not None else theme_switched_to
+                    report += f"\nSwitched theme to {label}."
+            else:
+                report += (
+                    "\nTheme registry reload failed. Check config.toml for errors."
+                )
+            if not discovery_ok:
+                # Diff is meaningless when discovery failed: prior cache
+                # was preserved, so old vs. new is identical and
+                # `Skills reloaded. No changes detected.` would be a lie.
+                report += (
+                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                )
+            elif added_skills or removed_skills:
+                skill_lines = []
+                if added_skills:
+                    skill_lines.append(f"  - Added: {', '.join(added_skills)}")
+                if removed_skills:
+                    skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
+                report += "\nSkills updated:\n" + "\n".join(skill_lines)
+
+            # Rediscover plugins and restart the owned server so plugin MCP config
+            # is picked up without a separate slash command.
+            from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
+            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+
+            try:
+                plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
+                    self._discover_plugins_with_fingerprints
+                )
+            except Exception:
+                # User and project hooks still reload when plugin discovery fails.
+                await self._reload_hooks(plugins=())
+                logger.exception("Failed to discover plugins during /reload")
+                report += "\nCouldn't read plugin state; run /reload to be safe."
+            else:
+                # Server-owned events are fixed when the server starts, so refresh
+                # hooks from this same plugin snapshot before any restart.
+                plugins = plugin_result.plugins
+                await self._reload_hooks(plugins=plugins)
+                old_plugin_fingerprints = self._plugin_fingerprints
+                self._plugin_fingerprints = new_plugin_fingerprints
+                discovered_plugin_ids = frozenset(
+                    plugin.plugin_id for plugin in plugins
+                )
+                plugin_count = len(plugins)
+                mcp_configs = plugin_mcp_configs(plugins)
+                mcp_count = sum(
+                    len(servers)
+                    for config in mcp_configs
+                    if isinstance((servers := config.get("mcpServers")), dict)
+                )
+                plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
+                hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
+                report += (
+                    f"\nPlugins: {plugin_count} plugin"
+                    f"{'s' if plugin_count != 1 else ''} · "
+                    f"{plugin_skill_count} skill"
+                    f"{'s' if plugin_skill_count != 1 else ''} · "
+                    f"{mcp_count} plugin MCP server"
+                    f"{'s' if mcp_count != 1 else ''} · "
+                    f"{hook_count} hook{'s' if hook_count != 1 else ''}"
+                )
+                if old_plugin_fingerprints is not None:
+                    old_ids = set(old_plugin_fingerprints)
+                    new_ids = set(new_plugin_fingerprints)
+                    added_count = len(new_ids - old_ids)
+                    removed_count = len(old_ids - new_ids)
+                    changed_count = sum(
+                        self._plugin_fingerprint_changed(
+                            old_plugin_fingerprints[plugin_id],
+                            new_plugin_fingerprints[plugin_id],
+                        )
+                        for plugin_id in old_ids & new_ids
+                    )
+                    change_parts = []
+                    for count, label in (
+                        (added_count, "added"),
+                        (removed_count, "removed"),
+                        (changed_count, "changed"),
+                    ):
+                        if count:
+                            noun = "plugin" if count == 1 else "plugins"
+                            change_parts.append(f"{count} {noun} {label}")
+                    if change_parts:
+                        report += "\nPlugin changes: " + ", ".join(change_parts) + "."
+                    else:
+                        report += "\nPlugin changes: no changes detected."
+                    # Reads each added plugin's MCP config from disk; keep it
+                    # off the UI thread like the discovery scan above.
+                    login_labels = await asyncio.to_thread(
+                        self._plugin_login_labels,
+                        plugins,
+                        new_ids - old_ids,
+                    )
+                    for label in login_labels:
+                        report += f"\nSign in to {label} via `/mcp`."
+                if plugin_result.warnings:
+                    report += (
+                        f"\n{len(plugin_result.warnings)} plugin warning(s) "
+                        "during load."
+                    )
+
+                if self._server_proc is not None and self._server_kwargs is not None:
+                    if self._agent_running and self._agent_worker:
+                        # `/reload` runs detached, so submissions can queue
+                        # while discovery is in progress. `_cancel_worker()`
+                        # clears the queue, but these messages belong to the
+                        # reload rather than the cancelled agent turn.
+                        preserved = list(self._pending_messages)
+                        self._cancel_worker(self._agent_worker)
+                        # Via `_set_agent_running` so the quiescence event is
+                        # released with the flag; a bare assignment leaves
+                        # `_agent_quiescent` cleared.
+                        self._set_agent_running(False)
+                    else:
+                        # `/reload` now runs detached, so the user may have
+                        # submitted messages that queued while the reload was
+                        # busy. The restart's `_discard_queue()` would silently
+                        # drop them; snapshot and restore them instead. Only the
+                        # idle path reaches `_discard_queue()` directly; the
+                        # running-agent path snapshots before its cancellation.
+                        preserved = list(self._pending_messages)
+                        self._discard_queue()
+                    try:
+                        restart_result = await self._restart_server_manual_result()
+                    finally:
+                        self._restart_requested_during_reload = False
+                        if preserved:
+                            self._pending_messages.extendleft(reversed(preserved))
+                            self._sync_status_queued()
+                    if restart_result.restarted:
+                        self._session_plugin_ids = discovered_plugin_ids
+                        report += "\nAgent server restarted for plugin MCP."
+                        if restart_result.mcp_status == "disabled":
+                            # `--no-mcp`: there is nothing to refresh, so an
+                            # empty diff is the truth rather than an unknown.
+                            # Says *why* rather than "no changes detected" —
+                            # the plugin count printed above mentions MCP
+                            # servers, and a bare no-changes line next to it
+                            # reads as though they were loaded.
+                            report += (
+                                "\nMCP is disabled for this session (--no-mcp); "
+                                "no servers were loaded."
+                            )
+                        else:
+                            report += "\n" + _format_mcp_server_changes(
+                                old_mcp_server_info,
+                                restart_result.mcp_server_info,
+                                restart_result.mcp_error,
+                            )
+                    else:
+                        report += (
+                            "\nAgent server was not restarted; plugin MCP may be stale."
+                        )
+                elif self._server_kwargs is None:
+                    # Attached to an externally managed server: this session
+                    # cannot respawn it, so MCP config was never re-read. The
+                    # plugin line above still counts plugin MCP servers, which
+                    # would otherwise imply the reload picked them up.
+                    report += (
+                        "\nMCP servers unchanged; this session uses a remote "
+                        "server and cannot reload MCP config."
+                    )
+                # Deferred local startup (app-owned kwargs, no process yet):
+                # not a remote session, so don't claim it is one — the
+                # deferred start below may boot the server from the config
+                # this reload just read, which would contradict the report.
+                # Keyed on the session's `no_mcp` kwarg rather than absent
+                # preload kwargs so the reason matches how `_respawn_server`
+                # derives the same status.
+                elif self._server_kwargs.get("no_mcp"):
+                    # Mirrors the `--no-mcp` line in the restart branch.
+                    report += (
+                        "\nMCP is disabled for this session (--no-mcp); "
+                        "no servers were loaded."
+                    )
+                else:
+                    report += (
+                        "\nMCP server changes couldn't be determined; the "
+                        "local server hasn't started yet. If startup "
+                        "succeeds, it loads the reloaded config — use /mcp "
+                        "to check."
+                    )
+
+            await self._mount_message(AppMessage(report))
+            await self._maybe_start_deferred_server_from_default()
+        except Exception:
+            logger.exception("Detached /reload failed unexpectedly")
+            await self._mount_message(
+                ErrorMessage("Reload failed unexpectedly. Check the debug log."),
+            )
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.
@@ -16517,6 +17022,7 @@ class DeepAgentsApp(App):
             or not self._pending_messages
             or self._exit
             or self._exiting
+            or self._reloading
             or self._connecting
         ):
             return
@@ -16549,6 +17055,7 @@ class DeepAgentsApp(App):
             or self._goal_state_mutating
             or self._shell_running
             or self._modal_command_running()
+            or self._reloading
         )
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
@@ -17056,16 +17563,49 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _mount_previous_thread_hint(self, previous_thread_id: str | None) -> bool:
+    def _store_has_server_output(self) -> bool:
+        """Return whether the live message store holds server-backed output.
+
+        Feeds `_mount_previous_thread_hint`'s `had_agent_output` gate; see
+        `_SERVER_OUTPUT_MESSAGE_TYPES` for why `USER` rows do not count.
+        `assistant_local_only` rows are excluded too: non-incognito `!` shell
+        output borrows `AssistantMessage` to render, so the row type alone
+        would let a thread that only ran a shell command look like agent work.
+
+        Callers must read this *before* `_clear_messages` empties the store —
+        it describes the thread being left, not the one being loaded. Every
+        current caller snapshots it into a local at the top of its handler for
+        that reason; moving the read down next to its use would make the gate
+        permanently `False`.
+
+        Returns:
+            `True` when the store holds at least one message type implying the
+            user did conversational work in this thread.
+        """
+        return any(
+            msg.type in _SERVER_OUTPUT_MESSAGE_TYPES and not msg.assistant_local_only
+            for msg in self._message_store.get_all_messages()
+        )
+
+    async def _mount_previous_thread_hint(
+        self,
+        previous_thread_id: str | None,
+        *,
+        had_agent_output: bool,
+    ) -> bool:
         """Point the user back at the thread the session just left.
 
         Shared by every path that moves the session off a thread: `/clear`,
         `/force-clear`, a mid-session thread switch, and both agent swaps.
 
-        The hint is suppressed wherever `/threads -r` would dead-end: threads
-        with no checkpoint row (`-r` can't resume them), threads whose owning
-        agent can't be determined, and cross-agent threads on remote-server
-        sessions, which cannot perform the agent restart `-r` would need. The
+        The hint is suppressed in two situations. First, where `/threads -r`
+        would dead-end: threads with no checkpoint row (`-r` can't resume
+        them), threads whose owning agent can't be determined, and cross-agent
+        threads on remote-server sessions, which cannot perform the agent
+        restart `-r` would need. Second, where the thread holds no
+        conversational work to return to (`had_agent_output`) — a checkpoint
+        row alone is too weak a signal, since `/clear` plus a server-mode
+        thread registration produces one for a thread the user never used. The
         return value lets callers fall back to a heavier remedy — the agent
         swap offers a relaunch command — when `-r` can't reach the thread.
 
@@ -17073,12 +17613,30 @@ class DeepAgentsApp(App):
             previous_thread_id: The thread the session left. Tolerates `None`
                 by mounting nothing, since the underlying field is nullable
                 before the first reset; all current callers pass a real id.
+            had_agent_output: Whether that thread saw server-backed output,
+                from `_store_has_server_output` read before the store was
+                cleared. Keyword-only and required so a new caller has to
+                decide when to sample it rather than inherit a wrong default.
 
         Returns:
             `True` when a hint was mounted, `False` when it was suppressed or
             could not be rendered.
         """
         if not previous_thread_id:
+            return False
+
+        if not had_agent_output:
+            # `info`, not `debug`, for the same reason as the store-failure
+            # branch below: the always-on ring buffer behind the Debug Console
+            # captures INFO and above, and at `debug` a vanished hint leaves no
+            # trace. Deliberately does not report a store count — by the time
+            # `_resume_thread` reaches here the store holds the *incoming*
+            # thread's history, so any count would describe the wrong thread.
+            logger.info(
+                "Suppressing previous-thread hint for %s: no server-backed "
+                "output was recorded in it",
+                previous_thread_id,
+            )
             return False
 
         import sqlite3
@@ -17326,13 +17884,16 @@ class DeepAgentsApp(App):
                 thread_id=history_thread_id,
             )
 
-            # 10. Scroll once to bottom after history loads
-            def scroll_to_end() -> None:
-                with suppress(NoMatches):
-                    chat = self.query_one("#chat", VerticalScroll)
-                    chat.scroll_end(animate=False, immediate=True)
-
-            self.set_timer(0.1, scroll_to_end)
+            # 10. Scroll once to bottom after history loads. Leave `immediate`
+            # at its default: `scroll_end()` defers via `call_after_refresh` so
+            # `max_scroll_y` is read once layout has settled. With
+            # `immediate=True` it reads bounds computed before the just-mounted
+            # history is laid out and strands the view short of the newest
+            # message. Validated against Textual 8.2.8; guarded by
+            # `TestResumeScrollPosition`.
+            with suppress(NoMatches):
+                chat = self.query_one("#chat", VerticalScroll)
+                chat.scroll_end(animate=False)
 
         except Exception as e:  # Resilient history loading
             logger.exception(
@@ -18875,6 +19436,13 @@ class DeepAgentsApp(App):
         restart_task = self._restart_respawn_task
         if restart_task is not None and not restart_task.done():
             restart_tasks.add(restart_task)
+        # `/reload` runs in a detached task and may itself respawn the owned
+        # server. Treat it like other restart-capable work: cancel and settle
+        # it before stopping the server so it cannot rebuild the agent after
+        # teardown begins.
+        reload_task = self._reload_task
+        if reload_task is not None and not reload_task.done():
+            restart_tasks.add(reload_task)
         should_wait_for_restart = bool(restart_tasks)
         # Already cancelled above; awaited in the bounded teardown phase below so
         # a continuation's cancellation handler (which may be killing a `uv`
@@ -21164,20 +21732,9 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode_key if self._session_state else None
         )
         # Only offer a resume hint if the previous thread produced agent-side
-        # output. `USER` alone is not enough: local-only flows (`/update`,
-        # `!shell`, most slash commands) mount a `UserMessage` widget without
-        # ever invoking the server, so no checkpoint exists and `-r <thread>`
-        # would fail. `ASSISTANT` / `TOOL` / `SKILL` entries only land in the
-        # store after a server round-trip, which implies a checkpoint row.
-        checkpoint_signal_types = {
-            MessageType.ASSISTANT,
-            MessageType.TOOL,
-            MessageType.SKILL,
-        }
-        previous_thread_has_agent_output = any(
-            msg.type in checkpoint_signal_types
-            for msg in self._message_store.get_all_messages()
-        )
+        # output; see `_SERVER_OUTPUT_MESSAGE_TYPES`. Sampled here, before the
+        # Phase 1 teardown below clears the store.
+        previous_thread_has_agent_output = self._store_has_server_output()
         server_proc = self._server_proc
         if server_proc is None:
             # Guarded in _switch_agent, but the worker runs in the next tick
@@ -21485,7 +22042,10 @@ class DeepAgentsApp(App):
             # `from_markup` so a thread ID with stray brackets can't corrupt
             # rendering. See checkpoint-gating rationale on
             # `previous_thread_has_agent_output` above.
-            hinted = await self._mount_previous_thread_hint(previous_thread_id)
+            hinted = await self._mount_previous_thread_hint(
+                previous_thread_id,
+                had_agent_output=previous_thread_has_agent_output,
+            )
             if not hinted and previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
                     "[dim]Relaunch with[/dim] $command -r $thread "
@@ -22380,7 +22940,7 @@ class DeepAgentsApp(App):
                             show_toast=not progress_modal_visible,
                         )
                         return
-                    success, output = await perform_upgrade(
+                    success, output, installed = await perform_upgrade(
                         progress=screen.append_line,
                         log_path=log_path,
                         target_version=payload.latest,
@@ -22408,11 +22968,22 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
+                        # The install command is unpinned, so the installer
+                        # may have resolved a release newer than the one this
+                        # notification advertised (a release published while
+                        # the notice sat open). Report what actually landed on
+                        # disk rather than the stale payload version.
+                        upgraded_to = installed or payload.latest
+                        # After `mark_success`: the modal stays un-dismissable
+                        # until it is marked done, and this worker runs with
+                        # Textual's default `exit_on_error`, so a cosmetic
+                        # repaint must not be able to strand the modal.
                         screen.mark_success()
+                        self._update_splash_version(upgraded_to)
                         if progress_modal_visible:
                             return
                         self.notify(
-                            f"Updated to v{payload.latest}. "
+                            f"Updated to v{upgraded_to}. "
                             "Quit and relaunch dcode to use the new version.",
                             severity="information",
                             timeout=10,
@@ -24408,16 +24979,39 @@ class DeepAgentsApp(App):
         server subprocess. Used as a recovery escape hatch when the
         server wedges.
 
-        Cancels any in-flight agent work and drops the queued message
-        backlog before respawning. The streaming HTTP connection to the
-        dying subprocess would otherwise raise into the Textual reactor
+        A direct restart cancels in-flight agent work and drops the queued
+        message backlog before respawning. The streaming HTTP connection to
+        the dying subprocess would otherwise raise into the Textual reactor
         after the new server advertises ready, leaving the UI wedged.
 
         Args:
             command: Raw command string for echoing back to chat.
         """
-        await self._mount_message(UserMessage(command))
+        # Snapshot active reload state before mounting the command echo, which
+        # yields to the reload task. Recording the intent first lets that task
+        # consume or honor it even if it finishes while the message is mounted.
+        reload_task = self._reload_task
+        defer_restart = (
+            self._reloading and reload_task is not None and not reload_task.done()
+        )
+        if defer_restart:
+            self._restart_requested_during_reload = True
 
+        await self._mount_message(UserMessage(command))
+        if defer_restart:
+            await self._mount_message(
+                AppMessage("Reload already in progress; server restart requested.")
+            )
+            return
+
+        await self._run_restart_command()
+
+    async def _run_restart_command(self, *, preserve_queue: bool = False) -> None:
+        """Validate and schedule a restart without echoing another command.
+
+        Args:
+            preserve_queue: Keep prompts submitted during an active reload.
+        """
         # A duplicate `/restart` bypasses the normal input queue while the
         # first detached respawn is still connecting. Reject it before the
         # destructive setup below so prompts queued during that respawn are
@@ -24435,15 +25029,18 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
-        # discards the queued backlog too — those messages would otherwise
-        # fire against the freshly respawned agent silently. This restart *is*
-        # the reconnect, so suppress the dropped-reconnect warning: the respawn
-        # below reloads every on-disk MCP token regardless.
+        # Sever in-flight work bound to the dying subprocess. A direct restart
+        # drops the queued backlog, but a restart requested during `/reload`
+        # preserves prompts that the reload guard already accepted for later.
+        preserved = None
         if self._agent_running and self._agent_worker:
+            preserved = list(self._pending_messages) if preserve_queue else None
             self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
-        else:
+        elif not preserve_queue:
             self._discard_queue()
+        if preserved is not None:
+            self._pending_messages.extendleft(reversed(preserved))
+            self._sync_status_queued()
 
         if not await self._reload_configuration_for_restart():
             return
@@ -24573,14 +25170,28 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Restart complete."))
 
     async def _restart_server_manual(self) -> bool:
-        """Respawn the app-owned LangGraph server for `/restart`.
+        """Respawn the app-owned LangGraph server for a user-initiated restart.
+
+        Backs `/restart` and the post-install and web-search auto-restarts.
 
         Returns:
             Whether the server was restarted successfully.
         """
+        return (await self._restart_server_manual_result()).restarted
+
+    async def _restart_server_manual_result(self) -> _ServerRespawnResult:
+        """Respawn the app-owned server for a user-initiated restart.
+
+        `_restart_server_manual` wraps this for callers that need only the
+        boolean — `/restart` plus the post-install and web-search auto-restarts;
+        `/reload` uses the full result to diff MCP metadata.
+
+        Returns:
+            Restart status and refreshed MCP server metadata.
+        """
         return await self._respawn_server(
-            log_message="Manual /restart of server failed",
-            mcp_failure_log="MCP metadata preload after /restart failed",
+            log_message="User-initiated server restart failed",
+            mcp_failure_log="MCP metadata preload after user-initiated restart failed",
             mcp_failure_toast=(
                 "MCP tool metadata could not be refreshed. Use /mcp to check."
             ),
@@ -24645,11 +25256,13 @@ class DeepAgentsApp(App):
         mcp_failure_log: str,
         mcp_failure_toast: str,
         restart_timeout: float = 30.0,
-    ) -> bool:
+    ) -> _ServerRespawnResult:
         """Stop the app-owned server subprocess and rebuild the agent.
 
-        Used by `_restart_server_manual` (the `/restart` command) and
-        `_restart_server_for_mcp_refresh` (post-OAuth-login refresh).
+        Every path that respawns the app-owned server routes through here —
+        `/restart`, `/reload`, the post-install and web-search auto-restarts,
+        the post-OAuth-login MCP refresh, and goal/rubric model and
+        max-iteration changes.
 
         Args:
             log_message: Error log written when `server_proc.restart()`
@@ -24665,11 +25278,11 @@ class DeepAgentsApp(App):
                 deadlock the handler.
 
         Returns:
-            Whether the server was restarted successfully.
+            Restart status and refreshed MCP server metadata.
         """
         server_proc = self._server_proc
         if self._server_kwargs is None or server_proc is None:
-            return False
+            return _ServerRespawnResult(restarted=False)
 
         try:
             self._connecting = True
@@ -24694,33 +25307,73 @@ class DeepAgentsApp(App):
                 self._sync_status_connection()
                 logger.exception(log_message)
                 self.post_message(self.ServerStartFailed(error=exc))
-                return False
+                return _ServerRespawnResult(restarted=False)
 
             from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
             from deepagents_code.main import _preload_session_mcp_server_info
 
             mcp_info = None
-            try:
-                mcp_info = await _preload_session_mcp_server_info(
-                    **self._mcp_preload_kwargs,  # ty: ignore[invalid-argument-type]
+            mcp_error: str | None = None
+            mcp_status: _McpRefreshStatus = "unavailable"
+            if self._mcp_preload_kwargs is None:
+                # MCP is off for this session (`--no-mcp`). Splatting `None`
+                # would raise `TypeError` into the handler below, logging a
+                # traceback and toasting an MCP failure for a session that
+                # never asked for MCP.
+                #
+                # Confirmed against the session's own flag rather than trusting
+                # absent kwargs as a proxy for it: `disabled` makes `/reload`
+                # emit an unconditional all-clear, so a session that somehow has
+                # MCP live but no preload kwargs must degrade to the pessimistic
+                # value instead of fabricating a clean bill of health.
+                mcp_status = (
+                    "disabled" if self._server_kwargs.get("no_mcp") else "unavailable"
                 )
-            except Exception as exc:
-                logger.exception(mcp_failure_log)
-                self.notify(
-                    f"{mcp_failure_toast} ({type(exc).__name__})",
-                    severity="warning",
-                    markup=False,
-                )
+            else:
+                try:
+                    mcp_info = await _preload_session_mcp_server_info(
+                        **self._mcp_preload_kwargs,
+                    )
+                except Exception as exc:
+                    logger.exception(mcp_failure_log)
+                    mcp_error = f"{type(exc).__name__}: {exc}"
+                    self.notify(
+                        f"{mcp_failure_toast} ({mcp_error})",
+                        severity="warning",
+                        markup=False,
+                    )
+                else:
+                    # Keyed off the returned value, not merely off not raising:
+                    # the preload is typed `list[...] | None` and returns `None`
+                    # when its own `no_mcp` is set, which would otherwise pair
+                    # `fresh` with `None` and violate the contract the callers
+                    # rely on. Degrades to the pessimistic value, which reports
+                    # an indeterminate refresh rather than an all-clear.
+                    mcp_status = "fresh" if mcp_info is not None else "unavailable"
 
             def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
                 return _RemoteAgent(url=url, graph_name="agent")
+
+            # A failed refresh must not reach the UI as "zero servers": the
+            # `ServerReady` handler recomputes the status-bar counters and the
+            # `/mcp` viewer from this value, so `None` after a failure blanks
+            # every warning indicator and renders "No MCP servers configured" at
+            # the moment the app knows least — while the report line sends the
+            # user to that very screen. Carry the last-known snapshot forward;
+            # the warning toast above already says it may be stale. The returned
+            # result keeps `mcp_server_info=None` so `/reload` still reports the
+            # refresh as indeterminate rather than diffing a snapshot against
+            # itself and concluding nothing changed.
+            ready_mcp_info = mcp_info
+            if mcp_status == "unavailable":
+                ready_mcp_info = self._mcp_server_info
 
             self._agent = _build_agent(server_proc.url)
             self.post_message(
                 self.ServerReady(
                     agent=self._agent,
                     server_proc=server_proc,
-                    mcp_server_info=mcp_info,
+                    mcp_server_info=ready_mcp_info,
                 ),
             )
         except BaseException:
@@ -24729,7 +25382,12 @@ class DeepAgentsApp(App):
             self._sync_status_connection()
             raise
         else:
-            return True
+            return _ServerRespawnResult(
+                restarted=True,
+                mcp_server_info=mcp_info,
+                mcp_status=mcp_status,
+                mcp_error=mcp_error,
+            )
         finally:
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
@@ -25798,6 +26456,11 @@ class DeepAgentsApp(App):
         prev_previous_thread = self._session_state.previous_thread_id
         prev_cwd = Path(self._cwd)
 
+        # Not rollback state, unlike the block above: sampled here because
+        # `_clear_messages` further down empties the store, and this has to
+        # describe the outgoing thread. See `_store_has_server_output`.
+        previous_thread_has_agent_output = self._store_has_server_output()
+
         cwd_choice = await self._offer_thread_cwd_switch(
             thread_id,
             restart_server=True,
@@ -25883,8 +26546,14 @@ class DeepAgentsApp(App):
             # just left — the same affordance `/clear` offers. Deliberately not
             # described as sitting under the "Resumed thread" note: that note is
             # only mounted on `_load_thread_history`'s happy path, so an empty
-            # or failed load leaves the hint under something else.
-            await self._mount_previous_thread_hint(prev_session_thread)
+            # or failed load leaves the hint under something else. Suppressed
+            # entirely for a thread the user did no work in — chiefly the
+            # `/clear` then bare `/threads -r` round trip, where the thread
+            # being left was created moments ago and never used.
+            await self._mount_previous_thread_hint(
+                prev_session_thread,
+                had_agent_output=previous_thread_has_agent_output,
+            )
 
             # Landing on a new thread re-arms the same-thread toast, so stepping
             # back to a thread and re-selecting it announces itself again.

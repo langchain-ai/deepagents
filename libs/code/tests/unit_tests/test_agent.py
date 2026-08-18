@@ -5060,15 +5060,15 @@ class TestCreateCliAgentInterpreterWiring:
 
         assert agent is not None
 
-    def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
-        """Auto is refused (no middleware) in a non-interactive session."""
+    def test_auto_mode_wires_for_local_acp(self, tmp_path: Path) -> None:
+        """Local ACP can install classifier-backed Auto without the TUI."""
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
 
         middleware = self._capture_middleware(
             tmp_path, auto_mode_enabled=True, interactive=False
         )
 
-        assert not any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+        assert any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
 
     def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) when a sandbox backend is active.

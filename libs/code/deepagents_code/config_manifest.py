@@ -1820,6 +1820,10 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set by the self-update restart to carry the launched command name into
         # the re-exec'd process; never user-configured.
         _env_vars.INVOKED_AS,
+        # Launch-time snapshot of `TERM_PROGRAM` recorded by `cli_main` so the
+        # resume hint can distinguish an explicit launch value from a `.env`
+        # file that sets `TERM_PROGRAM` after launch; never user-configured.
+        _env_vars.LAUNCH_TERM_PROGRAM,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

@@ -9,11 +9,15 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from pydantic import TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
+    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    QUESTION_TYPES,
     Question,
+    _requires_choices,
 )
 from deepagents_code.ask_user import (
     AskUserMiddleware,
@@ -69,6 +73,161 @@ class TestValidateQuestions:
                 ]
             )
 
+    def test_rejects_multi_select_without_choices(self) -> None:
+        with pytest.raises(ValueError, match=r"multi_select question .* non-empty"):
+            _validate_questions(
+                [{"question": "Pick some", "type": "multi_select", "choices": []}]
+            )
+
+    def test_rejects_blank_choice_value(self) -> None:
+        """A blank label would render as a selectable option with no answer."""
+        with pytest.raises(ValueError, match="missing or blank 'value'"):
+            _validate_questions(
+                [
+                    {
+                        "question": "Pick some",
+                        "type": "multi_select",
+                        "choices": [{"value": "logs"}, {"value": "  "}],
+                    }
+                ]
+            )
+
+    def test_rejects_non_string_choice_value(self) -> None:
+        # Deliberately ill-typed. On the tool path pydantic rejects this shape
+        # first, so this exercises `_validate_choices`' belt-and-braces content
+        # checks directly — see the note on the loop in `_validate_choices`.
+        questions = cast(
+            "list[Question]",
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": 1}],
+                }
+            ],
+        )
+        with pytest.raises(ValueError, match="missing or blank 'value'"):
+            _validate_questions(questions)
+
+    def test_rejects_multi_select_choice_containing_separator(self) -> None:
+        """Commas in values would make the joined answer ambiguous."""
+        with pytest.raises(ValueError, match="would make the joined answer ambiguous"):
+            _validate_questions(
+                [
+                    {
+                        "question": "Where?",
+                        "type": "multi_select",
+                        "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
+                    }
+                ]
+            )
+
+    def test_allows_comma_in_multiple_choice_value(self) -> None:
+        """Single-selection answers are unambiguous, so commas are fine there."""
+        _validate_questions(
+            [
+                {
+                    "question": "Where?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "Boston, MA"}],
+                }
+            ]
+        )
+
+    def test_rejects_unknown_question_type(self) -> None:
+        """Nothing outside `QuestionType` may reach the interrupt."""
+        questions = cast("list[Question]", [{"question": "Q?", "type": "multiselect"}])
+        with pytest.raises(ValueError, match="unsupported ask_user question type"):
+            _validate_questions(questions)
+
+    def test_rejects_non_boolean_required(self) -> None:
+        """Belt-and-braces for a raw, unparsed payload.
+
+        The tool path never reaches this check — `Question.required` is
+        `strict=True`, so pydantic rejects a non-boolean first (see
+        `test_tool_schema_rejects_non_boolean_required`, which pins that). This
+        covers a caller that bypasses pydantic.
+        """
+        questions = cast(
+            "list[Question]",
+            [{"question": "Q?", "type": "text", "required": "false"}],
+        )
+        with pytest.raises(ValueError, match="non-boolean 'required'"):
+            _validate_questions(questions)
+
+    def test_tool_schema_rejects_non_boolean_required(self) -> None:
+        """Pydantic must reject `required: "false"` rather than coercing it.
+
+        This is the check that actually runs in production, and it has to be
+        strict. `_ask_user_question_count` reads the *raw* tool args and requires
+        a real bool, so a coerced `"false"` would render the prompt, let the user
+        answer, and then return `None` — dropping every answer in the call as
+        same-turn authorization with no error.
+        """
+        adapter = TypeAdapter(list[Question])
+
+        # A real bool is still accepted, in both Python and JSON form.
+        assert adapter.validate_python(
+            [{"question": "Q?", "type": "text", "required": False}]
+        ) == [{"question": "Q?", "type": "text", "required": False}]
+        assert adapter.validate_json(
+            '[{"question": "Q?", "type": "text", "required": true}]'
+        ) == [{"question": "Q?", "type": "text", "required": True}]
+
+        for coercible in ("false", "true", 0, 1):
+            with pytest.raises(ValidationError):
+                adapter.validate_python(
+                    [{"question": "Q?", "type": "text", "required": coercible}]
+                )
+
+    def test_accepts_every_declared_question_type(self) -> None:
+        """Guards against a `QuestionType` member the validator rejects.
+
+        Note this cannot catch a member *added* to `QuestionType`, since the
+        fixture derives its shape from `CHOICE_QUESTION_TYPES`. That direction is
+        covered by `test_choice_question_types_covers_every_question_type` and by
+        the widget-side `assert_never` in `_QuestionWidget.compose`.
+        """
+        for question_type in sorted(QUESTION_TYPES):
+            question: dict[str, Any] = {
+                "question": "Q?",
+                "type": question_type,
+            }
+            if question_type in CHOICE_QUESTION_TYPES:
+                question["choices"] = [{"value": "a"}, {"value": "b"}]
+            _validate_questions([cast("Question", question)])
+
+    def test_choice_question_types_covers_every_question_type(self) -> None:
+        """`CHOICE_QUESTION_TYPES` must partition `QUESTION_TYPES`, not lag it.
+
+        Non-tautological in the direction that matters: a `QuestionType` member
+        missing from `_requires_choices` would pass `_validate_questions` with no
+        choices validation *and* make `_ask_user_question_count` return `None`
+        for any payload that does carry choices.
+        """
+        assert CHOICE_QUESTION_TYPES <= QUESTION_TYPES
+        assert {
+            question_type
+            for question_type in QUESTION_TYPES
+            if _requires_choices(cast("Any", question_type))
+        } == CHOICE_QUESTION_TYPES
+
+    def test_non_choice_question_types_reject_choices(self) -> None:
+        """Every non-choice type must refuse a `choices` list."""
+        for question_type in sorted(QUESTION_TYPES - CHOICE_QUESTION_TYPES):
+            questions = cast(
+                "list[Question]",
+                [
+                    {
+                        "question": "Q?",
+                        "type": question_type,
+                        "choices": [{"value": "a"}],
+                    }
+                ],
+            )
+            with pytest.raises(ValueError, match="must not define 'choices'"):
+                _validate_questions(questions)
+
     def test_accepts_valid_question_set(self) -> None:
         _validate_questions(
             [
@@ -77,6 +236,11 @@ class TestValidateQuestions:
                     "question": "Color?",
                     "type": "multiple_choice",
                     "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {
+                    "question": "Toppings?",
+                    "type": "multi_select",
+                    "choices": [{"value": "cheese"}, {"value": "olives"}],
                 },
             ]
         )

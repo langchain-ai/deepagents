@@ -74,6 +74,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
+    "baseten:deepseek-ai/DeepSeek-V4-Pro-0813": "DeepSeek V4 Pro 0813",
     "baseten:moonshotai/Kimi-K3": "Kimi K3",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.2": "GLM 5.2",
@@ -82,6 +83,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
         "DeepSeek V4 Flash 0731"
     ),
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "fireworks:accounts/fireworks/models/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
     "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
@@ -104,6 +106,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "openrouter:deepseek/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
     "openrouter:google/gemini-3.6-flash": "Gemini 3.6 Flash",
     "openrouter:moonshotai/kimi-k3": "Kimi K3",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
@@ -1501,17 +1504,23 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ) -> Content:
         """Build the display label for a model option.
 
+        A highlighted row is styled entirely by CSS (`$background` on
+        `$primary`), so no inline hue is emitted for it — only `bold` weight.
+        Semantic colors are reserved for unhighlighted rows, where they sit on
+        the list background and stay legible.
+
         Args:
             model_spec: The `provider:model` string.
-            selected: Whether this option is currently highlighted.
+            selected: Whether this option is currently highlighted. Suppresses
+                every inline color so the CSS highlight keeps its contrast.
             current: Whether this is the active model.
             auth_status: Provider auth/readiness status.
             is_default: Whether this is the spec stored for the screen's
                 `DefaultModelScope` — the main agent model under `/model`, but
                 e.g. the stored classifier under `/auto model`.
             status: Model status from profile (e.g., `'deprecated'`,
-                `'beta'`, `'alpha'`). `'deprecated'` renders in red;
-                other non-None values render in yellow.
+                `'beta'`, `'alpha'`). On an unhighlighted row `'deprecated'`
+                renders in red and other non-None values render in yellow.
             install_required: Whether the provider's integration package is not
                 installed; renders the spec dimmed since selecting it prompts
                 an install rather than switching immediately.
@@ -1533,15 +1542,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
         display = model_spec if display_name is None else display_name
-        # When selected, skip the inline primary color — CSS already flips the
-        # row to ($primary bg, $background fg). Keep `bold` so the default
-        # emphasis survives both states.
-        if install_required and not selected:
+        # A highlighted row is repainted by CSS as ($primary bg, $background
+        # fg), but an inline hue survives that flip and lands on the accent
+        # background — amber-on-blue is barely legible in either theme. So the
+        # selected row carries weight only, and the provider header keeps
+        # showing the same missing-credentials / not-installed state in words.
+        if selected:
+            spec = Content.styled(display, "bold") if is_default else Content(display)
+        elif install_required:
             spec = Content.styled(display, "dim")
         elif auth_status.blocks_start:
             spec = Content.styled(display, colors.warning)
-        elif is_default and selected:
-            spec = Content.styled(display, "bold")
         elif is_default:
             spec = Content.styled(display, f"bold {colors.primary}")
         else:
@@ -1561,12 +1572,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             default_suffix = Content.styled(" (default)", f"bold {colors.primary}")
         else:
             default_suffix = Content("")
-        if status == "deprecated":
-            status_suffix = Content.styled(" (deprecated)", colors.error)
-        elif status:
-            status_suffix = Content.styled(f" ({status})", colors.warning)
-        else:
+        if not status:
             status_suffix = Content("")
+        elif selected:
+            status_suffix = Content(f" ({status})")
+        elif status == "deprecated":
+            status_suffix = Content.styled(" (deprecated)", colors.error)
+        else:
+            status_suffix = Content.styled(f" ({status})", colors.warning)
         return Content.assemble(
             cursor, spec, provider_tag, suffix, default_suffix, status_suffix
         )

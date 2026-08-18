@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shlex
 import sys
 from typing import TYPE_CHECKING
 
@@ -25,11 +24,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-
-def _tail_log_command(log_path: Path | str) -> str:
-    """Return a copy-pasteable command for following a log file."""
-    return f"tail -f {shlex.quote(str(log_path))}"
 
 
 def run_install_command(args: argparse.Namespace) -> int:
@@ -87,6 +81,7 @@ def _run_install_package(*, name: str, yes: bool) -> int:
     from deepagents_code.update_check import (
         create_update_log_path,
         editable_package_hint,
+        format_log_follow_command,
         is_valid_package_name,
         perform_install_package,
     )
@@ -143,7 +138,7 @@ def _run_install_package(*, name: str, yes: bool) -> int:
         console.print(f"Installing package '{package}'...")
         pkg_log_path = create_update_log_path()
         console.print(
-            f"Install log: {_tail_log_command(pkg_log_path)}",
+            f"Install log: {format_log_follow_command(pkg_log_path)}",
             style="dim",
             highlight=False,
             markup=False,
@@ -193,6 +188,7 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
     from deepagents_code.update_check import (
         create_update_log_path,
         editable_extra_hint,
+        format_log_follow_command,
         install_extra_command,
         install_extras_command,
         is_valid_extra_name,
@@ -254,7 +250,7 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
         console.print(f"Installing extra '{extra}'...")
         log_path = create_update_log_path()
         console.print(
-            f"Install log: {_tail_log_command(log_path)}",
+            f"Install log: {format_log_follow_command(log_path)}",
             style="dim",
             highlight=False,
             markup=False,

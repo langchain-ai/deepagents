@@ -572,15 +572,39 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
+        Pattern matching follows the shared backend contract (aligned with
+        grep include-glob, not classic non-recursive shell globbing):
+
+        - Patterns without `/` match the basename at any depth under `path`.
+
+            Example: `*.py` matches `src/app/main.py`.
+        - Patterns containing `/` match paths relative to the search root, with
+          `**` support.
+
+            Example: `src/**/*.py` matches `src/app/main.py`.
+        - A leading `/` anchors the pattern to the search root; it narrows the
+          match rather than widening it.
+
+            Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+        - Leading-dot names match only when the pattern segment itself starts
+          with `.`. Since `**` will not descend into dot-directories, a bare
+          pattern is *broader* than its `**/` form.
+
+            Example: `*.yml` matches `.github/workflows/ci.yml`; `**/*.yml`
+            does not. `.env` matches `.env`; `*` does not.
+
+        Only regular files are returned; directories are never matched.
+
         Args:
             pattern: Glob pattern with wildcards to match file paths.
 
-                Supports standard glob syntax:
+                Supports:
 
-                - `*` matches any characters within a filename/directory
+                - `*` matches any characters within a path segment
                 - `**` matches any directories recursively
                 - `?` matches a single character
-                - `[abc]` matches one character from set
+                - `[abc]` matches one character from a set, `[!abc]` negates
+                - `{a,b}` brace expansion, including nested groups
 
             path: Optional base directory to search from.
 
@@ -589,7 +613,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 The pattern is applied relative to this path.
 
         Returns:
-            `GlobResult` with matching files or error.
+            `GlobResult` with matching files or error. Patterns the matcher
+            refuses (e.g. brace expansion past its limit) are reported as
+            `error`, not raised.
 
         Raises:
             NotImplementedError: If the backend does not implement `glob`.

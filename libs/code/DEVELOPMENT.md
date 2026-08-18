@@ -168,7 +168,7 @@ uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
 ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
 ```
 
-The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick.
+The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.12`) works; omit the flag to let `uv` pick.
 
 > **Why `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable`?** This builds an isolated venv *outside* the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. (`uv pip` and `uv venv` are first-class `uv` subcommands here, not bare `pip`.)
 

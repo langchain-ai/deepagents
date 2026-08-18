@@ -101,6 +101,13 @@ class TestInlinePromptPaste:
         monkeypatch.setattr(
             paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
         )
+        # Promotion now happens on the first suppressed Enter, so the
+        # suppression window is load-bearing here: without widening it, a slow
+        # runner can spend more than the default 0.12s between the third
+        # character and the Enter and the paste would submit instead.
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
         payload = "alpha\nbeta\ngamma\ndelta"
         app = _PromptApp()
         async with app.run_test() as pilot:
@@ -190,7 +197,7 @@ class TestInlinePromptPaste:
     async def test_key_burst_with_newline_does_not_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A multi-line paste replayed as key events inserts a newline, no submit."""
+        """Rapid key-event text stays visible and inserts a newline, no submit."""
         # Widen the burst gap/window so wall-clock delays on slow runners still
         # register as one rapid burst.
         monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
@@ -205,12 +212,35 @@ class TestInlinePromptPaste:
 
             for char in "hello":
                 await pilot.press(char)
+            assert ta.text == "hello"
+            assert ta._paste_burst_buffer == ""
+
             await pilot.press("enter")
             await pilot.press("w")
             await pilot.pause(0.15)
 
             assert app.submissions == []
             assert "\n" in ta.text
+
+    @pytest.mark.parametrize("payload", ["hello", '"hello"'])
+    async def test_rapid_typing_stays_visible(
+        self, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        """Rapid ordinary typing, including quoted text, stays visible."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in payload:
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+            assert not list(app._notifications)
 
     async def test_deliberate_enter_submits(
         self, monkeypatch: pytest.MonkeyPatch
@@ -524,6 +554,33 @@ class TestInlinePromptMediaDrop:
             assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
             assert "clip.mp4" in latest.message
 
+    async def test_unquoted_media_key_burst_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unquoted media path replayed as rapid keys is rejected, not typed."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"vid")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in str(clip):
+                event = Key(char, char)
+                await ta._on_key(event)
+
+            await pilot.pause(0.35)
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "clip.mp4" in latest.message
+
     async def test_non_media_path_burst_is_inserted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -664,8 +721,8 @@ class TestInlinePromptMediaDrop:
 
         Drives the production route end to end — `_on_key` -> burst promotion ->
         flush timer -> `_dispatch_burst_payload` — rather than calling the
-        dispatcher directly. A leading quote is in `PASTE_BURST_START_CHARS`
-        precisely so a dropped path buffers, so this is the designed shape.
+        dispatcher directly. The leading quote stays visible until the rapid
+        run contains enough of the absolute path to confirm a dropped payload.
         """
         monkeypatch.setattr(
             paste_textarea_module, "_collapse_pastes_enabled", lambda: False
@@ -717,13 +774,14 @@ class TestInlinePromptMediaDrop:
             ta.focus()
             await pilot.pause()
 
-            for char in "'abc":
+            pending = f"'{tmp_path / 'draft.txt'}'"
+            for char in pending:
                 await ta._on_key(Key(char, char))
             assert ta._paste_burst_buffer, "expected a pending burst to flush"
 
             await _paste(pilot, str(img))
 
-            assert ta.text == "'abc"
+            assert ta.text == pending
             assert not ta._paste_burst_buffer
             latest = list(app._notifications)[-1]
             assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)

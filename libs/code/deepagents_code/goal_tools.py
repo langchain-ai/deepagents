@@ -9,8 +9,8 @@ from typing import (
     Any,
     Literal,
     NotRequired,
-    TypeVar,
     cast,
+    override,
 )
 
 from langchain.agents.middleware.types import (
@@ -25,7 +25,6 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 from pydantic import Field
-from typing_extensions import override
 
 from deepagents_code.goal_state_limits import (
     GOAL_STATUS_NOTE_CHAR_LIMIT,
@@ -100,9 +99,6 @@ def _goal_state_notice_for(
     if latest_candidate is None and not has_goal_or_rubric_state(state):
         return None
     return build_goal_state_notice(state)
-
-
-ResponseT = TypeVar("ResponseT")
 
 
 class GoalToolState(GoalRubricChannels):
@@ -462,7 +458,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         return request.override(messages=filtered)
 
     @override
-    def wrap_model_call(
+    def wrap_model_call[ResponseT](
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
@@ -475,7 +471,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         return handler(self._request_with_goal_notice(request))
 
     @override
-    async def awrap_model_call(
+    async def awrap_model_call[ResponseT](
         self,
         request: ModelRequest[ContextT],
         handler: Callable[

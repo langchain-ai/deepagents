@@ -5193,9 +5193,8 @@ def cli_main() -> None:
                     )
                 )
             except TimeoutError:
-                # `asyncio.wait_for` raises `asyncio.TimeoutError`, which is
-                # an alias of the builtin on Python >= 3.11 (the project's
-                # minimum).
+                # `asyncio.wait_for` raises `asyncio.TimeoutError`, an alias
+                # of the builtin.
                 from rich.console import Console as _Console
 
                 _Console(stderr=True).print(

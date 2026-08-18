@@ -6,6 +6,14 @@ and the ``CodeInterpreterMiddleware`` policy around them: ``_snapshot_update``
 encoding decisions, ``before_agent``/``after_agent`` snapshot roundtrips and
 failure handling, and the ``DeltaChannel`` checkpoint-storage behavior through
 a real compiled graph.
+
+Also covers HMAC signing of persisted snapshots (advisory AT-5b): the pure
+helpers (``normalize_signing_key``, ``sign_snapshot``, ``verify_snapshot``) and
+the middleware policy that signs the completed materialized snapshot in
+``after_agent`` before it is delta-encoded onto the ``bsdiff`` patch chain, then
+verifies it in ``before_agent`` before restore. A snapshot whose signature is
+missing, wrong, tampered, or bound to a different thread must be rejected
+instead of executed.
 """
 
 from __future__ import annotations
@@ -14,13 +22,20 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import bsdiff4
+import pytest
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
-from langchain_quickjs._snapshot import coerce_record, replay_snapshot_chain
+from langchain_quickjs._snapshot import (
+    coerce_record,
+    normalize_signing_key,
+    replay_snapshot_chain,
+    sign_snapshot,
+    verify_snapshot,
+)
 
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
@@ -83,7 +98,11 @@ def test_before_agent_clears_payload_on_restore_failure() -> None:
             state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
             runtime=MagicMock(),
         )
-        assert update == {"_quickjs_snapshot_payload": None}
+
+        assert update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
     finally:
         mw._registry.close()
 
@@ -125,7 +144,10 @@ def test_after_agent_clears_payload_on_snapshot_failure() -> None:
         repl = mw._registry.get(mw._fallback_thread_id)
         with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
             update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
+        assert update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
         assert mw._fallback_thread_id not in mw._registry._slots
     finally:
         mw._registry.close()
@@ -137,7 +159,10 @@ def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
         repl = mw._registry.get(mw._fallback_thread_id)
         with patch.object(repl, "create_snapshot", return_value=b"12345"):
             update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
+        assert update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
         assert mw._fallback_thread_id not in mw._registry._slots
     finally:
         mw._registry.close()
@@ -153,7 +178,10 @@ async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
             new=AsyncMock(return_value=b"12345"),
         ):
             update = await mw.aafter_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
+        assert update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
         assert mw._fallback_thread_id not in mw._registry._slots
     finally:
         mw._registry.close()
@@ -510,5 +538,308 @@ def test_mode_call_ignores_snapshot_payload() -> None:
         )
         assert before_update is None
         assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+# Signing keys used by the HMAC tests below. `_SIGNING_KEY` is the "real"
+# deployment secret; `_WRONG_SIGNING_KEY` stands in for a key an adversary
+# would use to forge a signature (or a key-rotation mismatch).
+_SIGNING_KEY = "correct horse battery staple"
+_WRONG_SIGNING_KEY = b"a-different-secret"
+
+
+def _signing_thread_id(mw: CodeInterpreterMiddleware) -> str:
+    """The thread id the middleware signs/verifies snapshots under.
+
+    Bound into every HMAC tag, so signing and verifying test helpers must agree
+    on it. Mirrors the middleware's own `_resolve_thread_id` fallback.
+    """
+    return mw._fallback_thread_id
+
+
+def test_normalize_signing_key_encodes_str_and_passes_bytes() -> None:
+    assert normalize_signing_key("abc") == b"abc"
+    assert normalize_signing_key(b"abc") == b"abc"
+    assert normalize_signing_key(bytearray(b"abc")) == b"abc"
+
+
+def test_normalize_signing_key_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        normalize_signing_key("")
+    with pytest.raises(ValueError, match="non-empty"):
+        normalize_signing_key(b"")
+
+
+def test_sign_verify_roundtrip() -> None:
+    key = normalize_signing_key(_SIGNING_KEY)
+    tag = sign_snapshot(key, b"payload", "thread-1")
+    assert verify_snapshot(key, b"payload", "thread-1", tag) is True
+
+
+def test_verify_rejects_missing_tag() -> None:
+    key = normalize_signing_key(_SIGNING_KEY)
+    assert verify_snapshot(key, b"payload", "thread-1", None) is False
+    assert verify_snapshot(key, b"payload", "thread-1", b"") is False
+
+
+def test_verify_rejects_tampered_payload() -> None:
+    key = normalize_signing_key(_SIGNING_KEY)
+    tag = sign_snapshot(key, b"payload", "thread-1")
+    assert verify_snapshot(key, b"payload-EVIL", "thread-1", tag) is False
+
+
+def test_verify_rejects_wrong_key() -> None:
+    good = normalize_signing_key(_SIGNING_KEY)
+    bad = normalize_signing_key(_WRONG_SIGNING_KEY)
+    tag = sign_snapshot(good, b"payload", "thread-1")
+    assert verify_snapshot(bad, b"payload", "thread-1", tag) is False
+
+
+def test_verify_rejects_cross_thread_replay() -> None:
+    """A tag signed for one thread must not authenticate another thread.
+
+    This is the state-store adversary who copies a legitimately-signed snapshot
+    from thread A into thread B's slot in the checkpointer.
+    """
+    key = normalize_signing_key(_SIGNING_KEY)
+    tag = sign_snapshot(key, b"payload", "thread-A")
+    assert verify_snapshot(key, b"payload", "thread-B", tag) is False
+
+
+def test_thread_id_framing_is_unambiguous() -> None:
+    """Length-prefixed framing prevents boundary-shift collisions.
+
+    Without length-prefixing, ``("ab", "cX")`` and ``("abc", "X")`` could
+    serialize to the same bytes. The tags must differ.
+    """
+    key = normalize_signing_key(_SIGNING_KEY)
+    tag1 = sign_snapshot(key, b"cX-payload", "ab")
+    tag2 = sign_snapshot(key, b"X-payload", "abc")
+    assert tag1 != tag2
+
+
+def test_empty_key_rejected_at_construction() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        CodeInterpreterMiddleware(snapshot_signing_key="")
+
+
+def test_after_agent_emits_hmac_when_key_set() -> None:
+    mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        repl.eval_sync("const answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        assert isinstance(update, dict)
+        tag = update["_quickjs_snapshot_hmac"]
+        assert isinstance(tag, bytes)
+        assert len(tag) == 32  # SHA-256 digest
+
+        # The tag authenticates the *materialized* snapshot the chain replays to.
+        materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+        assert verify_snapshot(
+            mw._snapshot_signing_key, materialized, _signing_thread_id(mw), tag
+        )
+    finally:
+        mw._registry.close()
+
+
+def test_after_agent_no_hmac_when_key_unset() -> None:
+    mw = CodeInterpreterMiddleware()  # thread mode, no key -> no signing
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        repl.eval_sync("const answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        assert isinstance(update, dict)
+        assert "_quickjs_snapshot_hmac" not in update
+    finally:
+        mw._registry.close()
+
+
+def test_signed_snapshot_roundtrip_restores() -> None:
+    """A snapshot signed in after_agent restores cleanly in before_agent."""
+    mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        repl.eval_sync("const answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+
+        before_update = mw.before_agent(
+            state={
+                "_quickjs_snapshot_payload": materialized,
+                "_quickjs_snapshot_hmac": update["_quickjs_snapshot_hmac"],
+            },
+            runtime=MagicMock(),
+        )
+        assert before_update is None  # accepted, restored in place
+        restored = mw._registry.get(_signing_thread_id(mw))
+        assert restored.eval_sync("answer").result == "42"
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_rejects_missing_hmac() -> None:
+    """Key configured but snapshot carries no tag -> rejected, not restored."""
+    mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        repl.eval_sync("const answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+
+        repl = mw._registry.get(_signing_thread_id(mw))
+        with patch.object(repl, "restore_snapshot") as restore:
+            before_update = mw.before_agent(
+                state={"_quickjs_snapshot_payload": materialized},  # no hmac
+                runtime=MagicMock(),
+            )
+            restore.assert_not_called()
+        assert before_update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_rejects_tampered_payload() -> None:
+    """Attacker mutates the stored snapshot bytes; the tag no longer matches."""
+    mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        repl.eval_sync("const answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        materialized = bytearray(
+            replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+        )
+        materialized[-1] ^= 0xFF  # flip a byte
+
+        before_update = mw.before_agent(
+            state={
+                "_quickjs_snapshot_payload": bytes(materialized),
+                "_quickjs_snapshot_hmac": update["_quickjs_snapshot_hmac"],
+            },
+            runtime=MagicMock(),
+        )
+        assert before_update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_rejects_wrong_key_signature() -> None:
+    """Snapshot signed under a different key (forged by an adversary)."""
+    signer = CodeInterpreterMiddleware(snapshot_signing_key=_WRONG_SIGNING_KEY)
+    verifier = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
+    try:
+        repl = signer._registry.get(_signing_thread_id(signer))
+        repl.eval_sync("const answer = 42")
+        update = signer.after_agent(state={}, runtime=MagicMock())
+        materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+
+        before_update = verifier.before_agent(
+            state={
+                "_quickjs_snapshot_payload": materialized,
+                "_quickjs_snapshot_hmac": update["_quickjs_snapshot_hmac"],
+            },
+            runtime=MagicMock(),
+        )
+        assert before_update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
+    finally:
+        signer._registry.close()
+        verifier._registry.close()
+
+
+async def test_abefore_agent_rejects_tampered_payload() -> None:
+    """Async restore path enforces the same rejection."""
+    mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        await repl.eval_async("const answer = 42")
+        update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        materialized = bytearray(
+            replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+        )
+        materialized[0] ^= 0xFF
+
+        before_update = await mw.abefore_agent(
+            state={
+                "_quickjs_snapshot_payload": bytes(materialized),
+                "_quickjs_snapshot_hmac": update["_quickjs_snapshot_hmac"],
+            },
+            runtime=MagicMock(),
+        )
+        assert before_update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
+    finally:
+        mw._registry.close()
+
+
+async def test_asigned_snapshot_roundtrip_restores() -> None:
+    mw = CodeInterpreterMiddleware(snapshot_signing_key=_SIGNING_KEY)
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        await repl.eval_async("const answer = 42")
+        update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+
+        before_update = await mw.abefore_agent(
+            state={
+                "_quickjs_snapshot_payload": materialized,
+                "_quickjs_snapshot_hmac": update["_quickjs_snapshot_hmac"],
+            },
+            runtime=MagicMock(),
+        )
+        assert before_update is None
+        restored = mw._registry.get(_signing_thread_id(mw))
+        assert restored.eval_sync("answer").result == "42"
+    finally:
+        mw._registry.close()
+
+
+def test_no_key_restores_without_verification() -> None:
+    """Legacy behavior: with no key, an unsigned snapshot still restores.
+
+    This preserves backward compatibility for trusted-store deployments, where
+    the caller opts out of integrity verification by not configuring a key.
+    """
+    mw = CodeInterpreterMiddleware()  # no key
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        repl.eval_sync("const answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
+        before_update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": materialized},  # no hmac
+            runtime=MagicMock(),
+        )
+        assert before_update is None
+        restored = mw._registry.get(_signing_thread_id(mw))
+        assert restored.eval_sync("answer").result == "42"
+    finally:
+        mw._registry.close()
+
+
+def test_snapshot_size_cap_clears_hmac() -> None:
+    """A dropped oversized snapshot must also clear any stale signature."""
+    mw = CodeInterpreterMiddleware(
+        snapshot_signing_key=_SIGNING_KEY, max_snapshot_bytes=4
+    )
+    try:
+        repl = mw._registry.get(_signing_thread_id(mw))
+        with patch.object(repl, "create_snapshot", return_value=b"12345"):
+            update = mw.after_agent(state={}, runtime=MagicMock())
+        assert update == {
+            "_quickjs_snapshot_payload": None,
+            "_quickjs_snapshot_hmac": None,
+        }
     finally:
         mw._registry.close()

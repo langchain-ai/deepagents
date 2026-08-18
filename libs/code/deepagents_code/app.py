@@ -4427,6 +4427,9 @@ class DeepAgentsApp(App):
         self._last_cache_model_params: dict[str, Any] | None = None
         """Model params associated with `_last_model_request_at`."""
 
+        self._last_cache_endpoint: str | None = None
+        """Endpoint identity associated with `_last_model_request_at`."""
+
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
 
@@ -8361,6 +8364,7 @@ class DeepAgentsApp(App):
         self._last_model_request_at = None
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
+        self._last_cache_endpoint = None
         self._session_cost_warning_shown = False
         self._set_session_cost(self._thread_restored_cost_usd)
 
@@ -8657,6 +8661,21 @@ class DeepAgentsApp(App):
             # so it silently pins every later send to "model changed".
             return value.strip() if isinstance(value, str) and value.strip() else None
 
+        def _usable_endpoint_identity(value: object) -> str | None:
+            # Shape-checked, not merely non-empty: `endpoint_cache_identity`
+            # only ever mints `"default"`, `"invalid:<digest>"`, or a value
+            # containing `"://"`. Anything else (a hand-edited row, a future
+            # format) can never equal a freshly computed identity, so accepting
+            # it would report `identity_changed` on the next send while the
+            # discard warning below stayed silent. Discarding is the quieter
+            # wrong answer and it self-heals on the next checkpoint write.
+            usable = _usable_spec(value)
+            if usable is None:
+                return None
+            if usable == "default" or usable.startswith("invalid:") or "://" in usable:
+                return usable
+            return None
+
         raw_spec = _usable_spec(
             state_values.get("_last_cache_model_spec")
         ) or _usable_spec(state_values.get("_model_spec"))
@@ -8674,10 +8693,24 @@ class DeepAgentsApp(App):
                 type(state_values.get("_model_spec")).__name__,
             )
         self._last_cache_model_spec = raw_spec or ""
-        raw_params = state_values.get("_model_params")
+        raw_params = state_values.get("_last_cache_params")
         self._last_cache_model_params = (
             dict(raw_params) if isinstance(raw_params, dict) else None
         )
+        raw_endpoint = state_values.get("_last_cache_endpoint")
+        self._last_cache_endpoint = _usable_endpoint_identity(raw_endpoint)
+        if raw_endpoint is not None and self._last_cache_endpoint is None:
+            # Unlike a bad spec, a discarded endpoint fails *quietly*: `None`
+            # reads back as "never recorded", which suppresses endpoint-change
+            # detection instead of over-warning. It self-heals once any model
+            # call re-checkpoints, but nothing else would surface the gap, so it
+            # is logged here.
+            logger.warning(
+                "Discarding checkpointed _last_cache_endpoint (%s); endpoint "
+                "changes will not be detected until the next successful model "
+                "request records a fresh one",
+                type(raw_endpoint).__name__,
+            )
 
     def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -8692,10 +8725,16 @@ class DeepAgentsApp(App):
         """
         from datetime import UTC, datetime
 
+        from deepagents_code.cold_cache import cache_identity_params
+
         self._last_model_request_at = datetime.now(UTC).isoformat()
         self._last_cache_model_spec = self._effective_model_spec() or ""
+        # Record only the cache-identity projection of the session overrides,
+        # matching what the middleware checkpoints in `_last_cache_params`:
+        # the comparison side filters through `cache_identity_params` too, so
+        # unrelated knobs must not read as a cache change here either.
         self._last_cache_model_params = (
-            dict(self._model_params_override) if self._model_params_override else None
+            cache_identity_params(self._model_params_override) or None
         )
 
     async def _sync_session_cost_from_checkpoint(self) -> None:
@@ -11240,9 +11279,9 @@ class DeepAgentsApp(App):
             )
             return None
 
-        current_params = self._model_params_override or None
         last_spec = self._last_cache_model_spec
         last_params = self._last_cache_model_params
+        last_endpoint = self._last_cache_endpoint
 
         def _evaluate() -> ColdCacheWarning | None:
             from datetime import UTC, datetime
@@ -11253,7 +11292,9 @@ class DeepAgentsApp(App):
                 RewarmEstimate,
                 cache_identity_params,
                 debug_stand_in_policy,
+                endpoint_cache_identity,
                 estimate_rewarm_cost,
+                load_trusted_cache_endpoints,
                 parse_cache_timestamp,
                 resolve_prompt_cache_policy,
             )
@@ -11268,11 +11309,45 @@ class DeepAgentsApp(App):
             # `Anthropic:claude-opus-5` would report no custom endpoint and
             # price a gateway user at official-API rates.
             provider = model_spec.split(":", 1)[0].strip().lower()
-            base_url = ModelConfig.load().get_base_url(provider)
+            config = ModelConfig.load()
+            _, _, model_name = model_spec.partition(":")
+            configured_params = config.get_effective_kwargs(
+                provider,
+                model_name=model_name,
+                overrides=self._model_params_override,
+            )
+            # Test doubles and third-party config implementations created
+            # before `get_effective_kwargs` existed may not implement it.
+            # Retain the old endpoint-only behavior for those objects while
+            # production `ModelConfig` always supplies the complete mapping.
+            current_params = (
+                configured_params if isinstance(configured_params, dict) else {}
+            )
+            if not current_params:
+                current_params = dict(self._model_params_override or {})
+                fallback_base_url = config.get_base_url(provider)
+                if isinstance(fallback_base_url, str):
+                    current_params["base_url"] = fallback_base_url
+            # Endpoint changes have their own normalized identity. Keeping
+            # `base_url` out of this mapping avoids treating the same endpoint
+            # as two independent identity changes.
+            params_for_policy = {
+                key: value for key, value in current_params.items() if key != "base_url"
+            } or None
+            resolved_base_url = current_params.get("base_url")
+            base_url = resolved_base_url if isinstance(resolved_base_url, str) else None
+            endpoint = endpoint_cache_identity(base_url)
             policy = resolve_prompt_cache_policy(
                 model_spec,
-                current_params,
+                params_for_policy,
                 base_url=base_url,
+                # Only consulted for a custom endpoint: with no `base_url`,
+                # `_official_endpoint` short-circuits to `True` and the trust
+                # set is provably unused. Loading it eagerly would re-read and
+                # re-parse `config.toml` from disk on every turn of the common
+                # official-API path, which is the very cost the comment below
+                # is about.
+                trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
             )
             # Resolved before the suppression lookup so the common
             # no-policy case skips re-reading and re-parsing config.toml.
@@ -11353,17 +11428,26 @@ class DeepAgentsApp(App):
                 )
             else:
                 age_seconds = max(elapsed or 0.0, 0.0)
-                # Only cache-participating params are compared: `/effort` and
-                # friends rewrite `model_params` without touching the prefix.
-                if model_spec != last_spec or cache_identity_params(
-                    current_params
-                ) != cache_identity_params(last_params):
+                if (
+                    model_spec != last_spec
+                    # Only cache-participating params are compared: `/effort`
+                    # and friends rewrite `model_params` without touching the
+                    # prefix, and must not read as a cache identity change.
+                    or cache_identity_params(current_params)
+                    != cache_identity_params(last_params)
+                    # `None` means no endpoint was ever recorded -- e.g. a
+                    # thread checkpointed before this field existed, or one
+                    # whose stored value was unreadable and discarded on load.
+                    # Treating "unrecorded" as "changed" would fire a spurious
+                    # warning on the first turn of each such thread, so only a
+                    # recorded value that actually differs counts.
+                    or (last_endpoint is not None and endpoint != last_endpoint)
+                ):
                     reason = "identity_changed"
                 elif age_seconds > policy.window_seconds:
                     reason = "idle"
                 else:
                     return None
-
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
             if estimate is None:
                 logger.debug(
@@ -13128,6 +13212,8 @@ class DeepAgentsApp(App):
                     "_last_cache_model_spec": state_values.get(
                         "_last_cache_model_spec"
                     ),
+                    "_last_cache_endpoint": state_values.get("_last_cache_endpoint"),
+                    "_last_cache_params": state_values.get("_last_cache_params"),
                     "_model_spec": model_spec,
                     "_model_params": model_params,
                 }

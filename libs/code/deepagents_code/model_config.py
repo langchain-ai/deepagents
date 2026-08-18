@@ -582,6 +582,42 @@ LANGSMITH_GATEWAY_PROVIDERS: frozenset[str] = frozenset(
 )
 """Providers whose LangChain integrations support LangSmith LLM Gateway env vars."""
 
+LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
+"""Host identifying LangSmith's managed (SaaS) gateway.
+
+The single definition: compare against it through `is_langsmith_gateway_host`
+rather than testing it as a raw-URL substring, which also accepts lookalikes
+such as `smith.langchain.com.evil.example`.
+"""
+
+
+def is_langsmith_gateway_host(host: str | None) -> bool:
+    """Return whether a parsed hostname is the LangSmith managed gateway.
+
+    Matches the host exactly or as a subdomain (org-scoped gateway URLs). The
+    suffix match requires a dot boundary, so `notsmith.langchain.com` does not
+    qualify; a host that merely *contains* the gateway name earlier in the
+    string (`smith.langchain.com.evil.example`) is not a suffix and is
+    likewise rejected.
+
+    Case and a trailing root dot are normalized here rather than left to the
+    caller. Both callers reach this from a different parser, and a precondition
+    enforced only by a comment in each caller is the way the two drift apart.
+
+    Args:
+        host: A hostname, or `None` when the URL could not be parsed.
+
+    Returns:
+        `True` when the host is the gateway or a subdomain of it.
+    """
+    if host is None:
+        return False
+    normalized = host.strip().lower().removesuffix(".")
+    return normalized == LANGSMITH_GATEWAY_HOST or normalized.endswith(
+        f".{LANGSMITH_GATEWAY_HOST}"
+    )
+
+
 LANGSMITH_GATEWAY_ENV = "LANGSMITH_GATEWAY"
 LANGSMITH_GATEWAY_API_KEY_ENV = "LANGSMITH_GATEWAY_API_KEY"
 _LANGSMITH_GATEWAY_FALSE_VALUES = frozenset({"false", "0", "no"})
@@ -3015,6 +3051,37 @@ class ModelConfig:
             overrides = params.get(model_name)
             if isinstance(overrides, dict):
                 result.update(overrides)
+        return result
+
+    def get_effective_kwargs(
+        self,
+        provider_name: str,
+        *,
+        model_name: str | None = None,
+        overrides: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the effective configured and runtime model kwargs.
+
+        This mirrors the ordering used when constructing a model: provider and
+        per-model `params`, then the resolved `base_url`, then runtime
+        overrides. Consumers that need to reason about an actual request (such
+        as cache policy checks) must use this rather than inspecting one source
+        of settings in isolation.
+
+        Args:
+            provider_name: Provider whose configuration should be resolved.
+            model_name: Optional model name for per-model params.
+            overrides: Per-request params, which take highest precedence.
+
+        Returns:
+            Effective model kwargs.
+        """
+        result = self.get_kwargs(provider_name, model_name=model_name)
+        base_url = self.get_base_url(provider_name)
+        if base_url:
+            result["base_url"] = base_url
+        if overrides:
+            result.update(overrides)
         return result
 
     def get_profile_overrides(

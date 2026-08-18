@@ -20,7 +20,9 @@ from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
+    _cache_endpoint_identity,
     _checkpoint_command,
+    _effective_cache_params,
     _get_context,
     _is_anthropic_model,
     _is_fireworks_model,
@@ -76,6 +78,8 @@ def _checkpoint_update(
     assert isinstance(timestamp, str)
     cache_model_spec = update.pop("_last_cache_model_spec")
     assert isinstance(cache_model_spec, str)
+    cache_endpoint = update.pop("_last_cache_endpoint")
+    assert isinstance(cache_endpoint, str)
     return update
 
 
@@ -128,6 +132,7 @@ class TestCheckpointPersistence:
         assert isinstance(update, dict)
         assert update["_last_model_request_at"] == "2026-08-11T12:30:00+00:00"
         assert update["_last_cache_model_spec"] == "openai:gpt-5.6"
+        assert update["_last_cache_endpoint"] == "default"
 
     def test_timestamp_is_captured_before_the_model_call(self) -> None:
         """Cache age must be measured from when the prefix was written.
@@ -171,12 +176,13 @@ class TestCheckpointPersistence:
             model_params_known=True,
         )
 
-        command = _checkpoint_command(resolved, "2026-08-11T12:30:00+00:00")
+        command = _checkpoint_command(resolved, "2026-08-11T12:30:00+00:00", "default")
 
         update = command.update
         assert isinstance(update, dict)
         assert "_last_model_request_at" not in update
         assert "_last_cache_model_spec" not in update
+        assert "_last_cache_endpoint" not in update
 
     def test_failed_call_does_not_return_checkpoint_update(self) -> None:
         middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
@@ -220,6 +226,7 @@ class TestNoOverride:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-sonnet-4-6",
             "_model_params": None,
+            "_last_cache_params": None,
         }
 
     def test_dict_context_reconstructs_approval_fields(self) -> None:
@@ -374,7 +381,128 @@ class TestNoOverride:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-sonnet-4-6",
             "_model_params": None,
+            "_last_cache_params": None,
         }
+
+
+def test_cache_endpoint_identity_uses_configured_provider_params() -> None:
+    """A `params.base_url` gateway must not be recorded as the default API."""
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={"openai": {"params": {"base_url": "https://proxy.example.com/v1"}}}
+    )
+    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
+        assert _cache_endpoint_identity("openai:gpt-5.5") == (
+            "https://proxy.example.com/v1"
+        )
+
+
+def test_checkpoint_records_effective_cache_params() -> None:
+    """Configured cache params reach the checkpoint, not just runtime overrides.
+
+    Regression: with `prompt_cache_retention` in config and no session
+    override, storing only the runtime overrides (`None`) makes the next turn's
+    identity check compare `{"prompt_cache_retention": ...}` against `None` and
+    report a false `identity_changed` every turn. The projection lands in the
+    dedicated `_last_cache_params` channel so resume never re-reads it as
+    per-session overrides.
+    """
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={"openai": {"params": {"prompt_cache_retention": "24h"}}}
+    )
+    request = _make_request(
+        _make_model("gpt-5.5"),
+        context=CLIContext(),
+    )
+    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
+        result = ConfigurableModelMiddleware().wrap_model_call(
+            request, lambda _r: _make_response()
+        )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == {"prompt_cache_retention": "24h"}
+    assert update["_model_params"] is None
+
+
+def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
+    """Only cache-identity keys may be persisted for the cold-cache check.
+
+    Regression: `_model_params` is read back on resume as runtime overrides,
+    so persisting the full effective kwargs there (or anywhere resume reads)
+    pins configured defaults like `temperature` into old threads and silently
+    overrides newer config.
+    """
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={
+            "openai": {
+                "params": {
+                    "prompt_cache_retention": "24h",
+                    "temperature": 0.7,
+                    "max_retries": 5,
+                    "default_headers": {"x-trace": "abc"},
+                    "base_url": "https://proxy.example.com/v1",
+                }
+            }
+        }
+    )
+    request = _make_request(
+        _make_model("gpt-5.5"),
+        context=CLIContext(model_params={"reasoning_effort": "high"}),
+    )
+    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
+        result = ConfigurableModelMiddleware().wrap_model_call(
+            request, lambda _r: _make_response()
+        )
+
+    update = _checkpoint_update(result)
+    # Only the identity key survives; `base_url` is tracked separately as the
+    # endpoint identity, and the runtime override is not a cache-identity key.
+    assert update["_last_cache_params"] == {"prompt_cache_retention": "24h"}
+    # Resume semantics are untouched: exactly the runtime overrides.
+    assert update["_model_params"] == {"reasoning_effort": "high"}
+
+
+def test_cache_endpoint_identity_normalizes_the_provider() -> None:
+    """The reader lowercases before looking up, so the writer must too.
+
+    `get_kwargs`/`get_base_url` are exact-key lookups, so without this the two
+    sides resolve different endpoints for the same request and disagree on every
+    turn -- a disagreement that never self-heals.
+    """
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={"openai": {"params": {"base_url": "https://proxy.example.com/v1"}}}
+    )
+    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
+        for spec in ("openai:gpt-5.5", "OpenAI:gpt-5.5", " openai:gpt-5.5"):
+            assert _cache_endpoint_identity(spec) == "https://proxy.example.com/v1"
+
+
+def test_cache_endpoint_identity_degrades_instead_of_raising(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A completed, billed model call must not be lost to a config surprise.
+
+    Both call sites run after `handler()` returns, so propagating here would
+    discard a paid response over a value used only for change detection.
+    """
+    config = MagicMock()
+    config.get_effective_kwargs.side_effect = RuntimeError("config exploded")
+    config.get_base_url.side_effect = RuntimeError("config exploded")
+
+    with (
+        patch("deepagents_code.model_config.ModelConfig.load", return_value=config),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.configurable_model"),
+    ):
+        assert _cache_endpoint_identity("openai:gpt-5.5") == "default"
+
+    assert "Could not resolve the cache endpoint" in caplog.text
 
 
 class TestModelSwap:
@@ -441,10 +569,19 @@ class TestModelSwap:
                 "deepagents_code.configurable_model.asyncio.to_thread", fake_to_thread
             ),
         ):
-            await _mw.awrap_model_call(request, handler)
+            result = await _mw.awrap_model_call(request, handler)
 
         assert captured[0].model is override
-        assert offloaded == [(create, ("openai:gpt-5.5",), {})]
+        # Blocking calls must be offloaded: model construction, the
+        # endpoint-identity lookup, and effective cache-param resolution (both
+        # read the config and credential store). Doing any inline would trip
+        # `blockbuster` on the server event loop.
+        assert offloaded == [
+            (create, ("openai:gpt-5.5",), {}),
+            (_cache_endpoint_identity, ("openai:gpt-5.5",), {}),
+            (_effective_cache_params, ("openai:gpt-5.5", None), {}),
+        ]
+        assert "_last_cache_params" in _checkpoint_update(result)
 
     async def test_async_profile_overrides_forwarded_to_swapped_model(self) -> None:
         original = _make_model("claude-sonnet-4-6")
@@ -552,6 +689,7 @@ class TestModelSwap:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:gpt-5.5",
             "_model_params": None,
+            "_last_cache_params": None,
         }
 
 
@@ -1435,6 +1573,7 @@ class TestModelParams:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-sonnet-4-6",
             "_model_params": {"temperature": 0.7},
+            "_last_cache_params": None,
         }
 
     def test_reasoning_effort_reaches_model_settings(self) -> None:
@@ -1460,6 +1599,7 @@ class TestModelParams:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-opus-4-5",
             "_model_params": {"reasoning_effort": "high"},
+            "_last_cache_params": None,
         }
 
     def test_params_merge_preserves_existing(self) -> None:

@@ -425,6 +425,12 @@ class TestEndpointGatewayState:
 
         assert _endpoint_gateway_state("https://smith.langchain.com") == "yes"
 
+    def test_trailing_root_dot_is_gateway(self) -> None:
+        """The fully-qualified spelling classifies as `cold_cache` sees it."""
+        from deepagents_code.doctor import _endpoint_gateway_state
+
+        assert _endpoint_gateway_state("https://smith.langchain.com./") == "yes"
+
     def test_regional_subdomain_is_gateway(self) -> None:
         from deepagents_code.doctor import _endpoint_gateway_state
 

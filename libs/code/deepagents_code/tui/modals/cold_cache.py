@@ -211,11 +211,17 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         # with the status sentence above it.
         match self._warning.reason:
             case "identity_changed":
+                # All three triggers are named because the caller collapses
+                # them into one reason (see `app._cold_cache_warning_for`):
+                # the model, the endpoint, and the cache-affecting params each
+                # invalidate the prefix. Naming only some of them tells a user
+                # who switched endpoints that their model changed, which sends
+                # them debugging the wrong thing.
                 certain = True
                 status = (
-                    "The active model or prompt-cache settings differ from the "
-                    "last successful turn, so the previous cached prefix "
-                    "cannot be reused."
+                    "The active model, endpoint, or prompt-cache settings "
+                    "differ from the last successful turn, so the previous "
+                    "cached prefix cannot be reused."
                 )
             case "age_unknown":
                 certain = False

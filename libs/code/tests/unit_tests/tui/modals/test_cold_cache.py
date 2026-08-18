@@ -110,7 +110,12 @@ def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
     assert "~$1.2 more" in body
 
 
-def test_identity_change_uses_model_specific_copy() -> None:
+def test_identity_change_uses_identity_specific_copy() -> None:
+    """Identity copy must name every trigger the caller folds into the flag.
+
+    The endpoint is one of them, so copy naming only the model would misdirect
+    a user who switched gateways.
+    """
     screen = ColdCacheWarningScreen(
         _warning(
             _policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
@@ -123,7 +128,7 @@ def test_identity_change_uses_model_specific_copy() -> None:
 
     body = screen._body()
 
-    assert "active model or prompt-cache settings differ" in body
+    assert "active model, endpoint, or prompt-cache settings differ" in body
     assert "previous cached prefix cannot be reused" in body
     # An identity change guarantees the prefix is unusable, so the cost
     # sentence is unconditional even though the policy is `may_be_cold`.

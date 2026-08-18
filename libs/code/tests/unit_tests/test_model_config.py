@@ -4795,6 +4795,38 @@ api_key_env = "CIS_API_KEY"
         assert has_provider_credentials("nonexistent_provider_xyz") is None
 
 
+class TestIsLangsmithGatewayHost:
+    """Tests for the shared LangSmith gateway host predicate.
+
+    Two modules gate behavior on this (`doctor` classifies tracing endpoints,
+    `app` decides whether a provider key mismatches the gateway it is being
+    sent through), so its boundary cases are pinned directly rather than only
+    through callers. `cold_cache` deliberately does *not* use it: its
+    cross-format decision comes from the model-name prefix alone and is
+    host-independent.
+    """
+
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [
+            ("smith.langchain.com", True),
+            ("eu.api.smith.langchain.com", True),
+            # A dot boundary is required, so a longer name that merely ends in
+            # the gateway's letters is not a subdomain of it.
+            ("notsmith.langchain.com", False),
+            # The gateway name appearing earlier in the string is not a suffix.
+            ("smith.langchain.com.evil.example", False),
+            ("langchain.com", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_host_classification(self, host: str | None, expected: bool) -> None:
+        from deepagents_code.model_config import is_langsmith_gateway_host
+
+        assert is_langsmith_gateway_host(host) is expected
+
+
 class TestIsLocalEndpoint:
     """Tests for _is_local_endpoint URL classification."""
 
@@ -5142,6 +5174,39 @@ temperature = 0.5
         config = ModelConfig.load(config_path)
         kwargs = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert kwargs == {"temperature": 0.5}
+
+
+class TestModelConfigGetEffectiveKwargs:
+    """Tests for effective request kwargs used by model construction and policy."""
+
+    def test_merges_params_endpoint_and_runtime_override(self, tmp_path):
+        """Runtime params win after per-model config and the resolved endpoint."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+base_url = "https://configured.example.com/v1"
+
+[models.providers.openai.params]
+temperature = 0
+base_url = "https://params.example.com/v1"
+prompt_cache_retention = "in_memory"
+
+[models.providers.openai.params."gpt-5.5"]
+prompt_cache_retention = "24h"
+""")
+        config = ModelConfig.load(config_path)
+
+        kwargs = config.get_effective_kwargs(
+            "openai",
+            model_name="gpt-5.5",
+            overrides={"temperature": 0.5},
+        )
+
+        assert kwargs == {
+            "temperature": 0.5,
+            "base_url": "https://configured.example.com/v1",
+            "prompt_cache_retention": "24h",
+        }
 
 
 class TestModelConfigGetProfileOverrides:

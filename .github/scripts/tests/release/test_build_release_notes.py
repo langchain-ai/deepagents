@@ -1502,7 +1502,14 @@ class TestGhRequestContract:
                     {
                         "author": {"login": "alice"},
                         "labels": [],
-                        "closingIssuesReferences": [{"number": 101}],
+                        "closingIssuesReferences": [
+                            {
+                                "number": 101,
+                                "url": (
+                                    f"https://github.com/{REPOSITORY}/issues/101"
+                                ),
+                            }
+                        ],
                     }
                 )
             )
@@ -1513,7 +1520,7 @@ class TestGhRequestContract:
             warnings=[],
         )
         assert result.issue_reporters == [
-            brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)])
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
         ]
         issue = next(c for c in calls if c[0] == "api" and "/issues/" in c[1])
         assert issue[1] == f"/repos/{REPOSITORY}/issues/101"
@@ -1848,12 +1855,17 @@ class TestIssueReporters:
         )
 
     def _payload(self, issues: list[dict] | None, **overrides) -> dict:
-        # Real `gh pr view --json closingIssuesReferences` entries always carry
-        # the owning repository alongside the number, so the fixtures do too.
+        # Mirrors the shape observed from `gh pr view --json
+        # closingIssuesReferences` (gh 2.97.0): the owning repository is nested
+        # as `owner.login` + `name`, with no flat `nameWithOwner`.
+        owner, _, name = REPOSITORY.partition("/")
         if isinstance(issues, list):
             issues = [
                 (
-                    {"repository": {"nameWithOwner": REPOSITORY}, **issue}
+                    {
+                        "repository": {"name": name, "owner": {"login": owner}},
+                        **issue,
+                    }
                     if isinstance(issue, dict)
                     else issue
                 )
@@ -1910,10 +1922,11 @@ class TestIssueReporters:
             monkeypatch,
         )
         assert result.issue_reporters == [
-            brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)])
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
         ]
-        # The PR author is not credited for closing their own PR's issue.
-        assert [r.login for r in result.issue_reporters] != ["alice"]
+        # The credit follows the issue's author, not the PR's: alice opened the
+        # PR, so she is a community contributor and not an issue reporter.
+        assert [c.login for c in result.community] == ["alice"]
 
     def test_issues_are_deduped_and_sorted_ascending(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1929,7 +1942,7 @@ class TestIssueReporters:
         assert result.issue_reporters == [
             brn.IssueReporter(
                 "carol",
-                [brn.ClosedIssue(REPOSITORY, 101), brn.ClosedIssue(REPOSITORY, 220)],
+                (brn.ClosedIssue(REPOSITORY, 101), brn.ClosedIssue(REPOSITORY, 220)),
             )
         ]
 
@@ -1959,7 +1972,7 @@ class TestIssueReporters:
             warnings=[],
         )
         assert result.issue_reporters == [
-            brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)])
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
         ]
 
     def test_cross_repository_issue_is_resolved_in_its_own_repo(
@@ -2006,7 +2019,7 @@ class TestIssueReporters:
         )
         assert result.issue_reporters == [
             brn.IssueReporter(
-                "carol", [brn.ClosedIssue("langchain-ai/langchain", 37576)]
+                "carol", (brn.ClosedIssue("langchain-ai/langchain", 37576),)
             )
         ]
         issue = next(c for c in calls if c[0] == "api" and "/issues/" in c[1])
@@ -2033,35 +2046,65 @@ class TestIssueReporters:
         )
         assert result.issue_reporters == [
             brn.IssueReporter(
-                "carol", [brn.ClosedIssue("langchain-ai/langchain", 37576)]
+                "carol", (brn.ClosedIssue("langchain-ai/langchain", 37576),)
             )
         ]
 
-    def test_null_repository_warns_and_falls_back_to_the_released_repo(
+    def test_unresolvable_repository_is_dropped_rather_than_guessed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A present-but-null repository field warns rather than passing silently.
+        """An entry with no usable repository is skipped, not blamed on this repo.
 
-        The warning matters most for cross-repo references: they are credited
-        against the released repo, where the number can 404 or collide with a
-        different issue entirely.
+        Assuming the released repo would query an unrelated issue that happens
+        to share the number and publicly thank whoever filed it, so the entry
+        is dropped with a warning instead.
         """
         head = self._repo(tmp_path)
         warnings: list[str] = []
         result = self._run_with_authors(
             tmp_path,
             head,
-            self._payload([{"number": 101, "repository": None}]),
+            self._payload([{"number": 101, "repository": None, "url": None}]),
             {101: "carol"},
             monkeypatch,
             warnings,
         )
-        assert result.issue_reporters == [
-            brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)])
-        ]
+        assert result.issue_reporters == []
         assert any(
-            "closes issue #101 with no repository field" in w for w in warnings
+            "closes issue #101 with no resolvable repository" in w for w in warnings
         )
+
+    def test_nested_owner_payload_resolves_without_the_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real gh payload nests `owner.login` + `name` and carries no slug.
+
+        Pinned without a `url` so the nested-owner branch is what resolves the
+        repository, rather than the URL fallback masking a regression.
+        """
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(
+                [
+                    {
+                        "number": 37576,
+                        "repository": {
+                            "name": "langchain",
+                            "owner": {"login": "langchain-ai"},
+                        },
+                    }
+                ]
+            ),
+            {("langchain-ai/langchain", 37576): "carol"},
+            monkeypatch,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter(
+                "carol", (brn.ClosedIssue("langchain-ai/langchain", 37576),)
+            )
+        ]
 
     def test_same_issue_number_in_two_repos_credits_both(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2086,11 +2129,157 @@ class TestIssueReporters:
             monkeypatch,
         )
         assert result.issue_reporters == [
-            brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)]),
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),)),
             brn.IssueReporter(
-                "dave", [brn.ClosedIssue("langchain-ai/langchain", 101)]
+                "dave", (brn.ClosedIssue("langchain-ai/langchain", 101),)
             ),
         ]
+
+    def test_gated_pr_still_credits_the_issue_reporter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reporters are collected above the author and label gates.
+
+        This is the feature's primary case: a maintainer's `internal`-labeled
+        fix (or a bot's) closing an outside user's bug report. Both gates drop
+        the PR from the contributor lists, and the reporter must survive both.
+        """
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(
+                [{"number": 101}],
+                author={"login": "renovate[bot]", "is_bot": True},
+                labels=[{"name": "internal"}],
+            ),
+            {101: "carol"},
+            monkeypatch,
+        )
+        assert result.community == []
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
+        ]
+
+    def test_empty_reference_list_is_silent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Most PRs close nothing; that must not warn or every release is noise."""
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path, head, self._payload([]), {}, monkeypatch, warnings
+        )
+        assert result.issue_reporters == []
+        assert not any("closingIssuesReferences" in w for w in warnings)
+
+    @pytest.mark.parametrize("payload", ["oops", {"nodes": [{"number": 101}]}])
+    def test_non_list_reference_payload_warns(
+        self,
+        payload: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A truthy non-list survives the `or []` guard and must not be iterated.
+
+        Iterating a string would walk it character by character; the shapes here
+        are the plausible schema drift (a bare string, or the GraphQL
+        connection object) rather than hypotheticals.
+        """
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(None, closingIssuesReferences=payload),
+            {101: "carol"},
+            monkeypatch,
+            warnings,
+        )
+        assert result.issue_reporters == []
+        assert any("unexpected closingIssuesReferences payload" in w for w in warnings)
+
+    def test_non_dict_reference_entry_warns_and_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A malformed entry is dropped loudly; its siblings are still credited."""
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload([101, {"number": 202}]),
+            {202: "carol"},
+            monkeypatch,
+            warnings,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 202),))
+        ]
+        assert any(
+            "unexpected closingIssuesReferences entry (int)" in w for w in warnings
+        )
+
+    def test_repeated_issue_is_looked_up_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The author cache keeps two PRs closing one issue to a single call."""
+        head = self._repo(tmp_path)
+        calls: list[list[str]] = []
+        inner = _pr_handler(
+            "7",
+            json.dumps(self._payload([{"number": 101}])),
+            {(REPOSITORY, 101): "carol"},
+        )
+
+        def recording(args: list[str]):
+            calls.append(args)
+            return inner(args)
+
+        monkeypatch.setattr(brn, "_run_gh", recording)
+        brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=[],
+        )
+        issue_calls = [c for c in calls if c[0] == "api" and "/issues/101" in c[1]]
+        assert len(issue_calls) == 1
+
+    def test_failed_issue_lookups_are_reported_as_incomplete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The aggregate carries INCOMPLETE so main()'s sort floats it.
+
+        GitHub renders only the first 10 warning annotations per step, so a
+        section that silently loses reporters needs a line that outranks the
+        per-issue ones.
+        """
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+
+        def failing(args: list[str]):
+            if args[0] == "api" and "/issues/" in args[1]:
+                return subprocess.CompletedProcess(args, 1, "", "boom")
+            return (
+                _ok("7")
+                if args[0] == "api"
+                else _ok(json.dumps(self._payload([{"number": 101}])))
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", failing)
+        result = brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings,
+        )
+        assert result.issue_reporters == []
+        assert any("Special thanks section is INCOMPLETE" in w for w in warnings)
 
     def test_bot_reporter_is_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2265,7 +2454,7 @@ class TestIssueReporters:
             warnings=warnings,
         )
         assert result.issue_reporters == [
-            brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)])
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
         ]
         assert any("INCOMPLETE" in w for w in warnings)
 
@@ -2950,10 +3139,10 @@ class TestBuildBaseBody:
         body = self._body(
             community=[brn.Contributor("user1", "", "")],
             issue_reporters=[
-                brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)]),
+                brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),)),
                 brn.IssueReporter(
                     "dave",
-                    [brn.ClosedIssue(REPOSITORY, 201), brn.ClosedIssue(REPOSITORY, 202)],
+                    (brn.ClosedIssue(REPOSITORY, 201), brn.ClosedIssue(REPOSITORY, 202)),
                 ),
             ],
             internal=["maint"],
@@ -2981,10 +3170,10 @@ class TestBuildBaseBody:
             issue_reporters=[
                 brn.IssueReporter(
                     "carol",
-                    [
+                    (
                         brn.ClosedIssue(REPOSITORY, 101),
                         brn.ClosedIssue("langchain-ai/langchain", 37576),
-                    ],
+                    ),
                 )
             ]
         )
@@ -2994,10 +3183,27 @@ class TestBuildBaseBody:
             "(https://github.com/langchain-ai/langchain/issues/37576)"
         ) in body
 
+    def test_special_thanks_are_summarized_at_the_size_limit(self) -> None:
+        """A large closing-reference list cannot overflow the release body."""
+        reporters = [
+            brn.IssueReporter(
+                f"reporter-{number}",
+                (brn.ClosedIssue(REPOSITORY, number),) * 100,
+            )
+            for number in range(100)
+        ]
+        body = self._body(issue_reporters=reporters)
+
+        thanks_start = body.index("**Special thanks**")
+        thanks = body[thanks_start:]
+        assert len(thanks.encode()) <= brn.MAX_SPECIAL_THANKS_BYTES
+        assert "additional issue reporters" in thanks
+        assert "@reporter-99" not in thanks
+
     def test_special_thanks_opens_the_separator_when_alone(self) -> None:
         body = self._body(
             issue_reporters=[
-                brn.IssueReporter("carol", [brn.ClosedIssue(REPOSITORY, 101)])
+                brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
             ]
         )
         assert body.count("---") == 1
@@ -3212,7 +3418,14 @@ class TestBuildReleaseNotesOnline:
                         "author": {"login": "outside-dev", "is_bot": False},
                         "body": "Twitter: @outsidedev\n",
                         "labels": [],
-                        "closingIssuesReferences": [{"number": 5310}],
+                        "closingIssuesReferences": [
+                            {
+                                "number": 5310,
+                                "url": (
+                                    f"https://github.com/{REPOSITORY}/issues/5310"
+                                ),
+                            }
+                        ],
                     }
                 )
             )

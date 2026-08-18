@@ -1,7 +1,7 @@
-"""Autocomplete system for @ mentions and / commands.
+"""Autocomplete system for @ mentions, / commands, and $ skills.
 
 This is a custom implementation that handles trigger-based completion
-for slash commands (/) and file mentions (@).
+for slash commands (/), skills ($), and file mentions (@).
 """
 
 from __future__ import annotations
@@ -343,6 +343,25 @@ class SlashCommandController:
         """
         self._view.replace_completion_range(0, cursor_index, match.name)
         self.reset()
+
+
+class SkillCommandController(SlashCommandController):
+    """Controller for `$` skill completion."""
+
+    @staticmethod
+    def can_handle(text: str, cursor_index: int) -> bool:
+        """Return whether the input starts with the skill trigger."""
+        return 0 <= cursor_index <= len(text) and text.startswith("$")
+
+    @staticmethod
+    def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:
+        """Score a canonical skill command against its short skill name.
+
+        Returns:
+            Match score where higher values indicate stronger matches.
+        """
+        skill_name = cmd.removeprefix("/skill:")
+        return SlashCommandController._score_command(search, skill_name, desc, keywords)
 
 
 # ============================================================================

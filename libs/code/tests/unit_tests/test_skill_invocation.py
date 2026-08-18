@@ -13,7 +13,7 @@ from deepagents_code.command_registry import (
     build_skill_commands,
     parse_skill_command,
 )
-from deepagents_code.skills.load import load_skill_content
+from deepagents_code.skills.load import ExtendedSkillMetadata, load_skill_content
 
 
 class TestLoadSkillContent:
@@ -162,7 +162,7 @@ class TestBuildSkillCommands:
 
     def test_excludes_static_skill_aliases(self) -> None:
         """Skills with names matching static aliases are excluded."""
-        skills = [
+        skills: list[ExtendedSkillMetadata] = [
             {
                 "name": "remember",
                 "description": "Update memory",
@@ -194,12 +194,19 @@ class TestBuildSkillCommands:
                 "source": "user",
             },
         ]
-        result = build_skill_commands(skills)  # ty: ignore
+        result = build_skill_commands(skills)
         names = [r[0] for r in result]
         assert "/skill:remember" not in names
         assert "/skill:skill-creator" not in names
         assert "/skill:custom-skill" in names
         assert len(result) == 1
+
+        all_result = build_skill_commands(skills, include_static_aliases=True)
+        assert [entry.name for entry in all_result] == [
+            "/skill:remember",
+            "/skill:skill-creator",
+            "/skill:custom-skill",
+        ]
 
     def test_non_alias_command_names_not_suppressed(self) -> None:
         """Skills named after non-alias commands are NOT excluded."""

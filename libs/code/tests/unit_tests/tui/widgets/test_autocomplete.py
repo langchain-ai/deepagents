@@ -18,6 +18,7 @@ from deepagents_code.tui.widgets.autocomplete import (
     CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
+    SkillCommandController,
     SlashCommandController,
     _fuzzy_score,
     _fuzzy_search,
@@ -389,6 +390,52 @@ class TestSlashCommandController:
         event.key = "space"
         result = controller.on_key(event, "/zzz", 4)
         assert result == CompletionResult.IGNORED
+
+
+class TestSkillCommandController:
+    """Tests for `$` skill completion."""
+
+    @pytest.fixture
+    def mock_view(self):
+        """Create a mock CompletionView."""
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view):
+        """Create a controller with discovered skill entries."""
+        commands = [
+            CommandEntry("/skill:web-research", "Research the web", "web-research", ""),
+            CommandEntry("/skill:review", "Review a change", "review", ""),
+        ]
+        return SkillCommandController(commands, mock_view)
+
+    def test_handles_only_dollar_prefix(self, controller) -> None:
+        """The skill picker activates only for `$` input."""
+        assert controller.can_handle("$", 1) is True
+        assert controller.can_handle("$web", 4) is True
+        assert controller.can_handle("/web", 4) is False
+
+    def test_filters_on_short_skill_name(self, controller, mock_view) -> None:
+        """Queries match the skill name without requiring `skill:`."""
+        controller.on_text_changed("$web", 4)
+
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions == [("/skill:web-research", "Research the web")]
+
+    def test_completion_inserts_canonical_skill_command(
+        self, controller, mock_view
+    ) -> None:
+        """Selecting a `$` suggestion preserves command dispatch syntax."""
+        controller.on_text_changed("$rev", 4)
+        event = MagicMock()
+        event.key = "tab"
+
+        result = controller.on_key(event, "$rev", 4)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(
+            0, 4, "/skill:review"
+        )
 
 
 class TestScoreCommand:

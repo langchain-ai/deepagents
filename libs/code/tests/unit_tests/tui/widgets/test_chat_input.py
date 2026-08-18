@@ -4893,6 +4893,38 @@ class TestChatInputTypingBubble:
             assert app.chat_input_typing_count == 2
 
 
+class TestSkillCompletion:
+    """Test skill-only completion wiring."""
+
+    async def test_update_commands_keeps_dollar_picker_skill_only(self) -> None:
+        """`$` receives skills while `/` retains every command."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            commands = [
+                *get_slash_commands(),
+                CommandEntry("/skill:review", "Review a change", "review", ""),
+            ]
+            skill_commands = [
+                CommandEntry("/skill:remember", "Update memory", "remember", ""),
+                commands[-1],
+            ]
+
+            chat.update_slash_commands(commands, skill_commands=skill_commands)
+
+            assert chat._slash_controller is not None
+            assert chat._skill_controller is not None
+            slash_names = [entry.name for entry in chat._slash_controller._commands]
+            assert "/help" in slash_names
+            assert "/skill:remember" not in slash_names
+            assert [entry.name for entry in chat._skill_controller._commands] == [
+                "/skill:remember",
+                "/skill:review",
+            ]
+
+
 class TestArgumentHints:
     """Test inline argument-hint ghost text for slash commands."""
 

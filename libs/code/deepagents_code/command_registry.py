@@ -538,6 +538,8 @@ def _skill_command_entry(skill: ExtendedSkillMetadata) -> CommandEntry:
 
 def build_skill_commands(
     skills: list[ExtendedSkillMetadata],
+    *,
+    include_static_aliases: bool = False,
 ) -> list[CommandEntry]:
     """Build autocomplete entries for discovered skills.
 
@@ -552,6 +554,7 @@ def build_skill_commands(
 
     Args:
         skills: List of discovered skill metadata.
+        include_static_aliases: Include skills that have dedicated slash aliases.
 
     Returns:
         List of `CommandEntry` instances.
@@ -559,5 +562,5 @@ def build_skill_commands(
     return [
         _skill_command_entry(skill)
         for skill in skills
-        if skill["name"] not in _STATIC_SKILL_ALIASES
+        if include_static_aliases or skill["name"] not in _STATIC_SKILL_ALIASES
     ]

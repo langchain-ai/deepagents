@@ -51,6 +51,7 @@ from deepagents_code.tui.widgets.autocomplete import (
     CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
+    SkillCommandController,
     SlashCommandController,
 )
 from deepagents_code.tui.widgets.history import HistoryManager
@@ -1945,7 +1946,7 @@ class ChatInput(Vertical):
     - Multi-line input with TextArea
     - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
-    - Autocomplete for @ (files) and / (commands)
+    - Autocomplete for @ (files), / (commands), and $ (skills)
     - Drag the top border to resize the composer; double-click it to expand to
       the maximum height, or to drop a manual height back to content-driven
       sizing
@@ -2125,6 +2126,7 @@ class ChatInput(Vertical):
         self._completion_manager: MultiCompletionManager | None = None
         self._completion_view: _CompletionViewAdapter | None = None
         self._slash_controller: SlashCommandController | None = None
+        self._skill_controller: SkillCommandController | None = None
 
         # Collapsed paste storage: paste_id → full content.  When a large paste
         # arrives, the full text is stored here and a compact
@@ -2244,9 +2246,11 @@ class ChatInput(Vertical):
         self._slash_controller = SlashCommandController(
             get_slash_commands(), self._completion_view
         )
+        self._skill_controller = SkillCommandController([], self._completion_view)
         self._completion_manager = MultiCompletionManager(
             [
                 self._slash_controller,
+                self._skill_controller,
                 self._file_controller,
             ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
         )
@@ -2395,21 +2399,32 @@ class ChatInput(Vertical):
             file_controller.set_cwd(self._cwd)
             self._warm_file_cache()
 
-    def update_slash_commands(self, commands: list[CommandEntry]) -> None:
-        """Update the slash command controller's command list.
+    def update_slash_commands(
+        self,
+        commands: list[CommandEntry],
+        *,
+        skill_commands: list[CommandEntry] | None = None,
+    ) -> None:
+        """Update slash-command and skill completion entries.
 
         Called by the app after discovering skills to merge static
         commands with dynamic `/skill:` entries.
 
         Args:
-            commands: Full list of `CommandEntry` instances.
+            commands: Full list of slash autocomplete entries.
+            skill_commands: Complete skill-only entries for `$` autocomplete.
         """
-        if self._slash_controller:
+        if self._slash_controller and self._skill_controller:
             self._slash_controller.update_commands(commands)
+            if skill_commands is None:
+                skill_commands = [
+                    entry for entry in commands if entry.name.startswith("/skill:")
+                ]
+            self._skill_controller.update_commands(skill_commands)
             self._rebuild_argument_hints(commands)
         else:
             logger.warning(
-                "Cannot update slash commands: controller not initialized "
+                "Cannot update command completions: controllers not initialized "
                 "(widget not yet mounted)"
             )
 

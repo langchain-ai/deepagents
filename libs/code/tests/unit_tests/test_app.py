@@ -2615,6 +2615,17 @@ class TestCacheStatus:
             input_tokens=1_500,
         )
 
+    def test_refresh_swallows_uncomposed_status_bar(self) -> None:
+        """A usage update racing `/reload` compose/teardown must not raise."""
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._status_bar = MagicMock()
+        app._status_bar.query_one.side_effect = NoMatches(
+            "No nodes match '#cache-display'"
+        )
+
+        # Should not raise despite the status bar lacking `#cache-display`.
+        app._refresh_cache_display()
+
 
 class TestThreadCachePrewarm:
     """Tests for startup thread-cache prewarming."""

@@ -628,6 +628,17 @@ def test_glob_matches_pattern() -> None:
     assert paths == ["/a.md", "/c.md"]
 
 
+async def test_glob_refused_pattern_returns_error() -> None:
+    """Sync and inherited async glob calls report patterns refused by `wcmatch`."""
+    backend, _ = _make_backend()
+    pattern = "{a,b}" * 40 + "*.py"
+
+    for result in (backend.glob(pattern), await backend.aglob(pattern)):
+        assert result.error is not None
+        assert "Invalid glob pattern" in result.error
+        assert result.matches is None
+
+
 def test_upload_text_file_succeeds() -> None:
     backend, mock_client = _make_backend()
     responses = backend.upload_files([("/note.md", b"hello")])

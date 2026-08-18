@@ -284,6 +284,18 @@ The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
 """
 
+LAUNCH_TERM_PROGRAM = "DEEPAGENTS_CODE_LAUNCH_TERM_PROGRAM"
+"""Internal sentinel recording the `TERM_PROGRAM` present when `dcode` started.
+
+Not user-facing. The resume hint echoes `TERM_PROGRAM` only when the launch
+environment supplied it (an inline `TERM_PROGRAM=x dcode`, a terminal's own
+export, or a shell alias), so the value set by a project or global `.env` file
+*after* launch must not leak in. The app itself never sets `TERM_PROGRAM`, so
+`cli_main` snapshotting the variable here at entry means a set sentinel always
+marks an explicit launch value; the update re-exec inherits it unchanged,
+which is correct because the relaunch runs the command the user typed.
+"""
+
 LEGACY_ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
 """Removed project MCP allowlist env var retained for migration detection only.
 

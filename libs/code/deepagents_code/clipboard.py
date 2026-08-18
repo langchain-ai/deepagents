@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import base64
 import logging
-import os
-import pathlib
 from typing import TYPE_CHECKING, Literal
 
 from textual.dom import NoScreen
@@ -24,15 +22,26 @@ _PREVIEW_MAX_LENGTH = 40
 
 
 def _copy_osc52(text: str) -> None:
-    """Copy text using OSC 52 escape sequence (works over SSH/tmux)."""
-    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    osc52_seq = f"\033]52;c;{encoded}\a"
-    if os.environ.get("TMUX"):
-        osc52_seq = f"\033Ptmux;\033{osc52_seq}\033\\"
+    """Copy text using an OSC 52 escape sequence (works over SSH and tmux).
 
-    with pathlib.Path("/dev/tty").open("w", encoding="utf-8") as tty:
-        tty.write(osc52_seq)
-        tty.flush()
+    Delegates to `terminal_escape.write_osc`, which owns the `/dev/tty`
+    fallbacks and the tmux passthrough wrapper, and therefore also honors
+    `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE`.
+
+    Args:
+        text: Text to place on the clipboard.
+
+    Raises:
+        RuntimeError: When no terminal could be written to, so
+            `copy_text_to_clipboard` reports the failure like any other
+            backend's.
+    """
+    from deepagents_code.terminal_escape import write_osc
+
+    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    if not write_osc("52", f"c;{encoded}"):
+        msg = "no terminal available for an OSC 52 clipboard write"
+        raise RuntimeError(msg)
 
 
 def _shorten_preview(texts: list[str]) -> str:

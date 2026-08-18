@@ -22,11 +22,19 @@ from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
+    from collections.abc import Mapping
 
     from deepagents_code.config import TracingStatus
     from deepagents_code.extras_info import VersionReport
+    from deepagents_code.multiplexer import TmuxStatus
 
 logger = logging.getLogger(__name__)
+
+TMUX_DOCS_URL = (
+    "https://github.com/langchain-ai/deepagents/blob/main/libs/code/README.md"
+    "#-running-under-tmux"
+)
+"""Where the tmux options reported by the `Terminal` section are explained."""
 
 
 @dataclass
@@ -508,6 +516,221 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     )
 
 
+def _color_system() -> str:
+    """Return the console's detected color depth, or `not detected`."""
+    from deepagents_code.config import console
+
+    return console.color_system or "not detected"
+
+
+def _kitty_keyboard_item() -> DiagnosticItem:
+    """Build the row describing kitty-keyboard support and the newline key.
+
+    Returns:
+        A diagnostic item naming the shortcut the composer will actually honor.
+    """
+    from deepagents_code.config import newline_shortcut
+    from deepagents_code.terminal_capabilities import supports_kitty_keyboard_protocol
+
+    supported = supports_kitty_keyboard_protocol()
+    state = "available" if supported else "unavailable"
+    return DiagnosticItem(
+        "Kitty keyboard", f"{state} - newline is {newline_shortcut()}"
+    )
+
+
+def _annotated_item(
+    label: str,
+    value: str,
+    *,
+    healthy: str,
+    consequence: str,
+    remedy: str,
+) -> DiagnosticItem:
+    """Build a row that explains itself when `value` is not `healthy`.
+
+    Args:
+        label: Row label.
+        value: Current value.
+        healthy: Value at which the dependent feature works.
+        consequence: What breaks while the value differs from `healthy`.
+        remedy: The `~/.tmux.conf` line that fixes it.
+
+    Returns:
+        A diagnostic item. Always healthy: these are opt-in suggestions, not
+        faults, and must not change the `doctor` exit code.
+    """
+    if value == healthy:
+        return DiagnosticItem(label, value)
+    return DiagnosticItem(label, _annotated_value(value, consequence, remedy))
+
+
+def _annotated_value(value: str, consequence: str, remedy: str) -> str:
+    """Render a value alongside what it costs and the line that fixes it.
+
+    Args:
+        value: The state tmux or the terminal reported.
+        consequence: What breaks while `value` stands.
+        remedy: The `~/.tmux.conf` line that fixes it.
+
+    Returns:
+        The annotated value shown in a diagnostic row.
+    """
+    return f"{value} - {consequence}; {remedy}"
+
+
+def _tmux_option_item(
+    label: str,
+    options: Mapping[str, str] | None,
+    name: str,
+    *,
+    consequence: str,
+    remedy: str,
+) -> DiagnosticItem:
+    """Build a row for one tmux option, annotated when it is not `on`.
+
+    Args:
+        label: Row label.
+        options: Options tmux reported, or `None` when the probe failed.
+        name: tmux option name to look up.
+        consequence: What breaks while the option is not `on`.
+        remedy: The `~/.tmux.conf` line that fixes it.
+
+    Returns:
+        A diagnostic item, distinguishing a failed probe from a tmux too old
+        to know the option.
+    """
+    if options is None:
+        return DiagnosticItem(label, "could not query tmux")
+    value = options.get(name)
+    if value is None:
+        return DiagnosticItem(label, "unsupported by this tmux")
+    return _annotated_item(
+        label, value, healthy="on", consequence=consequence, remedy=remedy
+    )
+
+
+def _iterm_profile_item(status: TmuxStatus) -> DiagnosticItem | None:
+    """Build the row describing whether the inherited iTerm2 profile is current.
+
+    The cursor-guide workaround reads `ITERM_PROFILE` to decide whether the
+    guide was on before launch. tmux does not refresh that variable on attach
+    unless it is listed in `update-environment`, so a pane inherits whichever
+    profile the window that started the server happened to be using — and the
+    workaround then reads the wrong profile's preference.
+
+    Args:
+        status: Facts probed from the tmux server hosting this pane.
+
+    Returns:
+        A diagnostic item, or `None` when iTerm2 is not the outer terminal and
+        the row would be noise.
+    """
+    import os
+
+    from deepagents_code.multiplexer import ITERM_PROFILE_VAR, UPDATE_ENVIRONMENT
+    from deepagents_code.terminal_capabilities import is_iterm2
+
+    label = "iTerm2 profile"
+    if not is_iterm2():
+        return None
+    updates = status.environment_updates
+    if updates is None:
+        return DiagnosticItem(label, "could not query tmux")
+    value = os.environ.get(ITERM_PROFILE_VAR, "").strip() or "not inherited"
+    if ITERM_PROFILE_VAR in updates:
+        return DiagnosticItem(label, value)
+    return DiagnosticItem(
+        label,
+        _annotated_value(
+            value,
+            "frozen at server start, so the cursor guide may read the wrong one",
+            f"set -ga {UPDATE_ENVIRONMENT} {ITERM_PROFILE_VAR}",
+        ),
+    )
+
+
+def _tmux_items(status: TmuxStatus) -> list[DiagnosticItem]:
+    """Build the tmux-specific rows of the `Terminal` section.
+
+    Args:
+        status: Facts probed from the tmux server hosting this pane.
+
+    Returns:
+        One row per option that changes how the app behaves under tmux.
+    """
+    from deepagents_code.multiplexer import (
+        ALLOW_PASSTHROUGH,
+        FOCUS_EVENTS,
+        SET_CLIPBOARD,
+    )
+
+    options = status.options
+    items = [
+        DiagnosticItem("Multiplexer", status.version or "tmux (version unknown)"),
+        _tmux_option_item(
+            "Focus events",
+            options,
+            FOCUS_EVENTS,
+            consequence="unfocused panes keep a blinking cursor",
+            remedy="set -g focus-events on",
+        ),
+        _tmux_option_item(
+            "Passthrough",
+            options,
+            ALLOW_PASSTHROUGH,
+            consequence="progress, OSC 52, and the cursor guide are dropped",
+            remedy="set -g allow-passthrough on",
+        ),
+        _tmux_option_item(
+            "Clipboard",
+            options,
+            SET_CLIPBOARD,
+            consequence="`/copy` cannot reach the outer clipboard",
+            remedy="set -g set-clipboard on",
+        ),
+        _annotated_item(
+            "Color",
+            _color_system(),
+            healthy="truecolor",
+            consequence="themes are quantized",
+            remedy="set -ga update-environment COLORTERM",
+        ),
+        _kitty_keyboard_item(),
+    ]
+    profile = _iterm_profile_item(status)
+    if profile is not None:
+        items.append(profile)
+    return items
+
+
+def _collect_terminal() -> DiagnosticSection:
+    """Collect terminal and multiplexer facts that shape the TUI.
+
+    Returns:
+        The `Terminal` section. Inside tmux it reports the options that gate
+        focus handling, escape passthrough, and clipboard writes; elsewhere it
+        collapses to the terminal identity and color depth.
+    """
+    import os
+
+    from deepagents_code.multiplexer import query_tmux_status
+
+    status = query_tmux_status()
+    if status is not None:
+        return DiagnosticSection(title="Terminal", items=_tmux_items(status))
+
+    identity = os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or "unknown"
+    return DiagnosticSection(
+        title="Terminal",
+        items=[
+            DiagnosticItem("Terminal", identity),
+            DiagnosticItem("Color", _color_system()),
+            _kitty_keyboard_item(),
+        ],
+    )
+
+
 def _collect_configuration() -> DiagnosticSection:
     """Collect on-disk configuration and data locations.
 
@@ -536,6 +759,7 @@ def collect_sections() -> list[DiagnosticSection]:
     """
     return [
         _collect_diagnostics(),
+        _collect_terminal(),
         _collect_updates(),
         _collect_tracing(),
         _collect_configuration(),
@@ -557,6 +781,7 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
 
     from deepagents_code import theme
     from deepagents_code.config import console, get_glyphs
+    from deepagents_code.multiplexer import inside_tmux
 
     glyphs = get_glyphs()
     tee, corner = _tree_connectors()
@@ -590,6 +815,12 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
         style=theme.MUTED,
         highlight=False,
     )
+    if inside_tmux():
+        console.print(
+            f"       tmux setup is documented at {TMUX_DOCS_URL}",
+            style=theme.MUTED,
+            highlight=False,
+        )
     console.print()
 
 

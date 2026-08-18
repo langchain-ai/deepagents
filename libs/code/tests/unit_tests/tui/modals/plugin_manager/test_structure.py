@@ -127,8 +127,9 @@ async def test_plugin_manager_keeps_modal_mounted_through_reload_prompt() -> Non
         await started.wait()
 
         assert app.screen is screen
-        assert str(screen.query_one("#plugin-manager-status", Static).render()) == (
-            "Checking plugin changes..."
+        # The manager keeps its normal content painted while the check runs.
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Plugins"
         )
         await pilot.press("escape")
         assert app.screen is screen

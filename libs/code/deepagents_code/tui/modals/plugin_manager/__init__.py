@@ -655,7 +655,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._select_tab(event.tab)
 
     def _show_close_state(self, title: str, body: str, help_text: str) -> None:
-        """Replace manager content while checking or confirming reload."""
+        """Replace manager content with the reload confirmation."""
         self.add_class("plugin-close-state")
         self.query_one("#plugin-manager-title", Static).update(title)
         self.query_one("#plugin-manager-tabs", Horizontal).display = False
@@ -738,8 +738,10 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         if self._check_reload_required is None:
             self.dismiss(None)
             return
+        # Keep the manager painted as-is while the check runs; only repaint
+        # when the result is a reload prompt so an unchanged close shows no
+        # intermediate state.
         self._checking_changes = True
-        self._show_close_state("Plugins", "Checking plugin changes...", "")
         self.run_worker(
             self._close_or_prompt(),
             exclusive=True,

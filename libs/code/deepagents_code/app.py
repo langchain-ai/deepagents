@@ -4010,6 +4010,9 @@ class DeepAgentsApp(App):
         self._offload_worker: Worker[None] | None = None
         """Active `/offload` worker, tracked so Escape can cancel it."""
 
+        self._offload_task_started = False
+        """Whether the current `/offload` worker reached its first task step."""
+
         self._agent_turn_started = False
         """True once the current `_run_agent_task` invocation has begun.
 
@@ -15409,10 +15412,15 @@ class DeepAgentsApp(App):
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
-            self._offload_worker = self.run_worker(
-                self._run_offload_task(),
-                exclusive=False,
-            )
+            self._set_agent_running(True)
+            try:
+                self._offload_worker = self.run_worker(
+                    self._run_offload_task(),
+                    exclusive=False,
+                )
+            except Exception:
+                self._set_agent_running(False)
+                raise
         elif cmd == "/threads" or cmd.startswith("/threads "):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
@@ -16352,33 +16360,24 @@ class DeepAgentsApp(App):
         return conversation
 
     async def _run_offload_task(self) -> None:
-        """Run `/offload` without blocking the App message pump."""
+        """Run a synchronously reserved `/offload` outside the App message pump."""
+        self._offload_task_started = True
         try:
-            await self._handle_offload()
+            await self._handle_offload(reserved=True)
         finally:
+            self._offload_task_started = False
             self._offload_worker = None
             if not self._startup_sequence_running:
                 await self._process_next_from_queue()
 
-    async def _handle_offload(self) -> None:
-        """Reserve the turn and run `/offload`, always releasing the turn.
+    async def _handle_offload(self, *, reserved: bool = False) -> None:
+        """Run `/offload`, always releasing its busy-state reservation.
 
-        The reservation happens here — one frame above the implementation —
-        so the release in `finally` is guaranteed to run even when the worker
-        is cancelled while the implementation's own error handling is still
-        awaiting (a cancelled task that keeps catching and re-awaiting can be
-        re-cancelled out from under its own `finally`).
+        Args:
+            reserved: Whether the caller already reserved the turn synchronously.
         """
-        # Reserve before the first await. `run_worker()` only schedules the
-        # worker's task; everything down to the first await of the coroutine
-        # chain still runs within the same event-loop tick as the command
-        # handler. Setting `_agent_running` here (rather than after the state
-        # reads in `_offload_impl`, where it used to sit) closes the window in
-        # which `_submit_input`/`_process_next_from_queue` would otherwise
-        # consider the app idle and dispatch a queued prompt concurrently with
-        # the offload, and makes a rapid duplicate `/offload` queue behind
-        # this one instead of overlapping with it.
-        self._set_agent_running(True)
+        if not reserved:
+            self._set_agent_running(True)
         try:
             await self._offload_impl()
         finally:
@@ -19901,14 +19900,10 @@ class DeepAgentsApp(App):
         `_agent_turn_started` rather than the worker's own state. See
         `_agent_turn_started` for what goes wrong when nothing releases the turn.
 
-        The offload worker needs the same recovery: `/offload` sets
-        `_agent_running` at the top of `_handle_offload`, but a cancellation
-        delivered before that first step means `_run_offload_task`'s `finally`
-        never clears `_offload_worker`. Every later `Esc` would then be
-        consumed re-cancelling the dead worker instead of interrupting the
-        agent or clearing the input. A first-step cancellation still leaves
-        the flag set, so only the worker reference is cleared here and the
-        worker's own teardown handles the rest.
+        The offload worker needs the same recovery because command dispatch
+        reserves `_agent_running` before scheduling it. A cancellation before
+        its first step must release that reservation and clear the worker
+        reference because `_run_offload_task` never reaches its `finally`.
 
         Args:
             worker: The worker that was just cancelled. Callers may pass any
@@ -19916,8 +19911,9 @@ class DeepAgentsApp(App):
                 so anything that is not the current `_agent_worker` or
                 `_offload_worker` is ignored.
         """
-        if worker is self._offload_worker and not self._agent_turn_started:
+        if worker is self._offload_worker and not self._offload_task_started:
             self._offload_worker = None
+            self._set_agent_running(False)
             return
 
         if worker is not self._agent_worker or self._agent_turn_started:

@@ -8,8 +8,11 @@ import stat
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 import pytest
 from deepagents.backends.utils import validate_path
@@ -1157,6 +1160,41 @@ class TestAgentRunningGuard:
 class TestOffloadInterrupt:
     """Test that Escape can cancel `/offload` through the real App dispatch."""
 
+    async def test_command_reserves_turn_before_worker_starts(self) -> None:
+        """Command dispatch should reserve busy state before scheduling offload."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            worker = MagicMock()
+            scheduled: list[Coroutine[Any, Any, None]] = []
+
+            def defer_worker(
+                work: Coroutine[Any, Any, None], **_kwargs: object
+            ) -> MagicMock:
+                scheduled.append(work)
+                return worker
+
+            with patch.object(app, "run_worker", side_effect=defer_worker):
+                await app._handle_command("/offload")
+
+            assert app._agent_running is True
+            assert app._offload_worker is worker
+            assert app._offload_task_started is False
+            assert len(scheduled) == 1
+
+            coroutine = scheduled[0]
+            try:
+                await app._submit_input("hello", "normal")
+                assert len(app._pending_messages) == 1
+                app._cancel_worker(worker)
+            finally:
+                coroutine.close()
+
+            worker.cancel.assert_called_once_with()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
     async def test_escape_cancels_offload_worker(self) -> None:
         """Escape should reach and cancel an offload blocked in its stream."""
         app = DeepAgentsApp()
@@ -1217,9 +1255,9 @@ class TestOffloadInterrupt:
     async def test_offload_blocks_queued_prompt_until_done(self) -> None:
         """A prompt submitted while offload is reserved must not overlap it.
 
-        `_handle_offload` sets `_agent_running` before its first await, so a
-        prompt that was queued before the worker even starts stays queued until
-        the offload finishes and `_run_offload_task` drains the queue.
+        Command dispatch sets `_agent_running` before scheduling the worker, so
+        a prompt queued before the worker starts stays queued until the offload
+        finishes and `_run_offload_task` drains the queue.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1317,8 +1355,8 @@ class TestOffloadInterrupt:
                 await pilot.pause()
                 worker = app._offload_worker
                 assert worker is not None
-                # The reservation lands before the first await, so it is set
-                # even though the compaction never got to run.
+                # Command dispatch reserves the turn before the worker starts,
+                # so it is set even though compaction never got to run.
                 assert app._agent_running is True
 
                 await pilot.press("escape")

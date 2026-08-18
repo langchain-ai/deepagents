@@ -1927,6 +1927,8 @@ class TestRenderTeardownThreadHints:
         resume_term_program: bool | None = None,
         debug: bool = False,
         experimental: bool = False,
+        toml_data: dict | None = None,
+        toml_error: Exception | None = None,
     ) -> str:
         """Render teardown hints under controlled feature configuration."""
         buffer = StringIO()
@@ -1949,7 +1951,11 @@ class TestRenderTeardownThreadHints:
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
-            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config_manifest.load_config_toml",
+                side_effect=toml_error,
+                return_value={} if toml_data is None else toml_data,
+            ),
             patch.dict(os.environ, env),
             patch.object(sys, "platform", "darwin"),
         ):
@@ -1974,6 +1980,45 @@ class TestRenderTeardownThreadHints:
         thread_exists_mock.assert_awaited_once()
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
+
+    def test_resume_hint_honors_toml_feature_flag(self) -> None:
+        """`[features] resume_term_program` reaches the hint without an env var.
+
+        The helper otherwise stubs `load_config_toml` to `{}`, so without this
+        case the entire config.toml route to the prefix could break with the
+        suite still green.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_term_program="iTerm.app",
+            toml_data={"features": {"resume_term_program": True}},
+        )
+
+        assert "TERM_PROGRAM=iTerm.app dcode -r test123" in output
+
+    def test_resume_hint_survives_config_read_failure(self) -> None:
+        """A raising config read must not take down the exit path.
+
+        `_render_teardown_thread_hints` runs from a bare `finally` in
+        `cli_main`, so an exception escaping here would replace whatever is
+        already unwinding -- including the `KeyboardInterrupt` that produces
+        exit code 130.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_term_program="iTerm.app",
+            resume_term_program=True,
+            toml_error=RecursionError("deeply nested TOML"),
+        )
+
+        assert "dcode -r test123" in output
+        assert "TERM_PROGRAM=" not in output
 
     @pytest.mark.parametrize("return_code", [0, 1])
     def test_resume_hint_echoes_launch_command(self, return_code: int) -> None:

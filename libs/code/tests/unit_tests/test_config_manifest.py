@@ -498,6 +498,40 @@ def test_resume_term_program_toml_overrides_mode_default(
     ) == (expected, "config.toml")
 
 
+def test_resume_term_program_unrecognized_env_falls_through_to_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typo'd feature flag must not silently defeat debug mode."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    monkeypatch.setenv(_env_vars.DEBUG, "1")
+    monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, "maybe")
+
+    assert resolve_scalar(option, toml_data={}) == (True, "default")
+
+
+def test_bool_mode_default_rejects_declared_default() -> None:
+    """A declared default is dead for this kind, so it is rejected up front.
+
+    `resolve_scalar` derives the default from debug/experimental mode and
+    returns before reading `default` -- but `dcode config` still renders the
+    declared value, advertising a default that contradicts the real one.
+    """
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    assert option.default is None
+
+    with pytest.raises(TypeError, match="must not declare a default"):
+        ConfigOption(
+            key="features.example",
+            group="Tools",
+            summary="Example.",
+            kind=OptionKind.BOOL_MODE_DEFAULT,
+            default=False,
+        )
+
+
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
     """The effective log level follows debug mode when no level is explicit."""
     option = get_option("debug.log_level")

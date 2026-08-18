@@ -154,7 +154,9 @@ class OptionKind(Enum):
     tokens; an unrecognized value is logged and skipped to the next layer."""
 
     BOOL_MODE_DEFAULT = "bool_mode_default"
-    """Boolean whose default follows experimental or debug mode."""
+    """Same token handling as `BOOL`, but with no static default: when no env or
+    TOML value applies, `resolve_scalar` derives the default from debug or
+    experimental mode. Declaring a `default` is rejected at construction."""
 
     BOOL_PRESENCE = "bool_presence"
     """Any non-empty env value enables the flag (e.g. debug injectors)."""
@@ -217,9 +219,10 @@ if _KIND_TYPE_LABEL.keys() != set(OptionKind):
 # Python types accepted for a `ConfigOption.default` of each scalar kind,
 # enforced by `ConfigOption.__post_init__`. Delegate kinds accept their parser's
 # output shape and are validated by those parsers, so they are omitted here.
+# `BOOL_MODE_DEFAULT` is omitted for the opposite reason: it must not declare a
+# default at all, so there is no value here to type-check.
 _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.BOOL: (bool,),
-    OptionKind.BOOL_MODE_DEFAULT: (bool,),
     OptionKind.BOOL_PRESENCE: (bool,),
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
@@ -362,6 +365,16 @@ class ConfigOption:
         if self.kind is OptionKind.STRUCTURED:
             msg = f"{self.key}: STRUCTURED options must not declare a default"
             raise TypeError(msg)
+        if self.kind is OptionKind.BOOL_MODE_DEFAULT:
+            # `resolve_scalar` computes this kind's default from debug/experimental
+            # mode and returns before reading `default`, so a declared value would
+            # be dead -- yet `dcode config` still renders it, advertising a default
+            # that contradicts the real one.
+            msg = (
+                f"{self.key}: BOOL_MODE_DEFAULT options must not declare a "
+                "default; the default follows debug/experimental mode"
+            )
+            raise TypeError(msg)
         if self.invert_toml_bool:
             self._validate_invert_toml_bool()
         expected = _KIND_DEFAULT_TYPES.get(self.kind)
@@ -385,7 +398,11 @@ class ConfigOption:
         Raises:
             TypeError: When the marker is used without a boolean TOML source.
         """
-        if self.kind not in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
+        if self.kind not in {
+            OptionKind.BOOL,
+            OptionKind.BOOL_MODE_DEFAULT,
+            OptionKind.BOOL_PRESENCE,
+        }:
             msg = f"{self.key}: invert_toml_bool requires a boolean option kind"
             raise TypeError(msg)
         if self.toml_keys is None:
@@ -696,7 +713,8 @@ def resolve_scalar(
 
     Resolution order is: the prefixed primary `env_var`, then each
     `fallback_env_vars` name in declaration order, then `config.toml`, then the
-    typed `default`.
+    typed `default` -- or, for `BOOL_MODE_DEFAULT`, a default derived from debug
+    or experimental mode rather than from `option.default`.
 
     Returns:
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
@@ -1456,7 +1474,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
             "experimental or debug mode."
         ),
         kind=OptionKind.BOOL_MODE_DEFAULT,
-        default=False,
         env_var=_env_vars.RESUME_TERM_PROGRAM,
         empty_env_is_false=True,
         toml_keys=("features", "resume_term_program"),

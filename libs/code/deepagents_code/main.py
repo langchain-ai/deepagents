@@ -266,12 +266,21 @@ def _should_check_teardown_thread(
 
 
 def _resume_term_program() -> str | None:
-    """Return an enabled `TERM_PROGRAM` value safe for the resume hint.
+    """Return the `TERM_PROGRAM` value to echo in the resume hint, if any.
+
+    Gated on `features.resume_term_program` (off unless the user opts in, on by
+    default in debug or experimental mode), so this reads `config.toml` from
+    disk. The value comes from `LAUNCH_TERM_PROGRAM` -- the snapshot `cli_main`
+    takes at process entry -- so a `TERM_PROGRAM` that only appears later, from
+    a project or global `.env` file, never reaches the hint.
 
     Returns:
         The printable launch-time value when the feature is enabled, else `None`.
-        Native Windows shells also return `None` because they cannot parse the
-        POSIX `VAR=value` prefix. POSIX markers (`SHELL` from git-bash/MSYS,
+        A value carrying control characters is dropped rather than stripped:
+        stripping would both write raw escape sequences into teardown output and
+        name a terminal the environment never actually contained. Native Windows
+        shells also return `None` because they cannot parse the POSIX
+        `VAR=value` prefix. POSIX markers (`SHELL` from git-bash/MSYS,
         `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
     """
     from deepagents_code.config_manifest import (
@@ -282,6 +291,12 @@ def _resume_term_program() -> str | None:
 
     option = get_option("features.resume_term_program")
     if option is None:
+        # Unreachable unless the manifest key is renamed without updating this
+        # literal; log so that mismatch surfaces instead of silently defaulting.
+        logger.warning(
+            "Unknown config option %r; omitting TERM_PROGRAM from the resume hint",
+            "features.resume_term_program",
+        )
         return None
     enabled, _ = resolve_scalar(option, toml_data=load_config_toml())
     if not enabled:
@@ -354,7 +369,20 @@ def _render_teardown_thread_hints(
     # Echo the command the user actually launched (a shim or the
     # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
     resume_command = shlex.join([invoked_name(), "-r", str(thread_id)])
-    term_program = _resume_term_program()
+    # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
+    # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
+    # the bare command would resume without it. Carrying the launch-time value
+    # as an env prefix keeps the line pasteable as-is. Guarded because this
+    # reads `config.toml`: unlike the rest of this function, it can raise, and
+    # an exception here would replace whatever is already unwinding.
+    try:
+        term_program = _resume_term_program()
+    except Exception:
+        logger.debug(
+            "Could not resolve resume TERM_PROGRAM on teardown",
+            exc_info=True,
+        )
+        term_program = None
     if term_program is not None:
         resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"
     console.print(Text(resume_command, style="cyan"))

@@ -1464,8 +1464,9 @@ class TestGhRequestContract:
         )
         view = next(c for c in calls if c[0] == "pr")
         fields = view[view.index("--json") + 1].split(",")
-        # `labels` drives the internal/community split; `body` the socials.
-        assert set(fields) == {"author", "body", "labels"}
+        # `labels` drives the internal/community split; `body` the socials;
+        # `closingIssuesReferences` the special-thanks section.
+        assert set(fields) == {"author", "body", "labels", "closingIssuesReferences"}
         assert "--repo" in view and REPOSITORY in view
 
     def test_merged_by_requests_the_merger_login(
@@ -1516,7 +1517,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, internal = self._run(
+        community, internal, _ = self._run(
             tmp_path,
             head,
             {
@@ -1536,7 +1537,7 @@ class TestCollectContributors:
     ) -> None:
         """A LinkedIn URL in prose is not the author's own profile."""
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1555,7 +1556,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1579,7 +1580,7 @@ class TestCollectContributors:
         the published link depend on commit order.
         """
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1604,7 +1605,7 @@ class TestCollectContributors:
         publishing a dead link under a real contributor's name.
         """
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1621,7 +1622,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, internal = self._run(
+        community, internal, _ = self._run(
             tmp_path,
             head,
             {
@@ -1639,7 +1640,7 @@ class TestCollectContributors:
     ) -> None:
         """A missing or renamed is_bot field must not promote a bot."""
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {"author": {"login": "renovate[bot]"}, "body": "", "labels": []},
@@ -1651,7 +1652,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, internal = self._run(
+        community, internal, _ = self._run(
             tmp_path,
             head,
             {
@@ -1710,7 +1711,7 @@ class TestCollectContributors:
             return _ok(json.dumps(payloads[args[2]]))
 
         monkeypatch.setattr(brn, "_run_gh", handler)
-        community, internal = brn.collect_contributors(
+        community, internal, _ = brn.collect_contributors(
             tmp_path,
             str(PACKAGE_PATH),
             head,
@@ -1730,7 +1731,7 @@ class TestCollectContributors:
             brn, "_run_gh", lambda _args: _fail("HTTP 403 rate limit", 1)
         )
         warnings: list[str] = []
-        community, internal = brn.collect_contributors(
+        community, internal, _ = brn.collect_contributors(
             tmp_path,
             str(PACKAGE_PATH),
             head,
@@ -1759,7 +1760,260 @@ class TestCollectContributors:
             REPOSITORY,
             offline=True,
             warnings=[],
-        ) == ([], [])
+        ) == ([], [], [])
+
+
+class TestIssueReporters:
+    """The `closingIssuesReferences` side of the contributor walk.
+
+    Reporters share the walk's range, dedupe, and failure accounting, so the
+    tests here pin only what is new: which payload fields credit whom, and
+    which reporters are dropped.
+    """
+
+    def _repo(self, tmp_path: Path) -> str:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        return _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one"
+        )
+
+    def _run(
+        self,
+        tmp_path: Path,
+        head: str,
+        pr_payload: dict,
+        monkeypatch: pytest.MonkeyPatch,
+        warnings: list[str] | None = None,
+    ) -> brn.Contributors:
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", json.dumps(pr_payload)))
+        return brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings if warnings is not None else [],
+        )
+
+    def _payload(self, issues: list[dict] | None, **overrides) -> dict:
+        payload = {
+            "author": {"login": "alice", "is_bot": False},
+            "body": "",
+            "labels": [],
+            "closingIssuesReferences": issues,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_reporter_is_credited_with_the_issue_they_filed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        result = self._run(
+            tmp_path,
+            head,
+            self._payload([{"number": 101, "author": {"login": "carol"}}]),
+            monkeypatch,
+        )
+        assert result.issue_reporters == [brn.IssueReporter("carol", [101])]
+        # The PR author is not credited for closing their own PR's issue.
+        assert [r.login for r in result.issue_reporters] != ["alice"]
+
+    def test_issues_are_deduped_and_sorted_ascending(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        result = self._run(
+            tmp_path,
+            head,
+            self._payload(
+                [
+                    {"number": 220, "author": {"login": "carol"}},
+                    {"number": 101, "author": {"login": "carol"}},
+                    {"number": 220, "author": {"login": "carol"}},
+                ]
+            ),
+            monkeypatch,
+        )
+        assert result.issue_reporters == [brn.IssueReporter("carol", [101, 220])]
+
+    def test_issue_shared_by_two_prs_is_counted_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 2\n", "feat(example): two"
+        )
+
+        prs = iter(["1", "2"])
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                return _ok(next(prs))
+            return _ok(
+                json.dumps(
+                    self._payload([{"number": 101, "author": {"login": "carol"}}])
+                )
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        assert result.issue_reporters == [brn.IssueReporter("carol", [101])]
+
+    def test_bot_reporter_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The issue-author payload has no is_bot field; the suffix is all we get."""
+        head = self._repo(tmp_path)
+        result = self._run(
+            tmp_path,
+            head,
+            self._payload([{"number": 101, "author": {"login": "dependabot[bot]"}}]),
+            monkeypatch,
+        )
+        assert result.issue_reporters == []
+
+    def test_internal_reporter_is_filtered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A maintainer in this release's internal set is not publicly thanked.
+
+        The filter reads the release's own `internal`-labeled PRs rather than
+        an org-membership API, so the fixture reporter must carry the label on
+        their own PR in range.
+        """
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 2\n", "feat(example): two"
+        )
+
+        payloads = {
+            # Newest commit first: the feature PR closing carol's issue.
+            "1": self._payload([{"number": 101, "author": {"login": "carol"}}]),
+            # carol's own internal-labeled PR puts her in the internal set.
+            "2": self._payload(
+                [],
+                author={"login": "carol", "is_bot": False},
+                labels=[{"name": "internal"}],
+            ),
+        }
+        prs = iter(["1", "2"])
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                return _ok(next(prs))
+            return _ok(json.dumps(payloads[args[2]]))
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        assert result.internal == ["carol"]
+        assert result.issue_reporters == []
+
+    @pytest.mark.parametrize("missing", ["absent", "null"])
+    def test_missing_field_warns_and_is_treated_as_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+    ) -> None:
+        """Schema drift must not silently empty the section."""
+        head = self._repo(tmp_path)
+        payload = self._payload(None if missing == "null" else [])
+        if missing == "absent":
+            del payload["closingIssuesReferences"]
+        warnings: list[str] = []
+        result = self._run(tmp_path, head, payload, monkeypatch, warnings)
+        assert result.issue_reporters == []
+        assert any("no closingIssuesReferences field" in w for w in warnings)
+
+    @pytest.mark.parametrize(
+        "issues",
+        [
+            [{"number": 101}],  # no author
+            [{"number": 101, "author": None}],
+            [{"number": 101, "author": {"login": None}}],
+            [{"number": 101, "author": {"login": ""}}],
+            [{"author": {"login": "carol"}}],  # no number
+            [{"number": "101", "author": {"login": "carol"}}],  # non-int number
+        ],
+    )
+    def test_unusable_issue_entries_warn_and_are_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, issues: list[dict]
+    ) -> None:
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run(tmp_path, head, self._payload(issues), monkeypatch, warnings)
+        assert result.issue_reporters == []
+        assert any("PR #7" in w for w in warnings)
+
+    def test_offline_returns_no_reporters(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+
+        def explode(_args):
+            raise AssertionError("gh must not run in offline mode")
+
+        monkeypatch.setattr(brn, "_run_gh", explode)
+        result = brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            offline=True,
+            warnings=[],
+        )
+        assert result.issue_reporters == []
+
+    def test_failed_pr_view_leaves_thanks_incomplete_but_warned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The thanks list reflects only the PRs that were actually read.
+
+        A failing `pr view` drops that PR's reporters along with its
+        contributor, and the existing INCOMPLETE warning is the only signal.
+        """
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 2\n", "feat(example): two"
+        )
+
+        prs = iter(["1", "2"])
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                return _ok(next(prs))
+            if args[2] == "1":
+                return _ok(
+                    json.dumps(
+                        self._payload([{"number": 101, "author": {"login": "carol"}}])
+                    )
+                )
+            return _fail("HTTP 502")
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        warnings: list[str] = []
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=warnings,
+        )
+        assert result.issue_reporters == [brn.IssueReporter("carol", [101])]
+        assert any("INCOMPLETE" in w for w in warnings)
 
 
 class TestContributorEdgeCases:
@@ -1816,7 +2070,7 @@ class TestContributorEdgeCases:
 
         monkeypatch.setattr(brn, "_run_gh", handler)
         warnings: list[str] = []
-        community, _ = self._collect(tmp_path, tip, warnings)
+        community, _, _ = self._collect(tmp_path, tip, warnings)
         assert len(community) == 3
         assert any(
             "only the newest 3 were scanned" in w and "INCOMPLETE" in w
@@ -1838,7 +2092,7 @@ class TestContributorEdgeCases:
 
         monkeypatch.setattr(brn, "_run_gh", handler)
         warnings: list[str] = []
-        community, internal = self._collect(tmp_path, tip, warnings)
+        community, internal, _ = self._collect(tmp_path, tip, warnings)
         assert community == [] and internal == []
         assert calls == 3, "must stop at the failure threshold, not walk 20 commits"
         assert any("abandoned after 3 consecutive failures" in w for w in warnings)
@@ -1879,7 +2133,7 @@ class TestContributorEdgeCases:
             )
 
         monkeypatch.setattr(brn, "_run_gh", handler)
-        community, _ = self._collect(tmp_path, tip, [])
+        community, _, _ = self._collect(tmp_path, tip, [])
         assert views == 1
         assert [c.login for c in community] == ["alice"]
 
@@ -1910,7 +2164,7 @@ class TestContributorEdgeCases:
             )
 
         monkeypatch.setattr(brn, "_run_gh", handler)
-        community, _ = self._collect(tmp_path, tip, [])
+        community, _, _ = self._collect(tmp_path, tip, [])
         assert community == [
             brn.Contributor("alice", "firsthandle", "https://linkedin.com/in/alice")
         ]
@@ -1921,7 +2175,7 @@ class TestContributorEdgeCases:
         self._history(tmp_path, 1)
         monkeypatch.setattr(brn, "_run_gh", lambda args: _ok("1"))
         warnings: list[str] = []
-        community, internal = self._collect(tmp_path, "nope-nope-nope", warnings)
+        community, internal, _ = self._collect(tmp_path, "nope-nope-nope", warnings)
         assert community == [] and internal == []
         assert any("git rev-list failed" in w for w in warnings)
 
@@ -1944,7 +2198,7 @@ class TestContributorEdgeCases:
 
         monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", payload))
         warnings: list[str] = []
-        community, _ = self._collect(tmp_path, tip, warnings)
+        community, _, _ = self._collect(tmp_path, tip, warnings)
         assert community == []
         assert any(expected in w for w in warnings)
 
@@ -1957,7 +2211,7 @@ class TestContributorEdgeCases:
         payload = json.dumps({"author": author, "body": "", "labels": []})
         monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", payload))
         warnings: list[str] = []
-        community, _ = self._collect(tmp_path, tip, warnings)
+        community, _, _ = self._collect(tmp_path, tip, warnings)
         assert community == []
         assert any("PR #7" in w for w in warnings)
 
@@ -2109,6 +2363,7 @@ class TestMissingGhVersusOffline:
         body, warnings = self._build(tmp_path, head, offline=False)
         assert "Released by: @mdrxy" in body
         assert "community contributors" not in body
+        assert "Special thanks" not in body
         assert any("gh executable not found" in w for w in warnings), warnings
 
     def test_offline_drops_the_releaser_line(self, tmp_path: Path) -> None:
@@ -2117,6 +2372,7 @@ class TestMissingGhVersusOffline:
         body, _ = self._build(tmp_path, head, offline=True)
         assert "Released by:" not in body
         assert "community contributors" not in body
+        assert "Special thanks" not in body
 
 
 class TestGitFailureIsFatalAndNamed:
@@ -2381,6 +2637,7 @@ class TestBuildBaseBody:
             "is_prerelease": False,
             "community": [],
             "internal": [],
+            "issue_reporters": [],
             "releaser": "",
             "base_branch": "main",
             "default_branch": "main",
@@ -2434,6 +2691,42 @@ class TestBuildBaseBody:
         assert "[LinkedIn](https://linkedin.com/in/user2)" in body
         assert "Internal maintainers: @maintainer1" in body
         assert "Released by: @releaser1" in body
+
+    def test_special_thanks_between_community_and_internal(self) -> None:
+        body = self._body(
+            community=[brn.Contributor("user1", "", "")],
+            issue_reporters=[
+                brn.IssueReporter("carol", [101]),
+                brn.IssueReporter("dave", [201, 202]),
+            ],
+            internal=["maint"],
+            releaser="shipper",
+        )
+        thanks = "**Special thanks** to everyone who reported the issues"
+        assert thanks in body
+        assert body.index("community contributors") < body.index(thanks)
+        assert body.index(thanks) < body.index("Internal maintainers")
+        assert body.index("Internal maintainers") < body.index("Released by")
+        assert body.count("---") == 1
+        assert (
+            "- @carol — [#101]"
+            f"(https://github.com/{REPOSITORY}/issues/101)"
+        ) in body
+        assert (
+            "- @dave — [#201]"
+            f"(https://github.com/{REPOSITORY}/issues/201), "
+            f"[#202](https://github.com/{REPOSITORY}/issues/202)"
+        ) in body
+
+    def test_special_thanks_opens_the_separator_when_alone(self) -> None:
+        body = self._body(issue_reporters=[brn.IssueReporter("carol", [101])])
+        assert body.count("---") == 1
+        assert "**Special thanks**" in body
+
+    def test_special_thanks_omitted_when_empty(self) -> None:
+        body = self._body(internal=["maint"])
+        assert "Special thanks" not in body
+        assert body.count("---") == 1
 
     def test_separator_added_once_for_internal_only(self) -> None:
         body = self._body(internal=["maint"])
@@ -2637,6 +2930,9 @@ class TestBuildReleaseNotesOnline:
                         "author": {"login": "outside-dev", "is_bot": False},
                         "body": "Twitter: @outsidedev\n",
                         "labels": [],
+                        "closingIssuesReferences": [
+                            {"number": 5310, "author": {"login": "carol"}}
+                        ],
                     }
                 )
             )
@@ -2662,6 +2958,8 @@ class TestBuildReleaseNotesOnline:
         )
         assert "Thanks to our community contributors: @outside-dev" in body
         assert "[Twitter](https://x.com/outsidedev)" in body
+        assert "**Special thanks**" in body
+        assert f"[#5310](https://github.com/{REPOSITORY}/issues/5310)" in body
         assert "Released by: @merger-person" in body
 
     def test_contributor_range_ends_at_the_release_commit(

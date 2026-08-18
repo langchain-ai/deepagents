@@ -928,11 +928,22 @@ def _parse_socials(pr_body: str) -> Socials:
     return Socials(twitter_match.group(1) if twitter_match else "", linkedin)
 
 
+class IssueReporter(NamedTuple):
+    """An issue author thanked in the Special thanks section.
+
+    `issues` holds closed-issue numbers, ascending and deduped.
+    """
+
+    login: str
+    issues: list[int]
+
+
 class Contributors(NamedTuple):
     """The community/internal split credited in the release notes."""
 
     community: list[Contributor]
     internal: list[str]
+    issue_reporters: list[IssueReporter]
 
 
 def collect_contributors(
@@ -947,14 +958,15 @@ def collect_contributors(
 ) -> Contributors:
     """Collect community and internal contributors from merged PRs.
 
-    *internal* comes back sorted; *community* keeps commit order. The two are
-    disjoint: an org member is credited only as internal, regardless of what
-    labels their other PRs carry.
+    *internal* comes back sorted; *community* and *issue_reporters* keep commit
+    order. The two attribution sets are disjoint: an org member is credited only
+    as internal, regardless of what labels their other PRs carry, and is dropped
+    from the issue-reporter thanks as well.
 
     Appends diagnostics to *warnings*.
     """
     if offline:
-        return Contributors([], [])
+        return Contributors([], [], [])
 
     range_spec = f"{prev_tag}..{release_commit}" if prev_tag else release_commit
     commits_result = _git_run(repo, "rev-list", range_spec, "--", working_dir)
@@ -963,7 +975,7 @@ def collect_contributors(
             f"contributor lookup: git rev-list failed for range '{range_spec}'"
             f" ({commits_result.stderr.strip()}); no contributors will be credited"
         )
-        return Contributors([], [])
+        return Contributors([], [], [])
     all_shas = [
         line.strip() for line in commits_result.stdout.splitlines() if line.strip()
     ]
@@ -979,6 +991,9 @@ def collect_contributors(
 
     contributors: dict[str, Contributor] = {}
     internal_users: set[str] = set()
+    # Insertion order mirrors the newest-first commit walk, so reporters render
+    # in the same order convention as community contributors.
+    reporters: dict[str, set[int]] = {}
     seen_prs: set[str] = set()
     failed_lookups = 0
     consecutive_failures = 0
@@ -1013,13 +1028,17 @@ def collect_contributors(
             continue
         seen_prs.add(pr_num)
 
-        pr_data, view_error = _gh_pr_view(pr_num, repository, "author,body,labels")
+        pr_data, view_error = _gh_pr_view(
+            pr_num, repository, "author,body,labels,closingIssuesReferences"
+        )
         if pr_data is None:
             failed_lookups += 1
             warnings.append(
                 f"contributor lookup: gh pr view #{pr_num} failed: {view_error}"
             )
             continue
+
+        _collect_issue_reporters(pr_num, pr_data, reporters, warnings)
 
         author = pr_data.get("author")
         if not isinstance(author, dict):
@@ -1096,8 +1115,70 @@ def collect_contributors(
     # other PRs carry, so they are credited only in the internal list.
     for user in internal_users:
         contributors.pop(user, None)
+        reporters.pop(user, None)
 
-    return Contributors(list(contributors.values()), sorted(internal_users))
+    issue_reporters = [
+        IssueReporter(login, sorted(issues)) for login, issues in reporters.items()
+    ]
+    return Contributors(
+        list(contributors.values()), sorted(internal_users), issue_reporters
+    )
+
+
+def _collect_issue_reporters(
+    pr_num: str,
+    pr_data: dict,
+    reporters: dict[str, set[int]],
+    warnings: list[str],
+) -> None:
+    """Fold a PR's closed-issue authors into *reporters*.
+
+    Runs before the author/labels gates in :func:`collect_contributors`, so a
+    bot-authored or `internal`-labeled PR still credits the human who filed the
+    issue it closed; the internal sweep afterwards drops reporters who are
+    themselves internal to this release.
+
+    `closingIssuesReferences` covers both the `Closes`/`Fixes`/`Resolves`
+    keywords and issues linked manually in the PR's Development section. Its
+    `author` payload has no `is_bot` field, so bots are caught by the login
+    suffix only. A missing or null field warns rather than being read as "no
+    closed issues": schema drift must not silently empty the section.
+    """
+    if pr_data.get("closingIssuesReferences") is None:
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} returned no"
+            " closingIssuesReferences field; the special-thanks section may be"
+            " incomplete"
+        )
+    issues = pr_data.get("closingIssuesReferences") or []
+    if not isinstance(issues, list):
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} has an unexpected"
+            " closingIssuesReferences payload; its closed issues will not be"
+            " credited"
+        )
+        return
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        author = issue.get("author")
+        login = author.get("login") if isinstance(author, dict) else None
+        if not login:
+            warnings.append(
+                f"contributor lookup: PR #{pr_num} closes an issue with no"
+                " author login; reporter will not appear in release notes"
+            )
+            continue
+        if login.endswith("[bot]"):
+            continue
+        number = issue.get("number")
+        if not isinstance(number, int):
+            warnings.append(
+                f"contributor lookup: PR #{pr_num} closes an issue with no"
+                " usable number; reporter will not appear in release notes"
+            )
+            continue
+        reporters.setdefault(login, set()).add(number)
 
 
 def _merged_by(repository: str, pr_num: str, warnings: list[str]) -> str:
@@ -1211,6 +1292,7 @@ def build_base_body(
     is_prerelease: bool,
     community: list[Contributor],
     internal: list[str],
+    issue_reporters: list[IssueReporter],
     releaser: str,
     base_branch: str,
     default_branch: str,
@@ -1236,6 +1318,23 @@ def build_base_body(
         entries = ", ".join(_build_contributor_entry(c) for c in community)
         body += f"\n\n---\n\nThanks to our community contributors: {entries}"
         separator_added = True
+
+    if issue_reporters:
+        if not separator_added:
+            body += "\n\n---"
+            separator_added = True
+        lines = "\n".join(
+            f"- @{r.login} — "
+            + ", ".join(
+                f"[#{n}](https://github.com/{repository}/issues/{n})"
+                for n in r.issues
+            )
+            for r in issue_reporters
+        )
+        body += (
+            "\n\n**Special thanks** to everyone who reported the issues addressed"
+            f" in this release:\n\n{lines}"
+        )
 
     if internal:
         if not separator_added:
@@ -1475,6 +1574,7 @@ def build_release_notes(
         warnings.append("Offline mode: skipping contributor and releaser lookups.")
         community: list[Contributor] = []
         internal: list[str] = []
+        issue_reporters: list[IssueReporter] = []
         releaser = ""
     else:
         # Deliberately bounded by release_commit, not release_sha: the git log
@@ -1482,7 +1582,7 @@ def build_release_notes(
         # release commit so commits merged after it are not credited here. For
         # a stable release the two differ whenever anything landed between the
         # changelog bump and the release SHA.
-        community, internal = collect_contributors(
+        community, internal, issue_reporters = collect_contributors(
             repo_root,
             working_dir,
             release_commit,
@@ -1501,6 +1601,12 @@ def build_release_notes(
             )
         if internal:
             print(f"Found internal maintainers: {', '.join(internal)}", file=sys.stderr)
+        if issue_reporters:
+            print(
+                "Found issue reporters: "
+                + ", ".join(r.login for r in issue_reporters),
+                file=sys.stderr,
+            )
         if releaser:
             print(f"Found releaser: @{releaser}", file=sys.stderr)
 
@@ -1511,6 +1617,7 @@ def build_release_notes(
         is_prerelease=is_pre,
         community=community,
         internal=internal,
+        issue_reporters=issue_reporters,
         releaser=releaser,
         base_branch=base_branch,
         default_branch=default_branch,

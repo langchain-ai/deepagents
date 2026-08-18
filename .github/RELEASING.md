@@ -292,7 +292,7 @@ The [release workflow (`.github/workflows/release.yml`)](https://github.com/lang
 
 1. **Setup** - Resolves package name to working directory
 2. **Build** - Creates distribution package
-3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts the changelog, appends a collapsible package-scoped Git log (newest commit first, up to 100 commits, truncated further if the log grows large), and collects contributor shoutouts; pre-release checks run tests against the built package
+3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts the changelog, appends a collapsible package-scoped Git log (newest commit first, up to 100 commits, truncated further if the log grows large), collects contributor shoutouts, and adds a **Special thanks** section crediting the users who filed the issues the release's PRs closed; pre-release checks run tests against the built package
 4. **Test PyPI** - Publishes to test.pypi.org for validation (after pre-release checks pass)
 5. **Publish** - Publishes to PyPI (requires Test PyPI to succeed)
 6. **Mark Release** - Creates a published GitHub release with the built artifacts; updates PR labels. For the SDK (`libs/deepagents`), we set it as the repository's `latest` (unless it's a pre-release).

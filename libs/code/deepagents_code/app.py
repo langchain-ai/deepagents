@@ -4123,6 +4123,9 @@ class DeepAgentsApp(App):
         """Active `_run_agent_task` worker, tracked so it can be cancelled
         on interrupt (`Ctrl+C`) or exit."""
 
+        self._offload_worker: Worker[None] | None = None
+        """Active `/offload` worker, tracked so Escape can cancel it."""
+
         self._agent_turn_started = False
         """True once the current `_run_agent_task` invocation has begun.
 
@@ -15522,7 +15525,10 @@ class DeepAgentsApp(App):
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
-            await self._handle_offload()
+            self._offload_worker = self.run_worker(
+                self._run_offload_task(),
+                exclusive=False,
+            )
         elif cmd == "/threads" or cmd.startswith("/threads "):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
@@ -16461,6 +16467,15 @@ class DeepAgentsApp(App):
         _, conversation = await self._get_context_usage_counts()
         return conversation
 
+    async def _run_offload_task(self) -> None:
+        """Run `/offload` without blocking the App message pump."""
+        try:
+            await self._handle_offload()
+        finally:
+            self._offload_worker = None
+            if not self._startup_sequence_running:
+                await self._process_next_from_queue()
+
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space.
 
@@ -16471,6 +16486,9 @@ class DeepAgentsApp(App):
         via `read_file` in every run mode (server, sandbox, in-process). The
         client only seeds the tool call, approves the resulting HITL interrupt,
         drains the run, and renders the persisted `_summarization_event`.
+
+        Raises:
+            CancelledError: If the offload worker is interrupted.
         """
         from langchain_core.messages.utils import count_tokens_approximately
 
@@ -16525,7 +16543,7 @@ class DeepAgentsApp(App):
                 )
             except ClientHookStopError:
                 return
-            except Exception as stream_error:
+            except (asyncio.CancelledError, Exception) as stream_error:
                 # A server graph can checkpoint the tool-node update before a
                 # later stream transport failure reaches this client. Reconcile
                 # the durable event before reporting the operation as failed.
@@ -20218,10 +20236,11 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
-        8. If agent is running, interrupt it (restoring the interrupted prompt
+        8. If offload is running, interrupt it
+        9. If agent is running, interrupt it (restoring the interrupted prompt
            to the chat input when it is empty and no user-visible model output
            — text or a tool call — has appeared yet for the turn)
-        9. Otherwise, a second Esc clears the chat input draft (undoable)
+        10. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
@@ -20290,6 +20309,10 @@ class DeepAgentsApp(App):
         # one at a time; once the queue is empty the next ESC will interrupt.
         if self._pending_messages:
             self._pop_last_queued_message()
+            return
+
+        if self._offload_worker is not None:
+            self._cancel_worker(self._offload_worker)
             return
 
         # If agent is running, interrupt it and discard queued messages

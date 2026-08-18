@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import tempfile
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.utils import validate_path
+from textual.worker import WorkerCancelled
 
 from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
@@ -24,6 +26,7 @@ from deepagents_code.offload import (
     _offload_fallback_root,
     delete_offloaded_history,
 )
+from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -1102,6 +1105,67 @@ class TestAgentRunningGuard:
                 await pilot.pause()
 
             assert app._agent_running is False
+
+
+class TestOffloadInterrupt:
+    """Test that Escape can cancel `/offload` through the real App dispatch."""
+
+    async def test_escape_cancels_offload_worker(self) -> None:
+        """Escape should reach and cancel an offload blocked in its stream."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(6))
+            reconciled = _state_values(_make_dict_messages(6))
+            drive_started = asyncio.Event()
+            drive_cancelled = asyncio.Event()
+
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                drive_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    drive_cancelled.set()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, reconciled],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=block_drive,
+                ),
+                patch.object(
+                    app,
+                    "_remove_unanswered_offload_seed",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as cleanup,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                worker = app._offload_worker
+                assert worker is not None
+                assert app._agent_running is True
+
+                await pilot.press("escape")
+                await asyncio.wait_for(drive_cancelled.wait(), timeout=1)
+                with pytest.raises(WorkerCancelled):
+                    await worker.wait()
+
+            cleanup.assert_awaited_once()
+            assert worker.is_cancelled
+            assert app._agent_running is False
+            assert app._agent_quiescent.is_set()
+            assert app._loading_widget is None
 
 
 class TestOffloadErrorHandling:

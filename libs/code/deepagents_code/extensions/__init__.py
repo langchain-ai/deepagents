@@ -15,6 +15,10 @@ from deepagents_code.extensions.settings import (
     TrustPolicy,
     load_extension_settings,
 )
+from deepagents_code.extensions.trust import (
+    is_project_extensions_trusted,
+    trust_project_extensions,
+)
 
 __all__ = [
     "ExtensionAPI",
@@ -27,5 +31,7 @@ __all__ = [
     "TrustPolicy",
     "UnitOrigin",
     "UnitScope",
+    "is_project_extensions_trusted",
     "load_extension_settings",
+    "trust_project_extensions",
 ]

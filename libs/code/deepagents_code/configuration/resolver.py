@@ -118,7 +118,18 @@ def merge_toml_tables(
         path = (*_path, key)
         dotted = ".".join(path)
         existing = merged.get(key)
-        if isinstance(existing, dict) and not isinstance(value, dict):
+        # A higher scalar must replace a lower table that only holds scalars:
+        # keeping the table lets a shape-colliding lower entry (e.g. a user
+        # `[threads.relative_time]` table against a managed
+        # `relative_time = false`) defeat the higher value, after which typed
+        # readers reject the table and fall back to the built-in default. A
+        # lower table with nested tables still survives a wrong-typed higher
+        # scalar so valid lower subtrees are not discarded.
+        if (
+            isinstance(existing, dict)
+            and not isinstance(value, dict)
+            and not _overriding_table_is_scalar_only(existing)
+        ):
             continue
         if (
             path in union_paths
@@ -161,6 +172,18 @@ def merge_toml_tables(
                 provenance.pop(leaf)
         provenance.update(_leaf_provenance(value, higher_source, path))
     return merged, provenance
+
+
+def _overriding_table_is_scalar_only(table: dict[str, Any]) -> bool:
+    """Return `True` when `table` holds no non-empty nested tables at any depth.
+
+    Empty nested tables carry no lower values worth preserving, so they do not
+    stop a higher-precedence scalar from replacing the table.
+    """
+    for child in cast("dict[str, object]", table).values():
+        if isinstance(child, dict) and child:
+            return False
+    return True
 
 
 def _leaf_provenance(

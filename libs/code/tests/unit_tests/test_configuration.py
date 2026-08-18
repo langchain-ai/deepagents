@@ -231,6 +231,23 @@ def test_user_writer_never_modifies_managed_config(tmp_path: Path) -> None:
     assert managed.read_text(encoding="utf-8") == "[ui]\ntheme = 'managed'\n"
 
 
+def test_user_table_cannot_shadow_managed_scalar() -> None:
+    """A shape-colliding user table yields to a managed scalar and provenance.
+
+    Regression: skipping the managed scalar let typed readers reject the
+    surviving user table and fall back to the built-in default, so the managed
+    value was never enforced.
+    """
+    merged, provenance = merge_toml_tables(
+        {"threads": {"relative_time": {"user": "table"}}, "other": {"a": 1}},
+        {"threads": {"relative_time": False}},
+        lower_source="config.toml",
+        higher_source="managed config",
+    )
+    assert merged == {"threads": {"relative_time": False}, "other": {"a": 1}}
+    assert provenance["threads.relative_time"] == "managed config"
+
+
 def test_managed_wrong_typed_table_keeps_valid_user_siblings() -> None:
     """A malformed managed table does not erase a valid lower table."""
     merged, provenance = merge_toml_tables(
@@ -382,6 +399,29 @@ def test_managed_structured_preferences_reach_runtime_readers(
         assert model_config.load_thread_relative_time() is False
         assert model_config.is_warning_suppressed("ripgrep") is True
         assert model_config.load_thread_relative_time(user) is True
+    finally:
+        service.invalidate_config_sources()
+        model_config.invalidate_thread_config_cache()
+
+
+def test_managed_scalar_enforced_over_user_table_shape_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user `[threads.relative_time]` table cannot neutralize managed policy."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[threads.relative_time]\nnested = true\n", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[threads]\nrelative_time = false\n", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.invalidate_thread_config_cache()
+    try:
+        assert model_config.load_thread_relative_time() is False
     finally:
         service.invalidate_config_sources()
         model_config.invalidate_thread_config_cache()

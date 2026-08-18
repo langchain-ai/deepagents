@@ -231,6 +231,7 @@ def _resolve(
         came from the typed default.
     """
     from deepagents_code.config_manifest import (
+        resolve_auto_classifier_model_with_source,
         resolve_auto_classifier_timeout_with_source,
         resolve_scalar,
     )
@@ -246,6 +247,14 @@ def _resolve(
         key = stored.keys.get(option.provider)
         if key is not None:
             return True, ProviderAuthSource.STORED.value, key
+
+    if option.key == "models.auto_classifier":
+        # A blank env var vetoes `config.toml` for this option, so `resolve_scalar`
+        # alone would report a classifier the runtime does not use. Share the
+        # runtime's resolver instead — this option decides which model reviews
+        # gated actions, so a wrong reading here is a security-relevant lie.
+        spec, source = resolve_auto_classifier_model_with_source(toml_data=toml_data)
+        return source != "default", source, spec
 
     if option.key == "models.auto_classifier_timeout":
         # `resolve_scalar` alone would credit an out-of-range env value that the
@@ -275,7 +284,12 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
 
     Returns:
         `configured`/`not configured` for credential options, otherwise the value
-            as text.
+            as text. A redacted option never renders its raw value here: a
+            credential reports `configured`/`not configured`, and a redacted
+            table (e.g. `[async_subagents]` headers) reports `configured`/
+            `(unset)`. This function is one of three enforcement points —
+            `_config_json_row` and the single-key JSON payload apply the same
+            redaction — so keep them in step when adding an output path.
     """
     if option.group == "Credentials":
         if value is None:
@@ -285,6 +299,14 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
             return _with_availability(option, status)
     if value is None:
         return "(unset)"
+    if option.redacted:
+        # Redacted tables (async subagents, custom model/sandbox providers) are
+        # dicts, so the credential presence wording above does not fit; a bare
+        # presence marker still keeps the table off the screen. Keyed on the
+        # value rather than `is_set` so a present-but-empty table reads as unset
+        # (nothing is configured) and a future non-`None` default is not
+        # mislabelled `(unset)` while it is in effect.
+        return "configured" if value else "(unset)"
     if option.key == "display.charset" and value == "auto":
         return _charset_display_value()
     text = str(value)

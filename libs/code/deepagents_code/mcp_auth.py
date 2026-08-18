@@ -26,7 +26,7 @@ import stat
 import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, override
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -47,7 +47,6 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
-from typing_extensions import override
 
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
@@ -272,11 +271,8 @@ def _token_file_stem(server_name: str, server_url: str | None) -> str:
     return f"{server_name}-{digest}"
 
 
-_T = TypeVar("_T")
-
-
-async def _join_task_deferring_cancellation(
-    task: asyncio.Task[_T],
+async def _join_task_deferring_cancellation[T](
+    task: asyncio.Task[T],
 ) -> asyncio.CancelledError | None:
     """Join `task` without letting caller cancellation cancel the task.
 

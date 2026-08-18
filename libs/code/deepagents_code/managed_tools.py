@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Literal
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
 
 if TYPE_CHECKING:
-    import tarfile
     import zipfile
 
 logger = logging.getLogger(__name__)
@@ -348,50 +347,6 @@ def _verify_sha256(path: Path, expected_hex: str) -> None:
         raise ChecksumMismatchError(msg)
 
 
-def _validate_legacy_tar_member(member: tarfile.TarInfo, extract_root: Path) -> None:
-    """Reject tar members that cannot be safely extracted without filters.
-
-    Raises:
-        tarfile.TarError: If a member would extract outside `extract_root`
-            or uses a tar entry type this fallback does not support.
-    """
-    import tarfile
-
-    target = extract_root / member.name
-    try:
-        target.resolve().relative_to(extract_root.resolve())
-    except ValueError as exc:
-        msg = f"Refusing to extract unsafe tar member {member.name!r}"
-        raise tarfile.TarError(msg) from exc
-
-    if not (member.isfile() or member.isdir()):
-        msg = f"Refusing to extract unsupported tar member {member.name!r}"
-        raise tarfile.TarError(msg)
-
-
-def _extract_tar_data(tf: tarfile.TarFile, extract_root: Path) -> None:
-    """Extract a tar archive with `data` filtering when available.
-
-    Python versions before the PEP 706 backport (3.11.0-3.11.3) lack the
-    `filter` keyword on `extractall`, and this package supports those patch
-    versions. The fallback validates the pinned release archive before
-    using the legacy API.
-
-    Raises:
-        TypeError: Re-raised when `extractall` rejects a non-`filter`
-            keyword (i.e. an unrelated `TypeError` we should not swallow).
-    """
-    try:
-        tf.extractall(extract_root, filter="data")
-    except TypeError as exc:
-        if "filter" not in str(exc):
-            raise
-        members = tf.getmembers()
-        for member in members:
-            _validate_legacy_tar_member(member, extract_root)
-        tf.extractall(extract_root, members=members)  # noqa: S202  # validated above
-
-
 def _extract_rg(archive: Path, extract_root: Path) -> Path:
     """Extract `archive` and locate the `rg` binary inside.
 
@@ -414,7 +369,7 @@ def _extract_rg(archive: Path, extract_root: Path) -> Path:
             _extract_zip_validated(zf, extract_root)
     else:
         with tarfile.open(archive, mode="r:*") as tf:
-            _extract_tar_data(tf, extract_root)
+            tf.extractall(extract_root, filter="data")
 
     target_name = "rg.exe" if sys.platform == "win32" else "rg"
     for path in extract_root.rglob(target_name):

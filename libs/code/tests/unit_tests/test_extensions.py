@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from blockbuster import blockbuster_ctx
 
 from deepagents_code.extensions import (
     ExtensionSettings,
@@ -236,6 +237,23 @@ async def test_loads_units_and_suffixes_colliding_commands(tmp_path: Path) -> No
     assert [unit.name for unit in result.registry.tools] == ["echo"]
     assert [unit.name for unit in result.registry.commands] == ["demo", "demo-2"]
     assert result.registry.command_description("demo") == ""
+
+
+async def test_extension_discovery_runs_off_event_loop(tmp_path: Path) -> None:
+    """Server extension discovery must not block LangGraph's event loop."""
+    extensions_dir = tmp_path / "extensions"
+    _write(extensions_dir, "extension.py", _ASYNC_EXTENSION)
+
+    with blockbuster_ctx() as blockbuster:
+        try:
+            result = await load_extensions(
+                cwd=tmp_path,
+                settings=ExtensionSettings(paths=(extensions_dir,)),
+            )
+        finally:
+            blockbuster.deactivate()
+
+    assert [unit.name for unit in result.registry.commands] == ["demo"]
 
 
 async def test_broken_extension_is_isolated(tmp_path: Path) -> None:

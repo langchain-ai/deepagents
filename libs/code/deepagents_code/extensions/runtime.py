@@ -31,7 +31,7 @@ from deepagents_code.extensions.settings import (
 from deepagents_code.extensions.trust import is_project_extensions_trusted
 
 if TYPE_CHECKING:
-    from deepagents_code.extensions.models import LoadedExtension
+    from deepagents_code.extensions.models import ExtensionFile, LoadedExtension
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,42 @@ def project_extensions_trusted(
     return is_project_extensions_trusted(project_root, store_path=store_path)
 
 
+def _prepare_extension_load(
+    *,
+    cwd: Path | None,
+    project_root: Path | None,
+    project_trust_granted: bool,
+    settings: ExtensionSettings | None,
+    trust_store_path: Path | None,
+) -> tuple[list[ExtensionFile], Path] | None:
+    """Resolve settings, trust, files, and cwd off the caller's event loop.
+
+    Returns:
+        Discovered files and session cwd, or `None` when extensions are disabled
+        or no files are found.
+    """
+    resolved_settings = load_extension_settings() if settings is None else settings
+    if not resolved_settings.enabled:
+        return None
+
+    project_dir: Path | None = None
+    if project_root is not None and project_extensions_trusted(
+        project_root,
+        policy=resolved_settings.trust,
+        granted=project_trust_granted,
+        store_path=trust_store_path,
+    ):
+        project_dir = project_extensions_dir(project_root)
+
+    files = discover_extension_files(
+        extra_paths=resolved_settings.paths,
+        project_dir=project_dir,
+    )
+    if not files:
+        return None
+    return files, Path.cwd() if cwd is None else Path(cwd)
+
+
 async def load_extensions(
     *,
     cwd: Path | None = None,
@@ -141,28 +177,19 @@ async def load_extensions(
     Returns:
         The populated registry alongside per-extension successes and failures.
     """
-    resolved_settings = load_extension_settings() if settings is None else settings
-    if not resolved_settings.enabled:
-        return ExtensionLoadResult()
-
-    project_dir: Path | None = None
-    if project_root is not None and project_extensions_trusted(
-        project_root,
-        policy=resolved_settings.trust,
-        granted=project_trust_granted,
-        store_path=trust_store_path,
-    ):
-        project_dir = project_extensions_dir(project_root)
-
-    files = discover_extension_files(
-        extra_paths=resolved_settings.paths,
-        project_dir=project_dir,
+    prepared = await asyncio.to_thread(
+        _prepare_extension_load,
+        cwd=cwd,
+        project_root=project_root,
+        project_trust_granted=project_trust_granted,
+        settings=settings,
+        trust_store_path=trust_store_path,
     )
-    if not files:
+    if prepared is None:
         return ExtensionLoadResult()
 
+    files, session_cwd = prepared
     registry = ExtensionRegistry()
-    session_cwd = Path.cwd() if cwd is None else Path(cwd)
     loaded: list[LoadedExtension] = []
     errors: list[str] = []
     for file in files:

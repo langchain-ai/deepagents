@@ -1,4 +1,4 @@
-# Clear `needs-response` after an author reply recorded by needs_response.yml.
+# Clear `waiting-on-author` after an author reply recorded by waiting_on_author.yml.
 #
 # `workflow_run` executes this definition from the default branch and receives
 # a write-capable token for fork-origin events. The artifact is untrusted input:
@@ -6,11 +6,11 @@
 # or review and the current item directly from GitHub before removing a label.
 # It never checks out or executes contributor-controlled code.
 
-name: Clear Needs Response After Author Reply
+name: Clear Waiting On Author After Author Reply
 
 on:
   workflow_run:
-    workflows: ["Needs Response"]
+    workflows: ["Waiting On Author"]
     types: [completed]
 
 permissions:
@@ -124,7 +124,7 @@ jobs:
 
             if (
               item.state !== 'open' ||
-              !item.labels.some((label) => label.name === 'needs-response') ||
+              !item.labels.some((label) => label.name === 'waiting-on-author') ||
               item.user.type === 'Bot' ||
               responseData.user.type === 'Bot' ||
               responseData.user.login !== item.user.login
@@ -146,21 +146,21 @@ jobs:
               .filter(
                 (event) =>
                   event.event === 'labeled' &&
-                  event.label?.name === 'needs-response' &&
+                  event.label?.name === 'waiting-on-author' &&
                   event.created_at,
               )
               .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
 
             if (!latestLabelEvent) {
               core.warning(
-                `No needs-response label event found for #${issueNumber}; leaving it intact.`,
+                `No waiting-on-author label event found for #${issueNumber}; leaving it intact.`,
               );
               return;
             }
 
             if (Date.parse(responseTime) <= Date.parse(latestLabelEvent.created_at)) {
               console.log(
-                `Response on #${issueNumber} predates its current needs-response label.`,
+                `Response on #${issueNumber} predates its current waiting-on-author label.`,
               );
               return;
             }
@@ -170,12 +170,12 @@ jobs:
                 owner,
                 repo,
                 issue_number: issueNumber,
-                name: 'needs-response',
+                name: 'waiting-on-author',
               });
             } catch (error) {
               if (error.status !== 404) throw error;
-              console.log(`needs-response was already absent from #${issueNumber}.`);
+              console.log(`waiting-on-author was already absent from #${issueNumber}.`);
               return;
             }
 
-            console.log(`Removed needs-response from #${issueNumber}.`);
+            console.log(`Removed waiting-on-author from #${issueNumber}.`);

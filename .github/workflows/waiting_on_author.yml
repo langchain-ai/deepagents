@@ -1,4 +1,4 @@
-# Close issues and PRs ten days after a maintainer applies `needs-response`,
+# Close issues and PRs ten days after a maintainer applies `waiting-on-author`,
 # unless the original author explicitly replies. The timeout is measured from
 # the latest label event, so unrelated activity never resets it. Maintainers
 # can therefore ask their question before or after applying the label.
@@ -14,7 +14,7 @@
 # GitHub API before mutating a label; neither workflow checks out or executes PR
 # code.
 
-name: Needs Response
+name: Waiting On Author
 
 on:
   issue_comment:
@@ -102,12 +102,12 @@ jobs:
             const closeMessage =
               'This item has been automatically closed because we have not received a response from the original author. Please comment with any additional information if you would like us to reopen it.';
 
-            function latestNeedsResponseEvent(events) {
+            function findLatestLabelEvent(events) {
               return events
                 .filter(
                   (event) =>
                     event.event === 'labeled' &&
-                    event.label?.name === 'needs-response' &&
+                    event.label?.name === 'waiting-on-author' &&
                     event.created_at,
                 )
                 .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
@@ -151,7 +151,7 @@ jobs:
               owner,
               repo,
               state: 'open',
-              labels: 'needs-response',
+              labels: 'waiting-on-author',
               per_page: 100,
             });
 
@@ -180,11 +180,11 @@ jobs:
                 issue_number: item.number,
                 per_page: 100,
               });
-              const latestLabelEvent = latestNeedsResponseEvent(events);
+              const latestLabelEvent = findLatestLabelEvent(events);
 
               if (!latestLabelEvent) {
                 core.warning(
-                  `No needs-response label event found for #${item.number}; leaving it open.`,
+                  `No waiting-on-author label event found for #${item.number}; leaving it open.`,
                 );
                 continue;
               }
@@ -204,7 +204,7 @@ jobs:
               ).data;
               if (
                 currentItem.state !== 'open' ||
-                !currentItem.labels.some((label) => label.name === 'needs-response') ||
+                !currentItem.labels.some((label) => label.name === 'waiting-on-author') ||
                 currentItem.labels.some((label) => label.name === 'do-not-close')
               ) {
                 continue;
@@ -219,13 +219,13 @@ jobs:
                   per_page: 100,
                 },
               );
-              const currentLabelEvent = latestNeedsResponseEvent(currentEvents);
+              const currentLabelEvent = findLatestLabelEvent(currentEvents);
 
               if (
                 !currentLabelEvent ||
                 currentLabelEvent.created_at !== latestLabelEvent.created_at
               ) {
-                console.log(`needs-response was reapplied to #${item.number}; skipping.`);
+                console.log(`waiting-on-author was reapplied to #${item.number}; skipping.`);
                 continue;
               }
 
@@ -235,9 +235,9 @@ jobs:
                   owner,
                   repo,
                   issue_number: item.number,
-                  name: 'needs-response',
+                  name: 'waiting-on-author',
                 });
-                console.log(`Removed needs-response from #${item.number} after an author reply.`);
+                console.log(`Removed waiting-on-author from #${item.number} after an author reply.`);
                 continue;
               }
 
@@ -259,7 +259,7 @@ jobs:
               if (
                 finalItem.state !== 'open' ||
                 finalItem.updated_at !== currentItem.updated_at ||
-                !finalItem.labels.some((label) => label.name === 'needs-response') ||
+                !finalItem.labels.some((label) => label.name === 'waiting-on-author') ||
                 finalItem.labels.some((label) => label.name === 'do-not-close')
               ) {
                 console.log(`#${item.number} changed during the scan; skipping.`);

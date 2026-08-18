@@ -2,6 +2,7 @@
 
 import os
 import sys
+from dataclasses import fields
 from unittest.mock import Mock, patch
 
 import pytest
@@ -50,6 +51,8 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.error) > 127
         assert ord(UNICODE_GLYPHS.circle_empty) > 127
         assert ord(UNICODE_GLYPHS.circle_filled) > 127
+        assert ord(UNICODE_GLYPHS.checkbox_empty) > 127
+        assert ord(UNICODE_GLYPHS.checkbox_checked) > 127
         assert ord(UNICODE_GLYPHS.output_prefix) > 127
         assert ord(UNICODE_GLYPHS.pause) > 127
         assert ord(UNICODE_GLYPHS.newline) > 127
@@ -62,10 +65,8 @@ class TestGlyphs:
         for frame in UNICODE_GLYPHS.spinner_frames:
             assert ord(frame) > 127
         # Box-drawing characters
-        assert ord(UNICODE_GLYPHS.box_vertical) > 127
         assert ord(UNICODE_GLYPHS.box_horizontal) > 127
-        assert ord(UNICODE_GLYPHS.box_double_horizontal) > 127
-        assert ord(UNICODE_GLYPHS.gutter_bar) > 127
+        assert ord(UNICODE_GLYPHS.hunk_break) > 127
 
     def test_ascii_glyphs_are_ascii(self) -> None:
         """Test that ASCII_GLYPHS contains only ASCII characters."""
@@ -80,6 +81,10 @@ class TestGlyphs:
         for char in ASCII_GLYPHS.circle_empty:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.circle_filled:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.checkbox_empty:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.checkbox_checked:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.output_prefix:
             assert ord(char) < 128
@@ -97,18 +102,12 @@ class TestGlyphs:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.cursor:
             assert ord(char) < 128
-        # Spinner frames should all be ASCII
         for frame in ASCII_GLYPHS.spinner_frames:
             for char in frame:
                 assert ord(char) < 128
-        # Box-drawing characters
-        for char in ASCII_GLYPHS.box_vertical:
-            assert ord(char) < 128
         for char in ASCII_GLYPHS.box_horizontal:
             assert ord(char) < 128
-        for char in ASCII_GLYPHS.box_double_horizontal:
-            assert ord(char) < 128
-        for char in ASCII_GLYPHS.gutter_bar:
+        for char in ASCII_GLYPHS.hunk_break:
             assert ord(char) < 128
 
     def test_glyphs_frozen(self) -> None:
@@ -117,34 +116,15 @@ class TestGlyphs:
             UNICODE_GLYPHS.tool_prefix = "changed"  # ty: ignore
 
     def test_glyphs_all_fields_present(self) -> None:
-        """Test that both glyph sets have all required fields."""
-        required_fields = [
-            "tool_prefix",
-            "ellipsis",
-            "checkmark",
-            "error",
-            "circle_empty",
-            "circle_filled",
-            "output_prefix",
-            "spinner_frames",
-            "pause",
-            "newline",
-            "warning",
-            "arrow_up",
-            "arrow_down",
-            "bullet",
-            "cursor",
-            # Box-drawing characters
-            "box_vertical",
-            "box_horizontal",
-            "box_double_horizontal",
-            "gutter_bar",
-        ]
-        for field in required_fields:
-            assert hasattr(UNICODE_GLYPHS, field)
-            assert hasattr(ASCII_GLYPHS, field)
-            assert getattr(UNICODE_GLYPHS, field) is not None
-            assert getattr(ASCII_GLYPHS, field) is not None
+        """Test that both glyph sets populate every declared field.
+
+        Enumerated from `dataclasses.fields` rather than a hand-written list: a
+        restated list silently stops covering new fields, and this one had
+        already drifted behind six of them.
+        """
+        for field in fields(Glyphs):
+            assert getattr(UNICODE_GLYPHS, field.name) is not None
+            assert getattr(ASCII_GLYPHS, field.name) is not None
 
 
 class TestDetectCharsetMode:
@@ -284,17 +264,15 @@ class TestGlyphUsability:
 
     def test_unicode_box_drawing_characters(self) -> None:
         """Test Unicode box-drawing characters are the expected characters."""
-        assert UNICODE_GLYPHS.box_vertical == "│"
         assert UNICODE_GLYPHS.box_horizontal == "─"
-        assert UNICODE_GLYPHS.box_double_horizontal == "═"
-        assert UNICODE_GLYPHS.gutter_bar == "▌"
+        assert UNICODE_GLYPHS.box_horizontal_heavy == "━"
+        assert UNICODE_GLYPHS.hunk_break == "⋮"
 
     def test_ascii_box_drawing_characters(self) -> None:
         """Test ASCII box-drawing alternatives are simple ASCII."""
-        assert ASCII_GLYPHS.box_vertical == "|"
         assert ASCII_GLYPHS.box_horizontal == "-"
-        assert ASCII_GLYPHS.box_double_horizontal == "="
-        assert ASCII_GLYPHS.gutter_bar == "|"
+        assert ASCII_GLYPHS.box_horizontal_heavy == "="
+        assert ASCII_GLYPHS.hunk_break == ":"
 
 
 class TestGetBanner:

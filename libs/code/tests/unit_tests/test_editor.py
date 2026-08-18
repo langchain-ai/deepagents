@@ -10,9 +10,11 @@ if TYPE_CHECKING:
     import pytest
 
 from deepagents_code.editor import (
+    EDITOR_DISPLAY_NAME_MAX_LENGTH,
     GUI_WAIT_FLAG,
     VIM_EDITORS,
     _prepare_command,
+    editor_display_name,
     open_in_editor,
     resolve_editor,
 )
@@ -65,6 +67,64 @@ class TestResolveEditor:
         monkeypatch.setenv("VISUAL", "")
         monkeypatch.setenv("EDITOR", "nano")
         assert resolve_editor() == ["nano"]
+
+
+class TestEditorDisplayName:
+    """Tests for safe editor names used in hints."""
+
+    def test_visual_takes_priority(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VISUAL", "vim")
+        monkeypatch.setenv("EDITOR", "nano")
+
+        assert editor_display_name() == "vim"
+
+    def test_editor_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setenv("EDITOR", "code")
+
+        assert editor_display_name() == "code"
+
+    def test_no_configured_editor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+
+        assert editor_display_name() is None
+
+    def test_command_with_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VISUAL", "code --wait")
+
+        assert editor_display_name() == "code"
+
+    def test_command_with_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VISUAL", "/usr/bin/nvim")
+
+        assert editor_display_name() == "nvim"
+
+    def test_over_length_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VISUAL", "x" * (EDITOR_DISPLAY_NAME_MAX_LENGTH + 1))
+
+        assert editor_display_name() is None
+
+    def test_quoted_whitespace_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", '"Visual Studio Code"')
+
+        assert editor_display_name() is None
+
+    def test_control_character_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", '"co\x01de"')
+
+        assert editor_display_name() is None
+
+    def test_malformed_command_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VISUAL", '"unterminated')
+
+        assert editor_display_name() is None
 
 
 class TestPrepareCommand:

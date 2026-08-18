@@ -12,6 +12,8 @@ import json
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -165,6 +167,56 @@ def test_lightweight_commands_skip_settings_bootstrap(
     assert bootstrap_done in (None, False), (
         f"settings bootstrap must not run for {argv}; got {bootstrap_done!r}"
     )
+
+
+@pytest.mark.parametrize(
+    ("args", "runner"),
+    [
+        (
+            SimpleNamespace(command="config"),
+            "deepagents_code.client.commands.config.run_config_command",
+        ),
+        (
+            SimpleNamespace(command="auth", auth_command="path"),
+            "deepagents_code.client.commands.auth.run_auth_command",
+        ),
+        (
+            SimpleNamespace(command="doctor"),
+            "deepagents_code.doctor.run_doctor_command",
+        ),
+        (
+            SimpleNamespace(command="tools", tools_command="list"),
+            "deepagents_code.client.commands.tools.run_tools_command",
+        ),
+        (
+            SimpleNamespace(command="install"),
+            "deepagents_code.client.commands.extras.run_install_command",
+        ),
+    ],
+)
+def test_lightweight_commands_check_dependency_floors_before_dispatch(
+    args: SimpleNamespace, runner: str
+) -> None:
+    """Every action subcommand warns before an early fast-path exit."""
+    from deepagents_code.main import cli_main
+
+    calls: list[str] = []
+    with (
+        patch.object(sys, "argv", ["dcode", str(args.command)]),
+        patch("deepagents_code.main.check_cli_dependencies"),
+        patch("deepagents_code.main._install_termination_signal_handlers"),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch(
+            "deepagents_code._dep_floor_check.warn_if_editable_deps_stale",
+            side_effect=lambda: calls.append("warning"),
+        ),
+        patch(runner, side_effect=lambda _args: calls.append("dispatch") or 0),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert calls == ["warning", "dispatch"]
 
 
 def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:

@@ -70,7 +70,7 @@ from deepagents_code.config import (
     is_shell_command_allowed,
     settings,
 )
-from deepagents_code.file_ops import FileOpTracker
+from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
     dispatch_hook,
     dispatch_hook_fire_and_forget,
@@ -781,12 +781,31 @@ def _process_message_chunk(
         else:
             tool_args = {}
         record = file_op_tracker.complete_with_message(message_obj)
-        if record and record.diff:
+        # Gated on the outcome, not on `record.diff`: two of the four outcomes
+        # produce no diff at all (`unreadable_after`, which returns before one is
+        # computed, and `terminators_only`, which has none by definition), and
+        # neither does a `delete` with a lost pre-image, where both sides are
+        # empty. None of those print anything without this. Headless output is
+        # what CI reads, so a change that could not be verified has to say so
+        # here too rather than only in the TUI.
+        caveat = record_display_caveat(record)
+        if record and (record.diff or caveat):
             if state.spinner:
                 state.spinner.stop()
             if not state.quiet:
                 console.print(
                     f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
+                    highlight=False,
+                )
+            if caveat:
+                # Printed even under `--quiet`, which suppresses *diagnostics*;
+                # a statement that an operation could not be verified is not
+                # one, and dropping it here would leave the caveat existing
+                # nowhere. Safe for the mode's contract because quiet already
+                # routes `console` to stderr, so this cannot pollute the stdout
+                # result that `-p --quiet` exists to keep clean.
+                console.print(
+                    f"[yellow]{escape_markup(caveat)}[/yellow]",
                     highlight=False,
                 )
         tool_name = getattr(message_obj, "name", "")

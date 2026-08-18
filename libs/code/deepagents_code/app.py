@@ -2729,9 +2729,6 @@ provider key is *not* a LangSmith gateway key. Only the prefix is inspected —
 the secret value is never logged or otherwise introspected.
 """
 
-_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
-"""Host substring identifying the LangSmith gateway endpoint."""
-
 
 def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     """Detect a non-LangSmith key being routed through the LangSmith gateway.
@@ -2754,15 +2751,18 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     if not provider:
         return None
     try:
+        from urllib.parse import urlsplit
+
         from deepagents_code.model_config import (
             ModelConfig,
             get_credential_env_var,
+            is_langsmith_gateway_host,
             resolve_env_var,
             resolved_env_var_name,
         )
 
         base_url = ModelConfig.load().get_base_url(provider)
-        if not base_url or _LANGSMITH_GATEWAY_HOST not in base_url:
+        if not base_url or not is_langsmith_gateway_host(urlsplit(base_url).hostname):
             return None
         key_env = get_credential_env_var(provider)
         if not key_env:

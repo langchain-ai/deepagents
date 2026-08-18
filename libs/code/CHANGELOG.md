@@ -4,37 +4,25 @@
 
 ## [0.1.57](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.56...deepagents-code==0.1.57) (2026-08-18)
 
-
 ### Features
 
-* **code:** add `DeepSeek-V4-Pro-0813` to model picker ([#5512](https://github.com/langchain-ai/deepagents/issues/5512)) ([f23d81b](https://github.com/langchain-ai/deepagents/commit/f23d81b910b7c3343fda293d70f0a75d44f45ba0))
-* **code:** add `multi_select` question type to `ask_user` ([#5097](https://github.com/langchain-ai/deepagents/issues/5097)) ([878ab3e](https://github.com/langchain-ai/deepagents/commit/878ab3e20d35de63001476d5e68c29b12fad4f12))
-* **code:** carry `TERM_PROGRAM` into the resume hint ([#5548](https://github.com/langchain-ai/deepagents/issues/5548)) ([3cdc821](https://github.com/langchain-ai/deepagents/commit/3cdc82181bc94a904290cce23db04d8a1341b123))
-* **code:** resize chat input by dragging its top border ([#5524](https://github.com/langchain-ai/deepagents/issues/5524)) ([d01e4ac](https://github.com/langchain-ai/deepagents/commit/d01e4ac5bf36752e5c89c1c6645d486282cb611f))
-* **code:** show conversation turns alongside message counts ([#5571](https://github.com/langchain-ai/deepagents/issues/5571)) ([3dd4fe5](https://github.com/langchain-ai/deepagents/commit/3dd4fe5cdc548f5408d5b74b82084d9d4c01a664))
-* **code:** support ACP approval modes ([#5394](https://github.com/langchain-ai/deepagents/issues/5394)) ([7772a14](https://github.com/langchain-ai/deepagents/commit/7772a1495440739130b8b613aa69433fbc0afbad))
-* **code:** trust user-declared endpoints for cold-cache policies ([#5462](https://github.com/langchain-ai/deepagents/issues/5462)) ([107980e](https://github.com/langchain-ai/deepagents/commit/107980e387b3fa060c2b33e9bd31b57c387eddb6))
-* **code:** warn before expensive cold-cache turns ([#5439](https://github.com/langchain-ai/deepagents/issues/5439)) ([8d2298f](https://github.com/langchain-ai/deepagents/commit/8d2298ff54797e224233349e4baf68e19b110040))
-
+- Added warnings before expensive cold-cache turns and trust user-declared endpoints for cold-cache policies ([#5439](https://github.com/langchain-ai/deepagents/issues/5439), [#5462](https://github.com/langchain-ai/deepagents/issues/5462)).
+- Made the chat input resizable by dragging its top border ([#5524](https://github.com/langchain-ai/deepagents/issues/5524)).
+- Added a `multi_select` question type to `ask_user` ([#5097](https://github.com/langchain-ai/deepagents/issues/5097)).
+- Added support for ACP approval modes ([#5394](https://github.com/langchain-ai/deepagents/issues/5394)).
+- Added `DeepSeek-V4-Pro-0813` to the model picker ([#5512](https://github.com/langchain-ai/deepagents/issues/5512)).
+- Show conversation turns alongside message counts ([#5571](https://github.com/langchain-ai/deepagents/issues/5571)).
+- Include `TERM_PROGRAM` in the resume hint ([#5548](https://github.com/langchain-ai/deepagents/issues/5548)).
 
 ### Bug Fixes
 
-* **code:** avoid detached spacer mount anchors ([#5516](https://github.com/langchain-ai/deepagents/issues/5516)) ([a38dc42](https://github.com/langchain-ai/deepagents/commit/a38dc4297b225e424207df5efd7dec0cf38ce832))
-* **code:** avoid duplicate Auto denial notices ([#5501](https://github.com/langchain-ai/deepagents/issues/5501)) ([41395c5](https://github.com/langchain-ai/deepagents/commit/41395c586d9743550c27073260539724a4bfedd3))
-* **code:** avoid plugin reload prompt flash ([#5500](https://github.com/langchain-ai/deepagents/issues/5500)) ([e03f030](https://github.com/langchain-ai/deepagents/commit/e03f03026984bf4bdeb8bd661707f29a4d682738))
-* **code:** avoid transcript hydration lag ([#5479](https://github.com/langchain-ai/deepagents/issues/5479)) ([3c8cae6](https://github.com/langchain-ai/deepagents/commit/3c8cae6fa44d4e12062fdb10421b48587925eade))
-* **code:** bind Auto-mode "yes" to the paired `ask_user` question ([#5038](https://github.com/langchain-ai/deepagents/issues/5038)) ([f4f138d](https://github.com/langchain-ai/deepagents/commit/f4f138db65484d4938ef3759cb26cec1e789357d))
-* **code:** condition relative timestamp toggle ([#5503](https://github.com/langchain-ai/deepagents/issues/5503)) ([96d72a1](https://github.com/langchain-ai/deepagents/commit/96d72a188bf951c9d3ca103e6611dcb50961af93))
-* **code:** defer plugin reload hint during startup ([#5502](https://github.com/langchain-ai/deepagents/issues/5502)) ([dc029ef](https://github.com/langchain-ai/deepagents/commit/dc029ef5072e9114125e4d332d3631dc1c3d4883))
-* **code:** hide chat input cursor while unfocused ([#5258](https://github.com/langchain-ai/deepagents/issues/5258)) ([c66d9b8](https://github.com/langchain-ai/deepagents/commit/c66d9b8500f120d6552af258750da8bb0dede7b8))
-* **code:** hide dependency details after updates ([#5519](https://github.com/langchain-ai/deepagents/issues/5519)) ([cf7578d](https://github.com/langchain-ai/deepagents/commit/cf7578d1c3403bde960a43cba51f5dad7c336cb3))
-* **code:** hide empty previous-thread hints ([#5552](https://github.com/langchain-ai/deepagents/issues/5552)) ([0f5bd4f](https://github.com/langchain-ai/deepagents/commit/0f5bd4f3356d0fcbdea436a27c8011629416a61c))
-* **code:** keep chat input responsive during `/reload` ([#5529](https://github.com/langchain-ai/deepagents/issues/5529)) ([5aa266e](https://github.com/langchain-ai/deepagents/commit/5aa266eab5ca0aedee58367c63599a926863d2cf))
-* **code:** preserve editables during dependency refresh ([#5521](https://github.com/langchain-ai/deepagents/issues/5521)) ([f0446c8](https://github.com/langchain-ai/deepagents/commit/f0446c8c8aecff243545fe0c551a6539ccf482a2))
-* **code:** refresh splash version after update ([#5520](https://github.com/langchain-ai/deepagents/issues/5520)) ([c2ec5e6](https://github.com/langchain-ai/deepagents/commit/c2ec5e6d9f85bf114a3666bba982de0c63ec5eb5))
-* **code:** report MCP server changes on reload ([#5504](https://github.com/langchain-ai/deepagents/issues/5504)) ([b16a740](https://github.com/langchain-ai/deepagents/commit/b16a74085af0057a24ce00f23a6a165bf5f21ed2))
-* **code:** report total context after `/offload` ([#5488](https://github.com/langchain-ai/deepagents/issues/5488)) ([5d806c8](https://github.com/langchain-ai/deepagents/commit/5d806c88cf2a8b10d9b13b832540151491c13e19))
-* **code:** scroll resumed threads to the bottom ([#5543](https://github.com/langchain-ai/deepagents/issues/5543)) ([1c6d358](https://github.com/langchain-ai/deepagents/commit/1c6d358c60306aad2af0067dcca76f85f4deeba1))
+- Report total context after `/offload` ([#5488](https://github.com/langchain-ai/deepagents/issues/5488)).
+- Fixed transcript and thread restoration issues, including hydration lag, scrolling resumed threads to the bottom, and hiding empty previous-thread hints ([#5479](https://github.com/langchain-ai/deepagents/issues/5479), [#5543](https://github.com/langchain-ai/deepagents/issues/5543), [#5552](https://github.com/langchain-ai/deepagents/issues/5552)).
+- Fixed Auto-mode approval handling by binding “yes” to the paired `ask_user` question and avoiding duplicate Auto denial notices ([#5038](https://github.com/langchain-ai/deepagents/issues/5038), [#5501](https://github.com/langchain-ai/deepagents/issues/5501)).
+- Improved reload behavior by keeping the chat input responsive during `/reload`, reporting MCP server changes, and avoiding plugin reload prompt flashes or startup hints ([#5529](https://github.com/langchain-ai/deepagents/issues/5529), [#5504](https://github.com/langchain-ai/deepagents/issues/5504), [#5500](https://github.com/langchain-ai/deepagents/issues/5500), [#5502](https://github.com/langchain-ai/deepagents/issues/5502)).
+- Improved dependency update UI by preserving editable fields and hiding dependency details after updates ([#5521](https://github.com/langchain-ai/deepagents/issues/5521), [#5519](https://github.com/langchain-ai/deepagents/issues/5519)).
+- Fixed chat UI polish issues, including detached spacer mount anchors, the unfocused input cursor, and relative timestamp toggle display ([#5516](https://github.com/langchain-ai/deepagents/issues/5516), [#5258](https://github.com/langchain-ai/deepagents/issues/5258), [#5503](https://github.com/langchain-ai/deepagents/issues/5503)).
+- Refresh the splash version after updates ([#5520](https://github.com/langchain-ai/deepagents/issues/5520)).
 
 ## [0.1.56](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.55...deepagents-code==0.1.56) (2026-08-14)
 

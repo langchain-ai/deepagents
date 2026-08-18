@@ -3538,12 +3538,20 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     own actions. The caller gets a description so it can say so on a surface the
     user actually reads; a log line alone is not that surface.
 
+    A present-but-blank env var is an explicit "inherit" and outranks
+    `config.toml`, so it is detected before resolution rather than being skipped
+    as unset the way `resolve_scalar` treats every other option's blank env
+    value. `dcode config` shares that veto via
+    `resolve_auto_classifier_model_with_source`, so the two surfaces cannot
+    disagree about which model grades gated actions.
+
     Returns:
         `(spec, problem)`. `spec` is a `provider:model` spec, or `None` when the
             classifier should inherit. `problem` is a one-line description when a
             configured value was ignored, else `None`.
     """
     from deepagents_code.config_manifest import (
+        blank_auto_classifier_env_name,
         get_option,
         load_config_toml,
         resolve_scalar,
@@ -3553,6 +3561,22 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     if option is None:
         return None, None
     toml_data = load_config_toml()
+    blank_env = blank_auto_classifier_env_name()
+    if blank_env is not None:
+        # Name the config.toml value being overridden: without it the warning
+        # sends the user to a config file that still shows their setting.
+        shadowed, shadowed_source = resolve_scalar(option, toml_data=toml_data)
+        overridden = (
+            f" (overriding {shadowed_source} {shadowed!r})"
+            if isinstance(shadowed, str) and shadowed.strip()
+            else ""
+        )
+        problem = (
+            f"Ignoring blank env ({blank_env}) auto_classifier model{overridden}; "
+            "the Auto approval classifier will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
     value, source = resolve_scalar(option, toml_data=toml_data)
     if isinstance(value, str) and value.strip():
         return value.strip(), None

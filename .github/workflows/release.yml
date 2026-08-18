@@ -1087,5 +1087,25 @@ jobs:
           # `-R` is required: this job skips checkout (it only needs the API),
           # and without a repo flag `gh` shells out to `git` to discover the
           # repository, which fails with "fatal: not a git repository".
+          # The dispatch time is recorded first so the poll below can ignore
+          # any earlier workflow_dispatch runs of this workflow.
+          DISPATCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
           gh workflow run bump_code_sdk_pin.yml --repo "${GITHUB_REPOSITORY}" --ref main
-          echo "::notice::Dispatched bump_code_sdk_pin.yml after publishing deepagents==${SDK_VERSION}."
+          # `gh workflow run` returns before the run exists and prints no run
+          # ID, so poll for the newest workflow_dispatch run to build its URL.
+          # Without the `--created >=` bound, a previous dispatch of this
+          # workflow would match immediately while the new run is still
+          # propagating. Fall back to the workflow page (newest run listed at
+          # top) if the API hasn't caught up after ~30s.
+          RUN_URL=""
+          for _ in 1 2 3 4 5 6; do
+            sleep 5
+            RUN_URL="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow bump_code_sdk_pin.yml --event workflow_dispatch --created ">=${DISPATCHED_AT}" --limit 1 --json url --jq '.[0].url // ""' || true)"
+            if [ -n "$RUN_URL" ]; then
+              break
+            fi
+          done
+          if [ -z "$RUN_URL" ]; then
+            RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/bump_code_sdk_pin.yml"
+          fi
+          echo "::notice::Dispatched bump_code_sdk_pin.yml after publishing deepagents==${SDK_VERSION}: ${RUN_URL}"

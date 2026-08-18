@@ -15918,33 +15918,33 @@ class TestScrollbarToggle:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Unparsable config falls back to the hidden default with a warning."""
+        """Unparsable config falls back to the hidden default, never raising.
+
+        The resolver owns the warning (see
+        `test_load_config_toml_corrupt_returns_empty_with_warning`); asserting its exact
+        text here would couple this test to a sibling module's log string without
+        distinguishing which preference failed to load.
+        """
         from deepagents_code.app import _load_show_scrollbar
 
         config = tmp_path / "config.toml"
         config.write_text("this is = = not valid toml [[[\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_show_scrollbar() is False
-        assert any("scrollbar" in record.getMessage() for record in caplog.records)
+        assert _load_show_scrollbar() is False
 
     def test_load_ignores_non_table_ui(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A scalar `[ui]` value is ignored with a warning on load."""
+        """A scalar `[ui]` value reads as unset rather than raising."""
         from deepagents_code.app import _load_show_scrollbar
 
         config = tmp_path / "config.toml"
         config.write_text('ui = "oops"\n')
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_show_scrollbar() is False
-        assert any("ui" in record.getMessage() for record in caplog.records)
+        assert _load_show_scrollbar() is False
 
     def test_save_repairs_malformed_ui_table(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -16189,7 +16189,6 @@ class TestDebugConsoleClickToCopyPreference:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A `[ui]` value that is not a table degrades to the off default."""
         from deepagents_code.app import _load_debug_console_click_to_copy
@@ -16197,25 +16196,20 @@ class TestDebugConsoleClickToCopyPreference:
         config = tmp_path / "config.toml"
         config.write_text('ui = "not-a-table"\n')
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_debug_console_click_to_copy() is False
-        assert any("[ui]" in record.getMessage() for record in caplog.records)
+        assert _load_debug_console_click_to_copy() is False
 
     def test_load_handles_unreadable_config(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Malformed TOML degrades to the off default with a warning."""
+        """Malformed TOML degrades to the off default, never raising."""
         from deepagents_code.app import _load_debug_console_click_to_copy
 
         config = tmp_path / "config.toml"
         config.write_text("[ui]\ndebug_console_click_to_copy = tru\n")  # invalid TOML
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_debug_console_click_to_copy() is False
-        assert any("click-to-copy" in record.getMessage() for record in caplog.records)
+        assert _load_debug_console_click_to_copy() is False
 
     def test_save_round_trips(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -16270,8 +16264,40 @@ class TestDebugConsoleClickToCopyPreference:
         assert result.message is not None
 
 
+@pytest.mark.parametrize(
+    ("key", "fallback"),
+    [
+        ("display.cursor_blink", True),
+        ("display.terminal_progress", True),
+        ("display.show_message_timestamps", False),
+        ("display.show_scrollbar", False),
+        ("display.debug_console_click_to_copy", False),
+        ("display.show_diff_line_numbers", True),
+    ],
+)
+def test_bool_display_preference_keys_match_the_manifest(
+    key: str, fallback: bool
+) -> None:
+    """Every `_load_bool_display_preference` key must exist and be a bool option.
+
+    The `fallback` argument duplicates the manifest default, and a mistyped key
+    silently resolves to it — with both in agreement that produces no symptom at
+    all until someone actually sets the option. Pinning existence, kind, and
+    default here is what makes the duplication safe.
+    """
+    from deepagents_code.config_manifest import OptionKind, get_option
+
+    option = get_option(key)
+    assert option is not None, f"{key} is not in the manifest"
+    assert option.kind is OptionKind.BOOL
+    assert option.default is fallback, (
+        f"{key} default {option.default!r} disagrees with the loader fallback "
+        f"{fallback!r}; they must match or the fallback path changes behavior"
+    )
+
+
 class TestAppBlurPausesCursorBlink:
-    """Test `on_app_blur` pauses cursor blink without changing widget focus."""
+    """Test the chat input cursor stops drawing when the terminal is blurred."""
 
     async def test_app_blur_pauses_blink(self) -> None:
         """Losing terminal focus should pause the chat input cursor blink."""
@@ -16287,8 +16313,8 @@ class TestAppBlurPausesCursorBlink:
 
             assert app._chat_input._text_area.cursor_blink is False
 
-    async def test_app_blur_preserves_widget_focus(self) -> None:
-        """Pausing blink must not blur the chat input widget."""
+    async def test_handler_alone_preserves_widget_focus(self) -> None:
+        """Pausing blink must not itself blur the chat input widget."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -16301,6 +16327,36 @@ class TestAppBlurPausesCursorBlink:
             await pilot.pause()
 
             assert app._chat_input._text_area.has_focus is True
+
+    async def test_blur_event_hides_cursor_and_focus_restores_it(self) -> None:
+        """A real `AppBlur` must stop drawing the cursor; `AppFocus` restores it.
+
+        This is the symptom users see in an unfocused tmux pane, so drive the
+        real events rather than calling the handlers: Textual's own `AppBlur`
+        handling drops screen focus, and only the combination of that and our
+        handler decides whether a cursor is painted.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            text_area = app._chat_input._text_area
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+            assert text_area._draw_cursor is True
+
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            await pilot.pause()
+
+            assert text_area._draw_cursor is False
+
+            app.post_message(events.AppFocus())
+            await pilot.pause()
+            await pilot.pause()
+
+            assert text_area._draw_cursor is True
 
     async def test_app_blur_noop_before_mount(self) -> None:
         """`on_app_blur` should silently ignore blur events before mount."""
@@ -30463,18 +30519,20 @@ class TestSetSpinnerTerminalProgress:
 
     @pytest.fixture(autouse=True)
     def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Point the config path at an empty temp dir.
+        """Point the config path at an empty temp dir and clear the env override.
 
         Without this, `_load_terminal_progress_preference` reads the developer's
         real `~/.deepagents/config.toml` during `DeepAgentsApp.__init__`, so a
-        local `[ui].terminal_progress = false` would silently flip the
-        positive-path tests below to failing. Tests that need a specific config
-        write to and re-point at this same path.
+        local `[ui].terminal_progress = false` — or an exported
+        `DEEPAGENTS_CODE_TERMINAL_PROGRESS`, which outranks it — would silently
+        flip the positive-path tests below to failing. Tests that need a
+        specific config write to and re-point at this same path.
         """
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "config.toml",
         )
+        monkeypatch.delenv("DEEPAGENTS_CODE_TERMINAL_PROGRESS", raising=False)
 
     async def test_status_triggers_indeterminate_progress(
         self, monkeypatch: pytest.MonkeyPatch

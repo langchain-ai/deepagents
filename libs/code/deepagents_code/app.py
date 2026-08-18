@@ -16797,7 +16797,7 @@ class DeepAgentsApp(App):
         from langchain_core.messages import AIMessage
         from langgraph.types import Command
 
-        from deepagents_code._tracing import resume_trace_config
+        from deepagents_code._tracing import stream_trace_config
         from deepagents_code.config import settings
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
@@ -16939,11 +16939,7 @@ class DeepAgentsApp(App):
                 stream_input,
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
-                config=(
-                    resume_trace_config(config)
-                    if isinstance(stream_input, Command)
-                    else config
-                ),
+                config=stream_trace_config(config, stream_input),
                 context=stream_context,
                 durability="exit",
             ):

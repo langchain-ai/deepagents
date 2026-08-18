@@ -106,7 +106,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
-from deepagents_code._tracing import resume_trace_config
+from deepagents_code._tracing import stream_trace_config
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
@@ -1543,11 +1543,7 @@ async def execute_task_textual(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
-                config=(
-                    resume_trace_config(config)
-                    if isinstance(stream_input, Command)
-                    else config
-                ),
+                config=stream_trace_config(config, stream_input),
                 context=context,
                 durability="exit",
             )

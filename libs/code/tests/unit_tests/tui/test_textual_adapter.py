@@ -2181,12 +2181,18 @@ class TestExecuteTaskTextualAutoApproveInput:
     ) -> None:
         """Choosing "auto-approve all" mid-turn flips the resuming stream's context.
 
-        The PR's headline behavior: iteration 1 interrupts for approval, the
-        user picks `auto_approve_all`, and the per-iteration context refresh
-        re-reads `session_state.auto_approve` so iteration 2 (the resume)
-        carries `auto_approve=True`. Guards against hoisting the refresh out of
-        the stream loop (which would leave the first-iteration value frozen and
-        keep interrupting the rest of the turn).
+        Iteration 1 interrupts for approval, the user picks `auto_approve_all`,
+        and the per-iteration context refresh re-reads
+        `session_state.auto_approve` so iteration 2 (the resume) carries
+        `auto_approve=True`. Guards against hoisting the refresh out of the
+        stream loop (which would leave the first-iteration value frozen and keep
+        interrupting the rest of the turn).
+
+        Because it is the one test that really drives two stream rounds through
+        `execute_task_textual`, it also owns the TUI call site's resume-trace
+        coverage: the initial round untagged, the resume tagged, and the turn
+        grouping keys identical across both. Keep those assertions here unless
+        they move to a test that also runs two rounds.
 
         Parametrized over an async and a sync `on_auto_approve_enabled` callback
         to cover the `Awaitable[None] | None` union the adapter awaits only when
@@ -2273,7 +2279,7 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert len(agent.contexts) == 2
         initial_config, resume_config = agent.configs
         assert RESUME_TRACE_TAG not in initial_config.get("tags", [])
-        assert resume_config["tags"] == [RESUME_TRACE_TAG]
+        assert RESUME_TRACE_TAG in resume_config["tags"]
         initial_metadata = initial_config["metadata"]
         resume_metadata = resume_config["metadata"]
         assert initial_metadata["thread_id"] == "thread-1"

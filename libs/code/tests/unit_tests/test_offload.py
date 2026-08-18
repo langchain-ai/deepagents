@@ -15,6 +15,7 @@ from deepagents.backends.utils import validate_path
 
 from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
+from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.hooks.manager import HooksManager
@@ -2048,12 +2049,19 @@ class TestDriveServerSideCompaction:
     @staticmethod
     def _fake_remote_agent(
         tool_content: str,
-    ) -> tuple[Any, list[Any], list[object]]:
+    ) -> tuple[Any, list[Any], list[object], list[Any]]:
         """Build a fake `RemoteAgent` that interrupts then returns a ToolMessage.
 
         First `astream(None)` surfaces a HITL approval interrupt; the resume
         stream (`Command(resume=...)`) yields a `ToolMessage` with the supplied
         content so callers can exercise both the success and failure branches.
+
+        Args:
+            tool_content: Body of the `ToolMessage` the resume stream yields.
+
+        Returns:
+            The agent plus one list per recorded `astream` keyword -- inputs,
+                contexts, and configs -- each appended to in call order.
         """
         from langchain_core.messages import ToolMessage
 
@@ -2061,6 +2069,7 @@ class TestDriveServerSideCompaction:
 
         astream_inputs: list[Any] = []
         astream_contexts: list[object] = []
+        astream_configs: list[Any] = []
 
         class _Interrupt:
             id = "interrupt-1"
@@ -2073,6 +2082,7 @@ class TestDriveServerSideCompaction:
         async def _astream(stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
             astream_inputs.append(stream_input)
             astream_contexts.append(kwargs.get("context"))
+            astream_configs.append(kwargs.get("config"))
             if stream_input is None:
                 yield ((), "updates", {"__interrupt__": [_Interrupt()]})
             else:
@@ -2086,7 +2096,7 @@ class TestDriveServerSideCompaction:
         agent.aensure_thread = AsyncMock()
         agent.aupdate_state = AsyncMock()
         agent.astream = _astream
-        return agent, astream_inputs, astream_contexts
+        return agent, astream_inputs, astream_contexts, astream_configs
 
     async def test_seeds_tool_call_and_resumes_interrupt(self) -> None:
         """Seeds a forced `compact_conversation` call and approves the interrupt."""
@@ -2097,8 +2107,11 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, astream_inputs, astream_contexts = self._fake_remote_agent(
-                "Conversation compacted. Summarized 2 messages into a concise summary."
+            agent, astream_inputs, astream_contexts, astream_configs = (
+                self._fake_remote_agent(
+                    "Conversation compacted. Summarized 2 messages into a "
+                    "concise summary."
+                )
             )
             app._agent = agent
             app._lc_thread_id = "test-thread"
@@ -2141,6 +2154,13 @@ class TestDriveServerSideCompaction:
                 assert isinstance(context, dict)
                 normalized = {str(key): value for key, value in context.items()}
                 assert {key: normalized[key] for key in expected} == expected
+
+            # Only the resume round is tagged, so LangSmith can tell the
+            # continuation apart from the run that opened the turn.
+            initial_config, resume_config = astream_configs
+            assert RESUME_TRACE_TAG not in initial_config.get("tags", [])
+            assert RESUME_TRACE_TAG in resume_config["tags"]
+            assert initial_config["configurable"] == resume_config["configurable"]
 
     async def test_records_summary_and_trailing_usage_in_cost_breakdown(self) -> None:
         """Manual offload usage reconciles by type and serving model."""
@@ -2483,7 +2503,7 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, _contexts = self._fake_remote_agent(
+            agent, _inputs, _contexts, _configs = self._fake_remote_agent(
                 f"{COMPACTION_FAILURE_PREFIX}: an error occurred during compaction."
             )
             app._agent = agent
@@ -2503,7 +2523,7 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, contexts = self._fake_remote_agent(
+            agent, _inputs, contexts, _configs = self._fake_remote_agent(
                 "Conversation compacted. Summarized 2 messages."
             )
             app._agent = agent

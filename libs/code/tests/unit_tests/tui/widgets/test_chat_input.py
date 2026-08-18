@@ -569,20 +569,90 @@ class TestChatInputResize:
             assert text_area.size.height == 1
             assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
 
-    async def test_double_click_from_a_partial_manual_height_expands(self) -> None:
-        """A part-way manual height still expands rather than collapsing.
+    async def test_double_click_from_a_partial_manual_height_collapses(self) -> None:
+        """A part-way manual height collapses rather than expanding.
 
-        The toggle keys off "already at the maximum", so a drag of a row or two
-        -- including the incidental jitter of a real double-click -- cannot
-        invert what the next double-click means.
+        Deliberate: the gesture keys off whether a manual height is what pins
+        the composer, not off whether it reached the maximum, so one
+        double-click undoes any drag the user can see.
         """
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
             box = app.query_one(ChatInputBox)
             handle = app.query_one(ChatInputResizeHandle)
             text_area = app.query_one(ChatTextArea)
+            text_area.insert("one\ntwo\nthree")
             box.set_manual_height(5)
             await pilot.pause()
+            assert text_area.size.height == 5
+
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height is None
+            assert text_area.size.height == 3
+            # Genuinely automatic again, not a height that happens to equal the
+            # draft: auto growth is back in charge and a further toggle expands.
+            assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+            assert box._requested_height == _EXPANDED_HEIGHT
+
+    async def test_double_click_expands_a_manual_height_hidden_by_the_draft(
+        self,
+    ) -> None:
+        """A drag floored by the draft expands instead of collapsing.
+
+        Dragging a tall draft smaller stores a request the content floor then
+        refuses to render, so the composer never moves. Collapsing that request
+        would not move it either, leaving the user with two dead gestures in a
+        row -- so this case expands.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            text_area.insert("one\ntwo\nthree\nfour\nfive\nsix")
+            await pilot.pause()
+            assert text_area.size.height == 6
+
+            # Drag downward to shrink; the floor keeps all six rows visible.
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(5, 3))
+            await pilot.mouse_up(handle, offset=(5, 3))
+            await pilot.pause()
+            assert box._requested_height == 3
+            assert text_area.size.height == 6
+
+            await pilot.double_click(handle, offset=(5, 0))
+            await pilot.pause()
+
+            assert box._requested_height == _EXPANDED_HEIGHT
+            assert text_area.size.height == _EXPANDED_HEIGHT
+
+    async def test_double_click_expands_after_a_one_row_drag_jitter(self) -> None:
+        """A single row of travel during a press still leaves "expand" next.
+
+        `on_mouse_move` only suppresses sub-cell jitter, so drifting a whole row
+        and back within one press does establish a manual height. It renders no
+        differently from automatic sizing, so the double-click that follows must
+        still expand.
+        """
+        app = _ChatInputResizeTestApp()
+        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
+            box = app.query_one(ChatInputBox)
+            handle = app.query_one(ChatInputResizeHandle)
+            text_area = app.query_one(ChatTextArea)
+            await pilot.pause()
+
+            await pilot.mouse_down(handle, offset=(5, 0))
+            await pilot.hover(handle, offset=(5, 1))
+            await pilot.hover(handle, offset=(5, 0))
+            await pilot.mouse_up(handle, offset=(5, 0))
+            await pilot.pause()
+            assert box._requested_height == 1
+            assert text_area.size.height == 1
 
             await pilot.double_click(handle, offset=(5, 0))
             await pilot.pause()
@@ -595,7 +665,8 @@ class TestChatInputResize:
 
         A double-click only registers when both presses land on the same cell,
         which is exactly when the pointer drifts away and back, emitting a
-        zero-delta move mid-gesture.
+        zero-delta move mid-gesture. Storing a height there would pin the
+        composer and stop it growing as the user keeps typing.
         """
         app = _ChatInputResizeTestApp()
         async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:

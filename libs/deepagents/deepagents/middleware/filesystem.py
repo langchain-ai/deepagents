@@ -2808,7 +2808,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         content_sample = f"{status_line}\n{response.output}"
         return _render_preview_stub(
             _TOO_LARGE_TOOL_MSG,
-            ContentPreview(content_sample, lines_omitted="lines truncated" in response.output),
+            ContentPreview(
+                content_sample,
+                lines_omitted="lines truncated" in response.output,
+                # A `PREVIEW_LINE_CHAR_LIMIT` caveat, and the wrapper has no
+                # per-line character budget, so it never applies here. The
+                # wrapper's byte caps can still cut a shown line mid-line; it
+                # discloses that in-band rather than through this note.
+                lines_clipped=False,
+            ),
             tool_call_id=tool_call_id,
             file_path=capture_path,
         )

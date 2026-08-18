@@ -38,12 +38,16 @@ You can do this by specifying an offset and limit in the read_file tool call. Fo
 {content_sample}
 """
 
-_PREVIEW_LINE_CHAR_LIMIT: Final = 1000
+PREVIEW_LINE_CHAR_LIMIT: Final = 1000
 """Per-line character budget for preview lines.
 
 Bounds previews of few-but-huge lines (a `.jsonl` dump, a minified bundle).
-Keep below `backends.utils.MAX_LINE_LENGTH`, or clipped lines also pick up
-that renderer's `N.1` continuation gutters.
+Clipping cuts within a shown line rather than dropping whole lines, so it is
+reported separately from `lines_omitted`.
+
+Keep below `backends.utils.MAX_LINE_LENGTH`, or clipped lines also pick up that
+renderer's `N.1` continuation gutters and `_CAVEAT_CLIPPED_LINES` no longer
+describes what the model sees.
 """
 
 _PREVIEW_NOTE_PLAIN = "Here is a preview of the {subject}"
@@ -52,15 +56,17 @@ _PREVIEW_NOTE_HEAD_TAIL = "Here is a preview showing the head and tail of the {s
 _CAVEAT_OMITTED_LINES = (
     f"lines of the form `{TRUNCATION_MARKER_TEMPLATE.format(omitted_lines='N')}` indicate omitted lines in the middle of the content"
 )
+_CAVEAT_CLIPPED_LINES = f"the output contains lines longer than {PREVIEW_LINE_CHAR_LIMIT} characters; this preview shows only their first {PREVIEW_LINE_CHAR_LIMIT} characters"
 
 
 @dataclass(frozen=True, slots=True)
 class ContentPreview:
     """A rendered preview plus a record of what was left out to build it.
 
-    `lines_omitted` is reported by the code that built `text`, never inferred
-    from the rendered bytes — a literal `... [N lines truncated] ...` line in
-    the content would otherwise pass for a real marker.
+    The flags are reported by the code that built `text`, never inferred from
+    the rendered bytes — a literal `... [N lines truncated] ...` line in the
+    content would otherwise pass for a real marker. The two flags track
+    independent kinds of loss; a preview can have both, so check both.
     """
 
     text: str
@@ -69,16 +75,21 @@ class ContentPreview:
     lines_omitted: bool
     """Whole lines were dropped from the middle, behind a truncation marker."""
 
+    lines_clipped: bool
+    """At least one shown line was clipped at `PREVIEW_LINE_CHAR_LIMIT` characters."""
 
-def _preview_note(*, lines_omitted: bool, subject: str = "result") -> str:
+
+def _preview_note(*, lines_omitted: bool, lines_clipped: bool = False, subject: str = "result") -> str:
     """Build the sentence introducing a preview.
 
-    Explains the truncation marker only when the preview actually has one, so
-    the model is never told to look for a marker that was not inserted.
+    Mentions only losses the preview actually has, so the model is never told
+    to look for a marker that was not inserted.
 
     Args:
         lines_omitted: Whole lines were dropped from the middle behind a
             truncation marker.
+        lines_clipped: At least one shown line was clipped at
+            `PREVIEW_LINE_CHAR_LIMIT` characters.
         subject: Noun for what is being previewed, e.g. `result`.
 
     Returns:
@@ -86,14 +97,16 @@ def _preview_note(*, lines_omitted: bool, subject: str = "result") -> str:
 
             For example:
 
-            - `lines_omitted=False`: `Here is a preview of the result:`
-            - `lines_omitted=True`: `Here is a preview showing the head and tail
-                of the result (lines of the form ... indicate omitted lines ...):`
+            - No losses: `Here is a preview of the result:`
+            - `lines_omitted`: `Here is a preview showing the head and tail of the
+                result (lines of the form ... indicate omitted lines ...):`
+            - Both losses: the head/tail sentence with both caveats in parentheses.
     """
     base = _PREVIEW_NOTE_HEAD_TAIL if lines_omitted else _PREVIEW_NOTE_PLAIN
+    caveats = [caveat for applies, caveat in ((lines_omitted, _CAVEAT_OMITTED_LINES), (lines_clipped, _CAVEAT_CLIPPED_LINES)) if applies]
     note = base.format(subject=subject)
-    if lines_omitted:
-        note += f" ({_CAVEAT_OMITTED_LINES})"
+    if caveats:
+        note += f" ({'; '.join(caveats)})"
     return f"{note}:"
 
 
@@ -113,17 +126,22 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     """
     lines = content_str.splitlines()
 
+    def _clip(shown: list[str]) -> tuple[list[str], bool]:
+        """Clip each line to the per-line budget, reporting whether any was."""
+        return [line[:PREVIEW_LINE_CHAR_LIMIT] for line in shown], any(len(line) > PREVIEW_LINE_CHAR_LIMIT for line in shown)
+
     if len(lines) <= head_lines + tail_lines:
         # If file is small enough, show all lines
-        preview_lines = [line[:_PREVIEW_LINE_CHAR_LIMIT] for line in lines]
+        preview_lines, clipped = _clip(lines)
         return ContentPreview(
             format_content_with_line_numbers(preview_lines, start_line=1),
             lines_omitted=False,
+            lines_clipped=clipped,
         )
 
     # Show head and tail with truncation marker
-    head = [line[:_PREVIEW_LINE_CHAR_LIMIT] for line in lines[:head_lines]]
-    tail = [line[:_PREVIEW_LINE_CHAR_LIMIT] for line in lines[-tail_lines:]]
+    head, head_clipped = _clip(lines[:head_lines])
+    tail, tail_clipped = _clip(lines[-tail_lines:])
 
     head_sample = format_content_with_line_numbers(head, start_line=1)
     marker = TRUNCATION_MARKER_TEMPLATE.format(omitted_lines=len(lines) - head_lines - tail_lines)
@@ -133,6 +151,7 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return ContentPreview(
         head_sample + truncation_notice + tail_sample,
         lines_omitted=True,
+        lines_clipped=head_clipped or tail_clipped,
     )
 
 
@@ -206,7 +225,7 @@ def _render_preview_stub(template: str, preview: ContentPreview, *, subject: str
         The rendered stub, ready to use as message content.
     """
     return template.format(
-        preview_note=_preview_note(lines_omitted=preview.lines_omitted, subject=subject),
+        preview_note=_preview_note(lines_omitted=preview.lines_omitted, lines_clipped=preview.lines_clipped, subject=subject),
         content_sample=preview.text,
         **fields,
     )

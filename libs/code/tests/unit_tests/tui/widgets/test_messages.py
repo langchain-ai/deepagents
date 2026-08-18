@@ -332,7 +332,7 @@ class _AssistantMessageApp(App[None]):
     """Minimal app that mounts an AssistantMessage for runtime tests."""
 
     def compose(self) -> ComposeResult:
-        widget = AssistantMessage("hello")
+        widget = AssistantMessage()
         widget.id = "assistant"
         yield widget
 
@@ -406,6 +406,7 @@ class TestAssistantMessageLinkPointer:
         """Real mouse routing distinguishes message text from trailing blank space."""
         async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await msg.set_content("hello")
             await msg.write_initial_content()
             await pilot.pause()
 

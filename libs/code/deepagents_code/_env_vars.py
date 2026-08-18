@@ -83,10 +83,12 @@ config.toml.
 CURSOR_BLINK = "DEEPAGENTS_CODE_CURSOR_BLINK"
 """Blink the chat input cursor.
 
-Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or blank)
 for a steady cursor. Parsed by `classify_env_bool` (an unrecognized value falls
-through to the config value rather than forcing the default). Also settable via
-`[ui].cursor_blink` in config.toml.
+through to the config value rather than forcing the default). A blank value —
+empty or whitespace-only — counts as `false` because the option declares
+`empty_env_is_false`, so it overrides `config.toml` instead of falling through.
+Also settable via `[ui].cursor_blink` in config.toml.
 """
 
 CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
@@ -547,11 +549,14 @@ the warning when this coexistence is expected. Parsed by `is_env_truthy`.
 TERMINAL_PROGRESS = "DEEPAGENTS_CODE_TERMINAL_PROGRESS"
 """Report agent activity as `OSC 9;4` taskbar/dock/tab progress.
 
-Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or blank)
 to stop emitting the sequence on terminals that render it poorly. Parsed by
 `classify_env_bool` (an unrecognized value falls through to the config value
-rather than forcing the default). Also settable via `[ui].terminal_progress` in
-config.toml. `NO_TERMINAL_ESCAPE` suppresses the sequence regardless.
+rather than forcing the default). A blank value — empty or whitespace-only —
+counts as `false` because the option declares `empty_env_is_false`, so it
+overrides `config.toml` instead of falling through. Also settable via
+`[ui].terminal_progress` in config.toml. `NO_TERMINAL_ESCAPE` suppresses the
+sequence regardless.
 """
 
 THEME = "DEEPAGENTS_CODE_THEME"

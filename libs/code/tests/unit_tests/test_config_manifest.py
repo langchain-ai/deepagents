@@ -3324,3 +3324,194 @@ def test_load_config_toml_tolerates_an_undecodable_file(
         assert load_config_toml() == {}
 
     assert "using defaults" in caplog.text
+
+
+def test_whitespace_env_is_ignored_with_a_warning(monkeypatch, caplog) -> None:
+    """A whitespace-only env value falls through and says so.
+
+    Empty is a normal "unset" idiom, but whitespace-only is nearly always an
+    accident (`export X="$UNSET "`). Discarding it without a word was the only
+    unlogged rejection path in `resolve_scalar`, so a user could lose an
+    override with no evidence anywhere.
+    """
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    assert option.env_var is not None
+    monkeypatch.setenv(option.env_var, "   ")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(
+            option, toml_data={"models": {"auto_classifier": "openai:gpt-5"}}
+        )
+
+    assert (value, source) == ("openai:gpt-5", "config.toml")
+    assert any("whitespace-only" in r.getMessage() for r in caplog.records)
+
+
+def test_whitespace_env_opts_out_when_empty_means_false(monkeypatch) -> None:
+    """`empty_env_is_false` treats whitespace like empty, outranking config.toml.
+
+    The asymmetry with the test above is the resolver's contract, so pin both
+    sides: a blank value is an opt-out only where the option declares one.
+    """
+    option = get_option("display.cursor_blink")
+    assert option is not None
+    assert option.empty_env_is_false is True
+    assert option.env_var is not None
+    monkeypatch.setenv(option.env_var, "  \t ")
+
+    assert resolve_scalar(option, toml_data={"ui": {"cursor_blink": True}}) == (
+        False,
+        f"env ({option.env_var})",
+    )
+
+
+def test_non_table_toml_section_is_reported_once(caplog) -> None:
+    """A scalar shadowing a whole table is logged, not silently defaulted.
+
+    `ui = "dark"` defaults every `[ui]` option at once; the pre-manifest loaders
+    each warned about it, and dropping that left the user's edited value absent
+    from the output with no explanation. Logged once per path per process
+    because `config` resolves the whole manifest in one pass.
+    """
+    from deepagents_code import config_manifest
+
+    config_manifest._warned_non_table_paths.clear()
+    scrollbar = get_option("display.show_scrollbar")
+    blink = get_option("display.cursor_blink")
+    assert scrollbar is not None
+    assert blink is not None
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(scrollbar, toml_data={"ui": "dark"}) == (False, "default")
+        assert resolve_scalar(blink, toml_data={"ui": "dark"}) == (True, "default")
+
+    warnings = [r for r in caplog.records if "expected a table" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "[ui]" in warnings[0].getMessage()
+    config_manifest._warned_non_table_paths.clear()
+
+
+def test_blank_env_auto_classifier_reports_a_problem(monkeypatch) -> None:
+    """A blank env classifier must be described, not just logged.
+
+    The blank value reverts authorization review to the main agent model — the
+    agent grading its own actions. A `logger.warning` lands in the debug log,
+    which is not a surface the user reads, so the caller needs the description.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5"}},
+    )
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "   ")
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert _env_vars.AUTO_CLASSIFIER_MODEL in problem
+    # The message must name the value it overrode; without it the user checks
+    # config.toml, still sees their setting, and learns nothing.
+    assert "openai:gpt-5" in problem
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_config_surface_agrees_with_runtime_on_blank_env_classifier(
+    blank: str, monkeypatch
+) -> None:
+    """`config` must not credit a classifier the runtime refuses to use.
+
+    A blank env var vetoes `config.toml` for this option only, so resolving it
+    with the generic scalar path would report the config.toml model while the
+    runtime inherits the main agent model.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    toml_data = {"models": {"auto_classifier": "openai:gpt-5"}}
+    monkeypatch.setattr(config_manifest, "load_config_toml", lambda: toml_data)
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, blank)
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    runtime_spec, _ = resolve_auto_classifier_model_with_problem()
+    is_set, source, displayed = _resolve(option, toml_data=toml_data)
+
+    assert runtime_spec is None
+    assert displayed == runtime_spec
+    assert source == f"env ({_env_vars.AUTO_CLASSIFIER_MODEL})"
+    assert is_set is True
+    assert _display_value(option, is_set=is_set, value=displayed) == "(unset)"
+
+
+def test_usable_env_classifier_is_still_reported(monkeypatch) -> None:
+    """The veto must not swallow a real env value."""
+    from deepagents_code import config_manifest
+
+    toml_data = {"models": {"auto_classifier": "openai:gpt-5"}}
+    monkeypatch.setattr(config_manifest, "load_config_toml", lambda: toml_data)
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+
+    option = get_option("models.auto_classifier")
+    assert option is not None
+    is_set, source, value = _resolve(option, toml_data=toml_data)
+
+    assert (is_set, value) == (True, "anthropic:claude-haiku-4-5")
+    assert source == f"env ({_env_vars.AUTO_CLASSIFIER_MODEL})"
+
+
+def test_config_text_output_redacts_credential_bearing_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """The human-readable surfaces must not print a credential-bearing table.
+
+    The JSON path redacts through `_config_json_row`; the table, `--verbose`,
+    and `config get` text paths go through `_display_value` instead, so they
+    need their own guard against a renderer that forgets.
+    """
+    from deepagents_code import model_config
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[async_subagents.researcher]\n"
+        'description = "Research agent"\n'
+        'graph_id = "agent"\n'
+        "headers = { Authorization = 'Bearer sk-secret' }\n"
+        "[models.providers.acme]\n"
+        'class_path = "acme.Chat:AcmeChat"\n'
+        'api_key = "sk-secret"\n'
+        "[sandboxes.providers.acme]\n"
+        'class_path = "acme.Sandbox:AcmeSandbox"\n'
+        "params = { token = 'sk-secret' }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config)
+
+    for args in (
+        argparse.Namespace(config_command=None, output_format="text", verbose=False),
+        argparse.Namespace(config_command=None, output_format="text", verbose=True),
+        argparse.Namespace(
+            config_command="get",
+            key="agents.async_subagents",
+            output_format="text",
+            verbose=False,
+        ),
+    ):
+        assert run_config_command(args) == 0
+        out = capsys.readouterr().out
+        assert "sk-secret" not in out
+        assert "Authorization" not in out
+    assert "configured" in out
+
+
+def test_empty_redacted_table_reads_as_unset() -> None:
+    """A present-but-empty table has nothing configured, so say so."""
+    option = get_option("agents.async_subagents")
+    assert option is not None
+    assert option.redacted is True
+    assert _display_value(option, is_set=True, value={}) == "(unset)"
+    assert _display_value(option, is_set=True, value={"a": {}}) == "configured"

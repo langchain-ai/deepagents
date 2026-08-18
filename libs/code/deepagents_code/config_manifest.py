@@ -456,15 +456,36 @@ def load_config_toml() -> dict[str, Any]:
         return {}
 
 
+_warned_non_table_paths: set[tuple[str, ...]] = set()
+
+
 def _toml_lookup(data: dict[str, Any], keys: tuple[str, ...]) -> tuple[bool, Any]:
     """Navigate nested `keys` in `data`.
+
+    A traversal that stops because an intermediate node is not a table (say
+    `ui = "dark"` shadowing the whole `[ui]` table) is logged, because it
+    silently defaults *every* option under that table and the value the user
+    edited is nowhere in the output. The warning is emitted once per path per
+    process: `config` resolves the full manifest in one pass, so logging per
+    option would print the same line ~100 times for a single typo.
 
     Returns:
         `(found, value)`, where `found` is `False` if any key was missing.
     """
     node: Any = data
-    for key in keys:
-        if not isinstance(node, dict) or key not in node:
+    for index, key in enumerate(keys):
+        if not isinstance(node, dict):
+            path = keys[:index]
+            if path not in _warned_non_table_paths:
+                _warned_non_table_paths.add(path)
+                logger.warning(
+                    "Ignoring config.toml [%s]; expected a table, got %s — every "
+                    "option under it falls back to its default",
+                    ".".join(path),
+                    type(node).__name__,
+                )
+            return False, None
+        if key not in node:
             return False, None
         node = node[key]
     return True, node
@@ -730,11 +751,12 @@ def resolve_scalar(
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
-        so the next layer (or the typed default) applies. An empty or whitespace-only
-        env value is treated as unset (mirroring `resolve_env_var`), so it falls
-        through to the next env var, then `config.toml`/`default`, rather than
-        counting as set. Options declaring `empty_env_is_false` instead resolve
-        an explicitly present empty value to `False`. Theme resolution
+        so the next layer (or the typed default) applies. An empty or
+        whitespace-only env value is treated as unset, so it falls through to
+        the next env var, then `config.toml`/`default`, rather than counting as
+        set; this is deliberately stricter than `resolve_env_var`, which keeps a
+        whitespace-only value. Options declaring `empty_env_is_false` instead
+        resolve an empty *or* whitespace-only value to `False`. Theme resolution
         (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
@@ -747,9 +769,10 @@ def resolve_scalar(
         if option.env_var:
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
-        # An empty string normally counts as unset, matching `resolve_env_var`,
-        # so it is skipped and the loop continues to the next name. Options
-        # with an explicitly documented empty-value opt-out declare
+        # A blank (empty or whitespace-only) value normally counts as unset, so
+        # it is skipped and the loop continues to the next name. This is
+        # stricter than `resolve_env_var`, which keeps a whitespace-only value.
+        # Options with an explicitly documented empty-value opt-out declare
         # `empty_env_is_false`. Names are tried in order, so the primary
         # `env_var` wins over any fallback.
         for name in names:
@@ -758,7 +781,26 @@ def resolve_scalar(
                 continue
             if not raw.strip():
                 if option.empty_env_is_false:
+                    # Documented opt-out: an empty value means "off". Logged
+                    # because a whitespace-only value reads as unset to the user
+                    # while it actively forces `False` over their config.toml.
+                    logger.debug(
+                        "%s is blank (%r); resolving %s to False",
+                        name,
+                        raw,
+                        option.key,
+                    )
                     return False, f"env ({name})"
+                if raw:
+                    # Empty is a normal "unset" idiom, but whitespace-only is
+                    # almost always an accident (`export X="$UNSET "`), and
+                    # discarding it silently was the one unlogged rejection path
+                    # in this resolver.
+                    logger.warning(
+                        "Ignoring %s=%r (whitespace-only; treated as unset)",
+                        name,
+                        raw,
+                    )
                 continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
@@ -913,6 +955,72 @@ def resolve_auto_classifier_timeout(
     """
     value, _ = resolve_auto_classifier_timeout_with_source(toml_data=toml_data)
     return value
+
+
+def blank_auto_classifier_env_name() -> str | None:
+    """Return the env var blanking the Auto classifier model, if any.
+
+    A present-but-blank `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` means "inherit
+    the main agent model" and deliberately outranks `config.toml`, unlike every
+    other option, where `resolve_scalar` treats a blank env value as unset. That
+    veto is why this cannot go through `resolve_scalar`.
+
+    Returns:
+        The name of the blank env var, or `None` when no env var is set or the
+            highest-precedence one carries a usable value.
+    """
+    option = get_option("models.auto_classifier")
+    if option is None:
+        return None
+    from deepagents_code.model_config import resolved_env_var_name
+
+    names: list[str] = []
+    if option.env_var:
+        names.append(resolved_env_var_name(option.env_var))
+    names.extend(option.fallback_env_vars)
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        # The first *set* name decides; a blank fallback must not veto a usable
+        # primary.
+        return name if not raw.strip() else None
+    return None
+
+
+def resolve_auto_classifier_model_with_source(
+    *, toml_data: dict[str, Any] | None = None
+) -> tuple[str | None, str]:
+    """Resolve the effective Auto classifier model spec and its source.
+
+    Shares the blank-env veto with
+    `config.resolve_auto_classifier_model_with_problem` so `dcode config` cannot
+    report a classifier the runtime does not use. `None` means the classifier
+    inherits the main agent model.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        `(spec, source)`. `source` credits the layer that decided the outcome,
+            including the env var whose blank value forced the inherit, so the
+            source never points at a value the runtime ignored.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("models.auto_classifier")
+    if option is None:
+        return None, "default"
+
+    blank_env = blank_auto_classifier_env_name()
+    if blank_env is not None:
+        return None, f"env ({blank_env})"
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if isinstance(value, str) and value.strip():
+        return value.strip(), source
+    # A blank or wrong-typed `config.toml` entry reverts to the main agent model;
+    # keep the source so the surface still shows where the ignored value lives.
+    return None, source
 
 
 def _is_valid_recursion_limit(value: object) -> bool:
@@ -1220,7 +1328,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="display.themes",
         group="Display",
-        summary="User-defined themes, each a table of theme colors.",
+        summary=(
+            "User-defined themes and built-in theme overrides, keyed by theme name."
+        ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("themes",),
     ),
@@ -1420,8 +1530,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("models", "providers"),
-        # A provider table can carry credentials (`api_key`, `params`), so the
-        # value is never printed — `config` reports source and presence only.
+        # A provider table's `params` are forwarded verbatim to the constructor
+        # and can carry credentials, so the value is never printed — `config`
+        # reports source and presence only.
         redacted=True,
     ),
     ConfigOption(
@@ -1438,14 +1549,20 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="agents.default",
         group="Agents",
-        summary="Agent used at launch when `--agent` is omitted.",
+        summary=(
+            "Sticky default agent; used when neither `--agent` nor `-r <thread>` "
+            "is given, and ignored if it names an agent that no longer exists."
+        ),
         kind=OptionKind.NON_EMPTY_STR,
         toml_keys=("agents", "default"),
     ),
     ConfigOption(
         key="agents.recent",
         group="Agents",
-        summary="Most recently switched-to agent (managed by the app).",
+        summary=(
+            "Last switched-to agent, written by the app; the fallback behind "
+            "`agents.default`."
+        ),
         kind=OptionKind.NON_EMPTY_STR,
         toml_keys=("agents", "recent"),
     ),
@@ -1463,7 +1580,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="sandboxes.default",
         group="Sandboxes",
-        summary="Sandbox backend used when none is named on the command line.",
+        summary=(
+            "Sandbox backend used by a bare `--sandbox` (passed with no value); "
+            "omitting the flag entirely runs unsandboxed."
+        ),
         kind=OptionKind.STR,
         toml_keys=("sandboxes", "default"),
     ),
@@ -1476,8 +1596,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("sandboxes", "providers"),
-        # A provider table can carry credentials (`api_key`, `params`), so the
-        # value is never printed — `config` reports source and presence only.
+        # A provider table's `params` are forwarded verbatim to the constructor
+        # and can carry credentials, so the value is never printed — `config`
+        # reports source and presence only.
         redacted=True,
     ),
     # --- Tracing -------------------------------------------------------

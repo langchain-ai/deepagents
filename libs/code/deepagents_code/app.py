@@ -1411,13 +1411,16 @@ def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
 
     Args:
         key: Manifest key of the option, e.g. `"display.cursor_blink"`.
-        fallback: Value to use when `key` is not in the manifest at all, which
-            only happens if a caller and the manifest disagree.
+        fallback: Value to use when `key` is not in the manifest at all, or is
+            not a `BOOL` option — both mean a caller and the manifest disagree.
+            `test_bool_display_preference_keys_match_the_manifest` pins it to
+            each option's declared default so the two cannot drift.
 
     Returns:
         The resolved value.
     """
     from deepagents_code.config_manifest import (
+        OptionKind,
         get_option,
         load_config_toml,
         resolve_scalar,
@@ -1426,6 +1429,16 @@ def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
     option = get_option(key)
     if option is None:
         logger.warning("Unknown config option %r; falling back to %r", key, fallback)
+        return fallback
+    if option.kind is not OptionKind.BOOL:
+        # Without this, a mistyped key naming a STR option would return
+        # `bool("block")` — silently `True` forever, with no warning at all.
+        logger.warning(
+            "Config option %r is %s, not a bool; falling back to %r",
+            key,
+            option.kind.value,
+            fallback,
+        )
         return fallback
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
@@ -1449,24 +1462,16 @@ def _load_message_timestamps_visible() -> bool:
 def _load_show_diff_line_numbers() -> bool:
     """Resolve whether diff hunks show file line numbers.
 
-    Returns:
-        Whether file-relative line numbers are enabled.
-    """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    Toggled in-app with `/line-numbers`, or preset with
+    `[ui].show_diff_line_numbers`. There is no env var for this option.
 
-    option = get_option("display.show_diff_line_numbers")
-    if option is None:
-        logger.warning(
-            "Unknown config option %r; showing diff line numbers",
-            "display.show_diff_line_numbers",
-        )
-        return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    Returns:
+        Whether file-relative line numbers are enabled, defaulting to `True`
+        when unset, unreadable, or malformed.
+    """
+    return _load_bool_display_preference(
+        "display.show_diff_line_numbers", fallback=True
+    )
 
 
 def _load_show_scrollbar() -> bool:
@@ -1485,8 +1490,10 @@ def _load_show_scrollbar() -> bool:
 def _load_debug_console_click_to_copy() -> bool:
     r"""Resolve whether the `Ctrl+\` Debug Console copies a row on click.
 
-    Preset with `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` or
-    `[ui].debug_console_click_to_copy`. Enter-to-copy is always available.
+    Toggled from the console's own "Click to copy" checkbox, or preset with
+    `DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY` /
+    `[ui].debug_console_click_to_copy`; while the env var is set the checkbox
+    will not appear to stick. Enter-to-copy is always available.
 
     Returns:
         The resolved preference, or `False` when unset, unreadable, or
@@ -21836,15 +21843,15 @@ class DeepAgentsApp(App):
         """Pause the chat input cursor blink when the terminal loses OS focus.
 
         Textual's own `AppBlur` handling already drops screen focus, which stops
-        the blink via `has_focus`; pausing `cursor_blink` here keeps the cursor
-        hidden even in the paths that restore widget focus while the app itself
-        stays blurred.
+        the blink via `has_focus`, so this is belt-and-braces: `Screen.set_focus`
+        does not gate on `app_focus`, so anything that refocuses the input while
+        the app stays blurred would restart the blink.
 
         Either way this only runs when the terminal reports focus changes. tmux
         withholds them from its panes unless `focus-events` is on, so an
         unfocused pane keeps showing a blinking cursor until the user sets
-        `set -g focus-events on`; `[ui].cursor_blink = false` is the in-app
-        workaround.
+        `set -g focus-events on`; the workaround is
+        `DEEPAGENTS_CODE_CURSOR_BLINK=0` or `[ui].cursor_blink = false`.
         """
         if self._chat_input is None:
             return

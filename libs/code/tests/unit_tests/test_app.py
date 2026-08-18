@@ -15918,17 +15918,20 @@ class TestScrollbarToggle:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Unparsable config falls back to the hidden default with a warning."""
+        """Unparsable config falls back to the hidden default, never raising.
+
+        The resolver owns the warning (see
+        `test_load_config_toml_corrupt_returns_empty_with_warning`); asserting its exact
+        text here would couple this test to a sibling module's log string without
+        distinguishing which preference failed to load.
+        """
         from deepagents_code.app import _load_show_scrollbar
 
         config = tmp_path / "config.toml"
         config.write_text("this is = = not valid toml [[[\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.config_manifest"):
-            assert _load_show_scrollbar() is False
-        assert any("Could not read config" in r.getMessage() for r in caplog.records)
+        assert _load_show_scrollbar() is False
 
     def test_load_ignores_non_table_ui(
         self,
@@ -16199,17 +16202,14 @@ class TestDebugConsoleClickToCopyPreference:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Malformed TOML degrades to the off default with a warning."""
+        """Malformed TOML degrades to the off default, never raising."""
         from deepagents_code.app import _load_debug_console_click_to_copy
 
         config = tmp_path / "config.toml"
         config.write_text("[ui]\ndebug_console_click_to_copy = tru\n")  # invalid TOML
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.config_manifest"):
-            assert _load_debug_console_click_to_copy() is False
-        assert any("Could not read config" in r.getMessage() for r in caplog.records)
+        assert _load_debug_console_click_to_copy() is False
 
     def test_save_round_trips(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -16262,6 +16262,38 @@ class TestDebugConsoleClickToCopyPreference:
         assert result.ok is False
         assert result.severity == "error"
         assert result.message is not None
+
+
+@pytest.mark.parametrize(
+    ("key", "fallback"),
+    [
+        ("display.cursor_blink", True),
+        ("display.terminal_progress", True),
+        ("display.show_message_timestamps", False),
+        ("display.show_scrollbar", False),
+        ("display.debug_console_click_to_copy", False),
+        ("display.show_diff_line_numbers", True),
+    ],
+)
+def test_bool_display_preference_keys_match_the_manifest(
+    key: str, fallback: bool
+) -> None:
+    """Every `_load_bool_display_preference` key must exist and be a bool option.
+
+    The `fallback` argument duplicates the manifest default, and a mistyped key
+    silently resolves to it — with both in agreement that produces no symptom at
+    all until someone actually sets the option. Pinning existence, kind, and
+    default here is what makes the duplication safe.
+    """
+    from deepagents_code.config_manifest import OptionKind, get_option
+
+    option = get_option(key)
+    assert option is not None, f"{key} is not in the manifest"
+    assert option.kind is OptionKind.BOOL
+    assert option.default is fallback, (
+        f"{key} default {option.default!r} disagrees with the loader fallback "
+        f"{fallback!r}; they must match or the fallback path changes behavior"
+    )
 
 
 class TestAppBlurPausesCursorBlink:

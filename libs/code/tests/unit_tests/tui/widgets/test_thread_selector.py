@@ -2960,6 +2960,10 @@ class TestThreadSelectorColumnConfig:
                 await pilot.pause()
                 assert relative_switch.display is True
                 assert relative_switch in screen._filter_focus_order()
+                # Value must be reasserted when un-hidden so the first visible
+                # frame renders the persisted check state, not a stale box.
+                assert relative_switch.value is True
+                assert relative_switch.value == screen._relative_time
 
                 updated_switch.value = True
                 created_switch.value = False

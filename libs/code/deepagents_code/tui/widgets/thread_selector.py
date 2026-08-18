@@ -1103,7 +1103,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def _sync_relative_time_visibility(self) -> None:
         """Show relative-time controls only when a timestamp column is visible."""
         relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
-        relative_switch.display = self._timestamp_columns_visible()
+        visible = self._timestamp_columns_visible()
+        if visible:
+            # Reassert the value before un-hiding so the checkbox's rendered
+            # check state and its visibility paint in the same frame; Textual
+            # skips refresh of display:none widgets, so without this the first
+            # visible frame can show a stale unchecked box.
+            relative_switch.value = self._relative_time
+        relative_switch.display = visible
 
     def _collect_agent_options(self) -> list[tuple[str, str]]:
         """Return Select option tuples for the agent dropdown.

@@ -217,6 +217,9 @@ class MessageData:
     diff cannot come back holding counts it also declares fictional.
     """
 
+    diff_show_numbers: bool = True
+    """Whether file-relative line numbers are shown in this DIFF message."""
+
     diff_show_caveat: bool = True
     """Whether the DIFF renders its outcome's caveat, or leaves it to its row.
 
@@ -268,6 +271,16 @@ class MessageData:
 
     While `True`, the corresponding widget is actively receiving content
     chunks and should not be pruned or re-hydrated.
+    """
+
+    assistant_local_only: bool = False
+    """Whether an `ASSISTANT` row holds client-side output, not agent output.
+
+    Set for non-incognito `!` shell output, which renders through
+    `AssistantMessage` without invoking the agent. Lets callers ask whether the
+    *agent* produced anything in a thread rather than trusting the row type.
+    Never set on a restored transcript: shell output reaches thread state as a
+    `<user_shell_command>` human message, not as an assistant turn.
     """
 
     is_markdown: bool = False
@@ -349,7 +362,12 @@ class MessageData:
                 return widget
 
             case MessageType.ASSISTANT:
-                return AssistantMessage(self.content, id=self.id)
+                # Carry `local_only` back so a row pruned by virtualization and
+                # rehydrated does not read as agent output on the next
+                # `from_widget` round trip.
+                return AssistantMessage(
+                    self.content, id=self.id, local_only=self.assistant_local_only
+                )
 
             case MessageType.TOOL:
                 widget = ToolCallMessage(
@@ -413,6 +431,7 @@ class MessageData:
                     stats=self.diff_stats,
                     outcome=self.diff_outcome,
                     show_caveat=self.diff_show_caveat,
+                    show_numbers=self.diff_show_numbers,
                     id=self.id,
                 )
 
@@ -478,6 +497,7 @@ class MessageData:
                 content=widget._content,
                 id=widget_id,
                 is_streaming=widget._stream is not None,
+                assistant_local_only=widget._local_only,
             )
 
         if isinstance(widget, ToolCallMessage):
@@ -534,6 +554,7 @@ class MessageData:
                 diff_stats=widget._stats,
                 diff_outcome=widget._outcome,
                 diff_show_caveat=widget._show_caveat,
+                diff_show_numbers=widget._show_numbers,
             )
 
         if isinstance(widget, SummarizationMessage):

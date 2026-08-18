@@ -203,6 +203,38 @@ def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_user_hooks_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Prevent the developer's real hook config from reaching hook loading.
+
+    `_isolate_price_overrides` already redirects
+    `model_config.DEFAULT_CONFIG_DIR`, but `hooks.loading` and `hooks.runtime`
+    bind that name with a `from` import at module import. Whether they see the
+    redirect is therefore an ordering accident: imported lazily inside a test
+    they pick up `tmp_path`, but imported at collection -- which is what a
+    whole-suite run does -- they keep the developer's real `~/.deepagents`.
+
+    A `SessionEnd` entry there is the damaging case. Any `DeepAgentsApp` that
+    finishes startup during a test loads it, and `App.exit()` consults
+    `self._hooks.has_handlers(SESSION_END)` and takes the deferred-teardown
+    branch when handlers exist, so `TestExitGracefulWorkerHandoff`'s
+    synchronous-exit assertions fail. It reads as load-dependent flakiness
+    because those tests race app startup, and it never reproduces in CI, where
+    no such file exists.
+
+    Rebind both to the same `tmp_path` the price-override fixture uses, so all
+    three names agree on the user config directory, and drop the legacy
+    loader's parse cache in case it already holds real entries. Tests needing
+    hook config patch these explicitly, which still wins inside the test body.
+    """
+    for module in ("deepagents_code.hooks.loading", "deepagents_code.hooks.runtime"):
+        monkeypatch.setattr(f"{module}.DEFAULT_CONFIG_DIR", tmp_path)
+
+    import deepagents_code.hooks.legacy as hooks_legacy
+
+    monkeypatch.setattr(hooks_legacy, "_hooks_config", None)
+
+
+@pytest.fixture(autouse=True)
 def _clear_debug_notifications_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent the debug-notifications override from changing suppression tests.
 
@@ -542,6 +574,14 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         tmp_path / "config.toml",
     )
     monkeypatch.setattr("deepagents_code.onboarding.DEFAULT_STATE_DIR", state_dir)
+    # Resolved from `DEFAULT_STATE_DIR` at import time, so patching the module
+    # constant above doesn't move it. Left unpatched, any test reaching the
+    # upgrade path would create a lock file in the developer's real home and
+    # contend with a genuinely running dcode.
+    monkeypatch.setattr(
+        "deepagents_code.update_check.UPDATE_LOCK_FILE",
+        state_dir / "update.lock",
+    )
     # Keep ordinary create/amend goal tests free of the one-time preference
     # modal without writing files into `tmp_path` (that would pollute git and
     # empty-tree assertions). Dedicated prompt coverage clears this env var.
@@ -650,3 +690,80 @@ def wait_for_modal() -> WaitForModal:
         raise AssertionError(msg)
 
     return _wait
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionfinish() -> Generator[None, None, None]:
+    """Close any debug-log file handlers still attached at session end.
+
+    Companion to `_close_leaked_debug_handlers`, which is setup-only and so
+    sweeps *before* each test — leaving nothing to sweep after the last one. A
+    handler installed during that final test would otherwise stay attached, and
+    its file open, for the remainder of the process.
+
+    This is a tidiness guarantee, not a warning fix: `logging.shutdown()` runs
+    at `atexit` and closes still-attached handlers, so an unswept handler does
+    not produce a `ResourceWarning` at interpreter exit.
+    """
+    try:
+        return (yield)
+    finally:
+        _sweep_debug_handlers()
+
+
+def _sweep_debug_handlers() -> None:
+    """Detach and close leaked `configure_debug_logging` file handlers.
+
+    `configure_debug_logging` tags the `FileHandler`s it installs with
+    `_DEBUG_HANDLER_ATTR`. Leaving one attached is not itself the bug: the
+    logger holds a strong reference, so the handler is not collected. The
+    failure comes one step later, when some *other* test clears or replaces
+    that logger's handlers and drops the last reference — the GC then reports
+    the unclosed file as a `PytestUnraisableExceptionWarning` against whichever
+    test happens to be running, which is why the blame lands on an innocent
+    test.
+    """
+    import logging
+
+    from deepagents_code._debug import _DEBUG_HANDLER_ATTR
+
+    for name in list(logging.root.manager.loggerDict):
+        target = logging.getLogger(name)
+        for handler in target.handlers[:]:
+            if isinstance(handler, logging.FileHandler) and getattr(
+                handler, _DEBUG_HANDLER_ATTR, False
+            ):
+                target.removeHandler(handler)
+                handler.close()
+
+
+@pytest.fixture
+def sweep_debug_handlers() -> Callable[[], None]:
+    """Expose `_sweep_debug_handlers` so tests can pin its behaviour.
+
+    The sweep runs autouse at setup, before any test body, so a test cannot
+    otherwise observe it acting on handlers the test itself installed.
+    """
+    return _sweep_debug_handlers
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_debug_handlers() -> None:
+    """Sweep debug-log file handlers installed before each test starts.
+
+    `deepagents_code.__init__` calls `configure_debug_logging` at import time,
+    so a `DEEPAGENTS_CODE_DEBUG` exported in the environment (a developer shell,
+    or a CI runner configured that way) attaches a real file handler to the
+    package logger before collection — and per-test checks then blame whichever
+    test first clears that logger's handlers. `config._quiet_sdk_logging` is the
+    other producer, tagging handlers on every SDK and MCP transport logger it
+    touches; the sweep walks the whole `loggerDict`, so both are in scope.
+
+    Individual tests are responsible for closing handlers they install
+    themselves; this only catches ones leaked from import time or from a prior
+    test that forgot. Sweeping rather than failing on a stray handler does mean
+    a test that forgets to close its own now passes quietly — accepted because
+    the goal here is to stop misattributed failures, and a detect-and-fail
+    variant would reintroduce them for the import-time handler nobody owns.
+    """
+    _sweep_debug_handlers()

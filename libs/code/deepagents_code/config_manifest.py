@@ -1169,6 +1169,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.KITTY_KEYBOARD,
     ),
     ConfigOption(
+        key="display.show_diff_line_numbers",
+        group="Display",
+        summary="Show file line numbers in diff hunks.",
+        kind=OptionKind.BOOL,
+        default=True,
+        toml_keys=("ui", "show_diff_line_numbers"),
+    ),
+    ConfigOption(
         key="display.show_scrollbar",
         group="Display",
         summary="Show the vertical scrollbar in the chat area (off by default).",
@@ -1756,6 +1764,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.LOG_LEVEL,
     ),
     ConfigOption(
+        key="debug.dep_floor",
+        group="Debug",
+        summary="Synthesize the stale editable-dependency prompt/warning at launch.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_DEP_FLOOR,
+    ),
+    ConfigOption(
         key="debug.notifications",
         group="Debug",
         summary="Inject sample missing-dependency notifications at launch.",
@@ -1804,6 +1820,10 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set by the self-update restart to carry the launched command name into
         # the re-exec'd process; never user-configured.
         _env_vars.INVOKED_AS,
+        # Launch-time snapshot of `TERM_PROGRAM` recorded by `cli_main` so the
+        # resume hint can distinguish an explicit launch value from a `.env`
+        # file that sets `TERM_PROGRAM` after launch; never user-configured.
+        _env_vars.LAUNCH_TERM_PROGRAM,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

@@ -173,6 +173,12 @@ class SessionStats:
     output_tokens: int = 0
     """Cumulative output tokens across all LLM requests."""
 
+    cache_read_tokens: int = 0
+    """Cumulative prompt tokens served from provider caches."""
+
+    cache_write_tokens: int = 0
+    """Cumulative prompt tokens written to provider caches."""
+
     total_cost_usd: float = 0.0
     """Cumulative estimated USD cost across priceable LLM requests."""
 
@@ -202,6 +208,8 @@ class SessionStats:
         *,
         cost_usd: float | None = None,
         kind: UsageKind = "assistant",
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         """Accumulate usage for one completed LLM request.
 
@@ -223,10 +231,14 @@ class SessionStats:
 
                 Missing estimates leave monetary totals unchanged.
             kind: Request class used for `/cost` type breakdowns.
+            cache_read_tokens: Input tokens served from provider caches.
+            cache_write_tokens: Input tokens written to provider caches.
         """
         self.request_count += 1
         self.input_tokens += input_toks
         self.output_tokens += output_toks
+        self.cache_read_tokens += cache_read_tokens
+        self.cache_write_tokens += cache_write_tokens
         if cost_usd is not None:
             self.total_cost_usd += cost_usd
             self.priced_request_count += 1
@@ -276,6 +288,8 @@ class SessionStats:
         self.request_count -= 1
         self.input_tokens -= input_toks
         self.output_tokens -= output_toks
+        self.cache_read_tokens -= recorded.cache_read_tokens
+        self.cache_write_tokens -= recorded.cache_write_tokens
         if cost_usd is not None:
             self.total_cost_usd -= cost_usd
             self.priced_request_count -= 1
@@ -318,6 +332,8 @@ class SessionStats:
         self.request_count += other.request_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.cache_read_tokens += other.cache_read_tokens
+        self.cache_write_tokens += other.cache_write_tokens
         self.total_cost_usd += other.total_cost_usd
         self.priced_request_count += other.priced_request_count
         self.wall_time_seconds += other.wall_time_seconds
@@ -363,6 +379,12 @@ class RecordedRequest:
 
     output_tokens: int
     """Running output tokens recorded so far for the request."""
+
+    cache_read_tokens: int
+    """Running cache-read tokens recorded so far for the request."""
+
+    cache_write_tokens: int
+    """Running cache-write tokens recorded so far for the request."""
 
     cost_usd: float | None
     """Estimate for the whole request so far, or `None` when unpriceable."""
@@ -654,6 +676,8 @@ def _move_request_to_named_model(
         provider,
         cost_usd=cost_usd,
         kind=previous.kind,
+        cache_read_tokens=previous.cache_read_tokens,
+        cache_write_tokens=previous.cache_write_tokens,
     )
     recorded_requests[request_id] = RecordedRequest(
         model_name=model_name,
@@ -661,6 +685,8 @@ def _move_request_to_named_model(
         kind=previous.kind,
         input_tokens=previous.input_tokens,
         output_tokens=previous.output_tokens,
+        cache_read_tokens=previous.cache_read_tokens,
+        cache_write_tokens=previous.cache_write_tokens,
         cost_usd=cost_usd,
         usage_metadata=previous.usage_metadata,
         finalized=previous.finalized,
@@ -782,7 +808,7 @@ def record_message_usage(
                 )
         return None
 
-    from deepagents_code.cost_tracking import estimate_cost
+    from deepagents_code.cost_tracking import cache_token_counts, estimate_cost
 
     model_name, provider = _resolve_usage_model(
         message,
@@ -816,6 +842,8 @@ def record_message_usage(
     # when the fallback is unpriceable, leave a priceable request showing no
     # cost at all.
     cost_usd = estimate_cost(accumulated_usage, model_name, provider)
+    cache_reads, cache_writes = cache_token_counts(accumulated_usage)
+    cache_write_tokens = sum(cache_writes)
 
     stats.record_request(
         model_name,
@@ -824,6 +852,8 @@ def record_message_usage(
         provider,
         cost_usd=cost_usd,
         kind=kind,
+        cache_read_tokens=cache_reads,
+        cache_write_tokens=cache_write_tokens,
     )
     if request_id is not None:
         recorded_requests[request_id] = RecordedRequest(
@@ -832,6 +862,8 @@ def record_message_usage(
             kind=kind,
             input_tokens=input_count,
             output_tokens=output_count,
+            cache_read_tokens=cache_reads,
+            cache_write_tokens=cache_write_tokens,
             cost_usd=cost_usd,
             usage_metadata=accumulated_usage,
             finalized=not is_chunk,

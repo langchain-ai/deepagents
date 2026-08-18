@@ -1,4 +1,4 @@
-"""Classifier-backed approval policy for the local interactive TUI."""
+"""Classifier-backed approval policy for local TUI and ACP runtimes."""
 
 from __future__ import annotations
 
@@ -56,7 +56,9 @@ from typing_extensions import TypedDict
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
+    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    QUESTION_TYPES,
 )
 from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
 from deepagents_code.approval_mode import (
@@ -1057,11 +1059,11 @@ def _ask_user_question_count(call: ToolCall) -> int | None:
         if (
             not isinstance(question, str)
             or not question.strip()
-            or question_type not in {"text", "multiple_choice"}
+            or question_type not in QUESTION_TYPES
             or (required is not None and not isinstance(required, bool))
         ):
             return None
-        if question_type == "multiple_choice":
+        if question_type in CHOICE_QUESTION_TYPES:
             if not isinstance(choices, list) or not choices:
                 return None
             if not all(
@@ -1815,7 +1817,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
-        """Initialize the local interactive Auto policy.
+        """Initialize the local Auto policy.
 
         Args:
             interrupt_on: Shared Manual interrupt map.

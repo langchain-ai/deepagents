@@ -52,7 +52,7 @@ KNOWN_PROVIDERS = {
 
 CATEGORY_MAP: dict[str, dict] = {
     "autonomous": {
-        "dataset": "harbor-index/harbor-index-1.0",
+        "dataset": "harbor-index/harbor-index",
         "dataset_path": "",
         "agent_impl": "bare",
         "fan_out": True,

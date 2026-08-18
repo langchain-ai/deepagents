@@ -256,6 +256,23 @@ def _clamp_cache_counts(
     )
 
 
+def cache_token_counts(
+    usage_metadata: Mapping[str, Any] | None,
+) -> tuple[int, tuple[int, int, int]]:
+    """Return normalized cache reads and generic, 5m, and 1h writes."""
+    if not usage_metadata:
+        return 0, (0, 0, 0)
+    input_tokens = _token_count(usage_metadata.get("input_tokens"))
+    details = usage_metadata.get("input_token_details")
+    if not isinstance(details, Mapping):
+        return 0, (0, 0, 0)
+    return _clamp_cache_counts(
+        input_tokens,
+        _token_count(details.get("cache_read")),
+        _cache_write_counts(details),
+    )
+
+
 def _clamped_detail(
     value: object,
     total: int,
@@ -1348,9 +1365,7 @@ def estimate_cost(
     # numbers, so say so -- a silent clamp can materially undercount.
     original_cache_read = cache_read_tokens
     original_cache_writes = cache_writes
-    cache_read_tokens, cache_writes = _clamp_cache_counts(
-        input_tokens, cache_read_tokens, cache_writes
-    )
+    cache_read_tokens, cache_writes = cache_token_counts(usage_metadata)
     if (
         cache_read_tokens != original_cache_read
         or cache_writes != original_cache_writes

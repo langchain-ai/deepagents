@@ -132,6 +132,22 @@ checkbox will not appear to "stick" across restarts while the env var remains
 set.
 """
 
+DEBUG_DEP_FLOOR = "DEEPAGENTS_CODE_DEBUG_DEP_FLOOR"
+"""Synthesize a stale editable-dependency floor mismatch at launch.
+
+Set to a truthy value to short-circuit `_collect_violations` to a hard-coded
+fake below-floor dependency, bypassing the editable-install gate and the real
+version comparison. Both channels are then reachable without a genuinely stale
+environment: the blocking pre-TUI continue/mute/abort prompt on an interactive
+terminal launch, and the one-off stderr warning everywhere else.
+
+Note that muting the synthetic mismatch writes a real dismissal for this
+checkout; it re-arms on its own once the fake mismatch changes or the var is
+unset.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
 """Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
 
@@ -266,6 +282,18 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LAUNCH_TERM_PROGRAM = "DEEPAGENTS_CODE_LAUNCH_TERM_PROGRAM"
+"""Internal sentinel recording the `TERM_PROGRAM` present when `dcode` started.
+
+Not user-facing. The resume hint echoes `TERM_PROGRAM` only when the launch
+environment supplied it (an inline `TERM_PROGRAM=x dcode`, a terminal's own
+export, or a shell alias), so the value set by a project or global `.env` file
+*after* launch must not leak in. The app itself never sets `TERM_PROGRAM`, so
+`cli_main` snapshotting the variable here at entry means a set sentinel always
+marks an explicit launch value; the update re-exec inherits it unchanged,
+which is correct because the relaunch runs the command the user typed.
 """
 
 LEGACY_ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"

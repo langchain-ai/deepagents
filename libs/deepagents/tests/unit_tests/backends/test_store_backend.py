@@ -37,12 +37,13 @@ def test_store_backend_crud_and_search():
     matches = be.grep("hi", path="/").matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # glob
+    # glob: bare `*.md` and `**/*.md` both match nested files (shared contract)
     g = be.glob("*.md", path="/").matches
-    assert len(g) == 0
+    assert any(i["path"] == "/docs/readme.md" for i in g)
 
     g2 = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
+    assert {i["path"] for i in g} == {i["path"] for i in g2}
 
 
 def test_store_backend_read_surfaces_pagination_metadata():

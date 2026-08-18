@@ -41,7 +41,8 @@ agent = create_deep_agent(middleware=[summ, tool_mw])
 
 ## Storage
 
-Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
+Offloaded messages are stored as markdown at `/conversation_history/{session_id}.md`,
+where `session_id` is an internally generated per-invocation id.
 
 Each summarization event appends a new section to this file, creating a running
 log of all evicted messages. Base64 media in evicted messages is written
@@ -88,7 +89,6 @@ from langchain.tools import (
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
-from langgraph.config import get_config
 from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -196,6 +196,12 @@ class SummarizationState(AgentState):
 
     _summarization_event: Annotated[NotRequired[SummarizationEvent | None], PrivateStateAttr]
     """Private field storing the most recent summarization event."""
+
+    _summarization_session_id: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Private, internally generated id naming the offload history file.
+
+    Scoped per graph invocation so parallel sub-agents do not share one history file.
+    """
 
 
 class SummarizationDefaults(TypedDict):
@@ -647,40 +653,41 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Generate summary for the given messages (async)."""
         return await self._lc_helper._acreate_summary(messages_to_summarize)
 
-    def _get_thread_id(self) -> str:
-        """Extract `thread_id` from langgraph config.
+    def _get_session_id(self, state: Mapping[str, Any]) -> str:
+        """Resolve the session id naming the offload history file.
 
-        Uses `get_config()` to access the `RunnableConfig` from langgraph's
-        `contextvar`. Falls back to a generated session ID if not available.
+        Reuses a previously persisted `_summarization_session_id` so history
+        appends to one file across turns; otherwise generates a fresh id, which
+        the caller persists in the state update so later turns reuse it.
+
+        The id is internal and scoped per graph invocation, so each invocation
+        -- including each sub-agent -- gets its own history file.
+
+        Args:
+            state: The agent state to read the persisted id from.
 
         Returns:
-            Thread ID string from config, or a generated session ID
-                (e.g., `'session_a1b2c3d4'`) if not in a runnable context.
+            A session id (e.g. `'session_<uuid4 hex>'`).
         """
-        try:
-            config = get_config()
-            thread_id = config.get("configurable", {}).get("thread_id")
-            if thread_id is not None:
-                return str(thread_id)
-        except RuntimeError:
-            # Not in a runnable context
-            pass
+        existing = state.get("_summarization_session_id")
+        if isinstance(existing, str) and existing:
+            return existing
+        # Full uuid4 entropy: history filenames must not collide across
+        # independent sessions sharing a backend, or their evicted history mixes.
+        return f"session_{uuid.uuid4().hex}"
 
-        # Fallback: generate session ID
-        generated_id = f"session_{uuid.uuid4().hex[:8]}"
-        logger.debug("No thread_id found, using generated session ID: %s", generated_id)
-        return generated_id
-
-    def _get_history_path(self) -> str:
+    def _get_history_path(self, session_id: str) -> str:
         """Generate path for storing conversation history.
 
-        Returns a single file per thread that gets appended to over time.
+        Returns a single file per session id that gets appended to over time.
+
+        Args:
+            session_id: An id from `_get_session_id`.
 
         Returns:
-            Path string like `'/conversation_history/{thread_id}.md'`
+            Path string like `'/conversation_history/{session_id}.md'`
         """
-        thread_id = self._get_thread_id()
-        return f"{self._history_path_prefix}/{thread_id}.md"
+        return f"{self._history_path_prefix}/{session_id}.md"
 
     def _is_summary_message(self, msg: AnyMessage) -> bool:
         """Check if a message is a previous summarization message.
@@ -1173,10 +1180,11 @@ A condensed summary follows:
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
+        session_id: str,
     ) -> str | None:
         """Persist messages to backend before summarization.
 
-        Appends evicted messages to a single markdown file per thread. Each
+        Appends evicted messages to a single markdown file per session. Each
         summarization event adds a new section with a timestamp header.
 
         Previous summary messages are filtered out to avoid redundant storage during
@@ -1188,11 +1196,12 @@ A condensed summary follows:
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
+            session_id: Id naming the history file.
 
         Returns:
             The file path where history was offloaded, or `None` on failure.
         """
-        path = self._get_history_path()
+        path = self._get_history_path(session_id)
 
         # Filter out previous summary messages to avoid redundant storage.
         # Base64 images are already converted to path references by the caller.
@@ -1248,10 +1257,11 @@ A condensed summary follows:
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
+        session_id: str,
     ) -> str | None:
         """Persist messages to backend before summarization (async).
 
-        Appends evicted messages to a single markdown file per thread. Each
+        Appends evicted messages to a single markdown file per session. Each
         summarization event adds a new section with a timestamp header.
 
         Previous summary messages are filtered out to avoid redundant storage during
@@ -1263,11 +1273,12 @@ A condensed summary follows:
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
+            session_id: Id naming the history file.
 
         Returns:
             The file path where history was offloaded, or `None` on failure.
         """
-        path = self._get_history_path()
+        path = self._get_history_path(session_id)
 
         # Filter out previous summary messages to avoid redundant storage.
         # Base64 images are already converted to path references by the caller.
@@ -1407,9 +1418,13 @@ A condensed summary follows:
         # Upload inline media once so both offload and summary see path references.
         offloaded_media_messages, failed_media = self._offload_inline_media(backend, messages_to_summarize)
 
+        # Resolve the internal history-file id and persist it below so later turns
+        # append to the same file.
+        session_id = self._get_session_id(request.state)
+
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
-        file_path = self._offload_to_backend(backend, offloaded_media_messages)
+        file_path = self._offload_to_backend(backend, offloaded_media_messages, session_id)
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
@@ -1445,7 +1460,10 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
-        update: dict[str, Any] = {"_summarization_event": new_event}
+        update: dict[str, Any] = {
+            "_summarization_event": new_event,
+            "_summarization_session_id": session_id,
+        }
         if new_state_tail:
             update["messages"] = list(new_state_tail)
 
@@ -1542,10 +1560,14 @@ A condensed summary follows:
         # This must complete before the gather since both methods consume the result.
         offloaded_media_messages, failed_media = await self._aoffload_inline_media(backend, messages_to_summarize)
 
+        # Resolve the internal history-file id and persist it below so later turns
+        # append to the same file.
+        session_id = self._get_session_id(request.state)
+
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
         file_path, summary = await asyncio.gather(
-            self._aoffload_to_backend(backend, offloaded_media_messages),
+            self._aoffload_to_backend(backend, offloaded_media_messages, session_id),
             self._acreate_summary(offloaded_media_messages),
         )
         if file_path is None:
@@ -1580,7 +1602,10 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 
-        update: dict[str, Any] = {"_summarization_event": new_event}
+        update: dict[str, Any] = {
+            "_summarization_event": new_event,
+            "_summarization_session_id": session_id,
+        }
         if new_state_tail:
             update["messages"] = list(new_state_tail)
 
@@ -1616,7 +1641,7 @@ def create_summarization_middleware(
     directly if none of the below apply:
 
     - **Backend offload of evicted history.** Evicted messages are appended
-        to `/conversation_history/{thread_id}.md` (default path) on the
+        to `/conversation_history/{session_id}.md` (default path) on the
         configured backend before the summary replaces them, and the
         summary embeds that path so the agent can re-open it via
         `read_file` when `FilesystemMiddleware` is registered. LangChain
@@ -1870,6 +1895,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         file_path: str | None,
         event: SummarizationEvent | None,
         cutoff: int,
+        session_id: str,
     ) -> Command:
         """Build the `Command` result for a successful compact operation.
 
@@ -1883,6 +1909,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             file_path: Backend path where history was offloaded, or `None`.
             event: The prior `_summarization_event`, or `None`.
             cutoff: The cutoff index within the effective message list.
+            session_id: Id that named the history file, persisted so later
+                turns reuse it.
 
         Returns:
             A `Command` with `_summarization_event` state update and a
@@ -1901,6 +1929,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         return Command(
             update={
                 "_summarization_event": new_event,
+                "_summarization_session_id": session_id,
                 "messages": [
                     ToolMessage(
                         content=f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary.",
@@ -2033,15 +2062,16 @@ class SummarizationToolMiddleware(AgentMiddleware):
         if cutoff == 0:
             return self._nothing_to_compact(tool_call_id)
 
+        session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
-            file_path = s._offload_to_backend(s._backend, to_summarize)
+            file_path = s._offload_to_backend(s._backend, to_summarize, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
@@ -2066,15 +2096,16 @@ class SummarizationToolMiddleware(AgentMiddleware):
         if cutoff == 0:
             return self._nothing_to_compact(tool_call_id)
 
+        session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
-            file_path = await s._aoffload_to_backend(s._backend, to_summarize)
+            file_path = await s._aoffload_to_backend(s._backend, to_summarize, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
 
     def wrap_model_call(
         self,

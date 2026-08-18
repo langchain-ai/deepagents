@@ -83,3 +83,13 @@ class TestLoadCursorBlinkPreference:
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         monkeypatch.setenv(CURSOR_BLINK, "maybe")
         assert _load_cursor_blink_preference() is False
+
+    def test_empty_env_var_opts_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicitly empty env value disables blinking (`empty_env_is_false`)."""
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ncursor_blink = true\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv(CURSOR_BLINK, "")
+        assert _load_cursor_blink_preference() is False

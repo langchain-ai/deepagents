@@ -275,7 +275,9 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
 
     Returns:
         `configured`/`not configured` for credential options, otherwise the value
-            as text.
+            as text. A redacted option never renders its raw value — it reports
+            `configured`/`(unset)` instead — so a table carrying credentials
+            (e.g. `[async_subagents]` headers) cannot leak into the output.
     """
     if option.group == "Credentials":
         if value is None:
@@ -285,6 +287,11 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
             return _with_availability(option, status)
     if value is None:
         return "(unset)"
+    if option.redacted:
+        # Redacted tables (async subagents, custom model/sandbox providers) are
+        # dicts, so the credential presence wording above does not fit; a bare
+        # presence marker still keeps the table off the screen.
+        return "configured" if is_set else "(unset)"
     if option.key == "display.charset" and value == "auto":
         return _charset_display_value()
     text = str(value)

@@ -92,3 +92,13 @@ class TestLoadTerminalProgressPreference:
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         monkeypatch.setenv(TERMINAL_PROGRESS, "maybe")
         assert _load_terminal_progress_preference() is False
+
+    def test_empty_env_var_opts_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicitly empty env value stops progress (`empty_env_is_false`)."""
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = true\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv(TERMINAL_PROGRESS, "")
+        assert _load_terminal_progress_preference() is False

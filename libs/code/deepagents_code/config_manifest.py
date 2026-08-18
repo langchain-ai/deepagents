@@ -16,10 +16,11 @@ wrong-typed TOML value is logged and falls back to the next layer rather than
 raising, so a bad config never blocks startup.
 
 Structured, user-defined config is *not* a flat scalar option and is parsed by
-dedicated typed loaders elsewhere. The manifest references `[threads].columns`
-and `[warnings].suppress` as `STRUCTURED` options for discovery; other tables
-such as `[models.providers.*]` and `[themes.*]` are handled entirely by their
-own loaders and the manifest does not enumerate them at all.
+dedicated typed loaders elsewhere; the manifest references those tables as
+`STRUCTURED` options for discovery only. Tables that can carry credentials —
+`[async_subagents]` headers, `[models.providers]` auth/`params`, and
+`[sandboxes.providers]` settings — are additionally flagged `redacted`, so
+`dcode config` reports their source and presence but never prints the table.
 
 Import discipline: the module top level stays stdlib + `_env_vars` only (both
 light) so it is safe to import from `config.py` at class-definition time without
@@ -1156,6 +1157,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=True,
         env_var=_env_vars.CURSOR_BLINK,
         toml_keys=("ui", "cursor_blink"),
+        empty_env_is_false=True,
     ),
     ConfigOption(
         key="display.terminal_progress",
@@ -1165,6 +1167,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=True,
         env_var=_env_vars.TERMINAL_PROGRESS,
         toml_keys=("ui", "terminal_progress"),
+        empty_env_is_false=True,
     ),
     ConfigOption(
         key="display.show_message_timestamps",
@@ -1378,6 +1381,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("models", "providers"),
+        # A provider table can carry credentials (`api_key`, `params`), so the
+        # value is never printed — `config` reports source and presence only.
+        redacted=True,
     ),
     ConfigOption(
         key="retries.max_retries",
@@ -1410,6 +1416,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Remote LangGraph deployments exposed to the agent as subagents.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("async_subagents",),
+        # A subagent `headers` table can carry `Authorization` tokens, so the
+        # value is never printed — `config` reports source and presence only.
+        redacted=True,
     ),
     # --- Sandboxes ------------------------------------------------------
     ConfigOption(
@@ -1428,6 +1437,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("sandboxes", "providers"),
+        # A provider table can carry credentials (`api_key`, `params`), so the
+        # value is never printed — `config` reports source and presence only.
+        redacted=True,
     ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(

@@ -710,6 +710,22 @@ def test_display_value_uses_credential_language_for_non_secret_unset() -> None:
     assert _display_value(option, is_set=False, value=None) == "not configured"
 
 
+def test_display_value_redacts_structured_table() -> None:
+    """A redacted table never renders its dict, only its presence."""
+    option = ConfigOption(
+        key="agents.async_subagents",
+        group="Agents",
+        summary="",
+        kind=OptionKind.STRUCTURED,
+        redacted=True,
+    )
+    secret = {"researcher": {"headers": {"Authorization": "Bearer sk-secret"}}}
+    rendered = _display_value(option, is_set=True, value=secret)
+    assert rendered == "configured"
+    assert "sk-secret" not in rendered
+    assert _display_value(option, is_set=False, value=None) == "(unset)"
+
+
 def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
     """Credential rows can show when their provider integration is unavailable."""
     option = ConfigOption(
@@ -1372,6 +1388,47 @@ def test_run_config_json_redacts_every_secret(monkeypatch, capsys) -> None:
     rows = json.loads(capsys.readouterr().out)["data"]
     assert any(r["key"] == "credentials.anthropic" and r["set"] for r in rows)
     assert all(r["value"] is None for r in rows if r["redacted"])
+
+
+def test_run_get_json_redacts_credential_bearing_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """`config get --json` reports a credential-bearing table's presence only.
+
+    `[async_subagents]` headers, `[models.providers]`, and
+    `[sandboxes.providers]` can hold tokens, so their rows carry `redacted`
+    and a `None` value instead of the raw table.
+    """
+    from deepagents_code import model_config
+
+    secret = "Bearer sk-secret"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[async_subagents.researcher]\n"
+        'description = "Research agent"\n'
+        'graph_id = "agent"\n'
+        "headers = { Authorization = '" + secret + "' }\n"
+        "[models.providers.acme]\n"
+        'class_path = "acme.Chat:AcmeChat"\n'
+        'api_key = "sk-secret"\n'
+        "[sandboxes.providers.acme]\n"
+        'class_path = "acme.Sandbox:AcmeSandbox"\n'
+        "params = { token = 'sk-secret' }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config)
+
+    for key, source in (
+        ("agents.async_subagents", "config.toml"),
+        ("models.providers", "config.toml"),
+        ("sandboxes.providers", "config.toml"),
+    ):
+        data = _get_json_object(key, capsys)
+        assert data["redacted"] is True
+        assert data["set"] is True
+        assert data["source"] == source
+        assert data["value"] is None
+    assert "sk-secret" not in capsys.readouterr().out
 
 
 def test_resolve_int_falls_back_to_toml_then_default() -> None:

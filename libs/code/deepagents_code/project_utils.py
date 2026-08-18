@@ -198,12 +198,12 @@ def find_project_agent_md(project_root: Path) -> list[Path]:
         except FileNotFoundError:
             # Absent file or broken symlink — matches the pre-existing
             # silent-skip behavior for missing candidates. `Path.exists()`
-            # also returns False for symlink loops on some Python versions,
+            # also returns False for symlink loops on every supported version,
             # so loops do NOT come through here; see the OSError branch.
             continue
         except (OSError, RuntimeError) as exc:
             # `OSError(ELOOP)` on Python 3.13+, `RuntimeError("Symlink loop
-            # ...")` on 3.11-3.12; bare `OSError` for permission/unreadable
+            # ...")` on 3.12 only; bare `OSError` for permission/unreadable
             # parent. Security-relevant — warn and skip.
             logger.warning(
                 "Skipping AGENTS.md candidate %s: %s",

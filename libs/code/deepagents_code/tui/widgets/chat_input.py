@@ -962,6 +962,11 @@ class ChatTextArea(PasteBurstTextArea):
         keeps_leading_slash = self._burst_payload_keeps_leading_slash
         self._burst_payload_keeps_leading_slash = False
         owner = self._chat_input_owner
+        if owner is not None:
+            # Cleared up front so the verbatim-insert path below cannot leave a
+            # previous payload's answer standing for
+            # `_payload_supplied_trailing_space`.
+            owner._paste_appended_trailing_space = False
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
@@ -1066,14 +1071,16 @@ class ChatTextArea(PasteBurstTextArea):
         super()._reset_paste_burst_state()
 
     def _payload_supplied_trailing_space(self) -> bool:
-        """Return whether the text before the cursor already ends in a space.
+        """Return whether the flush appended a trailing space of its own.
 
-        A dropped-path payload is applied by `_build_path_replacement`, which
-        appends its own trailing space. Inserting the pending space as well would
-        double it.
+        An attached dropped-path payload gets a trailing space from
+        `_build_path_replacement`; inserting the pending space as well would
+        double it. The question is what the flush *did*, not what the document
+        happens to end with — a verbatim payload that merely ends in a space
+        would otherwise swallow the user's real keystroke.
         """
-        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
-        return cursor_offset > 0 and self.text[cursor_offset - 1] == " "
+        owner = self._chat_input_owner
+        return owner is not None and owner._paste_appended_trailing_space
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -2154,6 +2161,11 @@ class ChatInput(Vertical):
         # immediately recurse into the same replacement path.
         self._applying_inline_path_replacement = False
 
+        # Whether the most recent `apply_paste_payload` appended its own
+        # trailing space. Read by `ChatTextArea._payload_supplied_trailing_space`
+        # to decide whether a pending space keystroke would double it.
+        self._paste_appended_trailing_space = False
+
         # Text area content from the previous Changed event. Used to skip
         # blocking filesystem path-detection on single-keystroke edits while
         # still detecting replacement edits that insert a full path payload.
@@ -3016,9 +3028,10 @@ class ChatInput(Vertical):
         if not self._text_area:
             return False
         if paths is not None:
-            self._insert_pasted_paths(text, paths)
+            self._paste_appended_trailing_space = self._insert_pasted_paths(text, paths)
         else:
             self._collapse_and_insert_paste(text)
+            self._paste_appended_trailing_space = False
         return True
 
     def suppress_next_prefix_detection(self) -> None:
@@ -3128,22 +3141,28 @@ class ChatInput(Vertical):
         self._text_area.move_cursor_to_end()
         return True
 
-    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
+    def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> bool:
         """Insert pasted path payload, attaching images when possible.
 
         Args:
             raw_text: Original paste payload text.
             paths: Resolved file paths parsed from the payload.
+
+        Returns:
+            `True` when the inserted text carries a trailing space that
+            `_build_path_replacement` appended. Unattached payloads are inserted
+            verbatim, so they never do.
         """
         if not self._text_area:
-            return
+            return False
         replacement, attached = self._build_path_replacement(
             raw_text, paths, add_trailing_space=True
         )
         if attached:
             self._text_area.insert(replacement)
-            return
+            return replacement.endswith(" ")
         self._text_area.insert(raw_text)
+        return False
 
     def _build_path_replacement(
         self,

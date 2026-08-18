@@ -242,6 +242,10 @@ class _ChatInputResizeTestApp(App[None]):
         yield ChatInput(id="chat-input")
 
 
+class _DispatchError(RuntimeError):
+    """Stand-in for a burst dispatch that raises (media decode, notify, ...)."""
+
+
 class _RecordingApp(App[None]):
     """App that records ChatInput.Submitted events for assertion."""
 
@@ -5572,6 +5576,13 @@ class TestPasteBurstPromotion:
 
             for char in payload:
                 await pilot.press(char)
+
+            # Asserted before any pause: the flush timer would restore the text
+            # and hide the very regression this covers. Typing must be visible
+            # *while* typing, not once it stops.
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
             await pilot.pause(0.15)
 
             assert ta.text == payload
@@ -6011,6 +6022,71 @@ class TestPasteBurstPromotion:
 
             assert ta.text == "[image 1] "
 
+    async def test_verbatim_payload_ending_in_space_keeps_the_typed_space(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flushed payload that merely ends in a space must not eat the next one.
+
+        The double-space guard applies only to the trailing space that
+        `_build_path_replacement` appends. A payload inserted verbatim supplies
+        no such space, so the user's own keystroke has to survive — checking the
+        document instead would silently swallow one space of, say, a pasted
+        indent.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            stale_time = (
+                chat_input_module.time.monotonic()
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            ta._start_paste_burst("hello ", stale_time)
+
+            await ta._on_key(events.Key("space", None))
+            await pilot.pause(0.35)
+
+            assert ta.text == "hello  "
+
+    async def test_failed_dispatch_reinserts_the_payload_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising dispatch must not destroy the buffered paste.
+
+        Promotion has already deleted the run from the document and the flush
+        clears the buffer before dispatching, so without the guard the text
+        exists nowhere — not on screen, not in the buffer, not in undo.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            async def _boom(payload: str) -> None:  # noqa: ARG001, RUF029
+                raise _DispatchError
+
+            monkeypatch.setattr(ta, "_dispatch_burst_payload", _boom)
+
+            ta._start_paste_burst("important paste", chat_input_module.time.monotonic())
+
+            with pytest.raises(_DispatchError):
+                await ta._flush_paste_burst()
+            await pilot.pause()
+
+            assert ta.text == "important paste"
+            assert ta._paste_burst_buffer == ""
+
     async def test_flushed_run_is_not_re_promoted_by_a_later_enter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -6205,6 +6281,12 @@ class TestPasteBurstPromotion:
 
             for char in payload:
                 await ta._on_key(events.Key(char, char))
+
+            # Before the pause: waiting for the flush timer would restore the
+            # text and mask a run that had wrongly been promoted.
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+
             await pilot.pause(0.35)
 
             assert ta.text == payload
@@ -6224,8 +6306,15 @@ class TestPasteBurstPromotion:
             ta = chat._text_area
             assert ta is not None
 
+            typed = ""
             for char in "abcde":
                 await ta._on_key(events.Key(char, char))
+                typed += char
+                # Checked after every keystroke rather than only at the end: the
+                # inter-key sleep is shorter than the flush delay, so a promoted
+                # run would be hidden right here and restored before the final
+                # assertion could see it.
+                assert ta.text == typed
                 await asyncio.sleep(
                     paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS + 0.01
                 )

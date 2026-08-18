@@ -365,6 +365,13 @@ class PasteBurstTextArea(TextArea):
         defensively before handling a bracketed paste. The payload is applied
         before this returns, so a caller may go on to handle the current key
         knowing it lands after the paste.
+
+        The buffer is cleared before dispatch, and `_promote_paste_burst_run` has
+        already deleted the run from the document, so a raising dispatch would
+        leave the text nowhere at all — not on screen, not in the buffer, not in
+        undo history. Media decoding, attachment tracking and notifications all
+        run inside that call, so the payload is re-inserted verbatim before the
+        error propagates.
         """
         payload = self._paste_burst_buffer
         self._paste_burst_buffer = ""
@@ -372,7 +379,16 @@ class PasteBurstTextArea(TextArea):
         self._cancel_paste_burst_timer()
         if not payload:
             return
-        await self._dispatch_burst_payload(payload)
+        try:
+            await self._dispatch_burst_payload(payload)
+        except Exception:
+            logger.warning(
+                "Burst dispatch failed (%d chars); inserting payload verbatim",
+                len(payload),
+                exc_info=True,
+            )
+            self.insert(payload)
+            raise
 
     def _promote_paste_burst_run(self, now: float) -> bool:
         """Move an already-inserted rapid run out of the document into the buffer.
@@ -571,15 +587,13 @@ class PasteBurstTextArea(TextArea):
             self._paste_burst_last_suppressed_enter_time = None
             return False
         # This newline confirms a multi-line key-event paste, so pull the
-        # still-visible run into the buffer and keep the newline with it. The
-        # `_paste_burst_buffer` guard checks the same field as
-        # `_enter_inserts_newline_during_burst` but to the opposite effect: there a
-        # live buffer forces suppression, here it forces the plain-newline
-        # fallback. Both shipped `_on_key`s absorb or flush an active buffer before
-        # Enter reaches here, so a live buffer is unreachable — and it would be
-        # actively wrong, not merely redundant: the newline would land in the
-        # document while the buffered run flushed in *after* it, reordering the
-        # paste. Loud rather than silently wrong if a future caller gets here.
+        # still-visible run into the buffer and keep the newline with it. Both
+        # shipped `_on_key`s absorb or flush an active buffer before Enter
+        # reaches here, so the `_paste_burst_buffer` branch is unreachable. It
+        # exists because falling through to `_promote_paste_burst_run` would call
+        # `_start_paste_burst`, which *assigns* the buffer rather than appending
+        # — silently dropping the text already in it. Loud rather than silently
+        # wrong if a future caller gets here.
         if self._paste_burst_buffer:
             logger.warning(
                 "Enter reached burst-newline handling with a live buffer "

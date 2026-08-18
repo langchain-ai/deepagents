@@ -18,7 +18,7 @@ from textual.worker import WorkerCancelled
 from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
 from deepagents_code._tracing import RESUME_TRACE_TAG
-from deepagents_code.app import DeepAgentsApp
+from deepagents_code.app import DeepAgentsApp, QueuedMessage
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.offload import (
@@ -133,23 +133,69 @@ class TestOffloadGuards:
             msgs = app.query(AppMessage)
             assert any("Nothing to offload" in str(w._content) for w in msgs)
 
-    async def test_agent_running_shows_error(self) -> None:
-        """Should show error when agent is currently running."""
+    async def test_offload_while_busy_queues_instead_of_overlapping(self) -> None:
+        """A `/offload` submitted while busy must queue, not start a second run.
+
+        `_handle_offload` reserves the turn (`_agent_running = True`) before its
+        first await, so by the time a same-tick duplicate submission is
+        processed `_submit_input` already sees the app busy and queues it. The
+        in-flight offload runs exactly once and the queued duplicate drains
+        afterward.
+        """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._agent = MagicMock()
-            app._backend = MagicMock()
-            app._lc_thread_id = "test-thread"
-            app._agent_running = True
+            _setup_server_offload_app(app)
 
-            await app._handle_offload()
-            await pilot.pause()
+            before = _state_values(_make_dict_messages(6))
+            after = _state_values(_make_dict_messages(8), _summary_event(4))
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+            drive_calls = 0
 
-            msgs = app.query(AppMessage)
-            assert any(
-                "Cannot offload while agent is running" in str(w._content) for w in msgs
-            )
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                nonlocal drive_calls
+                drive_calls += 1
+                drive_started.set()
+                await release_drive.wait()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after, before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=block_drive,
+                ),
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                # The reservation is already in effect: a duplicate submission
+                # queues instead of entering `_handle_offload` concurrently.
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                assert drive_calls == 1
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The queued duplicate drained after the first offload completed;
+            # both ran sequentially, never concurrently.
+            assert drive_calls == 2
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
 
     async def test_nothing_to_compact_noop(self) -> None:
         """Show a no-op message when server-side compaction changed nothing.
@@ -1167,6 +1213,127 @@ class TestOffloadInterrupt:
             assert app._agent_running is False
             assert app._agent_quiescent.is_set()
             assert app._loading_widget is None
+
+    async def test_offload_blocks_queued_prompt_until_done(self) -> None:
+        """A prompt submitted while offload is reserved must not overlap it.
+
+        `_handle_offload` sets `_agent_running` before its first await, so a
+        prompt that was queued before the worker even starts stays queued until
+        the offload finishes and `_run_offload_task` drains the queue.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            # The drive blocks the offload so the reservation window stays
+            # open. It runs on the real loop (not a Mock) because pilot.pause
+            # must be able to yield between message-processing steps below.
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                drive_started.set()
+                await release_drive.wait()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[
+                        _state_values(_make_dict_messages(6)),
+                        _state_values(_make_dict_messages(8), _summary_event(4)),
+                    ],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    side_effect=block_drive,
+                ),
+                # Spy on the queue drain itself: patching `_dispatch_queued_message`
+                # would let the drain's awaited dispatch return instantly, so the
+                # worker could complete before the test's own `pilot.pause()`s
+                # observe the mid-offload state.
+                patch.object(
+                    app,
+                    "_process_next_from_queue",
+                    wraps=app._process_next_from_queue,
+                ) as drain,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                # The reservation is already in effect: a prompt submitted now
+                # queues instead of starting an agent turn concurrently.
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("hello", "prompt"))
+                await pilot.pause()
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The worker's teardown drained the queued prompt only after the
+            # offload completed.
+            drain.assert_called()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_escape_before_offload_worker_step_recovers(self) -> None:
+        """Cancelling the worker mid-run releases it for later `Esc` presses.
+
+        `Esc` routes to `_cancel_worker(self._offload_worker)`. If the offload
+        worker then ends without clearing `_offload_worker` (the same wedge
+        `_recover_unstarted_agent_worker` covers for the agent worker when a
+        cancel lands before the worker's first step), every later `Esc` would
+        be consumed re-cancelling the dead worker instead of reaching the
+        double-`Esc` input-clear path.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            # Hold the offload at its first await (the state read) so the
+            # cancel lands while the worker is in flight.
+            hold_state_read = asyncio.Event()
+
+            async def block_state_read(_thread_id: object) -> dict[str, Any]:
+                await hold_state_read.wait()
+                return _state_values(_make_dict_messages(6))
+
+            with patch.object(
+                app,
+                "_get_thread_state_values",
+                side_effect=block_state_read,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                worker = app._offload_worker
+                assert worker is not None
+                # The reservation lands before the first await, so it is set
+                # even though the compaction never got to run.
+                assert app._agent_running is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert worker.is_cancelled
+                assert app._offload_worker is None
+                assert app._agent_running is False
+
+                # The next `Esc` is no longer consumed by a stale offload
+                # worker: it reaches the double-`Esc` clear-input path.
+                app._chat_input.value = "draft"
+                await pilot.press("escape")
+                assert app._clear_input_pending is True
 
 
 class TestOffloadErrorHandling:

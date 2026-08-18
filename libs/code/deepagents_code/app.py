@@ -16362,6 +16362,34 @@ class DeepAgentsApp(App):
                 await self._process_next_from_queue()
 
     async def _handle_offload(self) -> None:
+        """Reserve the turn and run `/offload`, always releasing the turn.
+
+        The reservation happens here — one frame above the implementation —
+        so the release in `finally` is guaranteed to run even when the worker
+        is cancelled while the implementation's own error handling is still
+        awaiting (a cancelled task that keeps catching and re-awaiting can be
+        re-cancelled out from under its own `finally`).
+        """
+        # Reserve before the first await. `run_worker()` only schedules the
+        # worker's task; everything down to the first await of the coroutine
+        # chain still runs within the same event-loop tick as the command
+        # handler. Setting `_agent_running` here (rather than after the state
+        # reads in `_offload_impl`, where it used to sit) closes the window in
+        # which `_submit_input`/`_process_next_from_queue` would otherwise
+        # consider the app idle and dispatch a queued prompt concurrently with
+        # the offload, and makes a rapid duplicate `/offload` queue behind
+        # this one instead of overlapping with it.
+        self._set_agent_running(True)
+        try:
+            await self._offload_impl()
+        finally:
+            self._set_agent_running(False)
+            try:
+                await self._set_spinner(None)
+            except Exception:  # best-effort spinner cleanup
+                logger.exception("Failed to dismiss spinner after offload")
+
+    async def _offload_impl(self) -> None:
         """Offload older messages to free context window space.
 
         Runs offload SERVER-SIDE by driving the agent's own
@@ -16385,12 +16413,6 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._agent_running:
-            await self._mount_message(
-                AppMessage("Cannot offload while agent is running"),
-            )
-            return
-
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
@@ -16405,8 +16427,6 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Prevent concurrent user input while offload modifies state
-        self._set_agent_running(True)
         try:
             await self._set_spinner("Offloading")
 
@@ -16652,12 +16672,6 @@ class DeepAgentsApp(App):
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")
             await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
-        finally:
-            self._set_agent_running(False)
-            try:
-                await self._set_spinner(None)
-            except Exception:  # best-effort spinner cleanup
-                logger.exception("Failed to dismiss spinner after offload")
 
     async def _drive_server_side_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None
@@ -19888,11 +19902,25 @@ class DeepAgentsApp(App):
         `_agent_turn_started` rather than the worker's own state. See
         `_agent_turn_started` for what goes wrong when nothing releases the turn.
 
+        The offload worker needs the same recovery: `/offload` sets
+        `_agent_running` at the top of `_handle_offload`, but a cancellation
+        delivered before that first step means `_run_offload_task`'s `finally`
+        never clears `_offload_worker`. Every later `Esc` would then be
+        consumed re-cancelling the dead worker instead of interrupting the
+        agent or clearing the input. A first-step cancellation still leaves
+        the flag set, so only the worker reference is cleared here and the
+        worker's own teardown handles the rest.
+
         Args:
             worker: The worker that was just cancelled. Callers may pass any
                 worker — `_cancel_worker` also handles the shell worker —
-                so anything that is not the current `_agent_worker` is ignored.
+                so anything that is not the current `_agent_worker` or
+                `_offload_worker` is ignored.
         """
+        if worker is self._offload_worker and not self._agent_turn_started:
+            self._offload_worker = None
+            return
+
         if worker is not self._agent_worker or self._agent_turn_started:
             return
 

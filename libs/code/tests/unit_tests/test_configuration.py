@@ -708,3 +708,20 @@ def test_shell_allow_list_array_expands_recommended() -> None:
     assert isinstance(resolved, list)
     assert set(RECOMMENDED_SAFE_SHELL_COMMANDS) <= set(resolved)
     assert "make" in resolved
+
+
+def test_shell_allow_list_array_preserves_comma_in_entry() -> None:
+    """An element containing a comma stays a single command.
+
+    Regression: the TOML array was joined with commas and reparsed as the
+    string form, so `["my,tool"]` resolved to `["my", "tool"]` — auto-approving
+    two executables the administrator never listed.
+    """
+    from deepagents_code.config_manifest import _coerce_toml, get_option
+
+    option = get_option("shell.allow_list")
+    assert option is not None
+    assert _coerce_toml(option, ["my,tool", "git"], source="managed config") == [
+        "my,tool",
+        "git",
+    ]

@@ -2058,9 +2058,6 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     Returns:
         List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was specified,
             or `None` if no allow-list configured.
-
-    Raises:
-        ValueError: If `'all'` is combined with other commands.
     """
     if not allow_list_str:
         return None
@@ -2075,6 +2072,35 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
 
     # Split by comma and strip whitespace
     commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+    return parse_shell_allow_list_items(commands)
+
+
+def parse_shell_allow_list_items(items: list[str]) -> list[str] | None:
+    """Parse an already-split shell allow-list.
+
+    Unlike `parse_shell_allow_list`, this takes separate elements so no comma
+    reparsing occurs — a command name containing a comma (valid on POSIX)
+    survives intact instead of being split into two entries.
+
+    Args:
+        items: Individual allow-list entries, e.g. a TOML array's elements.
+            `'all'` must be the sole entry; `'recommended'` merges the curated
+            safe list at its position.
+
+    Returns:
+        List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was the sole
+        entry, or `None` if every entry was blank.
+
+    Raises:
+        ValueError: If `'all'` is combined with other commands.
+    """
+    commands = [item.strip() for item in items if item.strip()]
+    if not commands:
+        return None
+
+    if len(commands) == 1 and commands[0].lower() == "all":
+        return SHELL_ALLOW_ALL
 
     # Reject ambiguous input: 'all' mixed with other commands
     if any(cmd.lower() == "all" for cmd in commands):

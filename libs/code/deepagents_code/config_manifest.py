@@ -179,7 +179,7 @@ class OptionKind(Enum):
     """Validates log levels and resolves the default from debug mode."""
 
     SHELL_LIST_DELEGATE = "shell_list"
-    """Delegates to `config.parse_shell_allow_list`."""
+    """Delegates to `config.parse_shell_allow_list` / `parse_shell_allow_list_items`."""
 
     SKILLS_DIRS_DELEGATE = "skills_dirs"
     """Delegates to `config._parse_extra_skills_dirs`."""
@@ -725,23 +725,24 @@ def _coerce_toml(
         # Passed through verbatim for display; parsed by a dedicated loader.
         return raw
     elif kind is OptionKind.SHELL_LIST_DELEGATE:
-        from deepagents_code.config import parse_shell_allow_list
+        from deepagents_code.config import (
+            parse_shell_allow_list,
+            parse_shell_allow_list_items,
+        )
 
         # A TOML array is the natural spelling for this key, so it must honor
         # the same `all`/`recommended` sentinels and the same "`all` cannot be
-        # combined" rule as the string form. Joining and reusing one parser
-        # keeps the two spellings from drifting apart.
-        text: str | None = None
-        if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-            text = ",".join(cast("list[str]", raw))
-        elif isinstance(raw, str):
-            text = raw
-        if text is not None:
-            try:
-                return parse_shell_allow_list(text)
-            except ValueError as exc:
-                logger.warning("Ignoring %s in %s: %s", label, source, exc)
-                return _INVALID
+        # combined" rule as the string form. Elements are parsed individually:
+        # joining them into the comma-separated form would split an entry like
+        # `my,tool` into two commands, broadening the administrator's policy.
+        try:
+            if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+                return parse_shell_allow_list_items(cast("list[str]", raw))
+            if isinstance(raw, str):
+                return parse_shell_allow_list(raw)
+        except ValueError as exc:
+            logger.warning("Ignoring %s in %s: %s", label, source, exc)
+            return _INVALID
     # Any other (future) kind falls through to the warning below, so a missing
     # branch logs and falls back rather than passing a raw value through.
 

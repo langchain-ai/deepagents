@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -75,7 +75,7 @@ from deepagents_code.tui.widgets.diff import (
 from deepagents_code.unicode_security import render_with_unicode_markers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from rich.console import (
         Console as RichConsole,
@@ -83,6 +83,7 @@ if TYPE_CHECKING:
         RenderResult,
     )
     from textual.app import ComposeResult
+    from textual.css.types import PointerShape
     from textual.events import MouseMove
     from textual.timer import Timer
     from textual.widget import Widget
@@ -91,14 +92,15 @@ if TYPE_CHECKING:
 
     from deepagents_code.input import MediaTracker
     from deepagents_code.theme import ThemeColors
+    from deepagents_code.tui.widgets.message_store import MessageData
 
-    _SummaryCall: TypeAlias = tuple[str, Mapping[str, Any]]
+    type _SummaryCall = tuple[str, Mapping[str, Any]]
     """One tool call as the summary code sees it: `(raw tool name, parsed args)`."""
 
-    _SummaryCacheKey: TypeAlias = tuple[tuple[str, str | None], ...]
+    type _SummaryCacheKey = tuple[tuple[str, str | None], ...]
     """Opaque identity of a summary line's inputs — compare only for equality."""
 
-    _LiveSummaryKey: TypeAlias = tuple[_SummaryCacheKey, _SummaryCacheKey]
+    type _LiveSummaryKey = tuple[_SummaryCacheKey, _SummaryCacheKey]
     """The `(completed, pending)` key pair behind a cached live summary line."""
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,58 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
         return colors.mode_command
     logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
     return colors.primary
+
+
+def _event_targets_rendered_text(event: MouseMove) -> bool:
+    """Return whether the hovered cell was rendered from widget content.
+
+    Textual tags every content segment's style with a selection `offset`
+    (`Content.to_strip` via `Style.rich_style_with_offset`) and reads the same
+    key back in `Compositor.get_widget_and_offset_at` to map a screen cell to a
+    text position. Alignment padding and cells past the end of a line carry no
+    such meta, so the key doubles as a rendered-text hit test that agrees
+    exactly with what Textual can resolve to an offset.
+
+    `offset` and both of its producers are private Textual API. Re-verify these
+    names on every Textual bump: if the key moves, every cell reads as blank
+    and the text pointer silently stops appearing.
+
+    This tracks *rendered* text, not *selectable* text — the meta is attached
+    unconditionally, so a widget with `ALLOW_SELECT = False` still reports
+    `True` here.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `True` when the hovered cell holds content-rendered text.
+    """
+    return "offset" in event.style.meta
+
+
+def _pointer_shape_for(event: MouseMove) -> PointerShape:
+    """Return the pointer shape to show for the cell under the mouse.
+
+    Textual applies a widget's pointer across its whole rectangle, so a message
+    declaring `pointer: text` in CSS shows an I-beam over the blank space beside
+    its short lines. Resolving the shape per cell instead keeps the I-beam on
+    text the reader can actually select.
+
+    The result is only accurate as of the last mouse movement: content that
+    grows or scrolls under a stationary pointer leaves the previous shape in
+    place until the mouse moves again.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `'pointer'` over links, `'text'` over rendered text, else `'default'`.
+    """
+    if event_targets_link(event):
+        return "pointer"
+    if _event_targets_rendered_text(event):
+        return "text"
+    return "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,7 +510,6 @@ class UserMessage(Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $primary;
-        pointer: text;
         /* The expand affordance carries `@click` meta, which Textual styles as
            a link (underline, and bold on an accent block when hovered).
            Neutralize both so the hint renders as plain inherited-colour dim
@@ -789,6 +842,14 @@ class UserMessage(Static):
         self._append_highlighted_body(parts, collapse.tail, colors=colors)
         return Content.assemble(*parts)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 class QueuedUserMessage(Static):
     """Widget displaying a queued (pending) user message in grey.
@@ -804,7 +865,6 @@ class QueuedUserMessage(Static):
         background: transparent;
         border-left: wide $panel;
         opacity: 0.6;
-        pointer: text;
     }
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
@@ -888,6 +948,14 @@ class QueuedUserMessage(Static):
         prefix, content = self._prefix_and_body()
         content = _truncate_for_display(content)
         return Content.assemble(prefix, (content, colors.muted))
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -1197,7 +1265,6 @@ class AssistantMessage(Vertical):
     AssistantMessage Markdown {
         padding: 0;
         margin: 0;
-        pointer: text;
     }
 
     /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
@@ -1207,14 +1274,22 @@ class AssistantMessage(Vertical):
     }
     """
 
-    def __init__(self, content: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self, content: str = "", *, local_only: bool = False, **kwargs: Any
+    ) -> None:
         """Initialize an assistant message.
 
         Args:
             content: Initial markdown content
+            local_only: `True` when the content came from the client rather
+                than the agent — currently only non-incognito `!` shell
+                output, which borrows this widget for its markdown rendering
+                and streaming. Callers that ask "did the agent do anything in
+                this thread" must not count such a message.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+        self._local_only = local_only
         self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
@@ -1249,21 +1324,12 @@ class AssistantMessage(Vertical):
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over markdown links, text cursor elsewhere.
-
-        The pointer is set on the inner `Markdown` widget because it carries a
-        non-default (`text`) pointer in CSS, so the screen resolves its shape
-        before reaching this container.
-        """
-        if self._markdown is not None:
-            self._markdown.styles.pointer = (
-                "pointer" if event_targets_link(event) else "text"
-            )
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Reset the markdown pointer shape when the mouse leaves the message."""
-        if self._markdown is not None:
-            self._markdown.styles.pointer = "text"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
     async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         """Open Markdown links with the same toast feedback as style links."""
@@ -4706,6 +4772,195 @@ class ToolGroupSummary(Static):
             self.update(Content(f"{mark} {self._past_text}"), layout=layout)
 
 
+class LazyToolGroupSummary(Vertical):
+    """Data-backed tool summary that creates detail widgets only when expanded."""
+
+    class ExpansionChanged(Message):
+        """Posted after lazy tool details mount or unmount."""
+
+        def __init__(self, widget: LazyToolGroupSummary, expanded: bool) -> None:
+            """Initialize an expansion notification.
+
+            Args:
+                widget: Lazy group whose detail state changed.
+                expanded: Whether its detail widgets are now mounted.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    DEFAULT_CSS = """
+    LazyToolGroupSummary {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-header {
+        height: auto;
+        padding: 0 1;
+        color: $text-muted;
+        pointer: pointer;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-header:hover {
+        color: $text;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-details {
+        height: auto;
+    }
+    """
+
+    def __init__(
+        self,
+        messages: list[MessageData],
+        *,
+        detail_builder: Callable[[MessageData], tuple[Widget, Widget | None]]
+        | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a collapsed summary from retained message data.
+
+        Args:
+            messages: Completed tool and associated diff rows in display order.
+            detail_builder: Optional factory for a detail widget and its timestamp.
+            **kwargs: Additional arguments passed to `Vertical`.
+        """
+        super().__init__(**kwargs)
+        self._message_data = list(messages)
+        self._detail_builder = detail_builder
+        self._detail_widgets: list[tuple[MessageData, Widget]] = []
+        self._expanded = False
+        self._deferred_expanded = False
+        self._transitioning = False
+        self._details: Vertical | None = None
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
+        """Compose the persistent header and initially empty detail container.
+
+        Yields:
+            Header and detail container widgets.
+        """
+        yield Static("", classes="lazy-tool-group-header")
+        yield Vertical(classes="lazy-tool-group-details")
+
+    def on_mount(self) -> None:
+        """Render the summary and restore deferred expansion when requested."""
+        self._details = self.query_one(".lazy-tool-group-details", Vertical)
+        self._details.display = False
+        self._update_header()
+        if self._deferred_expanded:
+            self._deferred_expanded = False
+            self.toggle()
+
+    def _update_header(self) -> None:
+        """Refresh disclosure state without constructing any detail widget."""
+        if not self.is_attached:
+            return
+        glyphs = get_glyphs()
+        mark = (
+            glyphs.disclosure_expanded
+            if self._expanded
+            else glyphs.disclosure_collapsed
+        )
+        calls = [
+            (data.tool_name, data.tool_args or {})
+            for data in self._message_data
+            if data.tool_name is not None
+        ]
+        self.query_one(".lazy-tool-group-header", Static).update(
+            Content(f"{mark} {summarize_tool_group(calls)}")
+        )
+
+    def toggle(self) -> None:
+        """Schedule expansion or collapse without blocking the input handler."""
+        if not self._transitioning:
+            self.run_worker(self._set_expanded(not self._expanded))
+
+    def _snapshot_detail_state(self) -> None:
+        """Persist mutable child state before detail widgets leave the DOM."""
+        for data, widget in self._detail_widgets:
+            if isinstance(widget, ToolCallMessage):
+                data.tool_expanded = widget._expanded
+
+    async def _set_expanded(self, expanded: bool) -> None:
+        """Create or discard detail widgets for one explicit toggle."""
+        if expanded == self._expanded or self._transitioning:
+            return
+        details = self._details
+        if details is None or not details.is_attached:
+            return
+
+        self._transitioning = True
+        try:
+            if expanded:
+                try:
+                    entries = []
+                    for data in self._message_data:
+                        widget, footer = (
+                            self._detail_builder(data)
+                            if self._detail_builder is not None
+                            else (data.to_widget(), None)
+                        )
+                        entries.append((data, widget, footer))
+                    nodes = [
+                        node
+                        for _data, widget, footer in entries
+                        for node in (
+                            (widget, footer) if footer is not None else (widget,)
+                        )
+                    ]
+                    await details.mount(*nodes)
+                except Exception:
+                    logger.warning("Failed to expand lazy tool group", exc_info=True)
+                    try:
+                        await details.remove_children()
+                    except Exception:
+                        logger.warning(
+                            "Failed to clean up lazy tool group expansion",
+                            exc_info=True,
+                        )
+                    self.app.notify(
+                        "Tool details could not be expanded. See the debug log.",
+                        severity="warning",
+                        timeout=6,
+                        markup=False,
+                    )
+                    return
+                self._detail_widgets = [
+                    (data, widget) for data, widget, _footer in entries
+                ]
+                details.display = True
+            else:
+                self._snapshot_detail_state()
+                details.display = False
+                try:
+                    await details.remove_children()
+                except Exception:
+                    logger.warning("Failed to collapse lazy tool group", exc_info=True)
+                    details.display = True
+                    self.app.notify(
+                        "Tool details could not be collapsed. See the debug log.",
+                        severity="warning",
+                        timeout=6,
+                        markup=False,
+                    )
+                    return
+                self._detail_widgets = []
+
+            self._expanded = expanded
+            self._update_header()
+            self.post_message(self.ExpansionChanged(self, expanded))
+        finally:
+            self._transitioning = False
+
+    @on(Click, ".lazy-tool-group-header")
+    def _on_header_click(self, event: Click) -> None:
+        """Toggle details when the summary row is clicked."""
+        event.stop()
+        self.toggle()
+
+
 class DiffMessage(Static):
     """Widget displaying a diff with syntax highlighting.
 
@@ -4733,7 +4988,6 @@ class DiffMessage(Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $panel;
-        pointer: text;
     }
 
     DiffMessage .diff-header {
@@ -4921,6 +5175,14 @@ class DiffMessage(Static):
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.panel)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 class ErrorMessage(Static):
     """Widget displaying an error message."""
@@ -4933,7 +5195,6 @@ class ErrorMessage(Static):
         background: $error-muted;
         color: white;
         border-left: wide $error;
-        pointer: text;
     }
     """
     """Tinted background + left border to visually separate errors from output."""
@@ -4971,6 +5232,14 @@ class ErrorMessage(Static):
         """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class _RubricResultToggle(Static):
@@ -5301,7 +5570,6 @@ class AppMessage(Static):
         margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
-        pointer: text;
     }
     """
 
@@ -5394,17 +5662,12 @@ class AppMessage(Static):
         open_style_link(event)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over embedded links, text cursor elsewhere."""
-        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Restore the pointer shape when the mouse leaves the message.
-
-        `"text"` restates this widget's CSS default rather than clearing the
-        inline style, so a subclass declaring a different `pointer` would be
-        forced back to `text` on leave.
-        """
-        self.styles.pointer = "text"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class SummarizationMessage(AppMessage):
@@ -5419,7 +5682,6 @@ class SummarizationMessage(AppMessage):
         background: $surface;
         border-left: wide $primary;
         text-style: bold;
-        pointer: text;
     }
     """
 

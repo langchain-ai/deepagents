@@ -20,6 +20,7 @@ from langgraph.runtime import Runtime
 from deepagents_code import offload
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._session_stats import format_token_count
+from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.hooks.manager import HooksManager
@@ -375,6 +376,225 @@ class TestOffloadCommand:
 
             seeded.assert_awaited_once()
             remote.aoffload.assert_not_awaited()
+
+
+class TestLocalOffloadReporting:
+    """Preserve current reporting behavior on the seeded fallback path."""
+
+    @staticmethod
+    async def _run(
+        before: dict[str, Any], after: dict[str, Any]
+    ) -> tuple[list[str], int, bool]:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_local_offload_app(app)
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new=AsyncMock(side_effect=[before, after]),
+                ),
+                patch.object(
+                    app,
+                    "_drive_local_seeded_compaction",
+                    new=AsyncMock(return_value=None),
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            return contents, app._context_tokens, app._tokens_approximate
+
+    async def test_turn_counts_ignore_tools_and_internal_messages(self) -> None:
+        before_messages = [
+            {"type": "human", "content": "Old prompt", "id": "old-human"},
+            {"type": "ai", "content": "", "id": "old-tool-call"},
+            {
+                "type": "tool",
+                "content": "Old result",
+                "id": "old-tool",
+                "tool_call_id": "old-call",
+            },
+            {"type": "ai", "content": "Old answer", "id": "old-ai"},
+            {"role": "user", "content": "Kept prompt", "id": "kept-human"},
+            {"role": "assistant", "content": "", "id": "kept-tool-call"},
+            {
+                "type": "tool",
+                "content": "Kept result",
+                "id": "kept-tool",
+                "tool_call_id": "kept-call",
+            },
+            {"role": "assistant", "content": "Kept answer", "id": "kept-ai"},
+            {
+                "type": "human",
+                "content": "Internal state",
+                "id": "internal-human",
+                "additional_kwargs": {"lc_source": "goal_state"},
+            },
+        ]
+        contents, _, _ = await self._run(
+            _state_values(before_messages),
+            _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(4)
+            ),
+        )
+
+        assert any(
+            "Offloaded 4 older messages (1 conversation turn)" in content
+            for content in contents
+        )
+        assert any(
+            "5 messages (1 conversation turn) kept" in content for content in contents
+        )
+
+    async def test_offloaded_turns_ignore_internal_messages(self) -> None:
+        before_messages = [
+            {"type": "human", "content": "Old prompt", "id": "old-human"},
+            {
+                "type": "human",
+                "content": "Internal state",
+                "id": "offloaded-internal",
+                "additional_kwargs": {"lc_source": "goal_state"},
+            },
+            {
+                "type": "human",
+                "content": "[SYSTEM] Task interrupted by user.",
+                "id": "offloaded-system-prefix",
+            },
+            {"type": "ai", "content": "Old answer", "id": "old-ai"},
+            {"type": "human", "content": "Kept prompt", "id": "kept-human"},
+            {"type": "ai", "content": "Kept answer", "id": "kept-ai"},
+        ]
+        contents, _, _ = await self._run(
+            _state_values(before_messages),
+            _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(4)
+            ),
+        )
+
+        assert any(
+            "Offloaded 4 older messages (1 conversation turn)" in content
+            for content in contents
+        )
+
+    async def test_singular_labels_and_zero_offloaded_turns(self) -> None:
+        before_messages = [
+            {"type": "ai", "content": "", "id": "old-tool-call"},
+            {
+                "type": "tool",
+                "content": "Old result",
+                "id": "old-tool",
+                "tool_call_id": "old-call",
+            },
+            {"type": "ai", "content": "Old answer", "id": "old-ai"},
+            {"type": "human", "content": "Kept prompt", "id": "kept-human"},
+        ]
+        contents, _, _ = await self._run(
+            _state_values(before_messages),
+            _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(3)
+            ),
+        )
+
+        assert any(
+            "Offloaded 3 older messages (0 conversation turns)" in content
+            for content in contents
+        )
+        assert any(
+            "1 message (1 conversation turn) kept" in content for content in contents
+        )
+
+    async def test_zero_kept_turns_when_cutoff_reaches_last_human(self) -> None:
+        before_messages = [
+            {"type": "human", "content": "Old prompt", "id": "old-human"},
+            {"type": "ai", "content": "Old answer", "id": "old-ai"},
+            {"type": "ai", "content": "Trailing", "id": "trailing-ai"},
+        ]
+        contents, _, _ = await self._run(
+            _state_values(before_messages),
+            _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(2)
+            ),
+        )
+
+        assert any(
+            "1 message (0 conversation turns) kept" in content for content in contents
+        )
+
+    async def test_preserves_fixed_overhead_in_context_report(self) -> None:
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        from deepagents_code.app import _effective_conversation
+
+        before_messages = _make_dict_messages(10)
+        after_event = _summary_event(4)
+        conversation_before = count_tokens_approximately(before_messages)
+        conversation_after = count_tokens_approximately(
+            _effective_conversation(before_messages, after_event)
+        )
+        fixed_tokens = 50_000
+        reported_before = conversation_before + fixed_tokens
+        expected_after = conversation_after + fixed_tokens
+        before = _state_values(before_messages)
+        before["_context_tokens"] = reported_before
+        contents, context_tokens, approximate = await self._run(
+            before,
+            _state_values([*before_messages, *_make_dict_messages(2)], after_event),
+        )
+
+        expected_report = (
+            f"Context: {format_token_count(reported_before)} → "
+            f"~{format_token_count(expected_after)} tokens"
+        )
+        assert any(expected_report in content for content in contents)
+        assert context_tokens == expected_after
+        assert approximate is True
+
+    async def test_report_stays_on_provider_scale_when_total_is_low(self) -> None:
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        from deepagents_code.app import _effective_conversation
+
+        before_messages = _make_dict_messages(10)
+        after_event = _summary_event(4)
+        conversation_before = count_tokens_approximately(before_messages)
+        conversation_after = count_tokens_approximately(
+            _effective_conversation(before_messages, after_event)
+        )
+        reported_before = conversation_before // 2
+        expected_after = reported_before - (conversation_before - conversation_after)
+        assert expected_after > 0
+        before = _state_values(before_messages)
+        before["_context_tokens"] = reported_before
+        contents, context_tokens, _ = await self._run(
+            before,
+            _state_values([*before_messages, *_make_dict_messages(2)], after_event),
+        )
+
+        expected_report = (
+            f"Context: {format_token_count(reported_before)} → "
+            f"~{format_token_count(expected_after)} tokens"
+        )
+        assert any(expected_report in content for content in contents)
+        assert not any("(100% decrease)" in content for content in contents)
+        assert context_tokens == expected_after
+
+    async def test_oversized_summary_is_reported_as_an_increase(self) -> None:
+        before_messages = _make_dict_messages(10)
+        after_event = _summary_event(4)
+        after_event["summary_message"]["content"] = "verbose summary " * 500
+        contents, _, _ = await self._run(
+            _state_values(before_messages),
+            _state_values([*before_messages, *_make_dict_messages(2)], after_event),
+        )
+
+        assert any("Offloaded " in content for content in contents)
+        assert any("(increase)" in content for content in contents)
+        assert not any(
+            "freeing up context window space" in content for content in contents
+        )
+        assert any("context increased" in content for content in contents)
 
 
 class TestOffloadFallbackRoot:
@@ -922,12 +1142,19 @@ class TestDriveLegacySeededCompaction:
     @staticmethod
     def _fake_remote_agent(
         tool_content: str,
-    ) -> tuple[Any, list[Any], list[object]]:
+    ) -> tuple[Any, list[Any], list[object], list[Any]]:
         """Build a fake `RemoteAgent` that interrupts then returns a ToolMessage.
 
         First `astream(None)` surfaces a HITL approval interrupt; the resume
         stream (`Command(resume=...)`) yields a `ToolMessage` with the supplied
         content so callers can exercise both the success and failure branches.
+
+        Args:
+            tool_content: Body of the `ToolMessage` the resume stream yields.
+
+        Returns:
+            The agent plus one list per recorded `astream` keyword -- inputs,
+                contexts, and configs -- each appended to in call order.
         """
         from langchain_core.messages import ToolMessage
 
@@ -935,6 +1162,7 @@ class TestDriveLegacySeededCompaction:
 
         astream_inputs: list[Any] = []
         astream_contexts: list[object] = []
+        astream_configs: list[Any] = []
 
         class _Interrupt:
             id = "interrupt-1"
@@ -947,6 +1175,7 @@ class TestDriveLegacySeededCompaction:
         async def _astream(stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
             astream_inputs.append(stream_input)
             astream_contexts.append(kwargs.get("context"))
+            astream_configs.append(kwargs.get("config"))
             if stream_input is None:
                 yield ((), "updates", {"__interrupt__": [_Interrupt()]})
             else:
@@ -960,7 +1189,7 @@ class TestDriveLegacySeededCompaction:
         agent.aensure_thread = AsyncMock()
         agent.aupdate_state = AsyncMock()
         agent.astream = _astream
-        return agent, astream_inputs, astream_contexts
+        return agent, astream_inputs, astream_contexts, astream_configs
 
     async def test_seeds_tool_call_and_resumes_interrupt(self) -> None:
         """Seeds a forced `compact_conversation` call and approves the interrupt."""
@@ -971,8 +1200,11 @@ class TestDriveLegacySeededCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, astream_inputs, astream_contexts = self._fake_remote_agent(
-                "Conversation compacted. Summarized 2 messages into a concise summary."
+            agent, astream_inputs, astream_contexts, astream_configs = (
+                self._fake_remote_agent(
+                    "Conversation compacted. Summarized 2 messages into a "
+                    "concise summary."
+                )
             )
             app._agent = agent
             app._lc_thread_id = "test-thread"
@@ -1015,6 +1247,11 @@ class TestDriveLegacySeededCompaction:
                 assert isinstance(context, dict)
                 normalized = {str(key): value for key, value in context.items()}
                 assert {key: normalized[key] for key in expected} == expected
+
+            initial_config, resume_config = astream_configs
+            assert RESUME_TRACE_TAG not in initial_config.get("tags", [])
+            assert RESUME_TRACE_TAG in resume_config["tags"]
+            assert initial_config["configurable"] == resume_config["configurable"]
 
     async def test_records_summary_and_trailing_usage_in_cost_breakdown(self) -> None:
         """Manual offload usage reconciles by type and serving model."""
@@ -1355,7 +1592,7 @@ class TestDriveLegacySeededCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, _contexts = self._fake_remote_agent(
+            agent, _inputs, _contexts, _configs = self._fake_remote_agent(
                 f"{COMPACTION_FAILURE_PREFIX}: an error occurred during compaction."
             )
             app._agent = agent
@@ -1375,7 +1612,7 @@ class TestDriveLegacySeededCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, contexts = self._fake_remote_agent(
+            agent, _inputs, contexts, _configs = self._fake_remote_agent(
                 "Conversation compacted. Summarized 2 messages."
             )
             app._agent = agent

@@ -441,6 +441,19 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             },
         ),
         (
+            NotificationEvent(
+                event=HookEvent.NOTIFICATION,
+                notification=DcodeNotification(
+                    type=DcodeNotificationKind.COLD_CACHE_WARNING,
+                    message="Prompt cache may be cold",
+                ),
+            ),
+            {
+                "hook_event_name": "Notification",
+                "notification_type": "cold_cache_warning",
+            },
+        ),
+        (
             PreToolUseEvent(
                 event=HookEvent.PRE_TOOL_USE,
                 call=ToolCallData(id="call-1", name="Write", args={}),

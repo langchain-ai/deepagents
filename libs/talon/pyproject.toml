@@ -7,7 +7,7 @@ name = "deepagents-talon"
 version = "0.0.3"
 description = "Local runtime host for long-running Deep Agents channels and schedules (experimental)"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 keywords = ["agents", "ai", "deepagents", "runtime", "channels", "scheduling"]
 classifiers = [
@@ -15,7 +15,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -75,7 +74,7 @@ deepagents = { path = "../deepagents", editable = true }
 deepagents-code = { path = "../code", editable = true }
 
 [tool.ty.environment]
-python-version = "3.11"
+python-version = "3.12"
 extra-paths = ["../deepagents", "../code"]
 
 [tool.ty.rules]

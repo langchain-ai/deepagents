@@ -2,10 +2,16 @@
 
 Terminals deliver a paste in one of two shapes: a single bracketed `Paste`
 event, or — when bracketed paste is unavailable — a rapid stream of individual
-key events. Both the primary chat input and the inline free-text prompts need
-to (a) keep a multi-line paste grouped instead of submitting on the first
-embedded newline, and (b) collapse a large paste into a compact
-`[Pasted text #N]` placeholder that expands back to the full text on submit.
+key events. Both the primary chat input and the inline free-text prompts keep a
+multi-line paste grouped instead of submitting on the first embedded newline.
+Bracketed and detected key-event pastes may additionally collapse into a compact
+`[Pasted text #N]` placeholder that expands on submit, and dropped-path payloads
+(quoted, or bare paths detected by shape) are routed to path/media handling.
+
+Ordinary typing is never hidden: a rapid run stays in the document until
+something confirms it is a paste — an embedded newline, a dropped-path shape, or
+a length no human reaches at burst speed — at which point it is promoted into
+the hidden buffer.
 
 `PasteBurstTextArea` owns the burst detection and Enter-suppression state
 machine, leaving policy (slash-command context, whether collapsing is enabled,
@@ -22,8 +28,10 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from textual.binding import Binding
 from textual.widgets import TextArea
 
+from deepagents_code.input import looks_like_dropped_payload
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
+    PASTE_THRESHOLD_CHARS,
     PastedContent,
     count_lines,
     expand_paste_refs,
@@ -43,15 +51,29 @@ PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
 """Idle timeout before flushing buffered burst text."""
 
-PASTE_BURST_START_CHARS = {"'", '"'}
-"""Characters that can start dropped-path payloads."""
-
 PASTE_BURST_MIN_CHARS = 3
 """Consecutive fast keystrokes before a stream is treated as a paste burst.
 
 Terminals that lack bracketed paste replay a paste as individual key events.
 Counting a short run of rapid chars distinguishes that from human typing,
 which has much larger inter-key gaps.
+
+Reaching this count does not by itself hide the run: it arms the Enter
+suppression window and makes the run eligible for promotion into
+`_paste_burst_buffer`. Promotion itself needs further evidence of a paste — see
+`_check_burst_run_for_promotion` and `_consume_enter_as_burst_newline`.
+"""
+
+PASTE_BURST_PROMOTE_CHARS = PASTE_THRESHOLD_CHARS
+"""Rapid-run length that on its own confirms a key-event paste.
+
+A run this long arriving at burst speed (each char within
+`PASTE_BURST_CHAR_GAP_SECONDS`) is unreachable by human typing, so it is
+promoted into the buffer even without an embedded newline. Derived from the
+collapse threshold so a large single-line key-event paste reaches
+`[Pasted text #N]` collapsing. The comparison here is `>=` while
+`should_collapse_paste` uses `>`, so a run of exactly this length is promoted and
+then re-inserted verbatim.
 """
 
 PASTE_ENTER_SUPPRESS_WINDOW_SECONDS = 0.12
@@ -132,13 +154,13 @@ class PasteBurstTextArea(TextArea):
 
     def _init_paste_burst_state(self) -> None:
         """Reset all paste-burst tracking fields to their initial values."""
-        # Buffer high-frequency key bursts from terminals that emulate paste via
-        # rapid key events instead of dispatching a paste event.
+        # Holds burst text only after promotion. A rapid run stays in the
+        # document until something confirms it is a paste.
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._paste_burst_timer = None
-        # Counts consecutive rapid keystrokes so a paste-like stream can be
-        # detected even when it doesn't begin with a quote.
+        # Counts consecutive rapid keystrokes so a paste replayed as key events
+        # can be recognized without a bracketed paste event.
         self._paste_burst_run = 0
         self._paste_burst_run_text = ""
         self._paste_burst_last_key_time = None
@@ -149,6 +171,43 @@ class PasteBurstTextArea(TextArea):
         # Timestamp of a `\` keypress awaiting a fast `enter` to be treated as a
         # terminal-emitted shift+enter. See `_BACKSLASH_ENTER_GAP_SECONDS`.
         self._backslash_pending_time = None
+
+    # -- Cursor blink ---------------------------------------------------------
+
+    def _restart_blink(self) -> None:
+        """Keep the cursor hidden while the text area is unfocused.
+
+        Outside read-only mode Textual's `TextArea._draw_cursor` is
+        `(has_focus and not cursor_blink) or (cursor_blink and _cursor_visible)`,
+        so with blinking on (the default) it paints the cursor from
+        `_cursor_visible` alone and never consults focus. Any `_restart_blink()`
+        on an unfocused text area therefore shows a blinking cursor in a field
+        that cannot accept keys.
+
+        `TextArea._on_mouse_down` sets `_selecting` unconditionally, so the
+        matching mouse-up reaches `_restart_blink()` through
+        `_end_mouse_selection` unless a subclass gates the handler first (as
+        `ChatTextArea` does for refocus clicks). That covers clicks landing
+        while a focus-trapping widget is open: the `edit_file` approval menu
+        re-grabs focus on blur between mouse-down and mouse-up, so the click
+        left a phantom blinking cursor in the chat input. Programmatic
+        multi-character `insert()` into an unfocused input has the same
+        effect.
+
+        `_pause_blink(visible=False)` also parks the blink timer. Textual's
+        `_watch_has_focus` re-arms it when focus returns, so the cursor resumes
+        blinking rather than coming back solid.
+
+        Deliberately overrides Textual's private `_restart_blink`; verified
+        against Textual 8.2.8. Re-verify these attribute names on every Textual
+        bump — the `TestCursorHiddenWhileUnfocused` classes in
+        `test_chat_input.py` and `test_inline_prompt.py` fail if this stops
+        holding.
+        """
+        if not self.has_focus:
+            self._pause_blink(visible=False)
+            return
+        super()._restart_blink()
 
     # -- Policy hooks (override in subclasses) --------------------------------
 
@@ -161,8 +220,28 @@ class PasteBurstTextArea(TextArea):
         return False
 
     async def _dispatch_burst_payload(self, payload: str) -> None:
-        """Handle a flushed burst payload. Base behavior inserts it verbatim."""
+        """Handle a flushed burst payload. Base behavior inserts it verbatim.
+
+        Implementations must apply the payload before returning. A payload
+        applied later — from a posted message or a scheduled callback — is
+        ordered behind any key event already waiting in this widget's queue, so
+        the next keystroke would be inserted ahead of the paste.
+        """
         self.insert(payload)
+
+    def _burst_run_payload_for_dispatch(self, payload: str) -> str:  # noqa: PLR6301  # overridable hook
+        """Return the payload represented by a visible rapid-key run.
+
+        Most text areas display every character in the run, so the payload is
+        unchanged. Subclasses with virtual prefixes may restore characters
+        that were consumed before insertion.
+        """
+        return payload
+
+    def _on_burst_run_promoted(
+        self, visible_payload: str, dispatch_payload: str
+    ) -> None:
+        """React after a visible run has been promoted into the burst buffer."""
 
     # -- Burst state machine --------------------------------------------------
 
@@ -196,6 +275,21 @@ class PasteBurstTextArea(TextArea):
         self._paste_burst_last_char_time = now
         self._paste_burst_window_until = now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._schedule_paste_burst_flush()
+
+    def _append_recent_paste_burst_text(self, text: str, now: float) -> bool:
+        """Append text only when it continues an active rapid burst.
+
+        Returns:
+            `True` when the text was appended, or `False` when there is no
+            active burst or it has gone idle.
+        """
+        if not self._paste_burst_buffer:
+            return False
+        last_time = self._paste_burst_last_char_time
+        if last_time is None or (now - last_time) > PASTE_BURST_CHAR_GAP_SECONDS:
+            return False
+        self._append_paste_burst(text, now)
+        return True
 
     def _note_paste_burst_keystroke(self, char: str, now: float) -> None:
         """Track text and timing for consecutive rapid keystrokes."""
@@ -233,10 +327,17 @@ class PasteBurstTextArea(TextArea):
 
         True when the preceding keystroke was part of a rapid run or the
         previous `enter` was already suppressed, and the suppression window is
-        still open. The char-gap check keeps a deliberate `enter` pressed after
-        a burst settles from being swallowed; the window bounds how long a
-        replayed paste's newlines stay grouped. Returns `False` immediately in
-        slash-command context (see `_in_slash_command_context`).
+        still open. The window bounds how long a replayed paste's newlines stay
+        grouped. Returns `False` immediately in slash-command context (see
+        `_in_slash_command_context`), and an active burst buffer short-circuits to
+        `True` regardless of the window (see below).
+
+        The first suppressed `enter` must remain within the character gap. A
+        completed single-line burst followed by a deliberate `enter` is
+        otherwise indistinguishable from a delayed pasted newline, and submit
+        behavior takes priority once the rapid stream has gone idle. After one
+        `enter` is suppressed, the wider window keeps consecutive pasted blank
+        lines grouped.
         """
         if self._in_slash_command_context():
             return False
@@ -253,27 +354,24 @@ class PasteBurstTextArea(TextArea):
         if last_enter is not None:
             return True
         last_key = self._paste_burst_last_key_time
-        return last_key is not None and (now - last_key) <= PASTE_BURST_CHAR_GAP_SECONDS
-
-    def _should_start_paste_burst(self, char: str) -> bool:
-        """Return whether a keypress should start paste-burst buffering.
-
-        Quote-prefixed input at an empty cursor is buffered immediately for
-        dropped-path parsing. Other printable runs are promoted into the same
-        buffer once they reach `PASTE_BURST_MIN_CHARS` rapid keystrokes.
-        """
-        if char not in PASTE_BURST_START_CHARS:
+        if last_key is None:
             return False
-        if self.text or not self.selection.is_empty:
-            return False
-        row, col = self.cursor_location
-        return row == 0 and col == 0
+        return (now - last_key) <= PASTE_BURST_CHAR_GAP_SECONDS
 
     async def _flush_paste_burst(self) -> None:
         """Flush buffered burst text through the payload dispatch hook.
 
         When the buffer is empty this is a no-op, so it is safe to call
-        defensively before handling a bracketed paste.
+        defensively before handling a bracketed paste. The payload is applied
+        before this returns, so a caller may go on to handle the current key
+        knowing it lands after the paste.
+
+        The buffer is cleared before dispatch, and `_promote_paste_burst_run` has
+        already deleted the run from the document, so a raising dispatch would
+        leave the text nowhere at all — not on screen, not in the buffer, not in
+        undo history. Media decoding, attachment tracking and notifications all
+        run inside that call, so the payload is re-inserted verbatim before the
+        error propagates.
         """
         payload = self._paste_burst_buffer
         self._paste_burst_buffer = ""
@@ -281,34 +379,69 @@ class PasteBurstTextArea(TextArea):
         self._cancel_paste_burst_timer()
         if not payload:
             return
-        await self._dispatch_burst_payload(payload)
+        try:
+            await self._dispatch_burst_payload(payload)
+        except Exception:
+            logger.warning(
+                "Burst dispatch failed (%d chars); inserting payload verbatim",
+                len(payload),
+                exc_info=True,
+            )
+            self.insert(payload)
+            raise
 
-    def _promote_paste_burst_run(self, char: str, now: float) -> bool:
-        """Move a detected rapid run from the document into the burst buffer.
+    def _promote_paste_burst_run(self, now: float) -> bool:
+        """Move an already-inserted rapid run out of the document into the buffer.
 
-        The first keys in an unquoted run are inserted normally while the run is
-        still indistinguishable from typing. Once the threshold is reached, this
-        removes those keys and buffers the complete run so its eventual flush can
-        apply dropped-path and paste-collapse policy.
+        Deletes the run's characters from the document — they are visible on
+        screen at this point — and hands them to `_start_paste_burst` so the
+        eventual flush can apply dropped-path and paste-collapse policy.
+
+        No document mutation happens until every guard has passed, so a `False`
+        return never leaves a partially-promoted document. A failed verification
+        does still discard the tracked run, so `False` is not side-effect-free.
 
         Args:
-            char: Current character, which has not yet been inserted.
             now: Monotonic timestamp for the current key event.
 
         Returns:
-            `True` when the run was promoted and the current key was buffered.
+            `True` when the run was verified present immediately before the
+            cursor and moved into the buffer. `False` when promotion is unsafe:
+            an empty run, a non-empty selection (deleting would clobber the
+            user's selected range), or a document whose text immediately before
+            the cursor is no longer the tracked run — which means an intervening
+            edit desynchronized the tracker. Callers must fall back to handling
+            the key normally.
         """
-        if not char or not self.selection.is_empty:
+        payload = self._paste_burst_run_text
+        if not payload or not self.selection.is_empty:
             return False
-        prefix = self._paste_burst_run_text[: -len(char)]
         cursor = self.cursor_location
         cursor_offset = self.document.get_index_from_location(cursor)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
-        start_offset = cursor_offset - len(prefix)
-        if start_offset < 0 or self.text[start_offset:cursor_offset] != prefix:
+        start_offset = cursor_offset - len(payload)
+        if start_offset < 0 or self.text[start_offset:cursor_offset] != payload:
+            # An untracked edit desynchronized the tracker, so drop the stale run
+            # and let tracking restart on the next keystroke. Logged at warning
+            # (not debug) so it survives the default INFO level — this is a state
+            # -machine bug, not a user-reachable condition. The message carries
+            # only sizes, never the payload, which is user content.
+            logger.warning(
+                "Burst run diverged from document (run=%d chars, start=%d, "
+                "cursor=%d, doc=%d); skipping promotion",
+                len(payload),
+                start_offset,
+                cursor_offset,
+                len(self.text),
+            )
+            self._reset_paste_burst_run()
             return False
         start = self.document.get_location_from_index(start_offset)  # ty: ignore[unresolved-attribute]
         self.delete(start, cursor)
-        self._start_paste_burst(self._paste_burst_run_text, now)
+        self._start_paste_burst(payload, now)
+        # The buffer now owns these characters; clearing the run keeps the
+        # "run tracks visible text, buffer tracks hidden text" invariant true by
+        # construction, so a later Enter cannot re-promote the same stale text.
+        self._reset_paste_burst_run()
         return True
 
     def action_insert_newline(self) -> None:
@@ -323,61 +456,125 @@ class PasteBurstTextArea(TextArea):
         Returns:
             `True` when the key was buffered and the caller should stop handling
             it; `False` when there is no active burst (or it was just flushed)
-            and the caller should continue normal key handling.
+            and the caller should continue normal key handling. A flush applies
+            its payload before returning, so handling the key afterwards orders
+            it after the paste.
         """
         if not self._paste_burst_buffer:
             return False
         if event.key == "enter":
             self._append_paste_burst("\n", now)
             return True
-        if event.is_printable and event.character is not None:
-            last_time = self._paste_burst_last_char_time
-            if (
-                last_time is not None
-                and (now - last_time) <= PASTE_BURST_CHAR_GAP_SECONDS
-            ):
-                self._append_paste_burst(event.character, now)
-                return True
-        await self._flush_paste_burst()
-        return False
-
-    def _maybe_start_burst(self, event: events.Key, now: float) -> bool:
-        """Start buffering when a keypress looks like the head of a paste.
-
-        Returns:
-            `True` when a burst was started and the caller should stop handling
-            the key.
-        """
         if (
             event.is_printable
             and event.character is not None
-            and self._should_start_paste_burst(event.character)
+            and self._append_recent_paste_burst_text(event.character, now)
         ):
-            self._start_paste_burst(event.character, now)
             return True
+        await self._flush_paste_burst()
         return False
 
-    def _track_burst_run(self, event: events.Key, now: float) -> bool:
-        """Track a rapid run and promote it into the paste buffer once detected.
-
-        Returns:
-            `True` when the current key was buffered and should not be handled by
-            the caller.
-        """
+    def _track_burst_run(self, event: events.Key, now: float) -> None:
+        """Track a rapid run, arming Enter suppression once it looks like a paste."""
         if event.is_printable and event.character is not None:
-            self._paste_burst_last_suppressed_enter_time = None
-            self._note_paste_burst_keystroke(event.character, now)
-            if (
-                self._paste_burst_run >= PASTE_BURST_MIN_CHARS
-                and not self._in_slash_command_context()
-            ):
-                self._paste_burst_window_until = (
-                    now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
-                )
-                return self._promote_paste_burst_run(event.character, now)
+            self._note_printable_burst_keystroke(event.character, now)
         elif event.key != "enter":
             self._reset_paste_burst_run()
-        return False
+
+    def _note_printable_burst_keystroke(self, char: str, now: float) -> None:
+        """Record a printable char in the rapid run and arm Enter suppression.
+
+        Arming is conditional: the run must reach `PASTE_BURST_MIN_CHARS` and
+        must not be a slash command, where Enter always submits.
+
+        Any printable char also un-latches the suppressed-Enter state, so the next
+        Enter must re-qualify through the character gap.
+
+        Call this for any character that reaches the document without passing
+        through `_track_burst_run` — a caller that inserts text itself and
+        returns early must still keep the tracker in sync, or the run text will
+        diverge from the document and the run is discarded, losing grouping for
+        that stretch of the paste.
+
+        Args:
+            char: The character being inserted into the document.
+            now: Monotonic timestamp for the current key event.
+        """
+        self._paste_burst_last_suppressed_enter_time = None
+        self._note_paste_burst_keystroke(char, now)
+        if (
+            self._paste_burst_run >= PASTE_BURST_MIN_CHARS
+            and not self._in_slash_command_context()
+        ):
+            self._paste_burst_window_until = now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+
+    def _check_burst_run_for_promotion(self) -> None:
+        """Promote a rapid run whose shape or size already confirms a paste.
+
+        Callers must invoke this only once the current character is in the
+        document, so the run is present and `_promote_paste_burst_run` can find
+        it. Two confirmations do not need to wait for a newline:
+
+        - A dropped-path shape (`/`, `~`, drive letter, `file://`, UNC). Without
+          this, an unquoted single-line drop would never reach path parsing or
+          media rejection.
+        - A run that reaches `PASTE_BURST_PROMOTE_CHARS`, a length no human
+          reaches at burst speed. Without this, a large single-line key-event
+          paste would never collapse into a placeholder.
+
+        Neither case flushes here. The paste is still streaming, so the run is
+        only a prefix of the payload; once promoted, the remaining characters
+        are absorbed straight into the buffer by `_absorb_key_into_burst` and
+        the idle timer flushes the complete payload when the stream stops.
+        Flushing per keystroke would instead hand each prefix to
+        `_dispatch_burst_payload` — re-running path parsing, and its filesystem
+        probes, once per character.
+
+        Ordinary typing reaches neither confirmation: to qualify it would have to
+        sustain `PASTE_BURST_MIN_CHARS` keystrokes inside
+        `PASTE_BURST_CHAR_GAP_SECONDS` of each other (~400 WPM) *and* either open
+        with a path shape or run past the length threshold.
+        """
+        if self._paste_burst_buffer or self._paste_burst_run < PASTE_BURST_MIN_CHARS:
+            return
+        payload = self._paste_burst_run_text
+        dispatch_payload = self._burst_run_payload_for_dispatch(payload)
+        # In slash-command context Enter always submits and the text is a command,
+        # not content, so nothing may be hidden — with one exception: a payload the
+        # dispatch hook rewrote is a path whose leading `/` the mode prefix
+        # consumed (see `ChatTextArea._burst_run_payload_for_dispatch`), and that
+        # must reach path handling precisely so it stops being read as a command.
+        if self._in_slash_command_context() and dispatch_payload == payload:
+            return
+        if not (
+            looks_like_dropped_payload(dispatch_payload)
+            or len(payload) >= PASTE_BURST_PROMOTE_CHARS
+        ):
+            return
+        last_key_time = self._paste_burst_last_key_time
+        if last_key_time is None:
+            # Unreachable: the run is at least `PASTE_BURST_MIN_CHARS`, and every
+            # counted keystroke stamps this field. Refuse rather than substitute a
+            # timestamp, which on a monotonic clock would land decades in the past
+            # and make the burst flush per character.
+            logger.warning(
+                "Qualifying burst run (%d chars) has no key timestamp; "
+                "skipping promotion",
+                self._paste_burst_run,
+            )
+            return
+        if not self._promote_paste_burst_run(last_key_time):
+            # The shape or length already confirmed a paste, so failing here means
+            # dropped-path routing, media rejection, and collapsing are all
+            # silently skipped for this payload. Worth a breadcrumb.
+            logger.warning(
+                "Confirmed burst paste (%d chars) could not be promoted; "
+                "path routing and collapsing are skipped for it",
+                len(payload),
+            )
+            return
+        self._paste_burst_buffer = dispatch_payload
+        self._on_burst_run_promoted(payload, dispatch_payload)
 
     def _consume_enter_as_burst_newline(self, now: float) -> bool:
         """Insert a newline instead of submitting when inside a paste burst.
@@ -389,9 +586,31 @@ class PasteBurstTextArea(TextArea):
         if not self._enter_inserts_newline_during_burst(now):
             self._paste_burst_last_suppressed_enter_time = None
             return False
+        # This newline confirms a multi-line key-event paste, so pull the
+        # still-visible run into the buffer and keep the newline with it. Both
+        # shipped `_on_key`s absorb or flush an active buffer before Enter
+        # reaches here, so the `_paste_burst_buffer` branch is unreachable. It
+        # exists because falling through to `_promote_paste_burst_run` would call
+        # `_start_paste_burst`, which *assigns* the buffer rather than appending
+        # — silently dropping the text already in it. Loud rather than silently
+        # wrong if a future caller gets here.
+        if self._paste_burst_buffer:
+            logger.warning(
+                "Enter reached burst-newline handling with a live buffer "
+                "(%d chars); keeping the newline with the buffer",
+                len(self._paste_burst_buffer),
+            )
+            self._append_paste_burst("\n", now)
+        elif self._promote_paste_burst_run(now):
+            self._append_paste_burst("\n", now)
+        else:
+            self.action_insert_newline()
+        # Set after promotion: `_promote_paste_burst_run` resets run tracking,
+        # which clears `_paste_burst_last_suppressed_enter_time`.
+        # `_paste_burst_window_until` is not cleared by that reset; it is
+        # refreshed here to extend the grouping window.
         self._paste_burst_window_until = now + PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._paste_burst_last_suppressed_enter_time = now
-        self.action_insert_newline()
         return True
 
     # -- Newline affordances (shared by concrete text areas) ------------------
@@ -438,6 +657,7 @@ class PasteBurstTextArea(TextArea):
             and enabled
             and self._backslash_pending_time is not None
             and (now - self._backslash_pending_time) <= _BACKSLASH_ENTER_GAP_SECONDS
+            and not self._enter_inserts_newline_during_burst(now)
         ):
             self._backslash_pending_time = None
             if self._delete_preceding_backslash():

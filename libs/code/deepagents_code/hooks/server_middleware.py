@@ -15,17 +15,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import (
-    TYPE_CHECKING,
-    Annotated,
-    Any,
-    Literal,
-    NotRequired,
-    TypeAlias,
-    TypeGuard,
-    TypeVar,
-    cast,
-)
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypeGuard, cast
 from uuid import UUID, uuid5
 
 from langchain.agents.middleware.human_in_the_loop import (
@@ -156,7 +146,7 @@ def _in_server_operation() -> bool:
     return _HOOK_RESPONSES.get() is not None
 
 
-PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
+type PreToolBehavior = Literal["allow", "deny", "none"]
 _DEFAULT_DENY_REASON = "Blocked by PreToolUse hook"
 
 
@@ -175,7 +165,7 @@ class _PreToolPassed(TypedDict):
     context: list[str]
 
 
-_PreToolState: TypeAlias = _PreToolDenied | _PreToolPassed
+type _PreToolState = _PreToolDenied | _PreToolPassed
 
 # Maps a tool-call id to the measured execution duration while the call awaits
 # its post-execution hook. The value is overloaded as a tombstone: a `None`
@@ -186,7 +176,7 @@ _PreToolState: TypeAlias = _PreToolDenied | _PreToolPassed
 # omitting the key (a plain merge can only add/overwrite, never remove).
 # `_pending_post_tools` filters these tombstones out, so consumers only ever
 # see real `int` durations.
-_PendingPostToolState: TypeAlias = dict[str, int | None]
+type _PendingPostToolState = dict[str, int | None]
 
 
 def _merge_pending_post_tools(
@@ -764,13 +754,10 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         }
 
 
-_DecisionT = TypeVar("_DecisionT", bound=BaseHookDecision)
-
-
-def _require_decision(
+def _require_decision[DecisionT: BaseHookDecision](
     decision: HookDecision,
-    expected: type[_DecisionT],
-) -> _DecisionT:
+    expected: type[DecisionT],
+) -> DecisionT:
     if not isinstance(decision, expected):
         msg = f"Expected {expected.__name__}, got {type(decision).__name__}"
         raise TypeError(msg)

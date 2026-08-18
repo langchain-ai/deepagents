@@ -19,7 +19,7 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from deepagents_code import _env_vars
 from deepagents_code.mcp_config import resolve_mcp_server_env
@@ -35,8 +35,6 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
-
-_T = TypeVar("_T")
 
 # Maintainer note: `deepagents-talon` imports `MCPConfigError`,
 # `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
@@ -1801,11 +1799,11 @@ def _warm_mcp_adapter_imports() -> None:
         )
 
 
-async def _gather_bounded(
-    factories: Sequence[Callable[[], Awaitable[_T]]],
+async def _gather_bounded[T](
+    factories: Sequence[Callable[[], Awaitable[T]]],
     *,
     limit: int,
-) -> list[_T]:
+) -> list[T]:
     """Await coroutine factories with bounded concurrency, preserving order.
 
     Results are returned in submission order (not completion order), so callers
@@ -1830,7 +1828,7 @@ async def _gather_bounded(
     """
     semaphore = asyncio.Semaphore(max(1, limit))
 
-    async def _run(factory: Callable[[], Awaitable[_T]]) -> _T:
+    async def _run(factory: Callable[[], Awaitable[T]]) -> T:
         async with semaphore:
             return await factory()
 

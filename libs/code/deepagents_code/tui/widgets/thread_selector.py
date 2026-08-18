@@ -603,7 +603,12 @@ class ContainedSelect(Select[str]):
         )
 
     def _setup_options_renderables(self) -> None:
-        """Populate the custom overlay when options change."""
+        """Populate the custom overlay when options change.
+
+        Deliberately overrides Textual's private `Select._setup_options_renderables`
+        so options land in `ContainedSelectOverlay` instead of the stock overlay;
+        verified against Textual 8.2.8. Re-verify on every Textual bump.
+        """
         options = [
             Option(Text(self.prompt, style="dim"))
             if value == self.NULL
@@ -622,7 +627,12 @@ class ContainedSelect(Select[str]):
         option_list.add_options(options)
 
     def _watch_value(self, value: str | NoSelection) -> None:
-        """Update the current value while using the custom overlay widget."""
+        """Update the current value while using the custom overlay widget.
+
+        Deliberately overrides Textual's private `Select._watch_value` to drive
+        the custom overlay; verified against Textual 8.2.8. Re-verify on every
+        Textual bump.
+        """
         self._value = value
         try:
             select_current = self.query_one(SelectCurrent)
@@ -1071,26 +1081,46 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         return self._filter_input
 
     def _filter_focus_order(self) -> list[Input | Checkbox | Select[str]]:
-        """Return the cached tab order for filter controls in the side panel."""
+        """Return the cached tab order for visible side-panel controls."""
         if self._filter_controls is None:
             filter_input = self._get_filter_input()
             scope_select = self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
             sort_select = self.query_one(f"#{_SORT_SELECT_ID}", Select)
             agent_select = self.query_one(f"#{_AGENT_SELECT_ID}", Select)
             relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
-            column_switches = [
-                self.query_one(f"#{self._switch_id(key)}", Checkbox)
-                for key in _COLUMN_ORDER
-            ]
+            column_switches: list[Checkbox] = []
+            for key in _COLUMN_ORDER:
+                column_switches.append(
+                    self.query_one(f"#{self._switch_id(key)}", Checkbox)
+                )
+                if key == "updated_at":
+                    column_switches.append(relative_switch)
             self._filter_controls = [
                 filter_input,
                 scope_select,
                 sort_select,
                 agent_select,
-                relative_switch,
                 *column_switches,
             ]
-        return self._filter_controls
+        return [control for control in self._filter_controls if control.display]
+
+    def _timestamp_columns_visible(self) -> bool:
+        """Return whether any timestamp column is visible."""
+        return self._columns.get("created_at", False) or self._columns.get(
+            "updated_at", False
+        )
+
+    def _sync_relative_time_visibility(self) -> None:
+        """Show relative-time controls only when a timestamp column is visible."""
+        relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
+        visible = self._timestamp_columns_visible()
+        if visible:
+            # Reassert the value before un-hiding so the checkbox's rendered
+            # check state and its visibility paint in the same frame; Textual
+            # skips refresh of display:none widgets, so without this the first
+            # visible frame can show a stale unchecked box.
+            relative_switch.value = self._relative_time
+        relative_switch.display = visible
 
     def _collect_agent_options(self) -> list[tuple[str, str]]:
         """Return Select option tuples for the agent dropdown.
@@ -1354,13 +1384,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     with ThreadControlsScroll(
                         id=_CONTROLS_SCROLL_ID, classes="thread-controls-scroll"
                     ):
-                        yield Checkbox(
-                            "Relative Timestamps",
-                            self._relative_time,
-                            id=_RELATIVE_TIME_SWITCH_ID,
-                            classes="thread-column-toggle",
-                            compact=True,
-                        )
                         for key in _COLUMN_ORDER:
                             yield Checkbox(
                                 _COLUMN_TOGGLE_LABELS[key],
@@ -1369,6 +1392,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                                 classes="thread-column-toggle",
                                 compact=True,
                             )
+                            if key == "updated_at":
+                                relative_switch = Checkbox(
+                                    "Relative Timestamps",
+                                    self._relative_time,
+                                    id=_RELATIVE_TIME_SWITCH_ID,
+                                    classes="thread-column-toggle",
+                                    compact=True,
+                                )
+                                relative_switch.display = (
+                                    self._timestamp_columns_visible()
+                                )
+                                yield relative_switch
                     yield Static(
                         get_glyphs().ellipsis,
                         id=_CONTROLS_OVERFLOW_ID,
@@ -1512,6 +1547,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
 
         self._columns[column_key] = event.value
+        if column_key in {"created_at", "updated_at"}:
+            self._sync_relative_time_visibility()
         self._apply_sort()
         self._sync_selected_index()
         self._update_help_widgets()

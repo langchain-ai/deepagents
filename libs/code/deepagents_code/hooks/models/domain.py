@@ -6,7 +6,7 @@ from enum import StrEnum
 from pathlib import (
     Path,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import (
     UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
@@ -81,6 +81,7 @@ class DcodeNotificationKind(StrEnum):
     PERMISSION_REQUIRED = "permission_required"
     AGENT_NEEDS_INPUT = "agent_needs_input"
     AGENT_COMPLETED = "agent_completed"
+    COLD_CACHE_WARNING = "cold_cache_warning"
 
 
 class CompactTrigger(StrEnum):
@@ -90,7 +91,7 @@ class CompactTrigger(StrEnum):
     AUTO = "auto"
 
 
-EffortLevel: TypeAlias = Literal["none", "low", "medium", "high", "xhigh", "max"]
+type EffortLevel = Literal["none", "low", "medium", "high", "xhigh", "max"]
 
 
 class ToolCallData(_DomainModel):
@@ -307,7 +308,7 @@ class SubagentStopEvent(_DomainModel):
     session_crons: list[SessionCronSnapshot] = Field(default_factory=list)
 
 
-HookDomainEvent: TypeAlias = Annotated[
+type HookDomainEvent = Annotated[
     SessionStartEvent
     | UserPromptSubmitEvent
     | SessionEndEvent
@@ -445,7 +446,7 @@ class SubagentStopDecision(BaseHookDecision):
     context: list[str] = Field(default_factory=list)
 
 
-HookDecision: TypeAlias = Annotated[
+type HookDecision = Annotated[
     SessionStartDecision
     | UserPromptSubmitDecision
     | SessionEndDecision

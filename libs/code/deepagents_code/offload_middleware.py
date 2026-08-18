@@ -7,16 +7,7 @@ import hashlib
 import logging
 from functools import partial
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Annotated,
-    Any,
-    Literal,
-    NamedTuple,
-    Protocol,
-    TypeAlias,
-    cast,
-)
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
@@ -94,7 +85,7 @@ class _OffloadState(CostState, SummarizationState, total=False):
     """
 
 
-OffloadStatus: TypeAlias = Literal["compacted", "empty", "noop", "denied", "failed"]
+type OffloadStatus = Literal["compacted", "empty", "noop", "denied", "failed"]
 """Outcome of one offload attempt. Aliased so the result type and the private
 `_result` factory cannot drift apart."""
 
@@ -151,7 +142,7 @@ class OffloadInterruptResponse(TypedDict):
     request: dict[str, Any]
 
 
-OffloadResponse: TypeAlias = OffloadCompleteResponse | OffloadInterruptResponse
+type OffloadResponse = OffloadCompleteResponse | OffloadInterruptResponse
 """One round of the offload operation protocol.
 
 Tagged on `status` so the producer (`offload_api._execute_offload`) and the

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
+from deepagents_code._env_vars import TERMINAL_PROGRESS
 from deepagents_code.app import (
     _load_terminal_progress_preference,
 )
@@ -11,11 +14,14 @@ from deepagents_code.app import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
-
 
 class TestLoadTerminalProgressPreference:
-    """_load_terminal_progress_preference reads config.toml correctly."""
+    """_load_terminal_progress_preference resolves env then config.toml."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drop a developer's exported override so config tests stay honest."""
+        monkeypatch.delenv(TERMINAL_PROGRESS, raising=False)
 
     def test_default_true_when_no_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -66,3 +72,33 @@ class TestLoadTerminalProgressPreference:
         config.write_text('ui = "not a table"\n', encoding="utf-8")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         assert _load_terminal_progress_preference() is True
+
+    def test_env_var_wins_over_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env var overrides an enabling `config.toml` value."""
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = true\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv(TERMINAL_PROGRESS, "0")
+        assert _load_terminal_progress_preference() is False
+
+    def test_unrecognized_env_falls_through_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-boolean env token is ignored in favor of `config.toml`."""
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = false\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv(TERMINAL_PROGRESS, "maybe")
+        assert _load_terminal_progress_preference() is False
+
+    def test_empty_env_var_opts_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicitly empty env value stops progress (`empty_env_is_false`)."""
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = true\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv(TERMINAL_PROGRESS, "")
+        assert _load_terminal_progress_preference() is False

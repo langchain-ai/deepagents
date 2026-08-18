@@ -1515,6 +1515,32 @@ class TestGetSystemPromptModelIdentity:
         assert "may not be available" not in prompt
 
 
+class TestGetSystemPromptWebSearch:
+    """Tests for conditional web-search guidance."""
+
+    def test_omits_guidance_without_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = False
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" not in prompt
+        assert "{web_search_tool_guidance}" not in prompt
+
+    def test_includes_guidance_with_tavily(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.has_tavily = True
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Web Search Tool Usage" in prompt
+        assert "When you use the web_search tool:" in prompt
+
+
 class TestGetSystemPromptNonInteractive:
     """Tests for interactive vs non-interactive system prompt."""
 
@@ -5079,15 +5105,15 @@ class TestCreateCliAgentInterpreterWiring:
 
         assert agent is not None
 
-    def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
-        """Auto is refused (no middleware) in a non-interactive session."""
+    def test_auto_mode_wires_for_local_acp(self, tmp_path: Path) -> None:
+        """Local ACP can install classifier-backed Auto without the TUI."""
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
 
         middleware = self._capture_middleware(
             tmp_path, auto_mode_enabled=True, interactive=False
         )
 
-        assert not any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+        assert any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
 
     def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) when a sandbox backend is active.

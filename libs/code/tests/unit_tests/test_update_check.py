@@ -50,6 +50,7 @@ from deepagents_code.update_check import (
     clear_resume_auto_update_deferral,
     clear_startup_auto_update_failure,
     clear_update_notified,
+    create_update_log_file,
     create_update_log_path,
     dependency_refresh_command,
     dependency_refresh_dry_run_command,
@@ -62,6 +63,7 @@ from deepagents_code.update_check import (
     format_age_suffix,
     format_dependency_changes,
     format_installed_age_suffix,
+    format_log_follow_command,
     format_release_age,
     format_release_age_parenthetical,
     format_sdk_age_suffix,
@@ -2405,6 +2407,44 @@ class TestUpdateLogs:
         path = create_update_log_path()
         assert path.parent == update_log_dir
         assert path.name.endswith("-update.log")
+
+    def test_create_update_log_file_creates_the_file(self, update_log_dir) -> None:
+        """The advertised log must exist even before an installer writes to it."""
+        path = create_update_log_file()
+        assert path is not None
+        assert path.parent == update_log_dir
+        assert path.is_file()
+
+    @pytest.mark.usefixtures("update_log_dir")
+    def test_create_update_log_file_returns_none_when_uncreatable(self, caplog) -> None:
+        """An unwritable cache dir yields `None` so callers can skip the hint."""
+        with (
+            patch.object(Path, "mkdir", side_effect=OSError("read-only")),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            assert create_update_log_file() is None
+        assert any("Could not create update log" in r.message for r in caplog.records)
+
+    def test_format_log_follow_command_quotes_posix_paths(self) -> None:
+        with patch("deepagents_code.update_check.sys.platform", "linux"):
+            assert (
+                format_log_follow_command(Path("/tmp/dcode update.log"))
+                == "tail -f '/tmp/dcode update.log'"
+            )
+
+    def test_format_log_follow_command_uses_powershell_on_windows(self) -> None:
+        """`tail` does not exist on Windows; PowerShell's `Get-Content` does."""
+        with patch("deepagents_code.update_check.sys.platform", "win32"):
+            assert format_log_follow_command(Path(r"C:\Users\a b.log")) == (
+                r"Get-Content -Wait -LiteralPath 'C:\Users\a b.log'"
+            )
+
+    def test_format_log_follow_command_escapes_powershell_quotes(self) -> None:
+        """PowerShell escapes a literal single quote by doubling it."""
+        with patch("deepagents_code.update_check.sys.platform", "win32"):
+            assert format_log_follow_command("C:\\o'brien.log") == (
+                "Get-Content -Wait -LiteralPath 'C:\\o''brien.log'"
+            )
 
     def test_cleanup_update_logs_removes_old_and_excess(self, update_log_dir) -> None:
         update_log_dir.mkdir(parents=True)

@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast, override
 
 from deepagents.middleware.filesystem import FilesystemState
 from langchain.agents.middleware.types import (
@@ -26,7 +26,7 @@ from langchain_core.messages import (
     get_buffer_string,
 )
 from langgraph.errors import GraphRecursionError
-from typing_extensions import TypedDict, override
+from typing_extensions import TypedDict
 
 from deepagents_code._repository_bounds import (
     REPOSITORY_GREP_MATCH_LIMIT as _REPOSITORY_GREP_MATCH_LIMIT,

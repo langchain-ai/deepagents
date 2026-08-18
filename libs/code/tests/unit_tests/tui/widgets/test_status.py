@@ -14,10 +14,21 @@ from textual.widgets import Static
 from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
 from deepagents_code.config import reset_glyphs_cache
-from deepagents_code.tui.widgets.status import BranchLabel, ModelLabel, StatusBar
+from deepagents_code.tui.widgets.status import (
+    _PICKER_ACTIONS,
+    _PICKER_STYLES,
+    _PICKER_TARGET_META,
+    PICKER_TARGETS,
+    BranchLabel,
+    ModelLabel,
+    StatusBar,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from rich.style import Style
+    from textual.pilot import Pilot
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +45,7 @@ class StatusBarApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self.opened_pickers: list[str] = []
+        self.unhandled_clicks = 0
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status-bar")
@@ -43,6 +55,15 @@ class StatusBarApp(App[None]):
 
     def action_open_effort_selector(self) -> None:
         self.opened_pickers.append("effort")
+
+    def on_click(self, event: events.Click) -> None:
+        """Count clicks that reach the app, standing in for the real handler.
+
+        `DeepAgentsApp.on_click` refocuses the chat input, so a picker click must
+        not bubble here while a plain click must.
+        """
+        del event
+        self.unhandled_clicks += 1
 
 
 class TestTwoLineMetrics:
@@ -981,6 +1002,18 @@ class TestModelLabelPrefixStripping:
             assert "accounts/fireworks/models/kimi-k2p6" in rendered
 
 
+class TestPickerTargetRegistries:
+    """Tests that the picker mappings stay total over `PickerTarget`."""
+
+    def test_actions_cover_every_target(self) -> None:
+        """A new `PickerTarget` without an action would `KeyError` on click."""
+        assert set(_PICKER_ACTIONS) == PICKER_TARGETS
+
+    def test_styles_cover_every_target(self) -> None:
+        """A new `PickerTarget` without a style would `KeyError` on render."""
+        assert set(_PICKER_STYLES) == PICKER_TARGETS
+
+
 class TestModelLabelClickTargets:
     """Tests for the model and effort status-bar Ctrl+click targets."""
 
@@ -990,7 +1023,7 @@ class TestModelLabelClickTargets:
         for segment in label.render_line(0):
             if (
                 segment.style is not None
-                and segment.style.meta.get("status-picker-target") == target
+                and segment.style.meta.get(_PICKER_TARGET_META) == target
             ):
                 return Offset(x, 0)
             x += segment.cell_length
@@ -998,17 +1031,43 @@ class TestModelLabelClickTargets:
         raise AssertionError(msg)
 
     @staticmethod
-    def _rendered_targets(label: ModelLabel) -> dict[str, tuple[str, bool | None]]:
-        rendered = label.render()
-        assert isinstance(rendered, Content)
+    def _style_at(label: ModelLabel, x: int) -> Style | None:
+        """Return the style of the painted cell at `x`, as Textual would report it.
+
+        `render_line` yields segments, not cells, so walk their widths rather
+        than indexing the segment list.
+        """
+        cell = label.content_region.x - label.region.x
+        for segment in label.render_line(0):
+            if cell <= x < cell + segment.cell_length:
+                return segment.style
+            cell += segment.cell_length
+        msg = f"No painted cell at x={x}"
+        raise AssertionError(msg)
+
+    @staticmethod
+    def _rendered_targets(label: ModelLabel) -> dict[str, tuple[str, bool]]:
+        """Collect picker targets from painted output, not from `render`.
+
+        Reading `render_line` is what makes the assertions fail if
+        `_ctrl_hint_target` ever stops repainting the widget.
+        """
+        targets: dict[str, tuple[str, bool]] = {}
+        for segment in label.render_line(0):
+            style = segment.style
+            if style is None:
+                continue
+            meta_target = style.meta.get(_PICKER_TARGET_META)
+            if meta_target is None:
+                continue
+            # Adjacent segments can split one span, so accumulate by target.
+            previous = targets.pop(meta_target, None)
+            merged = (previous[0] if previous else "") + segment.text
+            # `Style.underline` is tri-state; only "set" matters here.
+            targets[meta_target] = (merged, bool(style.underline))
         return {
-            rendered.plain[span.start : span.end]: (
-                span.style.meta["status-picker-target"],
-                span.style.underline,
-            )
-            for span in rendered.spans
-            if not isinstance(span.style, str)
-            and "status-picker-target" in span.style.meta
+            span_text: (target, underline)
+            for target, (span_text, underline) in targets.items()
         }
 
     async def test_model_and_effort_have_distinct_targets(self) -> None:
@@ -1021,8 +1080,8 @@ class TestModelLabelClickTargets:
             await pilot.pause()
 
             assert self._rendered_targets(label) == {
-                "openai:gpt-5.5": ("model", None),
-                "high": ("effort", None),
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", False),
             }
 
     async def test_clicks_require_ctrl_and_dispatch_distinct_app_actions(self) -> None:
@@ -1047,7 +1106,81 @@ class TestModelLabelClickTargets:
 
             assert app.opened_pickers == ["model", "effort"]
 
-    async def test_ctrl_hover_underlines_only_the_target(self) -> None:
+    async def test_plain_clicks_bubble_but_picker_clicks_do_not(self) -> None:
+        """Only a Ctrl+click on a target should be consumed by the label.
+
+        The real app handler refocuses the chat input, which must not race the
+        picker; a plain click has to keep reaching it.
+        """
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            model_offset = self._offset_for_target(label, "model")
+            await pilot.click(label, offset=model_offset)
+            await pilot.pause()
+            assert app.unhandled_clicks == 1
+
+            await pilot.click(label, offset=model_offset, control=True)
+            await pilot.pause()
+            assert app.unhandled_clicks == 1
+            assert app.opened_pickers == ["model"]
+
+    async def test_ctrl_click_ignores_non_left_buttons(self) -> None:
+        """Textual reports a Click for any button, so only the left one counts."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            offset = self._offset_for_target(label, "model")
+            target = label.content_region.offset + offset
+            label.post_message(
+                events.Click(
+                    label,
+                    x=offset.x,
+                    y=offset.y,
+                    delta_x=0,
+                    delta_y=0,
+                    button=3,
+                    shift=False,
+                    meta=False,
+                    ctrl=True,
+                    screen_x=target.x,
+                    screen_y=target.y,
+                    style=self._style_at(label, offset.x),
+                )
+            )
+            await pilot.pause()
+
+            assert app.opened_pickers == []
+
+    async def test_ctrl_double_click_opens_one_picker(self) -> None:
+        """A chained click should not stack a second picker on the first."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            offset = self._offset_for_target(label, "model")
+            await pilot.click(label, offset=offset, control=True, times=2)
+            await pilot.pause()
+
+            assert app.opened_pickers == ["model"]
+            assert app.unhandled_clicks == 0
+
+    @pytest.mark.parametrize("target", ["model", "effort"])
+    async def test_ctrl_hover_underlines_only_the_target(self, target: str) -> None:
         """A Ctrl-modified pointer move should expose the target affordance."""
         async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
@@ -1056,19 +1189,150 @@ class TestModelLabelClickTargets:
             label.effort = "high"
             await pilot.pause()
 
-            model_offset = self._offset_for_target(label, "model")
-            await pilot.mouse_up(label, offset=model_offset, control=True)
-            await pilot.pause()
+            offset = self._offset_for_target(label, target)
+            await self._move(pilot, label, offset)
             assert self._rendered_targets(label) == {
-                "openai:gpt-5.5": ("model", True),
-                "high": ("effort", None),
+                "openai:gpt-5.5": ("model", target == "model"),
+                "high": ("effort", target == "effort"),
+            }
+            assert label.styles.pointer == "pointer"
+
+            # Moving over the same span without Ctrl drops the hint again.
+            await self._move(pilot, label, offset, ctrl=False)
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", False),
             }
 
-            await pilot.mouse_up(label, offset=model_offset)
+    async def test_ctrl_hover_moves_the_underline_between_targets(self) -> None:
+        """Sliding from the model span to the effort span should move the hint.
+
+        Both spans set the same pointer shape, so this transition changes no CSS
+        rule and repaints only because the hint reactive asks for it.
+        """
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
             await pilot.pause()
+
+            await self._move(pilot, label, self._offset_for_target(label, "model"))
+            await self._move(pilot, label, self._offset_for_target(label, "effort"))
+
             assert self._rendered_targets(label) == {
-                "openai:gpt-5.5": ("model", None),
-                "high": ("effort", None),
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", True),
+            }
+            assert label.styles.pointer == "pointer"
+
+    async def test_ctrl_hover_off_target_clears_the_underline(self) -> None:
+        """Moving onto the separator should drop the previous target's hint."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            effort_offset = self._offset_for_target(label, "effort")
+            await self._move(pilot, label, self._offset_for_target(label, "model"))
+            # The cell before the effort span is the unstyled separator.
+            await self._move(pilot, label, effort_offset + Offset(-1, 0))
+
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", False),
+            }
+            assert label.styles.pointer == "default"
+
+    async def test_leaving_the_label_clears_the_affordance(self) -> None:
+        """`on_leave` should drop both the underline and the pointer shape."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            await self._move(pilot, label, self._offset_for_target(label, "model"))
+            assert label.styles.pointer == "pointer"
+
+            label.post_message(events.Leave(label))
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", False),
+            }
+            assert label.styles.pointer == "default"
+
+    @classmethod
+    async def _move(
+        cls,
+        pilot: Pilot[None],
+        label: ModelLabel,
+        offset: Offset,
+        *,
+        ctrl: bool = True,
+    ) -> None:
+        """Post a mouse move at `offset` within `label`, optionally Ctrl-modified.
+
+        `Pilot.hover` accepts no modifiers, so build the event directly.
+        """
+        target = label.content_region.offset + offset
+        label.post_message(
+            events.MouseMove(
+                label,
+                x=offset.x,
+                y=offset.y,
+                delta_x=0,
+                delta_y=0,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=ctrl,
+                screen_x=target.x,
+                screen_y=target.y,
+                style=cls._style_at(label, offset.x),
+            )
+        )
+        await pilot.pause()
+
+    async def test_truncated_model_keeps_both_targets(self) -> None:
+        """The left-truncated rung should still expose model and effort targets.
+
+        This is the narrow layout where the affordance matters most, and the
+        only rung that renders an ellipsis alongside a surviving effort span.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "claude-opus-4-preview"
+            label.effort = "high"
+            label.styles.width = 15
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {
+                "\u2026preview": ("model", False),
+                "high": ("effort", False),
+            }
+
+    async def test_provider_dropped_rung_keeps_both_targets(self) -> None:
+        """Dropping the provider should leave both spans clickable."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "anthropic"
+            label.model = "claude-opus-4"
+            label.effort = "xhigh"
+            # Wide enough for the bare model plus effort, too narrow for the
+            # provider prefix (the label reserves two cells of its own).
+            label.styles.width = 22
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {
+                "claude-opus-4": ("model", False),
+                "xhigh": ("effort", False),
             }
 
     async def test_hidden_effort_has_no_click_target(self) -> None:
@@ -1081,7 +1345,29 @@ class TestModelLabelClickTargets:
             label.styles.width = 6
             await pilot.pause()
 
-            assert self._rendered_targets(label) == {"o1": ("model", None)}
+            assert self._rendered_targets(label) == {"o1": ("model", False)}
+
+    @pytest.mark.parametrize(
+        ("width", "expected"),
+        [(4, "\u20264"), (3, "\u2026")],
+    )
+    async def test_ellipsis_only_rungs_keep_the_model_target(
+        self, width: int, expected: str
+    ) -> None:
+        """Even a fully truncated model should stay clickable.
+
+        Covers both narrow rungs: a left-truncated tail, and the bare ellipsis
+        that a single content cell leaves room for.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "claude-opus-4"
+            label.effort = "high"
+            label.styles.width = width
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {expected: ("model", False)}
 
 
 class TestConnectionIndicator:

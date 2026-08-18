@@ -148,7 +148,7 @@ function componentFromBranch(ref) {
 }
 
 function parseReleaseTitle(title) {
-  const match = /^release\(([^()\s]+)\): ([0-9A-Za-z][0-9A-Za-z.+-]*)$/.exec(title ?? '');
+  const match = /^release\(`([^()\s]+)`\): `([0-9A-Za-z][0-9A-Za-z.+-]*)`$/.exec(title ?? '');
   return match ? { component: match[1], version: match[2] } : null;
 }
 
@@ -183,7 +183,7 @@ function isReleaseBranchPr(pr, registry = componentRegistry()) {
 
 // Resolve which package a release PR is for, or null if it is not one. The
 // component comes from the head ref and must both exist in the registry and match
-// the `release(<component>): <version>` title, so the branch and title have to
+// the release(`<component>`): `<version>` title, so the branch and title have to
 // agree before any changelog path or branch ref is derived from them.
 function releaseTarget(pr, registry = componentRegistry()) {
   if (!isReleaseBranchPr(pr, registry)) return null;
@@ -1122,7 +1122,7 @@ async function checkCuratedState({
   const component = componentFromBranch(pr.head.ref);
   const version = releaseVersion(pr.title, component);
   if (version === null) {
-    core.setFailed(`The ${component} release PR title does not match the required \`release(${component}): <version>\` title`);
+    core.setFailed(`The ${component} release PR title does not match the required release(\`${component}\`): \`<version>\` title`);
     return { status: 'invalid-title' };
   }
   const { changelogPath } = targetForComponent(component);

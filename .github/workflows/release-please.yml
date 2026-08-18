@@ -161,11 +161,11 @@ jobs:
             echo "::warning::Commit message is empty — no release will be triggered."
           fi
 
-          # Extract version from release commit message: "release(component): X.Y.Z"
+          # Extract version from release commit message: "release(`component`): `X.Y.Z`"
           # [^ ]+ stops at the first space to avoid capturing trailing PR refs like "(#1234)"
           # NOTE: separate-pull-requests=true ensures one release commit per workflow run,
           # so a single version output is correct — each package triggers its own run.
-          RELEASE_VERSION=$(echo "$COMMIT_MSG" | sed -nE 's/^release\([^)]+\): +([^ ]+).*/\1/p')
+          RELEASE_VERSION=$(echo "$COMMIT_MSG" | sed -nE 's/^release\(`?[^)`]+`?\): +`?([^ `]+)`?.*/\1/p')
           echo "release-version=${RELEASE_VERSION}" >> "$GITHUB_OUTPUT"
 
           if [ -n "$RELEASE_VERSION" ]; then
@@ -189,7 +189,7 @@ jobs:
           # check after the last package below).
           ANY_PACKAGE=false
 
-          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-cli\):"; then
+          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`deepagents-cli`\):"; then
             echo "cli-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "CLI release detected: $COMMIT_MSG"
@@ -197,7 +197,7 @@ jobs:
             echo "cli-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents\):"; then
+          if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`deepagents`\):"; then
             echo "sdk-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "SDK release detected: $COMMIT_MSG"
@@ -205,7 +205,7 @@ jobs:
             echo "sdk-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/acp/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-acp\):"; then
+          if echo "$CHANGED" | grep -q "^libs/acp/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`deepagents-acp`\):"; then
             echo "acp-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "ACP release detected: $COMMIT_MSG"
@@ -213,7 +213,7 @@ jobs:
             echo "acp-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/code/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-code\):"; then
+          if echo "$CHANGED" | grep -q "^libs/code/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`deepagents-code`\):"; then
             echo "code-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "Deep Agents Code release detected: $COMMIT_MSG"
@@ -221,7 +221,7 @@ jobs:
             echo "code-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/talon/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-talon\):"; then
+          if echo "$CHANGED" | grep -q "^libs/talon/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`deepagents-talon`\):"; then
             echo "talon-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "Deep Agents Talon release detected: $COMMIT_MSG"
@@ -229,7 +229,7 @@ jobs:
             echo "talon-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
+          if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`langchain-daytona`\):"; then
             echo "daytona-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "Daytona release detected: $COMMIT_MSG"
@@ -237,7 +237,7 @@ jobs:
             echo "daytona-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/partners/modal/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-modal\):"; then
+          if echo "$CHANGED" | grep -q "^libs/partners/modal/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`langchain-modal`\):"; then
             echo "modal-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "Modal release detected: $COMMIT_MSG"
@@ -245,7 +245,7 @@ jobs:
             echo "modal-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/partners/runloop/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-runloop\):"; then
+          if echo "$CHANGED" | grep -q "^libs/partners/runloop/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`langchain-runloop`\):"; then
             echo "runloop-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "Runloop release detected: $COMMIT_MSG"
@@ -253,7 +253,7 @@ jobs:
             echo "runloop-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/partners/vercel/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-vercel-sandbox\):"; then
+          if echo "$CHANGED" | grep -q "^libs/partners/vercel/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`langchain-vercel-sandbox`\):"; then
             echo "vercel-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "Vercel release detected: $COMMIT_MSG"
@@ -261,7 +261,7 @@ jobs:
             echo "vercel-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-quickjs\):"; then
+          if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(`langchain-quickjs`\):"; then
             echo "quickjs-release=true" >> "$GITHUB_OUTPUT"
             ANY_PACKAGE=true
             echo "QuickJS release detected: $COMMIT_MSG"
@@ -443,8 +443,8 @@ jobs:
           # Matching is `release.yml` run displayTitle == release PR title. That
           # holds only because two independently-maintained templates render
           # byte-identically: release-please-config.json's
-          # `pull-request-title-pattern` ("release(${component}): ${version}") and
-          # release.yml's `run-name` ("release(<package>): <version>"), with
+          # `pull-request-title-pattern` ("release(`${component}`): `${version}`") and
+          # release.yml's `run-name` ("release(`<package>`): `<version>`"), with
           # component == the dispatched package. This is the same run-name
           # coupling that `find_run_url` (in the trigger-releases job) reconstructs
           # from parts and warns about — see its lock-step comment. If either
@@ -937,8 +937,8 @@ jobs:
               | . as $pr
               | ($pr.headBranchName | ltrimstr($prefix)) as $component
               | select($component != "")
-              | select($pr.title | startswith("release(" + $component + "): "))
-              | select($pr.title | test("^release\\([^()]+\\): [0-9A-Za-z][0-9A-Za-z.+-]*$"))
+              | select($pr.title | startswith("release(`" + $component + "`): `"))
+              | select($pr.title | test("^release\\(`[^()]+`\\): `[0-9A-Za-z][0-9A-Za-z.+-]*`$"))
               | $pr.number' <<< "$RELEASE_PRS"); then
             echo "::error::Failed to parse release-please prs output for curated-notes dispatch."
             exit 1
@@ -1070,7 +1070,7 @@ jobs:
 
           # Recover the URL of a dispatched run. The workflow_dispatch API does
           # not return the created run's id, so we correlate on release.yml's
-          # `run-name`, which renders as "release(<package>): <version>". This
+          # `run-name`, which renders as "release(`<package>`): `<version>`". This
           # string MUST stay in lock-step with release.yml's `run-name`: if that
           # template changes, the jq $title below stops matching and correlation
           # silently always-misses (the best-effort warning fires, nothing else
@@ -1089,7 +1089,7 @@ jobs:
               --created ">=$started" \
               --limit 50 \
               --json displayTitle,url,createdAt 2>/dev/null \
-            | jq -r --arg title "release(${package}): ${VERSION}" \
+            | jq -r --arg title "release(\`${package}\`): \`${VERSION}\`" \
                 'map(select(.displayTitle == $title)) | sort_by(.createdAt) | last | .url // empty' \
               2>/dev/null || true
           }
@@ -1206,7 +1206,7 @@ jobs:
               if [ -z "$url" ]; then
                 continue
               fi
-              links+=$'\n\n'"- [\`release(${package}): ${VERSION}\`](${url})"
+              links+=$'\n\n'"- [release(\`${package}\`): \`${VERSION}\`](${url})"
               linked=$((linked + 1))
             done
 

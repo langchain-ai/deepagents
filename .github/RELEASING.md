@@ -243,7 +243,7 @@ Do **not** add a new managed package to the manifest at `0.0.1` unless `0.0.1` h
 The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects merged release PRs by checking two conditions on the merge commit:
 
 1. The package's `CHANGELOG.md` was modified (e.g., `libs/cli/CHANGELOG.md` for the CLI)
-2. The commit message matches the `release(<component>): <version>` pattern
+2. The commit message matches the release(`<component>`): `<version>` pattern
 
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
 
@@ -537,7 +537,7 @@ Pass only `--notes-file` when editing. Flags such as `--tag`, `--target`, `--pre
 
 ### Promoting a pre-release to GA
 
-After validating the final pre-release stage, merge the pending release PR (e.g., `release(deepagents-code): 0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps are needed.
+After validating the final pre-release stage, merge the pending release PR (e.g., release(`deepagents-code`): `0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps are needed.
 
 If no release PR exists yet (e.g., no releasable commits since the last GA, which is rare), you can force one with a package-scoped `Release-As` override. Do **not** use an empty commit on `main`: release-please assigns commits to packages by the file paths they change, not by the commit scope string. A commit titled `chore(code): ...` is not enough on its own! It must also touch a file under `libs/code` so release-please knows the override belongs to `deepagents-code` (instead of another managed package).
 
@@ -657,7 +657,7 @@ When the new line is ready to become `main`:
 
 ### Maintenance branch (patching the old line after cutover)
 
-After `main` adopts the new line, cut a `vX.Y` branch from the **last release commit** of the old line (e.g. branch `v0.6` from the `release(deepagents): 0.6.N` merge commit). Branching from the release commit means the latest `0.6` tag is its ancestor, so version math stays on the `0.6.x` line.
+After `main` adopts the new line, cut a `vX.Y` branch from the **last release commit** of the old line (e.g. branch `v0.6` from the release(`deepagents`): `0.6.N` merge commit). Branching from the release commit means the latest `0.6` tag is its ancestor, so version math stays on the `0.6.x` line.
 
 - **Backport** fixes by landing them on `main` first, then cherry-picking onto `vX.Y` with the conventional-commit message intact.
 - **Release** from the branch with [Manual Release](#manual-release) + `dangerous-nonmain-release` (its stated purpose is backports): bump the version files on the branch, then dispatch `🚀 Package Release` with that branch, package, version, and `dangerous-nonmain-release` ✓. It is usually rare to need to release old versions so these steps remain manual.
@@ -700,7 +700,7 @@ A subtler sibling of the empty-commit case. release-please scopes a commit to a 
 
 The `release_please_scope_check.yml` workflow ([`.github/scripts/release/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/release/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. Applying the label posts a loud bypass warning that lists every touched component — bypassing does **not** stop release-please from opening those release PRs. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
 
-After merge, `release_please_fanout_watch.yml` is a safety net: if an open `release(<component>):` PR's package path only changed lockfiles on `main` since the last released SHA, it sticky-comments that release PR and fails an advisory check so the fan-out is noticed within minutes. Recovery still follows [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
+After merge, `release_please_fanout_watch.yml` is a safety net: if an open release(`<component>`): PR's package path only changed lockfiles on `main` since the last released SHA, it sticky-comments that release PR and fails an advisory check so the fan-out is noticed within minutes. Recovery still follows [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
 
 ### Multi-component fan-out
 
@@ -717,7 +717,7 @@ When a `feat`/`fix` (etc.) also edits non-lockfile files under other managed pac
 
 ### Releasing a new line ahead of its dependents
 
-Local development installs sibling packages as editable path dependencies via `[tool.uv.sources]`, which hides whether published dependency ranges would resolve for real users installing from PyPI. The `📦 Check Release Dependencies` workflow closes that gap on `release(...)` PRs: it strips local sources and runs `uv pip compile --no-sources --universal --prerelease allow --all-extras` against PyPI for each changed release manifest, failing when the public install graph is unsatisfiable.
+Local development installs sibling packages as editable path dependencies via `[tool.uv.sources]`, which hides whether published dependency ranges would resolve for real users installing from PyPI. The `📦 Check Release Dependencies` workflow closes that gap on release(`...`): `...` PRs: it strips local sources and runs `uv pip compile --no-sources --universal --prerelease allow --all-extras` against PyPI for each changed release manifest, failing when the public install graph is unsatisfiable.
 
 When cutting a new major/minor line of a core package, it is normal for the release PR to be red on this check even with correct metadata: the branch already opens sibling upper bounds and floors in-tree, but **already-published** dependents on PyPI still reject the new line until they cut their own releases. In that case:
 
@@ -761,12 +761,12 @@ Notes:
 - Place the block at the bottom of the PR body, after a horizontal rule.
 - To produce multiple changelog entries from one PR, separate corrected messages by a **blank line** with each starting `type(scope):`, or wrap each in `BEGIN_NESTED_COMMIT`/`END_NESTED_COMMIT` markers — release-please's splitter requires one of these forms; a bare newline between messages is parsed as a single commit's body.
 - Only effective with **squash merges**. release-please attaches the override to the squash commit by matching it to the PR's `merge_commit_sha`; for plain-merge or rebase-merge strategies the per-branch commits have no PR association and the override is ignored.
-- Effect lands when release-please next syncs the open release PR (push to `main` or manual workflow dispatch). Verify the entry moved/disappeared in the corresponding `release(<component>): X.Y.Z` PR.
+- Effect lands when release-please next syncs the open release PR (push to `main` or manual workflow dispatch). Verify the entry moved/disappeared in the corresponding release(`<component>`): `X.Y.Z` PR.
 - Update via `gh pr edit <num> --body-file <file>` to avoid shell-escaping the multi-line body. (`gh api -f body=@<file>` does **not** work — `-f` writes the literal string `@<file>` rather than reading the file.)
 
 ### Reverting a Merged-but-Unreleased PR
 
-When a PR has merged to `main` but its `release(<component>): X.Y.Z` PR has **not** yet shipped, the bad commit is sitting in the open release PR's changelog. Pick a path based on whether the change should appear in the eventual release notes. (For commits that already shipped, see [Yanking a Release](#yanking-a-release) instead — and ship a follow-up `revert:` patch via the standard flow.)
+When a PR has merged to `main` but its release(`<component>`): `X.Y.Z` PR has **not** yet shipped, the bad commit is sitting in the open release PR's changelog. Pick a path based on whether the change should appear in the eventual release notes. (For commits that already shipped, see [Yanking a Release](#yanking-a-release) instead — and ship a follow-up `revert:` patch via the standard flow.)
 
 #### Path A — Hide and Revert (Quiet)
 
@@ -793,7 +793,7 @@ Use when the original commit is a mistake the changelog should not record (broke
 
    (This repo squash-merges, so `<merge_sha>` is a single-parent commit — no `-m` flag needed.)
 
-3. **Wait for release-please to rebase the open release PR** on the next push to `main` (or dispatch the workflow manually). Verify the entry has disappeared from the corresponding `release(<component>): X.Y.Z` PR's rendered body before merging it.
+3. **Wait for release-please to rebase the open release PR** on the next push to `main` (or dispatch the workflow manually). Verify the entry has disappeared from the corresponding release(`<component>`): `X.Y.Z` PR's rendered body before merging it.
 
 #### Path B — `revert:` with Audit Trail
 
@@ -810,7 +810,7 @@ Use when something measurable has already happened off `main` (downstream consum
 
 2. **Merge the revert PR.**
 
-3. **Wait for release-please to rebase the open release PR** on the next push to `main` (or dispatch the workflow manually). Verify the corresponding `release(<component>): X.Y.Z` PR's rendered body now contains both the original entry and a `Reverted Changes` entry before merging it.
+3. **Wait for release-please to rebase the open release PR** on the next push to `main` (or dispatch the workflow manually). Verify the corresponding release(`<component>`): `X.Y.Z` PR's rendered body now contains both the original entry and a `Reverted Changes` entry before merging it.
 
 #### Don'ts
 
@@ -850,7 +850,7 @@ If a release PR shows `autorelease: pending` after the release workflow ran, the
 
 ```bash
 # Find the PR number for the release commit (<PACKAGE> = package name from Managed Packages table)
-gh pr list --state merged --search "release(<PACKAGE>)" --limit 5
+gh pr list --state merged --search 'release(`<PACKAGE>`)' --limit 5
 
 # Update the label
 gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
@@ -966,7 +966,7 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 **The actual PR commits** are only:
 
-- The release commit (e.g., `release(deepagents): 0.5.1` or `release(deepagents-cli): 0.0.35`)
+- The release commit (e.g., release(`deepagents`): `0.5.1` or release(`deepagents-cli`): `0.0.35`)
 - The lockfile update commit (e.g., `chore: update lockfiles`)
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.

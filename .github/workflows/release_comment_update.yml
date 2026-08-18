@@ -37,7 +37,7 @@
 #   main). To name the published artifacts, the release.yml runs dispatched by
 #   the pipeline are re-discovered on the same correlation key
 #   `trigger-releases` uses for the original comment: release.yml's
-#   `run-name`, which renders exactly `release(<package>): <version>` (parsed
+#   `run-name`, which renders exactly release(`<package>`): `<version>` (parsed
 #   here from the release-please run's own title), restricted to
 #   `workflow_dispatch` runs created at or after the release-please run
 #   started. It diverges from `find_run_url` in one deliberate way: that
@@ -164,7 +164,7 @@ jobs:
 
           # Only runs that processed a merged release PR could have produced a
           # dispatch comment to follow up on. The display title for those is
-          # "release(<component>): <version> (#<pr>)"; maintenance runs that
+          # "release(`<component>`): `<version>` (#<pr>)"; maintenance runs that
           # merely opened/updated release PRs carry their triggering commit's
           # subject, which does not match.
           # The pattern lives in a variable because `[[ =~ ]]` word-splits an
@@ -177,7 +177,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # e.g. "release(deepagents-code): 0.5.0" — the exact title
+          # e.g. "release(`deepagents-code`): `0.5.0`" — the exact title
           # release.yml's run-name renders for each dispatched run.
           release_title="${BASH_REMATCH[1]}"
 
@@ -214,7 +214,7 @@ jobs:
           # already finished.
           created=$(date -u -d "$CREATED_AT" +%Y-%m-%dT%H:%M:%SZ)
 
-          # Match on the exact run title ("release(<package>): <version>", the
+          # Match on the exact run title ("release(`<package>`): `<version>`", the
           # release.yml run-name), the same correlation key find_run_url uses,
           # and on `event=workflow_dispatch` for the same reason it does: to
           # keep an unrelated run that happens to share a title from being
@@ -294,9 +294,9 @@ jobs:
           set -euo pipefail
 
           # Build one line per dispatched run, e.g.
-          #   - ✅ `release(deepagents-acp): 0.0.10` — published to PyPI (<url>)
-          #   - ⏹️ `release(deepagents): 0.5.0` — cancelled before publish (<url>)
-          #   - ❌ `release(deepagents-code): 0.5.0` — failed (conclusion: `failure`) (<url>)
+          #   - ✅ ``release(`deepagents-acp`): `0.0.10` `` — published to PyPI (<url>)
+          #   - ⏹️ ``release(`deepagents`): `0.5.0` `` — cancelled before publish (<url>)
+          #   - ❌ ``release(`deepagents-code`): `0.5.0` `` — failed (conclusion: `failure`) (<url>)
           #
           # RUNS rows are TSV: name <tab> conclusion <tab> url. The
           # re-discovery step polls until every run concludes, so the
@@ -319,12 +319,15 @@ jobs:
           for name, conclusion, url in rows:
               if not conclusion:
                   sys.exit(f"::error::run {url} has no conclusion; the poll loop exited early")
+              # The run name carries literal backticks from release.yml's
+              # run-name (release(`<pkg>`): `<version>`); double backticks keep
+              # the title a single Markdown code span.
               if conclusion == "success":
-                  out.append(f"- ✅ `{name}` — published to PyPI (<{url}>)")
+                  out.append(f"- ✅ ``{name}`` — published to PyPI (<{url}>)")
               elif conclusion == "cancelled":
-                  out.append(f"- ⏹️ `{name}` — cancelled before publish (<{url}>)")
+                  out.append(f"- ⏹️ ``{name}`` — cancelled before publish (<{url}>)")
               else:
-                  out.append(f"- ❌ `{name}` — failed (conclusion: `{conclusion}`) (<{url}>)")
+                  out.append(f"- ❌ ``{name}`` — failed (conclusion: `{conclusion}`) (<{url}>)")
           print("\n".join(out))
           ')
 

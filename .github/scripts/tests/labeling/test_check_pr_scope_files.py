@@ -152,10 +152,10 @@ def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
     therefore only pass via the release bypass, not ordinary scope coverage —
     deleting the early-return in `find_offenders` makes this test fail.
     """
-    assert is_release_title("release(deepagents-code): 0.1.22")
+    assert is_release_title("release(`deepagents-code`): `0.1.22`")
     assert (
         find_offenders(
-            "release(deepagents-code): 0.1.22",
+            "release(`deepagents-code`): `0.1.22`",
             [
                 "libs/code/deepagents_code/_version.py",
                 "libs/cli/deepagents_cli/_version.py",
@@ -213,8 +213,8 @@ def test_unmanaged_package_artifacts_do_not_trigger_release_bypass() -> None:
 
     assert not is_release_file("libs/evals/pyproject.toml")
     assert not is_release_file("libs/evals/deepagents_evals/_version.py")
-    assert not is_release_pr_change("release(deepagents-code): 0.1.22", changed)
-    assert find_offenders("release(deepagents-code): 0.1.22", changed, config) == [
+    assert not is_release_pr_change("release(`deepagents-code`): `0.1.22`", changed)
+    assert find_offenders("release(`deepagents-code`): `0.1.22`", changed, config) == [
         {"package": "evals", "dirs": ["libs/evals/"]}
     ]
 
@@ -244,7 +244,7 @@ def test_release_pr_change_fails_closed_on_malformed_release_config(tmp_path) ->
     bad.write_text(json.dumps({"packages": {}}), encoding="utf-8")
     with pytest.raises(ValueError, match="no non-empty 'packages' map"):
         is_release_pr_change(
-            "release(deepagents-code): 0.1.22",
+            "release(`deepagents-code`): `0.1.22`",
             ["libs/code/deepagents_code/_version.py"],
             release_config_path=bad,
         )
@@ -261,7 +261,7 @@ def test_release_uv_lock_only_still_validates_release_config(tmp_path) -> None:
     bad.write_text("{not json", encoding="utf-8")
     with pytest.raises(ValueError, match="could not read release-please config"):
         is_release_pr_change(
-            "release(deepagents-code): 0.1.22",
+            "release(`deepagents-code`): `0.1.22`",
             ["libs/code/uv.lock", "libs/cli/uv.lock"],
             release_config_path=bad,
         )
@@ -277,7 +277,7 @@ def test_main_malformed_release_config_fails_closed_and_attributes_correctly(
     release.write_text(json.dumps({"packages": {}}), encoding="utf-8")
 
     rc = main(
-        "release(deepagents-code): 0.1.22",
+        "release(`deepagents-code`): `0.1.22`",
         ["libs/code/deepagents_code/_version.py"],
         config_path=labeler,
         release_config_path=release,
@@ -298,7 +298,7 @@ def test_main_uv_lock_only_fails_closed_on_bad_release_config(capsys, tmp_path) 
     release.write_text("{not json", encoding="utf-8")
 
     rc = main(
-        "release(deepagents-code): 0.1.22",
+        "release(`deepagents-code`): `0.1.22`",
         ["libs/code/uv.lock", "libs/cli/uv.lock"],
         config_path=labeler,
         release_config_path=release,
@@ -321,7 +321,7 @@ def test_release_pr_change_covers_repo_wide_lockfiles() -> None:
     assert is_release_file("examples/async-subagent-server/uv.lock")
     assert is_release_file("examples/llm-wiki/uv.lock")
     assert is_release_pr_change(
-        "release(langchain-quickjs): 0.3.1",
+        "release(`langchain-quickjs`): `0.3.1`",
         [
             ".release-please-manifest.json",
             "examples/async-subagent-server/uv.lock",
@@ -349,8 +349,8 @@ def test_release_title_ignores_lockfile_churn_for_other_package_dirs() -> None:
     ]
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
 
-    assert not is_release_pr_change("release(deepagents-code): 0.1.23", changed)
-    assert find_offenders("release(deepagents-code): 0.1.23", changed, config) == []
+    assert not is_release_pr_change("release(`deepagents-code`): `0.1.23`", changed)
+    assert find_offenders("release(`deepagents-code`): `0.1.23`", changed, config) == []
 
 
 def test_release_title_with_mixed_files_does_not_bypass() -> None:
@@ -378,12 +378,12 @@ def test_release_bypass_does_not_validate_component() -> None:
 
 
 def test_is_release_title_boundaries() -> None:
-    """Only `release(<scope>):` shapes trigger the bypass title gate."""
-    assert is_release_title("release(cli): 1.0.0")
+    """Only release(`<scope>`): shapes trigger the bypass title gate."""
+    assert is_release_title("release(`cli`): `1.0.0`")
     assert is_release_title("release(): 1.0.0")  # empty scope still matches
     assert not is_release_title("release: 1.0.0")  # scope required
     assert not is_release_title("release(scope)!: 1.0.0")  # breaking marker excluded
-    assert not is_release_title("  release(cli): 1.0.0")  # anchored; no leading ws
+    assert not is_release_title("  release(`cli`): `1.0.0`")  # anchored; no leading ws
     assert not is_release_title("Release(cli): 1.0.0")  # case-sensitive
 
 
@@ -454,7 +454,7 @@ def test_main_release_bypass_validates_labeler_config(capsys, tmp_path) -> None:
         encoding="utf-8",
     )
     rc = main(
-        "release(deepagents-code): 0.1.22",
+        "release(`deepagents-code`): `0.1.22`",
         ["libs/code/uv.lock"],
         config_path=config_path,
     )
@@ -516,7 +516,7 @@ def test_main_release_bypass_emits_notice(capsys, tmp_path) -> None:
     config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
 
     rc = main(
-        "release(deepagents-code): 0.1.22",
+        "release(`deepagents-code`): `0.1.22`",
         ["libs/code/uv.lock", "libs/evals/uv.lock"],
         config_path=config_path,
     )

@@ -2,7 +2,7 @@
 
 Post-merge safety net for the pre-merge gates in
 `release_please_scope_check.yml`. Even when a bump-worthy multi-package PR
-slips through, this report surfaces open `release(<component>):` PRs whose
+slips through, this report surfaces open release(`<component>`): PRs whose
 component path — relative to the last *released package version* in
 `.release-please-manifest.json` — only changed lockfiles on `main`.
 

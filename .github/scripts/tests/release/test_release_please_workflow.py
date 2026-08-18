@@ -405,8 +405,8 @@ def test_every_component_is_wired_for_detection_and_dispatch() -> None:
 
     for path, meta in packages.items():
         component = meta["component"]
-        assert f"release\\({component}\\)" in detect, (
-            f"detect-release-commit does not match release({component})"
+        assert f"release\\(`{component}`\\)" in detect, (
+            f"detect-release-commit does not match release(`{component}`)"
         )
         changelog = f"^{path}/{meta['changelog-path']}$"
         assert changelog in detect, (

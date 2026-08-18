@@ -38,8 +38,10 @@
 #   1. The 'Type' must start with a lowercase letter.
 #   2. Breaking changes: append "!" after type/scope (e.g., feat(sdk)!: drop x support)
 #   3. When releasing (updating the pyproject.toml and uv.lock), the commit message
-#      should be: `release(scope): x.y.z` (e.g., `release(deepagents): 1.2.0` with no
-#      body, footer, or preceding/following text).
+#      should be: release(`scope`): `x.y.z` (e.g., release(`deepagents`): `1.2.0`
+#      with no body, footer, or preceding/following text). The auto-generated
+#      release-please title wraps the component and version in code fences, so it
+#      is exempt from the scope allowlist below (see the step's `if:`).
 #
 # Enforces Conventional Commits format for pull request titles to maintain a clear and
 # machine-readable change history.
@@ -89,6 +91,11 @@ jobs:
           fi
       - name: "✅ Validate Conventional Commits Format"
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
+        # release-please titles wrap the component in backticks
+        # (release(`deepagents-code`): `0.5.0`), which is not one of the
+        # allowlisted scopes below; the release pipeline validates those titles
+        # itself, so skip the scope check for them.
+        if: "!startsWith(github.event.pull_request.title, 'release(`')"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

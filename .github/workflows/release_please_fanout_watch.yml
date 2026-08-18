@@ -3,7 +3,7 @@
 # Why this exists:
 #   Pre-merge gates (`release_please_scope_check.yml`, etc.) should catch most
 #   multi-component / lockfile-only fan-outs, but bypass labels and race windows
-#   still happen. When release-please opens a `release(<component>):` PR for a
+#   still happen. When release-please opens a release(`<component>`): PR for a
 #   package whose only unreleased path changes on main are lockfiles, this job
 #   sticky-comments that release PR within minutes and fails the advisory check
 #   so someone notices before release time.

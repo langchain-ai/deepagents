@@ -30,7 +30,7 @@ function changelog(section = GENERATED_SECTION) {
 function releasePr(overrides = {}) {
   return {
     number: 123,
-    title: `release(deepagents-code): ${VERSION}`,
+    title: `release(\`deepagents-code\`): \`${VERSION}\``,
     state: 'open',
     draft: false,
     body: `Release notes preview\n\n${GENERATED_SECTION}\n_End release notes preview._\n`,
@@ -223,8 +223,8 @@ function tempWorkspace(section = GENERATED_SECTION) {
 }
 
 test('identifies only an exact release title and branch pair', () => {
-  assert.equal(releaseNotes.releaseVersion(`release(deepagents-code): ${VERSION}`, COMPONENT), VERSION);
-  assert.equal(releaseNotes.releaseVersion(`release(deepagents): ${VERSION}`, COMPONENT), null);
+  assert.equal(releaseNotes.releaseVersion(`release(\`deepagents-code\`): \`${VERSION}\``, COMPONENT), VERSION);
+  assert.equal(releaseNotes.releaseVersion(`release(\`deepagents\`): \`${VERSION}\``, COMPONENT), null);
   assert.equal(releaseNotes.isReleasePr(releasePr()), true);
   assert.equal(releaseNotes.isReleasePr(releasePr({ head: { ...releasePr().head, ref: `${RELEASE_BRANCH}-extra` } })), false);
   assert.equal(releaseNotes.isReleasePr(releasePr({ base: { ref: 'v0.1', repo: { full_name: 'langchain-ai/deepagents' } } })), false);
@@ -241,8 +241,8 @@ test('extracts and replaces exactly one version section', () => {
 });
 
 test('release version and section extraction accept prerelease and build metadata', () => {
-  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 0.2.0-rc.1', COMPONENT), '0.2.0-rc.1');
-  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 1.0.0+build.5', COMPONENT), '1.0.0+build.5');
+  assert.equal(releaseNotes.releaseVersion('release(`deepagents-code`): `0.2.0-rc.1`', COMPONENT), '0.2.0-rc.1');
+  assert.equal(releaseNotes.releaseVersion('release(`deepagents-code`): `1.0.0+build.5`', COMPONENT), '1.0.0+build.5');
   const version = '0.2.0-rc.1';
   const heading = `## [${version}](https://example.test) (2026-07-09)`;
   const doc = `# Changelog\n\n${heading}\n\n* Prerelease note\n\n## [0.1.34](https://example.test) (2026-07-01)\n\n* Older\n`;
@@ -760,7 +760,7 @@ test('required check binds to the expected head and rejects malformed target tit
   await releaseNotes.checkCuratedState({ github: staleHead.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: staleCore, number: 123, ...BOT_AUTH, expectedHead: APPLIED_HEAD });
   assert.match(staleCore.failed, /head changed before/);
 
-  const malformed = makeGithub({ pr: releasePr({ title: `release(deepagents): ${VERSION}` }) });
+  const malformed = makeGithub({ pr: releasePr({ title: `release(\`deepagents\`): \`${VERSION}\`` }) });
   const malformedCore = makeCore();
   await releaseNotes.checkCuratedState({ github: malformed.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: malformedCore, number: 123, ...BOT_AUTH });
   assert.match(malformedCore.failed, /title does not match/);
@@ -883,7 +883,7 @@ test('draft, unmanaged branch, and bypass label pass without metadata', async ()
     // Not a component release-please manages, so the gate does not apply. Every
     // managed component IS gated — see the companion test below.
     releasePr({
-      title: `release(not-a-package): ${VERSION}`,
+      title: `release(\`not-a-package\`): \`${VERSION}\``,
       head: { ...releasePr().head, ref: 'release-please--branches--main--components--not-a-package' },
     }),
     releasePr({ labels: [{ name: releaseNotes.BYPASS_LABEL }] }),
@@ -1976,7 +1976,7 @@ const OTHER_BRANCH = `${releaseNotes.RELEASE_BRANCH_PREFIX}${OTHER_COMPONENT}`;
 function prForComponent(component, overrides = {}) {
   const base = releasePr();
   return releasePr({
-    title: `release(${component}): ${VERSION}`,
+    title: `release(\`${component}\`): \`${VERSION}\``,
     head: { ...base.head, ref: `${releaseNotes.RELEASE_BRANCH_PREFIX}${component}` },
     ...overrides,
   });
@@ -2042,15 +2042,15 @@ test('rejects a head ref that is not a managed component', () => {
 
 test('rejects a release PR whose title and branch name different components', () => {
   const mismatched = prForComponent(COMPONENT, {
-    title: `release(${OTHER_COMPONENT}): ${VERSION}`,
+    title: `release(\`${OTHER_COMPONENT}\`): \`${VERSION}\``,
   });
   // The branch is a real managed component, so the branch check alone passes...
   assert.equal(releaseNotes.isReleaseBranchPr(mismatched), true);
   // ...but the title must name that same component before a target is derived.
   assert.equal(releaseNotes.releaseTarget(mismatched), null);
   assert.equal(releaseNotes.isReleasePr(mismatched), false);
-  assert.equal(releaseNotes.releaseVersion(`release(${OTHER_COMPONENT}): ${VERSION}`, COMPONENT), null);
-  assert.equal(releaseNotes.releaseVersion(`release(${OTHER_COMPONENT}): ${VERSION}`, OTHER_COMPONENT), VERSION);
+  assert.equal(releaseNotes.releaseVersion(`release(\`${OTHER_COMPONENT}\`): \`${VERSION}\``, COMPONENT), null);
+  assert.equal(releaseNotes.releaseVersion(`release(\`${OTHER_COMPONENT}\`): \`${VERSION}\``, OTHER_COMPONENT), VERSION);
 });
 
 test('a curated draft for one component does not satisfy another component', async () => {

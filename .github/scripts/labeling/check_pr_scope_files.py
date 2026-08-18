@@ -169,7 +169,12 @@ def parse_title_scopes(title: str) -> tuple[str, ...]:
     match = _TITLE_RE.match(title)
     if not match or not match.group(1):
         return ()
-    return tuple(scope.strip() for scope in match.group(1).split(",") if scope.strip())
+    # Strip code-fence backticks: release-please titles wrap the component
+    # (release(`deepagents-code`): `1.2.0`), and the bare component is what the
+    # scope->label map keys on.
+    return tuple(
+        scope.strip().strip("`") for scope in match.group(1).split(",") if scope.strip()
+    )
 
 
 def _package_rules(config: dict[str, Any]) -> list[dict[str, str]]:

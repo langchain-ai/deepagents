@@ -14,8 +14,8 @@
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "🚀 Package Release"
-run-name: "release(${{ inputs.package-override || inputs.package }}):${{
-  inputs.version && format(' {0}', inputs.version) || '' }}"
+run-name: "release(`${{ inputs.package-override || inputs.package }}`):${{
+  inputs.version && format(' `{0}`', inputs.version) || '' }}"
 on:
   workflow_dispatch:
     inputs:
@@ -239,7 +239,7 @@ jobs:
 
           if [ -z "$INPUT_SHA" ]; then
             if [ "$IS_DANGEROUS" = "true" ]; then
-              # Alpha/hotfix branches don't have a "release(pkg): X.Y.Z" commit; fall
+              # Alpha/hotfix branches don't have a "release(`pkg`): `X.Y.Z`" commit; fall
               # back to the dispatched HEAD. See RELEASING.md > Alpha / Beta / Pre-release.
               SHA="$GITHUB_SHA_FALLBACK"
               echo "release-sha unset; dangerous-nonmain-release=true -> using github.sha=$SHA"
@@ -1003,7 +1003,7 @@ jobs:
               --state merged \
               --label "autorelease: pending" \
               --label "release" \
-              --search "\"release($PKG_NAME)\" in:title" \
+              --search "\"release(\`$PKG_NAME\`)\" in:title" \
               --json number --jq '.[0].number // empty' 2>&1); then
               echo "::error::gh pr list failed: $LIST_OUT"
               fail_summary ""
@@ -1024,7 +1024,7 @@ jobs:
                 --state merged \
                 --label "autorelease: tagged" \
                 --label "release" \
-                --search "\"release($PKG_NAME): $VERSION\" in:title" \
+                --search "\"release(\`$PKG_NAME\`): \`$VERSION\`\" in:title" \
                 --json number --jq '.[0].number // empty' 2>&1); then
                 echo "::error::gh pr list failed while checking already-tagged releases: $TAGGED_PR"
                 fail_summary ""

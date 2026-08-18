@@ -21966,8 +21966,8 @@ class DeepAgentsApp(App):
         await self._show_model_selector()
 
     async def action_open_effort_selector(self) -> None:
-        """Open the reasoning effort picker from the status bar."""
-        await self._show_effort_selector("/effort")
+        """Queue the reasoning effort picker through the slash-command flow."""
+        await self._submit_input("/effort", "command")
 
     def _build_model_selector_screen(
         self,

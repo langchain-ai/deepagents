@@ -2555,17 +2555,17 @@ class TestStatusBarPickerActions:
 
         show_selector.assert_awaited_once_with()
 
-    async def test_effort_action_opens_effort_selector(
+    async def test_effort_action_uses_queued_command_flow(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The effort click action should reuse the `/effort` selector path."""
+        """The effort click action should preserve `/effort` queue ordering."""
         app = DeepAgentsApp()
-        show_selector = AsyncMock()
-        monkeypatch.setattr(app, "_show_effort_selector", show_selector)
+        submit_input = AsyncMock()
+        monkeypatch.setattr(app, "_submit_input", submit_input)
 
         await app.action_open_effort_selector()
 
-        show_selector.assert_awaited_once_with("/effort")
+        submit_input.assert_awaited_once_with("/effort", "command")
 
 
 class TestStartupFocus:

@@ -4600,10 +4600,7 @@ def _get_provider_kwargs(
     from deepagents_code.model_config import ModelConfig
 
     config = ModelConfig.load()
-    result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
-    base_url = config.get_base_url(provider)
-    if base_url:
-        result["base_url"] = base_url
+    result = config.get_effective_kwargs(provider, model_name=model_name)
     from deepagents_code.model_config import (
         OPTIONAL_AUTH_ENV,
         PROVIDER_API_KEY_ENV,

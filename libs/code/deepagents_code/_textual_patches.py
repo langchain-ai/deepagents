@@ -63,9 +63,11 @@ upstream.
 Imported for side effect from `app.py` before any `App()` is created.
 
 Not every Textual-internals workaround lives here: subclasses that shadow a
-private base method carry theirs inline, each flagged with a "Deliberately
-overrides/shadows Textual's private ..." note. Grep for that phrase alongside
-this module when auditing a Textual bump.
+private base method carry theirs inline. When auditing a Textual bump, grep for
+`Textual's private` and `Validated against Textual` alongside this module. Those
+two markers are a starting point rather than a complete inventory — a workaround
+can always land without one, so treat an unflagged subclass of a Textual widget
+as unaudited until you have read it.
 """
 
 from __future__ import annotations

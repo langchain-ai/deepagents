@@ -1822,14 +1822,24 @@ class TestCursorHiddenWhileUnfocused:
             await pilot.pause()
             assert text_area._draw_cursor is False
 
-            # `pilot.click` pauses between MouseDown and MouseUp, so the menu's
+            # Relies on `pilot.click` pausing before each event, so the menu's
             # deferred `on_blur` refocus lands before the mouse-up restarts the
             # blink; the phantom cursor is settled by the time `click` returns.
             await pilot.click(ChatTextArea)
             await pilot.pause()
 
+            # Pin the precondition. Without this, a `pilot` that stopped
+            # interleaving would leave the input focused, `_watch_has_focus`
+            # would hide the cursor on the later refocus, and the assertion
+            # below would pass for a reason unrelated to the fix.
+            assert text_area.has_focus is False
+
             assert app.focused is menu
             assert text_area._draw_cursor is False
+            # `_draw_cursor` alone is a 50/50 read against a regression that
+            # leaves the timer running, since it is False for half of every
+            # blink cycle. The parked timer is the deterministic signal.
+            assert text_area.blink_timer._active.is_set() is False
 
     async def test_click_without_focus_trap_shows_cursor(self) -> None:
         """A normal click still focuses the input and blinks its cursor."""
@@ -1847,12 +1857,17 @@ class TestCursorHiddenWhileUnfocused:
             await pilot.pause()
 
             assert text_area.has_focus is True
-            assert text_area._draw_cursor is True
-            # A drawn cursor is not enough. Unfocusing ran `_pause_blink`, which
-            # calls `blink_timer.pause()`; only `_restart_blink` → `reset()`
-            # re-arms it. Assert the timer itself is live, or a cursor that came
-            # back frozen solid would pass — toggling `_cursor_visible` by hand
-            # would not catch it, since that flips whether the timer runs or not.
+            # Assert the blink timer is live rather than `_draw_cursor`. Once
+            # the timer is re-armed it toggles `_cursor_visible` every
+            # `cursor_blink` interval, so `_draw_cursor` oscillates and only
+            # reads True inside a visible half-cycle. The timer state is the
+            # stable property, and it is also the only thing that distinguishes
+            # a blinking cursor from one that came back frozen solid: unfocusing
+            # ran `_pause_blink` → `blink_timer.pause()`, and `_restart_blink` →
+            # `reset()` is what re-arms it on this path. Setting `_cursor_visible`
+            # by hand would not catch a frozen timer, because
+            # `_watch__cursor_visible` only refreshes the row and never touches
+            # the timer.
             assert text_area.blink_timer._active.is_set() is True
 
     async def test_keyboard_refocus_shows_cursor(self) -> None:
@@ -1875,7 +1890,10 @@ class TestCursorHiddenWhileUnfocused:
             await pilot.pause()
 
             assert text_area.has_focus is True
-            assert text_area._draw_cursor is True
+            # The blink timer, not `_draw_cursor` — see
+            # `test_click_without_focus_trap_shows_cursor` for why the drawn
+            # state oscillates once the timer is re-armed.
+            assert text_area.blink_timer._active.is_set() is True
 
     async def test_unfocused_insert_with_blink_disabled_shows_no_cursor(self) -> None:
         """The override stays correct when blinking is turned off.
@@ -1916,6 +1934,7 @@ class TestCursorHiddenWhileUnfocused:
             await pilot.pause()
 
             assert text_area._draw_cursor is False
+            assert text_area.blink_timer._active.is_set() is False
 
 
 class TestHistoryBoundaryNavigation:

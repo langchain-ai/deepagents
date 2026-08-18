@@ -163,12 +163,14 @@ class PasteBurstTextArea(TextArea):
         that cannot accept keys.
 
         `TextArea._on_mouse_down` sets `_selecting` unconditionally, so the
-        matching mouse-up always reaches `_restart_blink()` through
-        `_end_mouse_selection`. That hits every click landing while a
-        focus-trapping widget is open: the `edit_file` approval menu re-grabs
-        focus on blur between mouse-down and mouse-up, so the click left a
-        phantom blinking cursor in the chat input. Programmatic multi-character
-        `insert()` into an unfocused input has the same effect.
+        matching mouse-up reaches `_restart_blink()` through
+        `_end_mouse_selection` unless a subclass gates the handler first (as
+        `ChatTextArea` does for refocus clicks). That covers clicks landing
+        while a focus-trapping widget is open: the `edit_file` approval menu
+        re-grabs focus on blur between mouse-down and mouse-up, so the click
+        left a phantom blinking cursor in the chat input. Programmatic
+        multi-character `insert()` into an unfocused input has the same
+        effect.
 
         `_pause_blink(visible=False)` also parks the blink timer. Textual's
         `_watch_has_focus` re-arms it when focus returns, so the cursor resumes
@@ -176,7 +178,9 @@ class PasteBurstTextArea(TextArea):
 
         Deliberately overrides Textual's private `_restart_blink`; verified
         against Textual 8.2.8. Re-verify these attribute names on every Textual
-        bump — `TestCursorHiddenWhileUnfocused` fails if this stops holding.
+        bump — the `TestCursorHiddenWhileUnfocused` classes in
+        `test_chat_input.py` and `test_inline_prompt.py` fail if this stops
+        holding.
         """
         if not self.has_focus:
             self._pause_blink(visible=False)

@@ -904,6 +904,9 @@ class TestCursorHiddenWhileUnfocused:
             await pilot.pause()
 
             assert ta._draw_cursor is False
+            # The parked timer, not just the drawn state: a regression that
+            # leaves the blink running reads False for half of every cycle.
+            assert ta.blink_timer._active.is_set() is False
 
     async def test_refocus_restores_cursor(self) -> None:
         """Focus returning to an inline prompt brings the blinking cursor back."""
@@ -917,4 +920,7 @@ class TestCursorHiddenWhileUnfocused:
             ta.focus()
             await pilot.pause()
 
-            assert ta._draw_cursor is True
+            assert ta.has_focus is True
+            # `_draw_cursor` oscillates once the timer is re-armed; assert the
+            # timer instead, which also catches a cursor frozen solid.
+            assert ta.blink_timer._active.is_set() is True

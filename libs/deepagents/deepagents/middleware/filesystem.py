@@ -2805,12 +2805,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         status_line = f"[Command {cmd_status} with exit code {response.exit_code}]"
         if response.truncated:
             status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
-        content_sample = f"{status_line}\n{response.output}"
         return _render_preview_stub(
             _TOO_LARGE_TOOL_MSG,
             ContentPreview(
-                content_sample,
-                lines_omitted="lines truncated" in response.output,
+                f"{status_line}\n{response.output}",
+                lines_omitted=offload.preview_has_truncation_marker,
                 # A `PREVIEW_LINE_CHAR_LIMIT` caveat, and the wrapper has no
                 # per-line character budget, so it never applies here. The
                 # wrapper's byte caps can still cut a shown line mid-line; it

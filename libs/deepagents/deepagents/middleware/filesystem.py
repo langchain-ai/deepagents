@@ -35,6 +35,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
@@ -91,6 +92,54 @@ from deepagents.middleware._video import (
     extract_video_frames,
     video_dependencies_available,
 )
+
+_LEGACY_TOO_LARGE_TOOL_MSG: Final = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
+
+You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
+
+You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
+
+Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
+
+{content_sample}
+"""
+"""Legacy `TOO_LARGE_TOOL_MSG` value available until `deepagents==0.9.0`."""
+
+_LEGACY_TOO_LARGE_HUMAN_MSG: Final = """Message content too large and was saved to the filesystem at: {file_path}
+
+You can read the full content using the read_file tool with pagination (offset and limit parameters).
+
+Here is a preview showing the head and tail of the content:
+
+{content_sample}
+"""
+"""Legacy `TOO_LARGE_HUMAN_MSG` value available until `deepagents==0.9.0`."""
+
+_LEGACY_LARGE_RESULT_TEMPLATES: Final = {
+    "TOO_LARGE_TOOL_MSG": _LEGACY_TOO_LARGE_TOOL_MSG,
+    "TOO_LARGE_HUMAN_MSG": _LEGACY_TOO_LARGE_HUMAN_MSG,
+}
+
+
+def __getattr__(name: str) -> str:
+    """Provide deprecated compatibility access to legacy prompt templates."""
+    if (template := _LEGACY_LARGE_RESULT_TEMPLATES.get(name)) is not None:
+        warn_deprecated(
+            since="0.7.7",
+            removal="0.9.0",
+            message=(
+                f"`{name}` was deprecated in `deepagents==0.7.7` and will be removed in "
+                "`deepagents==0.9.0`. Large-result prompt templates are internal "
+                "implementation details and should not be imported. This frozen copy "
+                "keeps the released wording; the live template now derives its preview "
+                "note from what the preview actually elided."
+            ),
+            package="deepagents",
+        )
+        return template
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
 
 # `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
 # `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF

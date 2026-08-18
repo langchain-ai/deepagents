@@ -33,6 +33,10 @@ in `backends.sandbox` so both emit identical marker text.
 Never scan preview text for this marker to detect truncation: output can
 contain a literal marker line. Producers report marker presence out of band
 instead (see `ExecuteOffloadResult.preview_has_truncation_marker`).
+
+Note: `middleware.filesystem._LEGACY_TOO_LARGE_TOOL_MSG` keeps a frozen copy of
+the old wording for a deprecated import and deliberately does not use this
+template.
 """
 
 FileType = Literal["text", "image", "audio", "video", "file"]

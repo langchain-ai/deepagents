@@ -2304,6 +2304,43 @@ async def test_short_affirmative_attaches_to_bound_ask_user_question(
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
+async def test_oversized_ask_user_question_is_excluded_from_classifier_context(
+    tmp_path: Path,
+) -> None:
+    """An unbounded prompt must not make the classifier request unavailable."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    oversized_question = "x" * 4001
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": oversized_question, "type": "text"}],
+    )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git push origin main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert oversized_question not in cast("str", classifier_message.content)
+
+
 async def test_affirmative_to_negated_question_grants_nothing(
     tmp_path: Path,
 ) -> None:

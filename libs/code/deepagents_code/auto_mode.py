@@ -58,6 +58,8 @@ from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    MAX_ASK_USER_AUTHORIZATION_QUESTION_CHARS,
+    MAX_ASK_USER_AUTHORIZATION_QUESTION_TOTAL_CHARS,
     QUESTION_TYPES,
 )
 from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
@@ -1252,6 +1254,7 @@ def _same_turn_user_answers(
     if not isinstance(questions, list) or len(questions) != len(answers):
         return []
     rows: list[dict[str, str]] = []
+    question_total_chars = 0
     for question, answer in zip(questions, answers, strict=True):
         if not answer.strip():
             continue
@@ -1259,6 +1262,14 @@ def _same_turn_user_answers(
             return []
         question_text = question.get("question")
         if not isinstance(question_text, str):
+            return []
+        question_total_chars += len(question_text)
+        if (
+            len(question_text) > MAX_ASK_USER_AUTHORIZATION_QUESTION_CHARS
+            or question_total_chars > MAX_ASK_USER_AUTHORIZATION_QUESTION_TOTAL_CHARS
+        ):
+            # Do not truncate a proposal: omitted material terms could make a
+            # short affirmative appear to authorize a different action.
             return []
         rows.append(
             {

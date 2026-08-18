@@ -235,7 +235,11 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         Args:
             tab: Tab to show.
         """
-        if self._mode == "add_marketplace":
+        if (
+            self._checking_changes
+            or self._reload_prompt
+            or self._mode == "add_marketplace"
+        ):
             return
         if self._details_mode_active():
             self._mode = "list"
@@ -826,6 +830,11 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self, event: OptionList.OptionSelected
     ) -> None:
         """Handle row activation."""
+        # Closing snapshots persisted state asynchronously. Ignore OptionList
+        # messages that arrive during that interval so a row cannot open a
+        # details view and mutate plugin state after the snapshot completes.
+        if self._checking_changes or self._reload_prompt:
+            return
         option_id = event.option.id
         if option_id is None or option_id == "empty":
             return

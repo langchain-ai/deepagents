@@ -1027,6 +1027,10 @@ if TYPE_CHECKING:
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
+    from deepagents_code.tui.modals.plugin_manager.models import (
+        PluginManagerAction,
+        PluginManagerResult,
+    )
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -3028,12 +3032,12 @@ class _ChatScroll(VerticalScroll):
         message. Scrollbar-track clicks do post `ScrollUp`/`ScrollDown`, but this
         container's own `_on_scroll_up`/`_on_scroll_down` handlers consume them
         via `event.stop()` before they can bubble to the app. Watching `scroll_y`
-        covers every input device uniformly. Validated against Textual 8.2.7.
+        covers every input device uniformly. Validated against Textual 8.2.8.
         """
 
     # The deferred-anchor logic below drives the base class through its private
     # anchor state (`_anchored`, `_anchor_released`) and mirrors the compositor's
-    # arrange-then-check ordering. Validated against Textual 8.2.7; a base-class
+    # arrange-then-check ordering. Validated against Textual 8.2.8; a base-class
     # rename or reflow change could break it silently, so `TestChatScrollAnchoring`
     # is the safety net for Textual upgrades.
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -23422,32 +23426,29 @@ class DeepAgentsApp(App):
         self,
         enabled_plugin_ids: frozenset[str],
         plugin_fingerprints: dict[str, _PluginFingerprint],
-    ) -> None:
-        """Offer a reload when plugin state changed while the manager was open.
+    ) -> bool | None:
+        """Check whether plugin state changed while the manager was open.
 
         Args:
             enabled_plugin_ids: Enabled plugin ids from before the manager opened.
             plugin_fingerprints: Plugin fingerprints from before the manager opened.
+
+        Returns:
+            Whether a reload is required, or `None` when state cannot be checked.
         """
         try:
             current_enabled_ids, current_fingerprints = await asyncio.to_thread(
                 self._snapshot_plugin_state
             )
-        except Exception:
-            # Preserve a manual reload path if state discovery fails after the
-            # modal has closed. Pending state is unknown here, so point the user
-            # at /reload without asserting that changes are pending.
-            logger.exception("Failed to check plugin state after manager close")
-            await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
-            return
-
-        if (
-            current_enabled_ids != enabled_plugin_ids
-            or self._plugin_fingerprints_changed(
-                plugin_fingerprints, current_fingerprints
+            return (
+                current_enabled_ids != enabled_plugin_ids
+                or self._plugin_fingerprints_changed(
+                    plugin_fingerprints, current_fingerprints
+                )
             )
-        ):
-            await self._offer_plugin_reload()
+        except Exception:
+            logger.exception("Failed to snapshot plugin state while closing manager")
+            return None
 
     async def _show_plugin_manager(self) -> None:
         """Open the interactive plugin manager."""
@@ -23456,30 +23457,45 @@ class DeepAgentsApp(App):
         try:
             baseline = await asyncio.to_thread(self._snapshot_plugin_state)
         except Exception:
-            # Still open the manager if the pre-open snapshot fails. Without a
-            # baseline, its close handler surfaces the check-failed notice
-            # (_PLUGIN_RELOAD_CHECK_FAILED) rather than the pending reminder.
+            # Still open the manager without a baseline. `check_changes` then
+            # returns None, which the manager reports as "check_failed" and we
+            # surface as _PLUGIN_RELOAD_CHECK_FAILED rather than the pending
+            # reload reminder.
             logger.exception("Failed to snapshot plugin state before opening manager")
             baseline = None
         else:
             if self._plugin_fingerprints is None:
                 self._plugin_fingerprints = baseline[1]
 
-        async def check_changes() -> None:
+        async def check_changes() -> bool | None:
             if baseline is None:
-                await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
-                return
+                return None
             enabled_plugin_ids, plugin_fingerprints = baseline
-            await self._check_plugin_manager_changes(
+            return await self._check_plugin_manager_changes(
                 enabled_plugin_ids, plugin_fingerprints
             )
 
-        def on_close(_result: None) -> None:
+        async def handle_close(action: PluginManagerAction) -> None:
+            if action == "reload":
+                await self._submit_input("/reload", "command")
+            elif action == "later":
+                await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
+            elif action == "check_failed":
+                await self._mount_message(AppMessage(_PLUGIN_RELOAD_CHECK_FAILED))
+            else:
+                # Static exhaustiveness guard: a new `PluginManagerAction`
+                # variant trips the type checker here instead of closing the
+                # manager with no visible outcome.
+                assert_never(action)
+
+        def on_close(result: PluginManagerResult) -> None:
+            if result is None:
+                return
             self.call_after_refresh(
                 lambda: self.run_worker(
-                    check_changes(),
+                    handle_close(result),
                     exclusive=True,
-                    group="plugin-reload-prompt",
+                    group="plugin-manager-close",
                 )
             )
 
@@ -23492,35 +23508,10 @@ class DeepAgentsApp(App):
                     if self._plugin_auto_update_started
                     else None
                 ),
+                check_reload_required=check_changes,
             ),
             on_close,
         )
-
-    async def _offer_plugin_reload(self) -> None:
-        """Offer to apply plugin changes after the manager closes."""
-        from deepagents_code.tui.widgets.plugin_reload import (
-            PluginReloadPromptScreen,
-        )
-
-        try:
-            choice = await asyncio.wait_for(
-                self._push_screen_wait(PluginReloadPromptScreen()),
-                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            logger.warning("Plugin reload prompt timed out")
-            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
-            return
-        except Exception:
-            # Modal could not be mounted; fall back to a pending reload reminder.
-            logger.exception("Failed to mount plugin reload prompt")
-            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
-            return
-
-        if choice == "reload":
-            await self._submit_input("/reload", "command")
-        else:
-            await self._mount_message(AppMessage(_PLUGIN_RELOAD_REMINDER))
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

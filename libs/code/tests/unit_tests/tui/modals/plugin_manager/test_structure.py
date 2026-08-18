@@ -107,6 +107,221 @@ async def test_plugin_manager_closes_without_mcp_reconnect() -> None:
     on_close.assert_called_once_with(None)
 
 
+async def test_plugin_manager_keeps_modal_mounted_through_reload_prompt() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def check_reload_required() -> bool:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    on_close = MagicMock()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, on_close)
+        await pilot.pause()
+        await pilot.press("escape")
+        await started.wait()
+
+        assert app.screen is screen
+        # The manager keeps its normal content painted while the check runs.
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Plugins"
+        )
+        await pilot.press("escape")
+        assert app.screen is screen
+
+        release.set()
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Reload plugins?"
+        )
+        assert "plugin skills and MCP tools" in str(
+            screen.query_one("#plugin-manager-status", Static).render()
+        )
+        # The browsing chrome is gone, so no live plugin list sits under the
+        # prompt while its bindings own enter and escape.
+        assert not screen.query_one("#plugin-manager-options", OptionList).display
+        assert not screen.query_one("#plugin-manager-search", Input).display
+        assert not screen.query_one("#plugin-manager-tabs").display
+
+        # Type-to-search must not focus the hidden filter from the prompt.
+        await pilot.press("r")
+        await pilot.pause()
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Reload plugins?"
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+    # The second escape during the check neither restarted nor cancelled it.
+    assert calls == 1
+    on_close.assert_called_once_with("reload")
+
+
+async def test_plugin_manager_reload_prompt_escape_defers() -> None:
+    async def check_reload_required() -> bool:
+        await asyncio.sleep(0)
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is screen
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == ["later"]
+
+
+@pytest.mark.parametrize(
+    ("reload_required", "outcome"),
+    [(False, None), (None, "check_failed")],
+)
+async def test_plugin_manager_check_close_outcome(
+    *, reload_required: bool | None, outcome: str | None
+) -> None:
+    async def check_reload_required() -> bool | None:
+        await asyncio.sleep(0)
+        return reload_required
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == [outcome]
+
+
+async def test_plugin_manager_check_raise_closes_with_check_failed() -> None:
+    """A raising checker still closes the manager instead of latching it."""
+
+    async def check_reload_required() -> bool:
+        await asyncio.sleep(0)
+        msg = "snapshot exploded"
+        raise RuntimeError(msg)
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    assert outcomes == ["check_failed"]
+
+
+async def test_plugin_manager_check_timeout_closes_with_check_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled check cannot hold the manager open with its keys locked out."""
+    monkeypatch.setattr(
+        "deepagents_code.tui.modals.plugin_manager._CLOSE_CHECK_TIMEOUT_SECONDS",
+        0.01,
+    )
+    release = asyncio.Event()
+
+    async def check_reload_required() -> bool:
+        await release.wait()
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+    outcomes: list[str | None] = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, outcomes.append)
+        await pilot.pause()
+        await pilot.press("escape")
+        await asyncio.sleep(0.05)
+        await pilot.pause()
+
+        assert outcomes == ["check_failed"]
+        release.set()
+
+
+async def test_plugin_manager_reload_prompt_survives_resize() -> None:
+    """Resizing must not repaint the browsing chrome under the reload prompt."""
+
+    async def check_reload_required() -> bool:
+        await asyncio.sleep(0)
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, MagicMock())
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await pilot.resize_terminal(100, 30)
+        await pilot.pause()
+
+        # A repaint from any source (resize refits the marketplace divider, and
+        # background state refreshes land the same way) must not restore the
+        # browsing chrome under the prompt's bindings.
+        screen._refresh_view()
+        await pilot.pause()
+
+        assert str(screen.query_one("#plugin-manager-title", Static).render()) == (
+            "Reload plugins?"
+        )
+        assert not screen.query_one("#plugin-manager-options", OptionList).display
+        assert not screen.query_one("#plugin-manager-tabs").display
+
+
+async def test_plugin_manager_details_escape_does_not_start_close_check() -> None:
+    """Backing out of a details view returns to the list without closing."""
+    calls = 0
+
+    async def check_reload_required() -> bool:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return True
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(check_reload_required=check_reload_required)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen, MagicMock())
+        await pilot.pause()
+        screen._mode = "plugin_details"
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert screen._mode == "list"
+        assert app.screen is screen
+
+    assert calls == 0
+
+
 async def test_plugin_search_filters_and_clears() -> None:
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     screen = PluginManagerScreen()

@@ -421,7 +421,12 @@ def load_config_toml() -> dict[str, Any]:
             return tomllib.load(f)
     except FileNotFoundError:
         return {}
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # `UnicodeDecodeError` is neither of the other two (it subclasses
+        # `ValueError`), but a file saved as UTF-16 or holding a stray byte is
+        # unreadable TOML in exactly the same way -- without it, a config that
+        # is merely mis-encoded raises out of every caller instead of falling
+        # back to defaults.
         # `exc_info=True` preserves the TOML line/column (or permission cause):
         # a corrupt file makes every option fall back to its default, so the
         # log must say *why*, not just that the read failed.
@@ -1564,6 +1569,20 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.FLOAT,
         default=COLD_CACHE_WARNING_THRESHOLD_USD_DEFAULT,
         toml_keys=("warnings", "cold_cache_min_delta_usd"),
+    ),
+    ConfigOption(
+        key="warnings.trusted_cache_endpoints",
+        group="Warnings",
+        summary=(
+            "Alternate endpoint hosts assumed to forward cache settings and "
+            "honor provider cache retention "
+            '(e.g. ["smith.langchain.com"]). Matched per exact host, so list '
+            "each subdomain you actually connect to; trusting a host trusts it "
+            "on every port. Bare hostnames or http(s) URLs; entries carrying a "
+            "user:password prefix or a non-default port are rejected."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("warnings", "trusted_cache_endpoints"),
     ),
     ConfigOption(
         key="warnings.session_cost_threshold_usd",

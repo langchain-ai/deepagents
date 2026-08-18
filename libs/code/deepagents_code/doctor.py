@@ -351,20 +351,14 @@ def _sanitize_endpoint(endpoint: str) -> str:
     return f"{parsed.scheme}://{netloc}"
 
 
-_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
-"""Host identifying LangSmith's managed (SaaS) tracing gateway.
-
-Traces sent to an endpoint whose host is `smith.langchain.com` (or a subdomain
-of it) route through the managed gateway; any other host is a self-hosted or
-dev/staging target. `app.py` keeps the same constant for its model-gateway
-key-mismatch check, but matches a raw-URL substring; this module matches the
-parsed hostname exactly or by subdomain suffix so lookalike hosts such as
-`smith.langchain.com.evil.example` are not treated as the gateway.
-"""
-
-
 def _endpoint_gateway_state(endpoint: str) -> str:
     """Classify a single tracing endpoint as gateway, non-gateway, or unknown.
+
+    Traces sent to the managed gateway host (or a subdomain of it) route
+    through LangSmith SaaS; any other host is a self-hosted or dev/staging
+    target. The exact/subdomain comparison, and the case and root-dot
+    normalization it needs, both live in
+    `model_config.is_langsmith_gateway_host`.
 
     Args:
         endpoint: A configured tracing endpoint URL.
@@ -375,15 +369,19 @@ def _endpoint_gateway_state(endpoint: str) -> str:
             and `"unknown"` when the endpoint cannot be parsed into a host — so
             a typo'd or malformed URL is never silently reported as `"no"`.
     """
+    from deepagents_code.model_config import is_langsmith_gateway_host
+
     try:
         host = urlsplit(endpoint.strip()).hostname or ""
     except ValueError:
         # urlsplit raises on bracket-malformed IPv6 (e.g. `http://[::1`); a
         # diagnostic must degrade to "unknown" rather than crash `dcode doctor`.
         return "unknown"
-    if not host:
+    # A host of only a root dot carries no name, so it stays `"unknown"` rather
+    # than being reported as a definite non-gateway.
+    if not host.removesuffix("."):
         return "unknown"
-    if host == _LANGSMITH_GATEWAY_HOST or host.endswith(f".{_LANGSMITH_GATEWAY_HOST}"):
+    if is_langsmith_gateway_host(host):
         return "yes"
     return "no"
 

@@ -48,6 +48,27 @@ class TestResumeState:
         metadata = getattr(hints["_last_cache_model_spec"], "__metadata__", ())
         assert PrivateStateAttr in metadata
 
+    def test_state_has_last_cache_endpoint_field(self) -> None:
+        """ResumeState declares the `_last_cache_endpoint` channel.
+
+        Without the annotation LangGraph silently drops the
+        `_checkpoint_command` write, so endpoint-change detection never fires
+        again -- and the `configurable_model` tests would stay green, because
+        they assert on the `Command.update` dict rather than on what the schema
+        accepts.
+        """
+        assert "_last_cache_endpoint" in ResumeState.__annotations__
+
+    def test_last_cache_endpoint_is_private(self) -> None:
+        """The endpoint identity must not enter public graph I/O.
+
+        It can embed a proxy hostname and path, so it belongs to the same
+        private set as the spec and timestamp it is checkpointed beside.
+        """
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_cache_endpoint"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
     def test_sticky_rubric_field_is_private(self):
         """Persistent TUI rubrics must not leak through the public schema."""
         # `_sticky_rubric` is inherited from `GoalRubricChannels`, so resolve the

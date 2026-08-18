@@ -2729,9 +2729,6 @@ provider key is *not* a LangSmith gateway key. Only the prefix is inspected —
 the secret value is never logged or otherwise introspected.
 """
 
-_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
-"""Host substring identifying the LangSmith gateway endpoint."""
-
 
 def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     """Detect a non-LangSmith key being routed through the LangSmith gateway.
@@ -2754,15 +2751,18 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     if not provider:
         return None
     try:
+        from urllib.parse import urlsplit
+
         from deepagents_code.model_config import (
             ModelConfig,
             get_credential_env_var,
+            is_langsmith_gateway_host,
             resolve_env_var,
             resolved_env_var_name,
         )
 
         base_url = ModelConfig.load().get_base_url(provider)
-        if not base_url or _LANGSMITH_GATEWAY_HOST not in base_url:
+        if not base_url or not is_langsmith_gateway_host(urlsplit(base_url).hostname):
             return None
         key_env = get_credential_env_var(provider)
         if not key_env:
@@ -4426,6 +4426,9 @@ class DeepAgentsApp(App):
 
         self._last_cache_model_params: dict[str, Any] | None = None
         """Model params associated with `_last_model_request_at`."""
+
+        self._last_cache_endpoint: str | None = None
+        """Endpoint identity associated with `_last_model_request_at`."""
 
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
@@ -8361,6 +8364,7 @@ class DeepAgentsApp(App):
         self._last_model_request_at = None
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
+        self._last_cache_endpoint = None
         self._session_cost_warning_shown = False
         self._set_session_cost(self._thread_restored_cost_usd)
 
@@ -8657,6 +8661,21 @@ class DeepAgentsApp(App):
             # so it silently pins every later send to "model changed".
             return value.strip() if isinstance(value, str) and value.strip() else None
 
+        def _usable_endpoint_identity(value: object) -> str | None:
+            # Shape-checked, not merely non-empty: `endpoint_cache_identity`
+            # only ever mints `"default"`, `"invalid:<digest>"`, or a value
+            # containing `"://"`. Anything else (a hand-edited row, a future
+            # format) can never equal a freshly computed identity, so accepting
+            # it would report `identity_changed` on the next send while the
+            # discard warning below stayed silent. Discarding is the quieter
+            # wrong answer and it self-heals on the next checkpoint write.
+            usable = _usable_spec(value)
+            if usable is None:
+                return None
+            if usable == "default" or usable.startswith("invalid:") or "://" in usable:
+                return usable
+            return None
+
         raw_spec = _usable_spec(
             state_values.get("_last_cache_model_spec")
         ) or _usable_spec(state_values.get("_model_spec"))
@@ -8674,10 +8693,24 @@ class DeepAgentsApp(App):
                 type(state_values.get("_model_spec")).__name__,
             )
         self._last_cache_model_spec = raw_spec or ""
-        raw_params = state_values.get("_model_params")
+        raw_params = state_values.get("_last_cache_params")
         self._last_cache_model_params = (
             dict(raw_params) if isinstance(raw_params, dict) else None
         )
+        raw_endpoint = state_values.get("_last_cache_endpoint")
+        self._last_cache_endpoint = _usable_endpoint_identity(raw_endpoint)
+        if raw_endpoint is not None and self._last_cache_endpoint is None:
+            # Unlike a bad spec, a discarded endpoint fails *quietly*: `None`
+            # reads back as "never recorded", which suppresses endpoint-change
+            # detection instead of over-warning. It self-heals once any model
+            # call re-checkpoints, but nothing else would surface the gap, so it
+            # is logged here.
+            logger.warning(
+                "Discarding checkpointed _last_cache_endpoint (%s); endpoint "
+                "changes will not be detected until the next successful model "
+                "request records a fresh one",
+                type(raw_endpoint).__name__,
+            )
 
     def _stamp_cache_identity_locally(self) -> None:
         """Record the just-run model as the cache identity, without a checkpoint.
@@ -8692,10 +8725,16 @@ class DeepAgentsApp(App):
         """
         from datetime import UTC, datetime
 
+        from deepagents_code.cold_cache import cache_identity_params
+
         self._last_model_request_at = datetime.now(UTC).isoformat()
         self._last_cache_model_spec = self._effective_model_spec() or ""
+        # Record only the cache-identity projection of the session overrides,
+        # matching what the middleware checkpoints in `_last_cache_params`:
+        # the comparison side filters through `cache_identity_params` too, so
+        # unrelated knobs must not read as a cache change here either.
         self._last_cache_model_params = (
-            dict(self._model_params_override) if self._model_params_override else None
+            cache_identity_params(self._model_params_override) or None
         )
 
     async def _sync_session_cost_from_checkpoint(self) -> None:
@@ -11240,9 +11279,9 @@ class DeepAgentsApp(App):
             )
             return None
 
-        current_params = self._model_params_override or None
         last_spec = self._last_cache_model_spec
         last_params = self._last_cache_model_params
+        last_endpoint = self._last_cache_endpoint
 
         def _evaluate() -> ColdCacheWarning | None:
             from datetime import UTC, datetime
@@ -11253,7 +11292,9 @@ class DeepAgentsApp(App):
                 RewarmEstimate,
                 cache_identity_params,
                 debug_stand_in_policy,
+                endpoint_cache_identity,
                 estimate_rewarm_cost,
+                load_trusted_cache_endpoints,
                 parse_cache_timestamp,
                 resolve_prompt_cache_policy,
             )
@@ -11268,11 +11309,45 @@ class DeepAgentsApp(App):
             # `Anthropic:claude-opus-5` would report no custom endpoint and
             # price a gateway user at official-API rates.
             provider = model_spec.split(":", 1)[0].strip().lower()
-            base_url = ModelConfig.load().get_base_url(provider)
+            config = ModelConfig.load()
+            _, _, model_name = model_spec.partition(":")
+            configured_params = config.get_effective_kwargs(
+                provider,
+                model_name=model_name,
+                overrides=self._model_params_override,
+            )
+            # Test doubles and third-party config implementations created
+            # before `get_effective_kwargs` existed may not implement it.
+            # Retain the old endpoint-only behavior for those objects while
+            # production `ModelConfig` always supplies the complete mapping.
+            current_params = (
+                configured_params if isinstance(configured_params, dict) else {}
+            )
+            if not current_params:
+                current_params = dict(self._model_params_override or {})
+                fallback_base_url = config.get_base_url(provider)
+                if isinstance(fallback_base_url, str):
+                    current_params["base_url"] = fallback_base_url
+            # Endpoint changes have their own normalized identity. Keeping
+            # `base_url` out of this mapping avoids treating the same endpoint
+            # as two independent identity changes.
+            params_for_policy = {
+                key: value for key, value in current_params.items() if key != "base_url"
+            } or None
+            resolved_base_url = current_params.get("base_url")
+            base_url = resolved_base_url if isinstance(resolved_base_url, str) else None
+            endpoint = endpoint_cache_identity(base_url)
             policy = resolve_prompt_cache_policy(
                 model_spec,
-                current_params,
+                params_for_policy,
                 base_url=base_url,
+                # Only consulted for a custom endpoint: with no `base_url`,
+                # `_official_endpoint` short-circuits to `True` and the trust
+                # set is provably unused. Loading it eagerly would re-read and
+                # re-parse `config.toml` from disk on every turn of the common
+                # official-API path, which is the very cost the comment below
+                # is about.
+                trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
             )
             # Resolved before the suppression lookup so the common
             # no-policy case skips re-reading and re-parsing config.toml.
@@ -11353,17 +11428,26 @@ class DeepAgentsApp(App):
                 )
             else:
                 age_seconds = max(elapsed or 0.0, 0.0)
-                # Only cache-participating params are compared: `/effort` and
-                # friends rewrite `model_params` without touching the prefix.
-                if model_spec != last_spec or cache_identity_params(
-                    current_params
-                ) != cache_identity_params(last_params):
+                if (
+                    model_spec != last_spec
+                    # Only cache-participating params are compared: `/effort`
+                    # and friends rewrite `model_params` without touching the
+                    # prefix, and must not read as a cache identity change.
+                    or cache_identity_params(current_params)
+                    != cache_identity_params(last_params)
+                    # `None` means no endpoint was ever recorded -- e.g. a
+                    # thread checkpointed before this field existed, or one
+                    # whose stored value was unreadable and discarded on load.
+                    # Treating "unrecorded" as "changed" would fire a spurious
+                    # warning on the first turn of each such thread, so only a
+                    # recorded value that actually differs counts.
+                    or (last_endpoint is not None and endpoint != last_endpoint)
+                ):
                     reason = "identity_changed"
                 elif age_seconds > policy.window_seconds:
                     reason = "idle"
                 else:
                     return None
-
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
             if estimate is None:
                 logger.debug(
@@ -13128,6 +13212,8 @@ class DeepAgentsApp(App):
                     "_last_cache_model_spec": state_values.get(
                         "_last_cache_model_spec"
                     ),
+                    "_last_cache_endpoint": state_values.get("_last_cache_endpoint"),
+                    "_last_cache_params": state_values.get("_last_cache_params"),
                     "_model_spec": model_spec,
                     "_model_params": model_params,
                 }
@@ -16424,9 +16510,10 @@ class DeepAgentsApp(App):
             prior_event = state_values.get("_summarization_event")
             before_messages = state_values.get("messages", [])
             prior_cutoff = _summarization_cutoff(prior_event)
-            tokens_before = count_tokens_approximately(
+            conversation_tokens_before = count_tokens_approximately(
                 _effective_conversation(before_messages, prior_event)
             )
+            reported_tokens_before = _persisted_context_tokens(state_values)
 
             # Own the seeded tool-call id here so a failed run can clean up the
             # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
@@ -16527,27 +16614,54 @@ class DeepAgentsApp(App):
                 if isinstance(new_event, dict)
                 else getattr(new_event, "file_path", None)
             )
-            # Recompute the post-offload size from the ORIGINAL pre-seed
-            # messages plus the new event. `_effective_conversation` yields
-            # `[summary, *before_messages[new_cutoff:]]` — the compacted
-            # conversation without the tool's own machinery (the seeded tool
-            # call, the tool result, and the trailing model turn), all of which
-            # land in `new_state["messages"]` at/after `new_cutoff`. Counting
-            # `before_messages` keeps this token figure consistent with the
-            # message counts below and avoids understating the reduction.
-            #
-            # This is a client-side approximation for the status bar and is
-            # deliberately not the persisted `_context_tokens` (refreshed from
-            # the trailing turn's real provider usage, which includes
-            # system/tool overhead and the machinery messages). The two can
-            # differ, and if the trailing turn failed `_context_tokens` keeps
-            # its pre-offload value.
-            tokens_after = count_tokens_approximately(
+            # Recompute the post-offload conversation from the original pre-seed
+            # messages plus the new event. This excludes the compact tool's own
+            # machinery while preserving the provider-reported system/tool overhead
+            # from the last ordinary turn when that total is available.
+            conversation_tokens_after = count_tokens_approximately(
                 _effective_conversation(before_messages, new_event)
             )
-            # Message and turn counts are likewise derived purely from the
-            # absolute cutoffs, so those same machinery artifacts are never
-            # mistaken for kept conversation.
+            if reported_tokens_before:
+                # Subtract the *delta* from the provider total rather than
+                # rebuilding the total as `overhead + conversation_after`. The two
+                # are algebraically equal, but only this form keeps both figures on
+                # the provider's scale: `count_tokens_approximately` need only
+                # overshoot the provider count by a token for an
+                # `overhead = max(0, reported - conversation_before)` clamp to
+                # collapse the overhead to zero, which would silently report the
+                # whole system prompt and tool schema as freed context.
+                #
+                # The estimator's error appears with opposite signs in the two
+                # conversation counts and largely cancels in the difference, which
+                # is why `before` prints exact and only `after` carries a `~`.
+                tokens_before = reported_tokens_before
+                tokens_after = max(
+                    0,
+                    reported_tokens_before
+                    - (conversation_tokens_before - conversation_tokens_after),
+                )
+                usage_label = "Context"
+                before = format_token_count(tokens_before)
+                after = f"~{format_token_count(tokens_after)}"
+            else:
+                # No usable provider total (never set, or a checkpoint value
+                # `_persisted_context_tokens` rejected), so fall back to a
+                # conversation-only estimate. `usage_label` is what tells the user
+                # which metric they are reading: "Conversation" excludes the
+                # system/tool overhead that "Context" includes, so the two
+                # percentages are not comparable across offloads.
+                tokens_before = conversation_tokens_before
+                tokens_after = conversation_tokens_after
+                usage_label = "Conversation"
+                before = f"~{format_token_count(tokens_before)}"
+                after = f"~{format_token_count(tokens_after)}"
+
+            # Message and turn counts are derived purely from the absolute cutoffs
+            # into the ORIGINAL pre-seed `before_messages`, never from the post-run
+            # `new_state["messages"]`. The compact tool's own machinery (the seeded
+            # tool call, its result, and the trailing model turn) lands at/after
+            # `new_cutoff` in the post-run list, so slicing that list instead would
+            # count those artifacts as kept conversation.
             messages_offloaded = max(0, new_cutoff - prior_cutoff)
             messages_kept = max(0, len(before_messages) - new_cutoff)
             turns_offloaded = sum(
@@ -16564,23 +16678,39 @@ class DeepAgentsApp(App):
             kept_message_label = "message" if messages_kept == 1 else "messages"
             offloaded_turn_label = "turn" if turns_offloaded == 1 else "turns"
             kept_turn_label = "turn" if turns_kept == 1 else "turns"
+            # Floored at zero: a summary can come out larger than the messages it
+            # replaced, and in the reported branch `tokens_after` mixes an exact
+            # provider total with an estimated delta. Neither should ever render as
+            # a negative "decrease".
             pct = (
-                round((tokens_before - tokens_after) / tokens_before * 100)
+                max(0, round((tokens_before - tokens_after) / tokens_before * 100))
                 if tokens_before > 0
                 else 0
             )
 
-            before = format_token_count(tokens_before)
-            after = format_token_count(tokens_after)
             offloaded_counts = (
                 f"{messages_offloaded} older {offloaded_message_label} "
                 f"({turns_offloaded} conversation {offloaded_turn_label})"
             )
-            stats_line = (
-                f"Context: {before} → {after} tokens ({pct}% decrease), "
-                f"{messages_kept} {kept_message_label} "
-                f"({turns_kept} conversation {kept_turn_label}) kept."
-            )
+            if tokens_after <= tokens_before:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                    f"{messages_kept} {kept_message_label} "
+                    f"({turns_kept} conversation {kept_turn_label}) kept."
+                )
+                outcome = (
+                    f"Offloaded {offloaded_counts}, freeing up context window space."
+                )
+            else:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens (increase), "
+                    f"{messages_kept} {kept_message_label} "
+                    f"({turns_kept} conversation {kept_turn_label}) kept."
+                )
+                outcome = (
+                    f"Offloaded {offloaded_counts}, but the summary was larger "
+                    "than the messages it replaced, so context increased."
+                )
             if archive_path:
                 from deepagents_code.offload import offload_storage_is_ephemeral
 
@@ -16597,8 +16727,7 @@ class DeepAgentsApp(App):
                 )
                 await self._mount_message(
                     AppMessage(
-                        f"Offloaded {offloaded_counts}, freeing up context window "
-                        f"space.\n{stats_line}{caveat}",
+                        f"{outcome}\n{stats_line}{caveat}",
                     ),
                 )
             else:
@@ -16608,7 +16737,7 @@ class DeepAgentsApp(App):
                 # separate warning immediately followed by a success line.
                 await self._mount_message(
                     ErrorMessage(
-                        f"Offloaded {offloaded_counts} and freed context, but the "
+                        f"{outcome} The "
                         "conversation history could not "
                         "be saved to storage, so those messages are not "
                         f"recoverable. Check logs for details.\n{stats_line}",

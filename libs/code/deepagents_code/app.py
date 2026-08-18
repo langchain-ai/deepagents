@@ -4007,6 +4007,12 @@ class DeepAgentsApp(App):
         """Active `_run_agent_task` worker, tracked so it can be cancelled
         on interrupt (`Ctrl+C`) or exit."""
 
+        self._offload_worker: Worker[None] | None = None
+        """Active `/offload` worker, tracked so Escape can cancel it."""
+
+        self._offload_task_started = False
+        """Whether the current `/offload` worker reached its first task step."""
+
         self._agent_turn_started = False
         """True once the current `_run_agent_task` invocation has begun.
 
@@ -15406,7 +15412,15 @@ class DeepAgentsApp(App):
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
-            await self._handle_offload()
+            self._set_agent_running(True)
+            try:
+                self._offload_worker = self.run_worker(
+                    self._run_offload_task(),
+                    exclusive=False,
+                )
+            except Exception:
+                self._set_agent_running(False)
+                raise
         elif cmd == "/threads" or cmd.startswith("/threads "):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
@@ -16345,7 +16359,35 @@ class DeepAgentsApp(App):
         _, conversation = await self._get_context_usage_counts()
         return conversation
 
-    async def _handle_offload(self) -> None:
+    async def _run_offload_task(self) -> None:
+        """Run a synchronously reserved `/offload` outside the App message pump."""
+        self._offload_task_started = True
+        try:
+            await self._handle_offload(reserved=True)
+        finally:
+            self._offload_task_started = False
+            self._offload_worker = None
+            if not self._startup_sequence_running:
+                await self._process_next_from_queue()
+
+    async def _handle_offload(self, *, reserved: bool = False) -> None:
+        """Run `/offload`, always releasing its busy-state reservation.
+
+        Args:
+            reserved: Whether the caller already reserved the turn synchronously.
+        """
+        if not reserved:
+            self._set_agent_running(True)
+        try:
+            await self._offload_impl()
+        finally:
+            self._set_agent_running(False)
+            try:
+                await self._set_spinner(None)
+            except Exception:  # best-effort spinner cleanup
+                logger.exception("Failed to dismiss spinner after offload")
+
+    async def _offload_impl(self) -> None:
         """Offload older messages to free context window space.
 
         Runs offload SERVER-SIDE by driving the agent's own
@@ -16355,6 +16397,9 @@ class DeepAgentsApp(App):
         via `read_file` in every run mode (server, sandbox, in-process). The
         client only seeds the tool call, approves the resulting HITL interrupt,
         drains the run, and renders the persisted `_summarization_event`.
+
+        Raises:
+            CancelledError: If the offload worker is interrupted.
         """
         from langchain_core.messages.utils import count_tokens_approximately
 
@@ -16363,12 +16408,6 @@ class DeepAgentsApp(App):
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
                 AppMessage("Nothing to offload \u2014 start a conversation first"),
-            )
-            return
-
-        if self._agent_running:
-            await self._mount_message(
-                AppMessage("Cannot offload while agent is running"),
             )
             return
 
@@ -16386,8 +16425,6 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Prevent concurrent user input while offload modifies state
-        self._set_agent_running(True)
         try:
             await self._set_spinner("Offloading")
 
@@ -16409,7 +16446,7 @@ class DeepAgentsApp(App):
                 )
             except ClientHookStopError:
                 return
-            except Exception as stream_error:
+            except (asyncio.CancelledError, Exception) as stream_error:
                 # A server graph can checkpoint the tool-node update before a
                 # later stream transport failure reaches this client. Reconcile
                 # the durable event before reporting the operation as failed.
@@ -16633,12 +16670,6 @@ class DeepAgentsApp(App):
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")
             await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
-        finally:
-            self._set_agent_running(False)
-            try:
-                await self._set_spinner(None)
-            except Exception:  # best-effort spinner cleanup
-                logger.exception("Failed to dismiss spinner after offload")
 
     async def _drive_server_side_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None
@@ -19869,11 +19900,22 @@ class DeepAgentsApp(App):
         `_agent_turn_started` rather than the worker's own state. See
         `_agent_turn_started` for what goes wrong when nothing releases the turn.
 
+        The offload worker needs the same recovery because command dispatch
+        reserves `_agent_running` before scheduling it. A cancellation before
+        its first step must release that reservation and clear the worker
+        reference because `_run_offload_task` never reaches its `finally`.
+
         Args:
             worker: The worker that was just cancelled. Callers may pass any
                 worker — `_cancel_worker` also handles the shell worker —
-                so anything that is not the current `_agent_worker` is ignored.
+                so anything that is not the current `_agent_worker` or
+                `_offload_worker` is ignored.
         """
+        if worker is self._offload_worker and not self._offload_task_started:
+            self._offload_worker = None
+            self._set_agent_running(False)
+            return
+
         if worker is not self._agent_worker or self._agent_turn_started:
             return
 
@@ -20103,10 +20145,11 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
-        8. If agent is running, interrupt it (restoring the interrupted prompt
+        8. If offload is running, interrupt it
+        9. If agent is running, interrupt it (restoring the interrupted prompt
            to the chat input when it is empty and no user-visible model output
            — text or a tool call — has appeared yet for the turn)
-        9. Otherwise, a second Esc clears the chat input draft (undoable)
+        10. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
@@ -20175,6 +20218,10 @@ class DeepAgentsApp(App):
         # one at a time; once the queue is empty the next ESC will interrupt.
         if self._pending_messages:
             self._pop_last_queued_message()
+            return
+
+        if self._offload_worker is not None:
+            self._cancel_worker(self._offload_worker)
             return
 
         # If agent is running, interrupt it and discard queued messages

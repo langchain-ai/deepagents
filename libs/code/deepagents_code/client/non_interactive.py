@@ -61,6 +61,7 @@ from deepagents_code._tool_stream import (
     normalize_tool_status,
     tool_call_buffer_key,
 )
+from deepagents_code._tracing import resume_trace_config
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -1241,7 +1242,11 @@ async def _stream_agent(
             stream_input,
             stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
-            config=config,
+            config=(
+                resume_trace_config(config)
+                if isinstance(stream_input, Command)
+                else config
+            ),
             context=context,
             durability="exit",
         ):

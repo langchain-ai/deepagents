@@ -33,6 +33,7 @@ from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
 )
+from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
     ApprovalMode,
@@ -2253,6 +2254,17 @@ class TestExecuteTaskTextualAutoApproveInput:
         # Two stream iterations: the initial turn and the resume after the
         # decision. The flag must flip between them, not stay frozen.
         assert len(agent.contexts) == 2
+        initial_config, resume_config = agent.configs
+        assert RESUME_TRACE_TAG not in initial_config.get("tags", [])
+        assert resume_config["tags"] == [RESUME_TRACE_TAG]
+        initial_metadata = initial_config["metadata"]
+        resume_metadata = resume_config["metadata"]
+        assert initial_metadata["thread_id"] == "thread-1"
+        assert initial_metadata["turn_id"]
+        assert initial_metadata["turn_number"] == 1
+        assert resume_metadata["thread_id"] == initial_metadata["thread_id"]
+        assert resume_metadata["turn_id"] == initial_metadata["turn_id"]
+        assert resume_metadata["turn_number"] == initial_metadata["turn_number"]
         assert agent.contexts[0]["approval_mode"] == "manual"
         assert agent.contexts[1]["approval_mode"] == "auto"
         assert agent.contexts[0]["auto_approve"] is False

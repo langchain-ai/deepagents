@@ -39,6 +39,20 @@ hardcoded integers.
 """
 
 
+def _prepare_debug_file(path: Path) -> None:
+    """Create or tighten a debug file before attaching the logging handler."""
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is None:
+            path.chmod(0o600)
+        else:
+            fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+
 def resolve_log_level(*, debug_enabled: bool | None = None) -> int:
     """Resolve the configured runtime logging level.
 
@@ -114,6 +128,7 @@ def configure_debug_logging(target: logging.Logger) -> None:
         existing.close()
 
     try:
+        _prepare_debug_file(debug_path)
         handler = logging.FileHandler(str(debug_path), mode="a")
     except OSError as exc:
         message = f"could not open debug log file {debug_path}: {exc}"

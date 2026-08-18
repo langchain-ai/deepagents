@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import stat
 from unittest.mock import patch
 
 import deepagents_code
@@ -63,6 +64,7 @@ class TestConfigureDebugLogging:
     def test_adds_handler_when_env_set(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.add")
         log_file = tmp_path / "debug.log"
+        log_file.touch(mode=0o644)
         with patch.dict(
             os.environ,
             {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
@@ -70,6 +72,8 @@ class TestConfigureDebugLogging:
             configure_debug_logging(logger)
         assert any(isinstance(h, logging.FileHandler) for h in logger.handlers)
         assert logger.level == logging.DEBUG
+        if os.name != "nt":
+            assert stat.S_IMODE(log_file.stat().st_mode) == 0o600
         # Cleanup
         for h in logger.handlers[:]:
             if isinstance(h, logging.FileHandler):

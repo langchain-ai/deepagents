@@ -136,7 +136,9 @@ For problems that appear after the app is up, tail the client log in another ter
 tail -f /tmp/deepagents_debug.log
 ```
 
-To send it elsewhere, also `export DEEPAGENTS_CODE_DEBUG_FILE=<path>`. The handler appends across runs, so a single file accumulates every session.
+To send it elsewhere, also `export DEEPAGENTS_CODE_DEBUG_FILE=<path>`. The handler appends across runs, so a single file accumulates every session. The file is created with user-only permissions.
+
+Stdio MCP server stderr is captured here at `DEBUG` so server-side failures remain diagnosable when the TUI cannot display process stderr. Records are split into bounded lines and stripped of control characters, but the remaining text is otherwise server-provided and may contain credentials or other sensitive values. Only enable or share DEBUG logs with that risk in mind.
 
 ### In-app Debug Console (`Ctrl+\`)
 

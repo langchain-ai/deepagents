@@ -9,14 +9,19 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import copy
 import fnmatch
 import functools
+import io
 import json
 import logging
+import os
 import re
 import shutil
-from contextlib import AsyncExitStack
+import threading
+import unicodedata
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
@@ -25,7 +30,15 @@ from deepagents_code import _env_vars
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Collection,
+        Mapping,
+        Sequence,
+    )
+    from typing import TextIO
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -187,6 +200,256 @@ class MCPConfigError(ValueError):
     keep working; new code can catch this specifically to render a
     user-actionable message (typically with a file path and hint).
     """
+
+
+_MCP_ENV_REFERENCE_RE = re.compile(r"\$\{([^}]+)\}")
+_MCP_STDERR_LINE_LIMIT = 4096
+_MCP_STDERR_READ_SIZE = 8192
+_MCP_STDERR_TRUNCATION_MARKER = "... [truncated]"
+
+
+def _resolve_stdio_env(
+    env: dict[str, str] | None,
+    *,
+    server_name: str,
+) -> dict[str, str] | None:
+    """Resolve adapter-compatible braced environment references.
+
+    Args:
+        env: Configured subprocess environment.
+        server_name: MCP server name used in warning records.
+
+    Returns:
+        Resolved environment values, or `None` when no environment is configured.
+    """
+    if env is None:
+        return None
+    resolved = {
+        key: _MCP_ENV_REFERENCE_RE.sub(
+            lambda match: os.environ.get(match.group(1), match.group(0)), value
+        )
+        for key, value in env.items()
+    }
+    for key, value in resolved.items():
+        if _MCP_ENV_REFERENCE_RE.search(value):
+            logger.warning(
+                "MCP server %r env[%r] contains an unexpanded variable reference",
+                server_name,
+                key,
+            )
+    return resolved
+
+
+class _MCPStderrSink(io.TextIOBase):
+    """Forward a subprocess pipe to the MCP logger one bounded line at a time."""
+
+    def __init__(self, server_name: str, *, encoding: str, errors: str) -> None:
+        """Create the pipe and start its reader."""
+        super().__init__()
+        self._server_name = server_name
+        self._encoding = encoding
+        self._errors = errors
+        self._capture = logger.isEnabledFor(logging.DEBUG)
+        self._decoder = (
+            codecs.getincrementaldecoder(encoding)(errors=errors)
+            if self._capture
+            else None
+        )
+        self._line = ""
+        self._truncated = False
+        self._read_fd, write_fd = os.pipe()
+        try:
+            self._writer = os.fdopen(write_fd, "wb", buffering=0)
+        except BaseException:
+            os.close(write_fd)
+            os.close(self._read_fd)
+            raise
+        try:
+            self._thread = threading.Thread(
+                target=self._drain,
+                name=f"mcp-stderr-{server_name}",
+                daemon=True,
+            )
+            self._thread.start()
+        except BaseException:
+            self._writer.close()
+            os.close(self._read_fd)
+            raise
+
+    @property
+    def encoding(self) -> str:
+        """Encoding used for writes and captured bytes."""
+        return self._encoding
+
+    @property
+    def errors(self) -> str:
+        """Configured encoding error handler."""
+        return self._errors
+
+    def fileno(self) -> int:
+        """Return the subprocess-inheritable write descriptor."""
+        return self._writer.fileno()
+
+    def writable(self) -> bool:
+        """Return whether the parent write descriptor remains open."""
+        return not self.closed
+
+    def write(self, text: str) -> int:
+        """Write text through the pipe for TextIO compatibility.
+
+        Args:
+            text: Text to encode and write.
+
+        Returns:
+            Number of input characters written.
+
+        Raises:
+            ValueError: If the sink is closed.
+        """
+        if self.closed:
+            msg = "I/O operation on closed MCP stderr sink"
+            raise ValueError(msg)
+        data = memoryview(text.encode(self._encoding, errors=self._errors))
+        while data:
+            written = self._writer.write(data)
+            if written is None:
+                continue
+            data = data[written:]
+        return len(text)
+
+    def flush(self) -> None:
+        """Flush parent writes before closing the descriptor."""
+        if not self._writer.closed:
+            self._writer.flush()
+
+    def close(self) -> None:
+        """Close the parent's copy of the subprocess write descriptor."""
+        if self.closed:
+            return
+        try:
+            super().close()
+        finally:
+            self._writer.close()
+
+    async def wait_closed(self) -> None:
+        """Wait off the event loop until the pipe reader reaches EOF."""
+        self.close()
+        await asyncio.to_thread(self._thread.join)
+
+    def _drain(self) -> None:
+        """Drain subprocess bytes so stderr can never block the child."""
+        try:
+            while chunk := os.read(self._read_fd, _MCP_STDERR_READ_SIZE):
+                if self._capture:
+                    self._decode(chunk)
+            if self._capture:
+                self._decode(b"", final=True)
+                if self._line or self._truncated:
+                    self._emit_line()
+        except OSError as exc:
+            if self._capture:
+                logger.debug(
+                    "MCP server %r stderr capture failed: %s",
+                    self._server_name,
+                    exc,
+                )
+        finally:
+            os.close(self._read_fd)
+
+    def _decode(self, data: bytes, *, final: bool = False) -> None:
+        """Decode one byte chunk without allowing malformed stderr to stop draining."""
+        if self._decoder is None:
+            return
+        try:
+            text = self._decoder.decode(data, final=final)
+        except (LookupError, UnicodeError) as exc:
+            self._decoder.reset()
+            logger.debug(
+                "MCP server %r stderr decode failed with %s: %s",
+                self._server_name,
+                self._encoding,
+                exc,
+            )
+            return
+        parts = text.split("\n")
+        for part in parts[:-1]:
+            self._append(part)
+            self._emit_line()
+        self._append(parts[-1])
+
+    def _append(self, text: str) -> None:
+        """Retain sanitized line content up to the configured bound."""
+        if self._truncated:
+            return
+        safe = "".join(
+            char for char in text if not unicodedata.category(char).startswith("C")
+        )
+        remaining = _MCP_STDERR_LINE_LIMIT - len(self._line)
+        self._line += safe[:remaining]
+        if len(safe) > remaining:
+            self._truncated = True
+
+    def _emit_line(self) -> None:
+        """Emit and reset the current complete line."""
+        line = self._line
+        if self._truncated:
+            content_limit = _MCP_STDERR_LINE_LIMIT - len(_MCP_STDERR_TRUNCATION_MARKER)
+            line = line[:content_limit] + _MCP_STDERR_TRUNCATION_MARKER
+        if line:
+            logger.debug("MCP server %r stderr: %s", self._server_name, line)
+        self._line = ""
+        self._truncated = False
+
+
+@asynccontextmanager
+async def _create_mcp_session(
+    connection: Connection,
+    *,
+    server_name: str,
+) -> AsyncIterator[ClientSession]:
+    """Create a session while routing stdio server diagnostics into DEBUG logs.
+
+    Args:
+        connection: Adapter connection configuration.
+        server_name: MCP server name used in log records.
+
+    Yields:
+        An open MCP client session.
+    """
+    from langchain_mcp_adapters.sessions import create_session
+
+    if connection["transport"] != "stdio":
+        async with create_session(connection) as session:
+            yield session
+        return
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    stdio = connection
+    encoding = stdio.get("encoding", "utf-8")
+    errors = stdio.get("encoding_error_handler", "strict")
+    params = StdioServerParameters(
+        command=stdio["command"],
+        args=stdio["args"],
+        env=_resolve_stdio_env(stdio.get("env"), server_name=server_name),
+        cwd=stdio.get("cwd"),
+        encoding=encoding,
+        encoding_error_handler=errors,
+    )
+    sink = _MCPStderrSink(server_name, encoding=encoding, errors=errors)
+    try:
+        async with stdio_client(params, errlog=cast("TextIO", sink)) as (read, write):
+            sink.close()
+            async with ClientSession(
+                read,
+                write,
+                **(stdio.get("session_kwargs") or {}),
+            ) as session:
+                yield session
+    finally:
+        sink.close()
+        await sink.wait_closed()
 
 
 def _is_transient_session_error(exc: BaseException) -> bool:
@@ -432,11 +695,11 @@ class MCPSessionManager:
             )
             raise ValueError(msg) from exc
 
-        from langchain_mcp_adapters.sessions import create_session
-
         exit_stack = AsyncExitStack()
         try:
-            session = await exit_stack.enter_async_context(create_session(connection))
+            session = await exit_stack.enter_async_context(
+                _create_mcp_session(connection, server_name=server_name)
+            )
             await session.initialize()
         except BaseException:
             # Close the partially entered stack in *this* task before
@@ -1891,7 +2154,6 @@ async def _load_tools_from_config(
         SSEConnection,
         StdioConnection,
         StreamableHttpConnection,
-        create_session,
     )
     from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 
@@ -2098,7 +2360,9 @@ async def _load_tools_from_config(
                 logger.log(level, message, server_name, exc_info=caught)
 
         try:
-            async with create_session(connections[server_name]) as discover_session:
+            async with _create_mcp_session(
+                connections[server_name], server_name=server_name
+            ) as discover_session:
                 await discover_session.initialize()
                 mcp_tools = await _discover_tools(discover_session)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):

@@ -150,6 +150,10 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._search_query = ""
         self._auto_update_enabled = False
         self._auto_update_source = "default"
+        # State loads run in worker threads. Keep their snapshots and view
+        # updates ordered so an older connecting snapshot cannot overwrite a
+        # later settled connection snapshot.
+        self._refresh_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -571,7 +575,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         """
         self._mcp_server_info = mcp_server_info
         self._mcp_connecting = mcp_connecting
-        task = asyncio.create_task(self._refresh_state())
+        task = asyncio.create_task(self._refresh_state(clear_search=False))
         task.add_done_callback(self._log_refresh_exception)
 
     @staticmethod
@@ -586,30 +590,49 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 exc_info=exc,
             )
 
-    async def _refresh_state(self) -> None:
-        # A mutating action (install/toggle/uninstall/marketplace change) reloads
-        # state and shows a fresh list, so a leftover query would hide results.
-        # Details round-trips use `_refresh_view` instead and keep the query.
-        self._search_query = ""
-        self._state = await asyncio.to_thread(
-            _load_manager_state,
-            self._mcp_server_info,
-            mcp_connecting=self._mcp_connecting,
-            loaded_plugin_ids=self._loaded_plugin_ids,
-        )
-        self._auto_update_enabled, self._auto_update_source = await asyncio.to_thread(
-            plugin_auto_update_setting
-        )
-        if self._selected_plugin is not None:
-            refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
-            if refreshed is None:
-                refreshed = self._find_available_plugin(self._selected_plugin.plugin_id)
-            self._selected_plugin = refreshed
-        if self._selected_marketplace is not None:
-            self._selected_marketplace = self._find_marketplace(
-                self._selected_marketplace.name
+    async def _refresh_state(self, *, clear_search: bool = True) -> None:
+        """Load and apply plugin state without allowing refreshes to overlap.
+
+        Args:
+            clear_search: Whether this refresh follows a plugin mutation that
+                should show the complete, newly loaded list.
+        """
+        async with self._refresh_lock:
+            # A mutating action (install/toggle/uninstall/marketplace change)
+            # reloads state and shows a fresh list, so a leftover query would
+            # hide results. Connection updates do not change plugin data and
+            # must retain the user's active filter.
+            if clear_search:
+                self._search_query = ""
+
+            # Take the snapshot only after acquiring the lock. A settled
+            # connection update queued behind the initial load therefore uses
+            # the current state rather than re-applying the connecting one.
+            mcp_server_info = tuple(self._mcp_server_info)
+            mcp_connecting = self._mcp_connecting
+            loaded_plugin_ids = self._loaded_plugin_ids
+            self._state = await asyncio.to_thread(
+                _load_manager_state,
+                mcp_server_info,
+                mcp_connecting=mcp_connecting,
+                loaded_plugin_ids=loaded_plugin_ids,
             )
-        self._refresh_view()
+            (
+                self._auto_update_enabled,
+                self._auto_update_source,
+            ) = await asyncio.to_thread(plugin_auto_update_setting)
+            if self._selected_plugin is not None:
+                refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
+                if refreshed is None:
+                    refreshed = self._find_available_plugin(
+                        self._selected_plugin.plugin_id
+                    )
+                self._selected_plugin = refreshed
+            if self._selected_marketplace is not None:
+                self._selected_marketplace = self._find_marketplace(
+                    self._selected_marketplace.name
+                )
+            self._refresh_view()
 
     def check_action(
         self,

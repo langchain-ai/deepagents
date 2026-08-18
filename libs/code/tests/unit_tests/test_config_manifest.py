@@ -8,8 +8,9 @@ and that secret-flagged options are never rendered by value.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -39,6 +40,9 @@ from deepagents_code.config_manifest import (
     resolve_scalar,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` to avoid accidental
 # PyPI/DNS work. This module checks whether update settings came from the env,
@@ -111,6 +115,13 @@ def test_option_keys_unique() -> None:
     """Manifest keys must be unique so `config get` lookups are unambiguous."""
     keys = option_keys()
     assert len(keys) == len(set(keys))
+
+
+def test_cold_cache_warning_threshold_default() -> None:
+    """Cold-cache warning uses the material incremental-cost default."""
+    option = get_option("warnings.cold_cache_min_delta_usd")
+    assert option is not None
+    assert resolve_scalar(option, toml_data={}) == (0.50, "default")
 
 
 def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
@@ -416,6 +427,109 @@ def test_invalid_goal_auto_accept_env_falls_through(
     monkeypatch.setenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, "maybe")
 
     assert resolve_scalar(option, toml_data=toml_data) == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [(None, False), (_env_vars.DEBUG, True), (_env_vars.EXPERIMENTAL, True)],
+)
+def test_resume_term_program_resolves_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str | None,
+    expected: bool,
+) -> None:
+    """The resume prefix defaults on only in experimental or debug mode."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.RESUME_TERM_PROGRAM, raising=False)
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    if mode is not None:
+        monkeypatch.setenv(mode, "1")
+
+    assert resolve_scalar(option, toml_data={}) == (expected, "default")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", True), ("0", False), ("", False)])
+def test_resume_term_program_env_overrides_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    expected: bool,
+) -> None:
+    """An explicit feature env value wins over mode and TOML values."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.DEBUG, "1")
+    monkeypatch.setenv(_env_vars.EXPERIMENTAL, "1")
+    monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, raw)
+
+    assert resolve_scalar(
+        option,
+        toml_data={"features": {"resume_term_program": not expected}},
+    ) == (expected, f"env ({_env_vars.RESUME_TERM_PROGRAM})")
+
+
+@pytest.mark.parametrize(
+    ("configured", "mode", "expected"),
+    [
+        (True, None, True),
+        (False, _env_vars.DEBUG, False),
+        (False, _env_vars.EXPERIMENTAL, False),
+    ],
+)
+def test_resume_term_program_toml_overrides_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    mode: str | None,
+    expected: bool,
+) -> None:
+    """An explicit config.toml value wins over the mode-dependent default."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.RESUME_TERM_PROGRAM, raising=False)
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    if mode is not None:
+        monkeypatch.setenv(mode, "1")
+
+    assert resolve_scalar(
+        option,
+        toml_data={"features": {"resume_term_program": configured}},
+    ) == (expected, "config.toml")
+
+
+def test_resume_term_program_unrecognized_env_falls_through_to_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typo'd feature flag must not silently defeat debug mode."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    monkeypatch.setenv(_env_vars.DEBUG, "1")
+    monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, "maybe")
+
+    assert resolve_scalar(option, toml_data={}) == (True, "default")
+
+
+def test_bool_mode_default_rejects_declared_default() -> None:
+    """A declared default is dead for this kind, so it is rejected up front.
+
+    `resolve_scalar` derives the default from debug/experimental mode and
+    returns before reading `default` -- but `dcode config` still renders the
+    declared value, advertising a default that contradicts the real one.
+    """
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    assert option.default is None
+
+    with pytest.raises(TypeError, match="must not declare a default"):
+        ConfigOption(
+            key="features.example",
+            group="Tools",
+            summary="Example.",
+            kind=OptionKind.BOOL_MODE_DEFAULT,
+            default=False,
+        )
 
 
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
@@ -3088,3 +3202,26 @@ def test_delegate_static_defaults_are_parseable() -> None:
             continue
         if opt.kind is OptionKind.PTC_DELEGATE:
             assert _parse_interpreter_ptc(opt.default) == opt.default
+
+
+def test_load_config_toml_tolerates_an_undecodable_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A mis-encoded config falls back to defaults instead of raising.
+
+    `UnicodeDecodeError` subclasses `ValueError`, so it is neither `OSError`
+    nor `TOMLDecodeError`. Without explicit handling, a config saved as UTF-16
+    raises out of every caller that reads an option.
+    """
+    from deepagents_code.config_manifest import load_config_toml
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_bytes(b"\xff\xfe[warnings]\n")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path)
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert load_config_toml() == {}
+
+    assert "using defaults" in caplog.text

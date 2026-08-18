@@ -11,8 +11,10 @@ config, no widget imports) so that `app.py` can import `SessionStats` and
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code.formatting import format_duration
@@ -913,6 +915,49 @@ def format_cost(cost_usd: float) -> str:
     if cost_usd < 0.01:  # noqa: PLR2004  # Display floor for sub-cent estimates.
         return "<$0.01"
     return f"${cost_usd:.2f}"
+
+
+def format_cost_estimate(cost_usd: float) -> str:
+    """Format a speculative USD cost as a rounded, approximate upper bound.
+
+    Used where the figure is a worst-case estimate rather than recorded spend
+    (e.g. the cold-cache warning modal, whose cache may be partially warm):
+    rounds so the display does not imply false precision, and prefixes with `~`
+    to signal "approximately". Do not use for recorded session spend --
+    `format_cost` renders actuals exactly.
+
+    Rounding is upward to two significant figures at or above a dime so it can
+    safely appear in an upper-bound estimate. Between one cent and a dime the
+    figure keeps cent-level precision instead (`0.062` renders `~$0.07`); a
+    second digit there would be sub-cent noise.
+
+    Args:
+        cost_usd: Estimated cost in US dollars.
+
+    Returns:
+        A string such as `'~$0.62'` or `'~$12'`; non-positive values use
+        `'$0.00'` and positive sub-cent values use `'<$0.01'`, matching
+        `format_cost` edge conventions.
+    """
+    if cost_usd <= 0:
+        return "$0.00"
+    if cost_usd < 0.01:  # noqa: PLR2004  # Display floor for sub-cent estimates.
+        return "<$0.01"
+    if cost_usd < 0.1:  # noqa: PLR2004  # Keep cent-level precision under a dime.
+        rounded = Decimal(str(cost_usd)).quantize(
+            Decimal("0.01"), rounding=ROUND_CEILING
+        )
+        return f"~${rounded:.2f}"
+    # Quantize through `Decimal(str(...))` so floating-point representation
+    # cannot cause the upper-bound display to round down. `ROUND_CEILING` is
+    # appropriate here because all values that reach this branch are positive.
+    # `normalize().adjusted()` re-derives the magnitude from the rounded
+    # value so a decade carry (9.99 -> 10) renders as `$10`, not `$10.0`.
+    exponent = math.floor(math.log10(cost_usd))
+    quantum = Decimal(1).scaleb(exponent - 1)
+    rounded = Decimal(str(cost_usd)).quantize(quantum, rounding=ROUND_CEILING)
+    decimals = max(1 - rounded.normalize().adjusted(), 0)
+    return f"~${rounded:.{decimals}f}"
 
 
 def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:

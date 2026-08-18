@@ -97,9 +97,9 @@ permissions:
   actions: read
   contents: read
   issues: write
-  # `/commits/{sha}/pulls` is a pull-requests-scoped endpoint, even though the
-  # comment itself goes through the issues API.
-  pull-requests: read
+  # `/commits/{sha}/pulls` needs read access; posting the outcome comment on the
+  # release PR needs write access, matching `trigger-releases` in release-please.yml.
+  pull-requests: write
 
 concurrency:
   # One comment attempt per completed release-please run; a rerun of this

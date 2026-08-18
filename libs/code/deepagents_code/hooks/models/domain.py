@@ -81,6 +81,7 @@ class DcodeNotificationKind(StrEnum):
     PERMISSION_REQUIRED = "permission_required"
     AGENT_NEEDS_INPUT = "agent_needs_input"
     AGENT_COMPLETED = "agent_completed"
+    COLD_CACHE_WARNING = "cold_cache_warning"
 
 
 class CompactTrigger(StrEnum):

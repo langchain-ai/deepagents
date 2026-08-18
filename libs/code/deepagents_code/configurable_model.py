@@ -528,7 +528,11 @@ def _build_overrides(
 
 
 def _model_creation_kwargs(ctx: CLIContextSchema) -> dict[str, dict[str, Any]]:
-    """Build constructor kwargs needed for a runtime model switch."""
+    """Build constructor kwargs needed for a runtime model switch.
+
+    Returns:
+        Keyword arguments for `create_model`.
+    """
     from deepagents_code.config import CLI_MAX_RETRIES_KEY
 
     kwargs: dict[str, dict[str, Any]] = {}

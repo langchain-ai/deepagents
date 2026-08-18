@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ModelRetryMiddleware
 
-from deepagents_code.config import DEFAULT_MODEL_RETRIES, MODEL_RETRIES_ATTR, get_glyphs
+from deepagents_code.config import DEFAULT_MODEL_RETRIES, MODEL_RETRIES_ATTR
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -279,7 +279,7 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The model-specific non-negative retry count, or the middleware's
             startup fallback when the model carries no valid metadata.
         """
-        raw_retries = getattr(request.model, MODEL_RETRIES_ATTR, None)
+        raw_retries = getattr(getattr(request, "model", None), MODEL_RETRIES_ATTR, None)
         if (
             isinstance(raw_retries, int)
             and not isinstance(raw_retries, bool)

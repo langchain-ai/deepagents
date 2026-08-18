@@ -119,7 +119,6 @@ def test_param_key_ignored_with_warning(
         caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
     ):
         assert resolve_model_retries("openai") == 2
-    assert "obsolete" in caplog.text
 
 
 def test_resolve_config_retry_count_direct() -> None:

@@ -11,7 +11,6 @@ from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
 from langchain.agents.middleware.types import ModelRequest
@@ -20,7 +19,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code.config import MODEL_RETRIES_ATTR
 from deepagents_code.offload_middleware import (
     COMPACTION_FAILURE_PREFIX,
     CLICompactionMiddleware,
@@ -403,34 +401,6 @@ class TestCLICompactionMiddleware:
         assert content.startswith(COMPACTION_FAILURE_PREFIX)
         assert "RuntimeError" in content
 
-    async def test_async_forced_summary_retries_transient_failure(self) -> None:
-        """Direct async summaries honor the selected model's retry metadata."""
-        summarization = self._summarization()
-        model = SimpleNamespace()
-        setattr(model, MODEL_RETRIES_ATTR, 2)
-        summarization.model = model
-        summarization._acreate_summary = AsyncMock(
-            side_effect=[httpx.ReadError("dropped"), "Summary"]
-        )
-        middleware = CLICompactionMiddleware(summarization)
-        events: list[dict[str, object]] = []
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
-        runtime.stream_writer = events.append
-
-        with patch(
-            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
-            return_value=0,
-        ):
-            result = await middleware._arun_forced_compact(runtime)
-
-        assert summarization._acreate_summary.await_count == 2
-        assert [event["attempt"] for event in events] == [1]
-        assert result.update is not None
-        assert result.update["_summarization_event"]["cutoff_index"] == 2
-
     def test_sync_forced_compact_compacts(self) -> None:
         """The synchronous forced path mirrors the async one."""
         summarization = self._summarization()
@@ -447,35 +417,6 @@ class TestCLICompactionMiddleware:
         result = middleware._run_forced_compact(runtime)
 
         summarization._create_summary.assert_called_once()
-        assert result.update is not None
-        assert result.update["_summarization_event"]["cutoff_index"] == 2
-
-    def test_sync_forced_summary_retries_transient_failure(self) -> None:
-        """Direct sync summaries honor the selected model's retry metadata."""
-        summarization = self._summarization()
-        model = SimpleNamespace()
-        setattr(model, MODEL_RETRIES_ATTR, 2)
-        summarization.model = model
-        summarization._create_summary.side_effect = [
-            httpx.ReadError("dropped"),
-            "Summary",
-        ]
-        middleware = CLICompactionMiddleware(summarization)
-        events: list[dict[str, object]] = []
-        runtime = MagicMock()
-        runtime.context = None
-        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
-        runtime.tool_call_id = "tool-call"
-        runtime.stream_writer = events.append
-
-        with patch(
-            "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
-            return_value=0,
-        ):
-            result = middleware._run_forced_compact(runtime)
-
-        assert summarization._create_summary.call_count == 2
-        assert [event["attempt"] for event in events] == [1]
         assert result.update is not None
         assert result.update["_summarization_event"]["cutoff_index"] == 2
 

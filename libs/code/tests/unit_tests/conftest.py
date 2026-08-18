@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator
+    from collections.abc import Callable, Coroutine, Generator, Iterator
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -562,6 +562,29 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         "deepagents_code.config._GLOBAL_DOTENV_PATH",
         tmp_path / "nonexistent-global.env",
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_managed_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Point managed config at a missing file and reset its process cache.
+
+    The managed path is fixed per platform, so without this the suite reads
+    whatever policy the developer's machine (or a CI image) has installed, and
+    unrelated tests change behavior. The snapshot is cached process-wide, so it
+    is also cleared on both sides of every test.
+    """
+    from deepagents_code.configuration import service
+
+    monkeypatch.setattr(
+        service,
+        "managed_config_path",
+        lambda: tmp_path / "absent-managed_config.toml",
+    )
+    service.invalidate_config_sources()
+    yield
+    service.invalidate_config_sources()
 
 
 @pytest.fixture(autouse=True)

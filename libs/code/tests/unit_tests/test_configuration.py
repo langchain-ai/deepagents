@@ -527,3 +527,184 @@ def test_managed_scalar_enforced_over_user_table_shape_collision(
     finally:
         service.invalidate_config_sources()
         model_config.invalidate_thread_config_cache()
+
+
+@pytest.mark.parametrize(
+    "colliding_user_value",
+    [
+        pytest.param({"nested": True}, id="scalar-only-table"),
+        pytest.param({"nested": {}}, id="table-with-empty-table"),
+        pytest.param({"nested": {"deep": True}}, id="table-with-nested-table"),
+        pytest.param({"a": {"b": {"c": 1}}}, id="deeply-nested-table"),
+    ],
+)
+def test_managed_scalar_beats_a_user_table_at_any_depth(
+    colliding_user_value: dict[str, object],
+) -> None:
+    """A valid managed scalar wins however deeply the user table nests.
+
+    Regression: the merge kept any user table that held a non-empty nested
+    table, so adding one level of nesting to `[threads.relative_time]` let a
+    user defeat a managed `relative_time = false`. Typed readers then rejected
+    the surviving table and fell back to the built-in default, which silently
+    voided administrator policy.
+    """
+    from deepagents_code.configuration.service import _is_valid_managed_scalar
+
+    merged, provenance = merge_toml_tables(
+        {"threads": {"relative_time": colliding_user_value}},
+        {"threads": {"relative_time": False}},
+        lower_source="config.toml",
+        higher_source="managed config",
+        higher_leaf_is_valid=_is_valid_managed_scalar,
+    )
+    assert merged == {"threads": {"relative_time": False}}
+    assert provenance["threads.relative_time"] == "managed config"
+
+
+def test_invalid_managed_scalar_keeps_a_nested_user_table() -> None:
+    """A wrong-typed managed scalar must not discard a valid user subtree."""
+    from deepagents_code.configuration.service import _is_valid_managed_scalar
+
+    merged, _ = merge_toml_tables(
+        {"threads": {"relative_time": {"a": {"b": 1}}}},
+        {"threads": {"relative_time": "not-a-bool"}},
+        lower_source="config.toml",
+        higher_source="managed config",
+        higher_leaf_is_valid=_is_valid_managed_scalar,
+    )
+    assert merged == {"threads": {"relative_time": {"a": {"b": 1}}}}
+
+
+def test_managed_policy_survives_a_corrupt_default_user_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt user config drops only the user layer, never managed policy.
+
+    Regression: the shared reader raised `OSError` on an unusable user file
+    before consulting the managed layer, so every caller fell back to built-in
+    defaults. The user owns that file, which made one invalid byte an
+    unprivileged way to switch administrator policy off.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("this is not [valid toml\n", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[startup]\nmode = "auto"\n[threads]\nrelative_time = false\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    model_config.invalidate_thread_config_cache()
+    try:
+        assert model_config.load_startup_mode() == "auto"
+        assert model_config.load_thread_relative_time() is False
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        model_config.invalidate_thread_config_cache()
+
+
+def test_malformed_managed_deny_list_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wrong-typed managed deny list reports an error instead of allowing all.
+
+    Regression: the managed branch discarded the malformed flag, so an
+    administrator typo produced an empty deny set with no signal, while the
+    same typo in the user file failed closed.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        "[mcp]\ndisabled_project_servers = 5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        trust = model_config.load_mcp_server_trust_lists()
+        assert trust.read_error is not None
+        assert "disabled_project_servers" in trust.read_error
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_non_table_managed_mcp_section_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scalar managed `[mcp]` cannot silently void the deny list."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('mcp = "locked"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        trust = model_config.load_mcp_server_trust_lists()
+        assert trust.read_error is not None
+    finally:
+        service.invalidate_config_sources()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param("all", ["__ALL__"], id="string-all"),
+        pytest.param(["all"], ["__ALL__"], id="list-all"),
+    ],
+)
+def test_shell_allow_list_sentinels_agree_across_spellings(
+    raw: object,
+    expected: list[str],
+) -> None:
+    """The TOML array honors the same sentinels as the comma-separated string.
+
+    Regression: the list branch bypassed the parser, so a managed
+    `allow_list = ["all"]` permitted one literal command named `all` instead
+    of every command, silently inverting the administrator's intent.
+    """
+    from deepagents_code.config_manifest import _coerce_toml, get_option
+
+    option = get_option("shell.allow_list")
+    assert option is not None
+    assert _coerce_toml(option, raw, source="managed config") == expected
+
+
+def test_shell_allow_list_rejects_all_combined_with_commands() -> None:
+    """`all` stays exclusive in the array form, matching the string form."""
+    from deepagents_code.config_manifest import _INVALID, _coerce_toml, get_option
+
+    option = get_option("shell.allow_list")
+    assert option is not None
+    assert _coerce_toml(option, ["all", "git"], source="managed config") is _INVALID
+
+
+def test_shell_allow_list_array_expands_recommended() -> None:
+    """A `recommended` element expands to the curated safe set."""
+    from deepagents_code.config import RECOMMENDED_SAFE_SHELL_COMMANDS
+    from deepagents_code.config_manifest import _coerce_toml, get_option
+
+    option = get_option("shell.allow_list")
+    assert option is not None
+    resolved = _coerce_toml(option, ["recommended", "make"], source="managed config")
+    assert isinstance(resolved, list)
+    assert set(RECOMMENDED_SAFE_SHELL_COMMANDS) <= set(resolved)
+    assert "make" in resolved

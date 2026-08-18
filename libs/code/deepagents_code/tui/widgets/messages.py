@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -94,13 +94,13 @@ if TYPE_CHECKING:
     from deepagents_code.theme import ThemeColors
     from deepagents_code.tui.widgets.message_store import MessageData
 
-    _SummaryCall: TypeAlias = tuple[str, Mapping[str, Any]]
+    type _SummaryCall = tuple[str, Mapping[str, Any]]
     """One tool call as the summary code sees it: `(raw tool name, parsed args)`."""
 
-    _SummaryCacheKey: TypeAlias = tuple[tuple[str, str | None], ...]
+    type _SummaryCacheKey = tuple[tuple[str, str | None], ...]
     """Opaque identity of a summary line's inputs — compare only for equality."""
 
-    _LiveSummaryKey: TypeAlias = tuple[_SummaryCacheKey, _SummaryCacheKey]
+    type _LiveSummaryKey = tuple[_SummaryCacheKey, _SummaryCacheKey]
     """The `(completed, pending)` key pair behind a cached live summary line."""
 
 logger = logging.getLogger(__name__)

@@ -27,7 +27,6 @@ from typing import (
     Literal,
     NamedTuple,
     Protocol,
-    TypeVar,
     assert_never,
     cast,
     override,
@@ -1040,8 +1039,6 @@ def _format_mcp_server_changes(
         lines.append(f"  - Still needs attention: {', '.join(stuck)} (use /mcp)")
     return "\n".join(lines)
 
-
-ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -10301,7 +10298,7 @@ class DeepAgentsApp(App):
                     ),
                 )
 
-    def _push_screen_result_future(
+    def _push_screen_result_future[ScreenResultT](
         self,
         screen: ModalScreen[ScreenResultT],
     ) -> asyncio.Future[ScreenResultT | None]:
@@ -10471,7 +10468,7 @@ class DeepAgentsApp(App):
         self.push_screen(screen, handle_result)
         return result_future
 
-    async def _push_screen_wait(
+    async def _push_screen_wait[ScreenResultT](
         self,
         screen: ModalScreen[ScreenResultT],
     ) -> ScreenResultT | None:

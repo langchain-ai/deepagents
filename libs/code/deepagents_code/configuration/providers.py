@@ -22,8 +22,15 @@ from deepagents_code.configuration.types import (
 class ConfigProvider[T](Protocol):
     """Provider of values keyed by canonical config identifier."""
 
-    name: str
-    rank: int
+    @property
+    def name(self) -> str:
+        """Human-readable source label used in provenance and diagnostics."""
+        ...
+
+    @property
+    def rank(self) -> int:
+        """Precedence rank; providers sort ascending by this value."""
+        ...
 
     def get(self, key: str) -> ProviderResult[T]:
         """Return this provider's result for `key`."""

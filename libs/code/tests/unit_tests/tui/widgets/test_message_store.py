@@ -654,15 +654,55 @@ class TestMessageStore:
         """Test appending messages and counting."""
         store = MessageStore()
         assert store.total_count == 0
+        assert store.turn_count == 0
         assert store.visible_count == 0
 
         store.append(MessageData(type=MessageType.USER, content="msg1"))
         assert store.total_count == 1
+        assert store.turn_count == 1
         assert store.visible_count == 1
 
         store.append(MessageData(type=MessageType.ASSISTANT, content="msg2"))
         assert store.total_count == 2
+        assert store.turn_count == 1
         assert store.visible_count == 2
+
+        store.append(
+            MessageData(type=MessageType.SKILL, content="msg3", skill_name="test")
+        )
+        assert store.total_count == 3
+        assert store.turn_count == 2
+        assert store.visible_count == 3
+
+    @pytest.mark.parametrize("message_type", list(MessageType))
+    def test_turn_count_counts_only_user_and_skill_rows(self, message_type):
+        """Exactly `USER` and `SKILL` count, across every `MessageType`.
+
+        Parametrized over the whole enum so a new member -- or a member quietly
+        added to the counted set -- fails here rather than silently shifting the
+        number the Debug Console reports.
+        """
+        store = MessageStore()
+        store.append(
+            MessageData(
+                type=message_type,
+                content="msg",
+                skill_name="test" if message_type is MessageType.SKILL else None,
+                tool_name="test" if message_type is MessageType.TOOL else None,
+                rubric_details=(
+                    "details" if message_type is MessageType.RUBRIC else None
+                ),
+                tool_group_messages=(
+                    [MessageData(type=MessageType.TOOL, content="t", tool_name="t")]
+                    if message_type is MessageType.TOOL_GROUP
+                    else []
+                ),
+            )
+        )
+
+        expected = 1 if message_type in {MessageType.USER, MessageType.SKILL} else 0
+        assert store.turn_count == expected
+        assert store.total_count == 1
 
     def test_append_preserves_hidden_tail(self):
         """Appending while scrolled up should keep newer messages hidden."""

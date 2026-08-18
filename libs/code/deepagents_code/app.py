@@ -20122,12 +20122,14 @@ class DeepAgentsApp(App):
             panel.on_subagent_event(event)
 
     async def _on_auto_mode_event(self, event: dict[str, Any]) -> None:
-        """Render one compact sanitized Auto event in the transcript.
+        """Render one compact sanitized Auto control-state notice.
 
         Args:
             event: Validated custom-stream event from the server middleware.
         """
         kind = event.get("event")
+        if kind not in {"fallback", "warning"}:
+            return
         reason = str(event.get("reason") or "")
         if kind == "fallback":
             if event.get("mode") == "manual":
@@ -20146,12 +20148,6 @@ class DeepAgentsApp(App):
                     f"unavailable {event.get('consecutive_unavailable', 0)}, "
                     f"total {event.get('total_denials', 0)})."
                 )
-        elif kind == "denial":
-            text = f"Auto denied [{event.get('category', 'policy')}]: {reason}"
-        elif kind == "unavailable":
-            # Reason is a short cause fragment from the server; keep the UI
-            # line outcome-focused so fail-closed denial is obvious.
-            text = f"Auto classifier unavailable: {reason} — tool not executed"
         else:
             text = f"Auto warning: {reason}"
         await self._mount_message(AppMessage(text))

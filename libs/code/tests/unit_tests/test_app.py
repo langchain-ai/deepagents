@@ -30369,6 +30369,16 @@ class TestLiveApprovalModeWrites:
         )
         mount.assert_awaited_once()
 
+    @pytest.mark.parametrize("kind", ["denial", "unavailable"])
+    async def test_tool_outcome_auto_event_is_not_mounted(self, kind: str) -> None:
+        app = DeepAgentsApp()
+        event = {"event": kind, "reason": "tool was denied"}
+
+        with patch.object(app, "_mount_message", new=AsyncMock()) as mount:
+            await app._on_auto_mode_event(event)
+
+        mount.assert_not_awaited()
+
 
 class TestExternalBypassFieldHonored:
     """`event.bypass` overrides queue when set on a prompt event."""

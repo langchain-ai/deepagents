@@ -1,5 +1,6 @@
 """Unit tests for filesystem permission enforcement in `FilesystemMiddleware`."""
 
+import json
 import threading
 
 import pytest
@@ -13,6 +14,7 @@ from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.backends.sandbox import _parse_glob_output
 from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
 from deepagents.middleware import filesystem as filesystem_module
@@ -21,6 +23,7 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
     _all_paths_scoped_to_routes,
+    _apply_permissions_to_glob_results,
     _check_fs_permission,
     _filter_paths_by_permission,
     _find_delete_deny_patterns,
@@ -1593,3 +1596,45 @@ class TestGeneralPurposeSubagentPermissionInheritance:
 
         assert _filesystem_permissions_for(agent) == parent_perms
         assert _filesystem_permissions_for(agent, "general-purpose") == override_perms
+
+
+class TestGlobResultPermissionFiltering:
+    """`deny` rules must survive the glob result path.
+
+    `_check_fs_permission` requires absolute patterns, so a backend reporting
+    search-root-relative match paths silently bypasses every `deny` rule: the
+    filter runs, matches nothing, and returns everything.
+    """
+
+    def test_absolute_match_is_filtered(self):
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        matches = [
+            {"path": "/secrets/key.py", "is_dir": False},
+            {"path": "/app.py", "is_dir": False},
+        ]
+
+        assert _apply_permissions_to_glob_results(rules, matches) == ["/app.py"]
+
+    def test_relative_match_would_bypass_the_rule(self):
+        """Documents why SandboxBackend.glob absolutizes before returning."""
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+
+        assert _check_fs_permission(rules, "read", "/secrets/key.py") == "deny"
+        assert _check_fs_permission(rules, "read", "secrets/key.py") == "allow"
+
+    def test_sandbox_glob_matches_are_filtered_end_to_end(self):
+        """A denied subtree must not appear in sandbox glob output."""
+        rules = [FilesystemPermission(operations=["read"], paths=["/w/secrets/**"], mode="deny")]
+        resp = ExecuteResponse(
+            output="\n".join(
+                [
+                    json.dumps({"path": "secrets/key.py", "is_dir": False}),
+                    json.dumps({"path": "app.py", "is_dir": False}),
+                ]
+            ),
+            exit_code=0,
+        )
+
+        parsed = _parse_glob_output(resp, "/w")
+
+        assert _apply_permissions_to_glob_results(rules, parsed.matches) == ["/w/app.py"]

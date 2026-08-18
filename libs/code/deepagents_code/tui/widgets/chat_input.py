@@ -824,8 +824,8 @@ class ChatTextArea(PasteBurstTextArea):
         regain only restores focus and leaves the cursor where it was.
 
         Deliberately shadows Textual's private `TextArea._on_mouse_down` to gate
-        cursor positioning; verified against Textual 8.2.7. If the base handler
-        changes, re-verify that early-returning before `super()` still leaves no
+        cursor positioning; verified against Textual 8.2.8. Re-verify on every
+        Textual bump that early-returning before `super()` still leaves no
         selection/capture state set.
         """
         if self._consume_refocus_click():
@@ -866,8 +866,8 @@ class ChatTextArea(PasteBurstTextArea):
         untouched.
 
         Deliberately overrides Textual's private `_refresh_scrollbars` and
-        swaps the private `_container_size`; verified against Textual 8.2.7.
-        Re-verify on major Textual upgrades.
+        swaps the private `_container_size`; verified against Textual 8.2.8.
+        Re-verify these attribute names on every Textual bump.
         """
         bound = self._settled_content_height()
         if bound is None:

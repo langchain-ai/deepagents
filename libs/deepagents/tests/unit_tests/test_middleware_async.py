@@ -180,8 +180,11 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        # Standard glob: *.py only matches files in root directory, not subdirectories
-        assert result.content == str(["/test.py"])
+        # Bare `*.py` matches the basename at any depth under the search root.
+        assert "/test.py" in result.content
+        assert "/pokemon/charmander.py" in result.content
+        assert "/test.txt" not in result.content
+        assert "/pokemon/squirtle.txt" not in result.content
 
     async def test_aglob_search_shortterm_wildcard_pattern(self):
         """Test async glob with wildcard pattern."""
@@ -244,8 +247,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
+        # Path scopes the tree; bare patterns still match nested basenames under it.
         assert "/src/main.py" in result.content
-        assert "/src/utils/helper.py" not in result.content
+        assert "/src/utils/helper.py" in result.content
         assert "/tests/test_main.py" not in result.content
 
     async def test_aglob_search_shortterm_brace_expansion(self):

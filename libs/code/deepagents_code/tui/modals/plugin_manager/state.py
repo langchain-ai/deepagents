@@ -238,6 +238,10 @@ def _row_from_instance(
         display_name=display_name,
         skill_count=len(skill_names) if instance else None,
         skill_names=skill_names,
+        # Tri-state: `None` means "unknown, render nothing". While the
+        # session is still connecting, `mcp_server_info` is not yet
+        # trustworthy, so report unknown rather than a false "not connected"
+        # that would show a bogus "run /reload to connect" hint.
         mcp_connected=_plugin_mcp_connected(instance, mcp_server_info)
         if instance and session_loaded and not mcp_connecting
         else None,

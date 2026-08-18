@@ -69,6 +69,11 @@ from deepagents_code.tui.modals.plugin_manager.tabs import (
 
 logger = logging.getLogger(__name__)  # noqa: RUF067  # module-level logger
 
+_CONNECTION_REFRESH_ERROR = (  # noqa: RUF067  # module-level constant
+    "Could not refresh MCP connection status. Reopen /plugins."
+)
+"""Banner for a failed connection refresh, cleared when a later one succeeds."""
+
 
 class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
     """Arrow-key navigable plugin manager for `/plugins`.
@@ -154,6 +159,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         # updates ordered so an older connecting snapshot cannot overwrite a
         # later settled connection snapshot.
         self._refresh_lock = asyncio.Lock()
+        self._refresh_tasks: set[asyncio.Task[None]] = set()
+        """Strong references to in-flight fire-and-forget refresh tasks."""
+
+        self._dismissed = False
+        """Whether the screen has been unmounted.
+
+        Textual leaves `is_mounted` `True` and `is_attached` `False` after a
+        dismiss, and `is_attached` is also `False` before the first mount, so
+        neither flag distinguishes a dismissed screen from a fresh one.
+        """
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -209,6 +224,10 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if self._status == "Loading plugins...":
             self._status = None
             self._refresh_view()
+
+    def on_unmount(self) -> None:
+        """Stop accepting deferred refreshes once the screen is torn down."""
+        self._dismissed = True
 
     def on_resize(self) -> None:
         """Refit width-sized dividers when the modal resizes."""
@@ -563,32 +582,70 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         """Update the live MCP connection snapshot and re-render.
 
         The constructor only receives a snapshot of the app's connection
-        state, so a manager opened while startup is still connecting would
-        otherwise keep `mcp_connecting=True` forever — suppressing both the
-        "connected" indicator and a legitimate "run /reload" hint until the
-        modal is closed and reopened. The app calls this when server startup
-        settles so the open manager reflects the final connection state.
+        state, so a manager opened while a connection is still settling would
+        otherwise keep `mcp_connecting=True` forever — suppressing, for
+        session-loaded plugins that declare MCP servers, both the "connected"
+        indicator and a legitimate "run /reload" hint until the modal is
+        closed and reopened. The app calls this whenever a connection attempt
+        settles — `ServerReady` or a startup failure, including reconnects —
+        so the open manager reflects the final connection state.
 
         Args:
             mcp_server_info: Settled MCP server metadata from the session.
             mcp_connecting: Whether MCP connection status is still loading.
+                While `True`, per-plugin MCP status is omitted entirely rather
+                than rendered as disconnected.
         """
+        if self._dismissed:
+            # The app resolves its handle synchronously but this refresh is
+            # deferred, so a dismiss landing in between would otherwise leave
+            # `_refresh_view` querying a torn-down DOM.
+            return
         self._mcp_server_info = mcp_server_info
         self._mcp_connecting = mcp_connecting
         task = asyncio.create_task(self._refresh_state(clear_search=False))
-        task.add_done_callback(self._log_refresh_exception)
+        # `asyncio` keeps only a weak reference to a running task, so hold a
+        # strong one until it completes or the refresh can vanish mid-flight.
+        self._refresh_tasks.add(task)
+        task.add_done_callback(self._refresh_tasks.discard)
+        task.add_done_callback(self._settle_refresh_result)
 
-    @staticmethod
-    def _log_refresh_exception(task: asyncio.Task[None]) -> None:
-        """Log a failed connection-state refresh instead of dropping it."""
+    def _settle_refresh_result(self, task: asyncio.Task[None]) -> None:
+        """Report a failed connection-state refresh instead of dropping it.
+
+        Logging alone would leave the manager showing the pre-settle snapshot
+        with no on-screen signal — indistinguishable from the stale state this
+        refresh exists to clear. Route through `_error` like every other
+        failure path in this screen, and retire that banner once a later
+        refresh succeeds.
+
+        Only this callback's own message is cleared: a reconnect must not wipe
+        a marketplace or install error the user still needs to read.
+        """
         if task.cancelled():
             return
         exc = task.exception()
-        if exc is not None:
-            logger.error(
-                "Failed to refresh plugin manager connection state",
-                exc_info=exc,
-            )
+        if not self.is_attached:
+            # Unmounted mid-refresh: a failure here means the DOM is gone, not
+            # that the plugin state is unreadable — and there is nothing left
+            # to render a message into either way.
+            if exc is not None:
+                logger.warning(
+                    "Plugin manager connection refresh failed after unmount",
+                    exc_info=exc,
+                )
+            return
+        if exc is None:
+            if self._error == _CONNECTION_REFRESH_ERROR:
+                self._error = None
+                self._refresh_view()
+            return
+        logger.warning(
+            "Failed to refresh plugin manager connection state",
+            exc_info=exc,
+        )
+        self._error = _CONNECTION_REFRESH_ERROR
+        self._refresh_view()
 
     async def _refresh_state(self, *, clear_search: bool = True) -> None:
         """Load and apply plugin state without allowing refreshes to overlap.

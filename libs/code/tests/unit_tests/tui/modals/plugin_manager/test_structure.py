@@ -859,6 +859,81 @@ async def test_connection_refresh_waits_for_initial_refresh(
     assert screen._state == settled_state
 
 
+async def test_connection_refresh_failure_is_surfaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed connection refresh tells the user instead of only logging.
+
+    A bare log would leave the manager on the pre-settle snapshot with no
+    on-screen signal — indistinguishable from the stale state the refresh
+    exists to clear.
+    """
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(mcp_connecting=True)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        def _boom(_info: object, **_kwargs: object) -> _ManagerState:
+            msg = "state dir unreadable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state", _boom
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+
+        assert screen._error is not None
+        assert "Reopen /plugins" in screen._error
+        # The error widget exists and `_refresh_view` ran, so the message
+        # reached the screen's error surface rather than only the log.
+        assert screen.query_one("#plugin-manager-error", Static) is not None
+
+
+async def test_connection_refresh_retires_its_own_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovered refresh clears its banner but leaves other errors alone."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen(mcp_connecting=True)
+    empty = _ManagerState((), (), (), ())
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        def _boom(_info: object, **_kwargs: object) -> _ManagerState:
+            msg = "state dir unreadable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state", _boom
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error is not None
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.modals.plugin_manager._load_manager_state",
+            lambda _info, **_kwargs: empty,
+        )
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error is None
+
+        # An error from another source must survive a connection refresh.
+        screen._error = "Marketplace add failed."
+        screen.update_connection_state([], mcp_connecting=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert screen._error == "Marketplace add failed."
+
+
 async def test_tab_switch_ignored_during_add_marketplace() -> None:
     """Switching tabs must not discard an in-progress marketplace source entry."""
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

@@ -3681,7 +3681,11 @@ class DeepAgentsApp(App):
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
         self._active_plugin_manager: Any = None
-        """Handle to the `/plugins` modal so server-ready events can refresh it."""
+        """Handle to the `/plugins` modal so connection-settled events refresh it.
+
+        Set on push and cleared on dismiss. Both `ServerReady` and
+        `ServerStartFailed` push the settled state into it.
+        """
 
         self._mcp_viewer_disable_toggled = False
         """Whether the current/last `/mcp` viewer session toggled a disable state.
@@ -5990,8 +5994,10 @@ class DeepAgentsApp(App):
             task.add_done_callback(_log_task_exception)
 
         # A `/plugins` manager opened mid-startup holds a connecting snapshot
-        # (`mcp_connecting=True`) that would otherwise suppress the settled
-        # connected/`/reload` status until the modal is reopened.
+        # (empty `mcp_server_info`, `mcp_connecting=True`) that would otherwise
+        # suppress the settled connected/`/reload` status until the modal is
+        # reopened. Push both halves: clearing the flag alone would render
+        # every MCP-declaring plugin as disconnected instead.
         if self._active_plugin_manager is not None:
             self._active_plugin_manager.update_connection_state(
                 self._mcp_server_info or [],
@@ -6038,6 +6044,16 @@ class DeepAgentsApp(App):
         self._connecting = False
         self._reconnecting = False
         self._connection_ready_event.set()
+
+        # A failed startup settles the connection just as `ServerReady` does.
+        # Without this the manager keeps `mcp_connecting=True` for the life of
+        # the modal, re-creating the stale-snapshot bug on the failure branch.
+        if self._active_plugin_manager is not None:
+            self._active_plugin_manager.update_connection_state(
+                self._mcp_server_info or [],
+                mcp_connecting=False,
+            )
+
         headline_truncated = False
         if isinstance(event.error, MCPConfigError):
             # Already carries the path + hint; showing the class name is noise.
@@ -23456,7 +23472,10 @@ class DeepAgentsApp(App):
             )
 
         def on_close(_result: None) -> None:
-            self._active_plugin_manager = None
+            # Guard identity: a stacked manager closing must not orphan the
+            # handle for one that is still open.
+            if self._active_plugin_manager is screen:
+                self._active_plugin_manager = None
             self.call_after_refresh(
                 lambda: self.run_worker(
                     check_changes(),
@@ -23475,8 +23494,8 @@ class DeepAgentsApp(App):
                 else None
             ),
         )
-        # Tracked so `on_deep_agents_app_server_ready` can push the settled
-        # connection state into a manager opened mid-startup.
+        # Tracked so the `ServerReady` / `ServerStartFailed` handlers can push
+        # the settled connection state into a manager opened mid-startup.
         self._active_plugin_manager = screen
         self.push_screen(screen, on_close)
 

@@ -265,7 +265,7 @@
 
 #### TB12: Managed Config → Runtime
 
-- **Inside**: The resolver reads one fixed OS path, gives valid managed values highest precedence, deep-merges tables, unions deny lists, replaces explicit allow/trust lists, and never writes the managed source. A missing file is accepted. A present unreadable, undecodable, or syntactically corrupt file blocks CLI and server agent startup while help, version, config inspection, and doctor remain usable. Wrong-typed individual values are skipped.
+- **Inside**: The resolver reads one fixed OS path and never writes the managed source. Valid managed values take the highest precedence. Tables deep-merge, deny lists union, and an explicit managed allow or trust list replaces lower-precedence grants. A managed scalar replaces a colliding user table at any depth, so a user cannot defeat policy by changing the shape of a key. A wrong-typed managed value is skipped, and the lower-precedence value stays in effect. A missing file is accepted. A present unreadable, undecodable, or syntactically corrupt file blocks CLI and server agent launch, and also blocks `/reload`; all subcommands stay usable for recovery. An unusable user `config.toml` drops only the user layer, so managed policy still applies.
 - **Outside**: Ownership, permission-mode validation, privileged installation, and `sudo` policy are deployment responsibilities. Anyone who can replace the administrator-managed file can control model, sandbox, interpreter, MCP trust, and other supported runtime settings.
 - **Crossing mechanism**: Synchronous local file read through `configuration.TomlFileProvider`, followed by typed resolution and CLI/server startup gates.
 

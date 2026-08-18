@@ -54,22 +54,28 @@ Administrators can enforce any supported `config.toml` setting with a read-only
 `managed_config.toml` using the same TOML schema:
 
 - macOS: `/Library/Application Support/dcode/managed_config.toml`
-- Windows: `%ProgramData%\dcode\managed_config.toml` (or
-  `C:\ProgramData\dcode\managed_config.toml` when `ProgramData` is unset)
+- Windows: the `ProgramData` directory reported by the registry, usually
+  `C:\ProgramData\dcode\managed_config.toml`. The `%ProgramData%` environment
+  variable is ignored, because any user can change it.
 - Linux and other supported POSIX systems: `/etc/dcode/managed_config.toml`
 
 Managed values override explicit CLI flags, `DEEPAGENTS_CODE_` and compatibility
-environment variables, and `~/.deepagents/config.toml`. Tables merge recursively;
-deny lists are unioned, while an explicitly managed allow or trust list replaces
-lower-precedence grants, including an empty-list lockdown. `dcode` never writes the
-managed file. User preference changes can still be saved, but the UI reports when a
-managed value keeps them from becoming effective.
+environment variables, and `~/.deepagents/config.toml`. Tables merge recursively.
+Deny lists are unioned. An explicitly managed allow or trust list replaces
+lower-precedence grants, including an empty-list lockdown. A managed value of the
+wrong type is ignored, and the lower-precedence value stays in effect. `dcode`
+never writes the managed file. Users can still save a preference, but the UI
+reports when a managed value keeps it from becoming effective.
 
 A missing managed file is normal. If one exists but is unreadable, not UTF-8, or
-invalid TOML, agent startup fails closed; `--help`, `--version`, `config`, and
-`doctor` remain available for recovery. Use `dcode config path` and `dcode doctor`
+invalid TOML, an agent launch fails closed. Subcommands stay available for
+recovery, including `--help`, `--version`, `config`, and `doctor`. A managed file
+that becomes unreadable later also blocks `/reload`, which keeps the settings
+resolved while the file was still readable. Use `dcode config path` and `dcode doctor`
 to inspect its fixed path and parse health. Individual values with the wrong type
-are ignored without discarding valid sibling settings.
+are ignored without discarding valid sibling settings. A corrupt
+`~/.deepagents/config.toml` does not disable managed policy: the user file is
+ignored and managed values still apply.
 
 Deployment tooling must create and protect this file with appropriate administrator
 or root permissions. `dcode` deliberately performs no ownership or mode validation

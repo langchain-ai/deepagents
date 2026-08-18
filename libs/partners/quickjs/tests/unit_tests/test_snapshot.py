@@ -558,7 +558,6 @@ def _signing_thread_id(mw: CodeInterpreterMiddleware) -> str:
     return mw._fallback_thread_id
 
 
-
 def test_normalize_signing_key_encodes_str_and_passes_bytes() -> None:
     assert normalize_signing_key("abc") == b"abc"
     assert normalize_signing_key(b"abc") == b"abc"
@@ -623,7 +622,6 @@ def test_thread_id_framing_is_unambiguous() -> None:
 def test_empty_key_rejected_at_construction() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         CodeInterpreterMiddleware(snapshot_signing_key="")
-
 
 
 def test_after_agent_emits_hmac_when_key_set() -> None:

@@ -237,9 +237,6 @@ division-by-zero = "error"
 # across environments.
 unused-ignore-comment = "ignore"
 
-[tool.ruff]
-target-version = "py312"
-
 [tool.ruff.format]
 docstring-code-format = true
 docstring-code-line-length = 100

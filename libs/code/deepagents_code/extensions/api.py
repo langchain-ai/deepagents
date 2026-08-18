@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from deepagents.backends.protocol import BackendProtocol
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
@@ -32,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 """Command names are restricted so a registration cannot forge slash syntax."""
+
+_ROUTE_PREFIX = re.compile(r"^/[a-z0-9][a-z0-9_/-]*/$")
+"""Route prefixes are absolute, slash-terminated virtual directory paths."""
 
 
 class ExtensionAPI:
@@ -196,3 +200,45 @@ class ExtensionAPI:
             self._source,
             description=description,
         )
+
+    def register_backend_route(self, prefix: str, backend: BackendProtocol) -> None:
+        """Mount a backend at a virtual path prefix on the agent's filesystem.
+
+        The backend is added as a route on the `CompositeBackend` that wraps the
+        agent's filesystem, so file operations under `prefix` (read, write, edit,
+        glob, grep) are routed to it instead of the default backend. This is how
+        a LangGraph memory store (via `StoreBackend`) or any other
+        `BackendProtocol` implementation becomes addressable by path, e.g.
+        mounting a store at `/memories/`.
+
+        Routing is additive: the default backend (local filesystem or sandbox) is
+        never replaced, and dcode's reserved internal routes always win over an
+        extension route. Note that routed content is reachable through the model's
+        file tools only — `execute` always runs against the default backend, so a
+        shell command cannot see routed (virtual) content.
+
+        Args:
+            prefix: Virtual path prefix to mount at. Must start and end with `/`
+                and contain no traversal (e.g. `/memories/`).
+            backend: The backend to route matching paths to.
+
+        Raises:
+            ExtensionError: If the prefix is malformed or the backend is not a
+                `BackendProtocol`.
+        """
+        # Deferred: LangChain is heavy on the startup path.
+        from deepagents.backends.protocol import BackendProtocol
+
+        if not _ROUTE_PREFIX.match(prefix) or ".." in prefix:
+            msg = (
+                f"Invalid backend route prefix {prefix!r}: use an absolute, "
+                "slash-terminated path with no traversal (e.g. '/memories/')"
+            )
+            raise ExtensionError(msg)
+        if not isinstance(backend, BackendProtocol):
+            msg = (
+                f"Backend route {prefix!r} got {type(backend).__name__}, "
+                "which is not a BackendProtocol"
+            )
+            raise ExtensionError(msg)
+        self._registry.add_backend_route(prefix, backend, self._source)

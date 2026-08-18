@@ -126,17 +126,22 @@ async def load_extension(
         middleware=tuple(unit.unit for unit in registry.middleware[before[0] :]),
         tools=tuple(unit.unit for unit in registry.tools[before[1] :]),
         commands=tuple(unit.name for unit in registry.commands[before[2] :]),
+        backend_routes=tuple(
+            unit.name for unit in registry.backend_routes[before[3] :]
+        ),
     )
 
 
-def _snapshot(registry: ExtensionRegistry) -> tuple[int, int, int]:
+def _snapshot(registry: ExtensionRegistry) -> tuple[int, int, int, int]:
     """Return the registry's per-kind counts.
 
     Returns:
-        Counts of middleware, tools, and commands currently registered.
+        Counts of middleware, tools, commands, and backend routes currently
+            registered.
     """
     return (
         len(registry.middleware),
         len(registry.tools),
         len(registry.commands),
+        len(registry.backend_routes),
     )

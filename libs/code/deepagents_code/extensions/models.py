@@ -145,6 +145,8 @@ class LoadedExtension:
     middleware: tuple[AgentMiddleware[Any, Any], ...] = ()
     tools: tuple[BaseTool, ...] = ()
     commands: tuple[str, ...] = ()
+    backend_routes: tuple[str, ...] = ()
+    """Path prefixes this extension mounted a backend route at."""
 
 
 class ExtensionError(Exception):

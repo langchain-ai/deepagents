@@ -2391,6 +2391,24 @@ def create_cli_agent(
         else (project_context.user_cwd if project_context is not None else None)
     )
 
+    # Extension loading runs before the composite backend is assembled so that
+    # extension-registered backend routes can be merged into its route table.
+    # Loading failures are already isolated by the loader: a malformed extension
+    # is reported and skipped, never raised here.
+    from deepagents_code.extensions import load_extensions_blocking
+    from deepagents_code.extensions.runtime import HEADLESS_MODE, INTERACTIVE_MODE
+
+    extension_result = load_extensions_blocking(
+        cwd=effective_cwd,
+        mode=INTERACTIVE_MODE if interactive else HEADLESS_MODE,
+        project_root=(
+            project_context.project_root if project_context is not None else None
+        ),
+        project_trust_granted=trust_project_extensions,
+    )
+    for message in extension_result.errors:
+        logger.warning("Extension not loaded: %s", message)
+
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
         agent_dir = settings.ensure_agent_dir(assistant_id)
@@ -2843,16 +2861,32 @@ def create_cli_agent(
                     virtual_mode=True,
                 )
             )
+        # Extension backend routes are additive on top of the reserved internal
+        # routes; a reserved prefix always wins over an extension route.
+        for unit in extension_result.registry.backend_routes:
+            if unit.name in artifact_routes:
+                logger.warning(
+                    "Ignoring extension backend route %r from %s: "
+                    "prefix is reserved for internal use",
+                    unit.name,
+                    unit.source.label,
+                )
+                continue
+            artifact_routes[unit.name] = unit.unit
         composite_backend = CompositeBackend(
             default=backend,
             routes=artifact_routes,
             artifacts_root=artifacts_root,
         )
     else:
-        # Sandbox mode: No special routing needed
+        # Sandbox mode: no internal routing, but extension routes still apply
+        # alongside the sandbox default.
         composite_backend = CompositeBackend(
             default=backend,
-            routes={},
+            routes={
+                unit.name: unit.unit
+                for unit in extension_result.registry.backend_routes
+            },
         )
 
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
@@ -3059,23 +3093,9 @@ def create_cli_agent(
         agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
 
     # Extension-contributed units are appended last so a built-in is never
-    # displaced, and loading failures are already isolated by the loader: a
-    # malformed extension is reported and skipped, never raised here.
-    from deepagents_code.extensions import load_extensions_blocking
-    from deepagents_code.extensions.runtime import HEADLESS_MODE, INTERACTIVE_MODE
-
-    extension_result = load_extensions_blocking(
-        cwd=effective_cwd,
-        mode=INTERACTIVE_MODE if interactive else HEADLESS_MODE,
-        project_root=(
-            project_context.project_root if project_context is not None else None
-        ),
-        project_trust_granted=trust_project_extensions,
-    )
+    # displaced; the load itself happened earlier (before backend assembly).
     tools = [*tools, *(unit.unit for unit in extension_result.registry.tools)]
     agent_middleware.extend(unit.unit for unit in extension_result.registry.middleware)
-    for message in extension_result.errors:
-        logger.warning("Extension not loaded: %s", message)
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

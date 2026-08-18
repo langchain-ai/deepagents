@@ -23,6 +23,7 @@ from deepagents_code.extensions.models import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents.backends.protocol import BackendProtocol
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
@@ -42,6 +43,7 @@ class ExtensionRegistry:
         self._middleware: list[RegisteredUnit[AgentMiddleware[Any, Any]]] = []
         self._tools: list[RegisteredUnit[BaseTool]] = []
         self._commands: list[RegisteredUnit[CommandHandler]] = []
+        self._backend_routes: list[RegisteredUnit[BackendProtocol]] = []
         self._shutdown_hooks: list[RegisteredUnit[Callable[[], Any]]] = []
         self._descriptions: dict[str, str] = {}
 
@@ -59,6 +61,11 @@ class ExtensionRegistry:
     def commands(self) -> list[RegisteredUnit[CommandHandler]]:
         """Registered commands in load order."""
         return list(self._commands)
+
+    @property
+    def backend_routes(self) -> list[RegisteredUnit[BackendProtocol]]:
+        """Registered backend routes in load order, keyed by path prefix."""
+        return list(self._backend_routes)
 
     @property
     def shutdown_hooks(self) -> list[RegisteredUnit[Callable[[], Any]]]:
@@ -170,6 +177,34 @@ class ExtensionRegistry:
         self._descriptions[resolved] = description
         return resolved
 
+    def add_backend_route(
+        self,
+        prefix: str,
+        backend: BackendProtocol,
+        source: SourceInfo,
+    ) -> None:
+        """Record a backend route, keeping the first registration of a prefix.
+
+        Args:
+            prefix: Virtual path prefix the backend is mounted at.
+            backend: Backend that handles paths under the prefix.
+            source: Provenance of the registering extension.
+        """
+        existing = next(
+            (unit for unit in self._backend_routes if unit.name == prefix), None
+        )
+        if existing is not None:
+            logger.warning(
+                "Ignoring backend route %r from %s: already registered by %s",
+                prefix,
+                source.label,
+                existing.source.label,
+            )
+            return
+        self._backend_routes.append(
+            RegisteredUnit(name=prefix, unit=backend, source=source)
+        )
+
     def find_command(self, name: str) -> RegisteredUnit[CommandHandler] | None:
         """Look up a registered command by name.
 
@@ -182,14 +217,22 @@ class ExtensionRegistry:
         """Return whether nothing has been registered.
 
         Returns:
-            `True` when no middleware, tools, or commands are registered.
+            `True` when no middleware, tools, commands, or backend routes are
+                registered.
         """
-        return not (self._middleware or self._tools or self._commands)
+        return not (
+            self._middleware or self._tools or self._commands or self._backend_routes
+        )
 
     def units(self) -> list[RegisteredUnit[Any]]:
         """Return every registered unit for provenance display.
 
         Returns:
-            Middleware, tools, and commands in that order.
+            Middleware, tools, commands, and backend routes in that order.
         """
-        return [*self._middleware, *self._tools, *self._commands]
+        return [
+            *self._middleware,
+            *self._tools,
+            *self._commands,
+            *self._backend_routes,
+        ]

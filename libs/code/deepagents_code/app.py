@@ -5730,6 +5730,9 @@ class DeepAgentsApp(App):
                                 f"/{', /'.join(loaded.commands)}"
                                 if loaded.commands
                                 else "",
+                                f"{len(loaded.backend_routes)} routes"
+                                if loaded.backend_routes
+                                else "",
                             )
                             if part
                         )

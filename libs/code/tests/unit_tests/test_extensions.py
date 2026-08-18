@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path  # noqa: TC003  # used at runtime (Path.cwd() in tests)
 from typing import TYPE_CHECKING
+
+import pytest
 
 from deepagents_code.extensions import (
     ExtensionSettings,
@@ -14,8 +17,22 @@ from deepagents_code.extensions.discovery import scan_extension_dir
 from deepagents_code.extensions.models import UnitOrigin
 from deepagents_code.extensions.trust import trust_project_extensions
 
-if TYPE_CHECKING:
-    from pathlib import Path
+
+@pytest.fixture(autouse=True)
+def _isolate_user_extensions_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point the global extensions dir at a tmp path.
+
+    `load_extensions` always scans `~/.deepagents/extensions/`, so a real user
+    extension would otherwise leak into these tests and break assertions that
+    expect an empty registry.
+    """
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir",
+        lambda: tmp_path / "user-extensions",
+    )
+
 
 _TOOL_EXTENSION = '''
 def extension(d):
@@ -35,6 +52,100 @@ async def extension(d):
 _BROKEN_EXTENSION = """
 raise RuntimeError("boom")
 """
+
+_ROUTE_EXTENSION = """
+from deepagents.backends import FilesystemBackend
+
+
+def extension(d):
+    d.register_backend_route("/memories/", FilesystemBackend(virtual_mode=False))
+"""
+
+_BAD_ROUTE_EXTENSION = """
+from deepagents.backends import FilesystemBackend
+
+
+def extension(d):
+    d.register_backend_route("memories", FilesystemBackend(virtual_mode=False))
+"""
+
+
+def test_route_prefixes_must_be_absolute_and_slash_terminated() -> None:
+    """A malformed route prefix is rejected with an ExtensionError."""
+    from pathlib import Path
+
+    import pytest
+
+    from deepagents_code.extensions import ExtensionAPI, ExtensionRegistry
+    from deepagents_code.extensions.models import (
+        ExtensionError,
+        SourceInfo,
+        UnitOrigin,
+        UnitScope,
+        UnitSource,
+    )
+
+    source = SourceInfo(
+        path=None,
+        source=UnitSource.EXTENSION,
+        scope=UnitScope.USER,
+        origin=UnitOrigin.TOP_LEVEL,
+    )
+    api = ExtensionAPI(ExtensionRegistry(), source, cwd=Path.cwd(), mode="interactive")
+    from deepagents.backends import FilesystemBackend
+
+    with pytest.raises(ExtensionError):
+        api.register_backend_route("memories", FilesystemBackend(virtual_mode=False))
+    with pytest.raises(ExtensionError):
+        api.register_backend_route("/../etc/", FilesystemBackend(virtual_mode=False))
+    with pytest.raises(ExtensionError):
+        api.register_backend_route("/memories/", object())
+
+
+async def test_registers_backend_routes_in_load_order(tmp_path: Path) -> None:
+    """A route registers cleanly and is recorded with its prefix as its name."""
+    extensions_dir = tmp_path / "extensions"
+    _write(extensions_dir, "routes.py", _ROUTE_EXTENSION)
+
+    result = await load_extensions(
+        cwd=tmp_path,
+        settings=ExtensionSettings(paths=(extensions_dir,)),
+    )
+
+    assert not result.errors
+    assert [unit.name for unit in result.registry.backend_routes] == ["/memories/"]
+    assert not result.registry.is_empty()
+
+
+def test_duplicate_route_prefix_is_dropped() -> None:
+    """The first registration of a prefix wins; the second is dropped."""
+    from pathlib import Path
+
+    from deepagents.backends import FilesystemBackend
+
+    from deepagents_code.extensions import ExtensionAPI, ExtensionRegistry
+    from deepagents_code.extensions.models import (
+        SourceInfo,
+        UnitOrigin,
+        UnitScope,
+        UnitSource,
+    )
+
+    source = SourceInfo(
+        path=None,
+        source=UnitSource.EXTENSION,
+        scope=UnitScope.USER,
+        origin=UnitOrigin.TOP_LEVEL,
+    )
+    registry = ExtensionRegistry()
+    api = ExtensionAPI(registry, source, cwd=Path.cwd(), mode="interactive")
+    first = FilesystemBackend(virtual_mode=False)
+    second = FilesystemBackend(virtual_mode=False)
+    api.register_backend_route("/memories/", first)
+    api.register_backend_route("/memories/", second)
+
+    assert [unit.name for unit in registry.backend_routes] == ["/memories/"]
+    assert registry.backend_routes[0].unit is first
 
 
 def _write(directory: Path, name: str, body: str) -> Path:

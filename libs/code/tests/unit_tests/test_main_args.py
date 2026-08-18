@@ -1964,13 +1964,13 @@ class TestUpdateSubcommand:
                 return_value=release_requires_prereleases,
             ),
             patch(
-                "deepagents_code.update_check.create_update_log_path",
+                "deepagents_code.update_check.create_update_log_file",
                 return_value=log_path,
             ),
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", None),
                 side_effect=upgrade_side_effect,
             ) as perform_upgrade_mock,
             pytest.raises(SystemExit) as exc_info,
@@ -2076,10 +2076,10 @@ class TestUpdateSubcommand:
 
         held_during_install: list[bool] = []
 
-        def _record_lock_state(**_kwargs: object) -> tuple[bool, str]:
+        def _record_lock_state(**_kwargs: object) -> tuple[bool, str, None]:
             with update_install_lock() as holding:
                 held_during_install.append(holding)
-            return True, ""
+            return True, "", None
 
         code, _, perform_upgrade_mock = self._run_update(
             editable=False,

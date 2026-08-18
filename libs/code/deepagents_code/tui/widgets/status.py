@@ -864,7 +864,7 @@ class StatusBar(Vertical):
                 color = colors.muted
             hit_rate = Content.styled(f"{percent:.0f}% hit", color)
         elif not self.cache_read_tokens and not self.cache_write_tokens:
-            hit_rate = Content.styled("0% hit", colors.muted)
+            return Content("")
         details = (
             f"{_compact_tokens(self.cache_read_tokens)} read"
             f" / {_compact_tokens(self.cache_write_tokens)} write"

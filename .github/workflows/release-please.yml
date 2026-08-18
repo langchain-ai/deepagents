@@ -615,7 +615,7 @@ jobs:
           MAX_WAIT=2700 # 45 min
           MAX_QUERY_FAILS=5
           WAITED=0
-          echo "::notice::Publish in flight; waiting up to $((MAX_WAIT / 60))m for it to finish before running release-please: $PENDING"
+          echo "::notice title=Release publish in progress::Waiting up to $((MAX_WAIT / 60)) minutes for the current publish to finish before updating release PRs. Pending publish: $PENDING"
 
           while [ -n "$PENDING" ] && [ "$WAITED" -lt "$MAX_WAIT" ]; do
             if [ "$QUERY_FAILS" -ge "$MAX_QUERY_FAILS" ]; then
@@ -646,7 +646,7 @@ jobs:
           # next push rather than failing — a hung publish is outside this run's
           # control and the operator must clear it manually.
           echo "skip=true" >> "$GITHUB_OUTPUT"
-          echo "::warning::release-please deferred after waiting ${WAITED}s: publish still in flight (or release state unverifiable): $PENDING"
+          echo "::warning title=Release publish still in progress::Waited $((WAITED / 60)) minutes, but the publish is still running or its status could not be verified. Release PR updates are deferred until the next push. Pending publish: $PENDING"
           {
             echo "## release-please deferred"
             echo ""

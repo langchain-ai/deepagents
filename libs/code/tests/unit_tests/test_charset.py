@@ -2,6 +2,7 @@
 
 import os
 import sys
+from dataclasses import fields
 from unittest.mock import Mock, patch
 
 import pytest
@@ -50,6 +51,8 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.error) > 127
         assert ord(UNICODE_GLYPHS.circle_empty) > 127
         assert ord(UNICODE_GLYPHS.circle_filled) > 127
+        assert ord(UNICODE_GLYPHS.checkbox_empty) > 127
+        assert ord(UNICODE_GLYPHS.checkbox_checked) > 127
         assert ord(UNICODE_GLYPHS.output_prefix) > 127
         assert ord(UNICODE_GLYPHS.pause) > 127
         assert ord(UNICODE_GLYPHS.newline) > 127
@@ -78,6 +81,10 @@ class TestGlyphs:
         for char in ASCII_GLYPHS.circle_empty:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.circle_filled:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.checkbox_empty:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.checkbox_checked:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.output_prefix:
             assert ord(char) < 128
@@ -109,32 +116,15 @@ class TestGlyphs:
             UNICODE_GLYPHS.tool_prefix = "changed"  # ty: ignore
 
     def test_glyphs_all_fields_present(self) -> None:
-        """Test that both glyph sets have all required fields."""
-        required_fields = [
-            "tool_prefix",
-            "ellipsis",
-            "checkmark",
-            "error",
-            "circle_empty",
-            "circle_filled",
-            "output_prefix",
-            "spinner_frames",
-            "pause",
-            "newline",
-            "warning",
-            "arrow_up",
-            "arrow_down",
-            "bullet",
-            "cursor",
-            # Box-drawing characters
-            "box_horizontal",
-            "hunk_break",
-        ]
-        for field in required_fields:
-            assert hasattr(UNICODE_GLYPHS, field)
-            assert hasattr(ASCII_GLYPHS, field)
-            assert getattr(UNICODE_GLYPHS, field) is not None
-            assert getattr(ASCII_GLYPHS, field) is not None
+        """Test that both glyph sets populate every declared field.
+
+        Enumerated from `dataclasses.fields` rather than a hand-written list: a
+        restated list silently stops covering new fields, and this one had
+        already drifted behind six of them.
+        """
+        for field in fields(Glyphs):
+            assert getattr(UNICODE_GLYPHS, field.name) is not None
+            assert getattr(ASCII_GLYPHS, field.name) is not None
 
 
 class TestDetectCharsetMode:

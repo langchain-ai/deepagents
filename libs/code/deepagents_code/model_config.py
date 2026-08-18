@@ -582,6 +582,42 @@ LANGSMITH_GATEWAY_PROVIDERS: frozenset[str] = frozenset(
 )
 """Providers whose LangChain integrations support LangSmith LLM Gateway env vars."""
 
+LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
+"""Host identifying LangSmith's managed (SaaS) gateway.
+
+The single definition: compare against it through `is_langsmith_gateway_host`
+rather than testing it as a raw-URL substring, which also accepts lookalikes
+such as `smith.langchain.com.evil.example`.
+"""
+
+
+def is_langsmith_gateway_host(host: str | None) -> bool:
+    """Return whether a parsed hostname is the LangSmith managed gateway.
+
+    Matches the host exactly or as a subdomain (org-scoped gateway URLs). The
+    suffix match requires a dot boundary, so `notsmith.langchain.com` does not
+    qualify; a host that merely *contains* the gateway name earlier in the
+    string (`smith.langchain.com.evil.example`) is not a suffix and is
+    likewise rejected.
+
+    Case and a trailing root dot are normalized here rather than left to the
+    caller. Both callers reach this from a different parser, and a precondition
+    enforced only by a comment in each caller is the way the two drift apart.
+
+    Args:
+        host: A hostname, or `None` when the URL could not be parsed.
+
+    Returns:
+        `True` when the host is the gateway or a subdomain of it.
+    """
+    if host is None:
+        return False
+    normalized = host.strip().lower().removesuffix(".")
+    return normalized == LANGSMITH_GATEWAY_HOST or normalized.endswith(
+        f".{LANGSMITH_GATEWAY_HOST}"
+    )
+
+
 LANGSMITH_GATEWAY_ENV = "LANGSMITH_GATEWAY"
 LANGSMITH_GATEWAY_API_KEY_ENV = "LANGSMITH_GATEWAY_API_KEY"
 _LANGSMITH_GATEWAY_FALSE_VALUES = frozenset({"false", "0", "no"})
@@ -3017,6 +3053,37 @@ class ModelConfig:
                 result.update(overrides)
         return result
 
+    def get_effective_kwargs(
+        self,
+        provider_name: str,
+        *,
+        model_name: str | None = None,
+        overrides: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the effective configured and runtime model kwargs.
+
+        This mirrors the ordering used when constructing a model: provider and
+        per-model `params`, then the resolved `base_url`, then runtime
+        overrides. Consumers that need to reason about an actual request (such
+        as cache policy checks) must use this rather than inspecting one source
+        of settings in isolation.
+
+        Args:
+            provider_name: Provider whose configuration should be resolved.
+            model_name: Optional model name for per-model params.
+            overrides: Per-request params, which take highest precedence.
+
+        Returns:
+            Effective model kwargs.
+        """
+        result = self.get_kwargs(provider_name, model_name=model_name)
+        base_url = self.get_base_url(provider_name)
+        if base_url:
+            result["base_url"] = base_url
+        if overrides:
+            result.update(overrides)
+        return result
+
     def get_profile_overrides(
         self, provider_name: str, *, model_name: str | None = None
     ) -> dict[str, Any]:
@@ -3561,7 +3628,32 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section). Callers that surface
+            the failure to the user should prefer `suppress_warning_reason`,
+            which distinguishes those causes.
+    """
+    return suppress_warning_reason(key, config_path) is None
+
+
+def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | None:
+    """Suppress a warning, reporting *why* the save failed when it does.
+
+    Same write as `suppress_warning`. The distinct causes matter because they
+    have different fixes: a malformed `[warnings]` section is one line of TOML
+    the user can correct, while telling them to check file permissions -- the
+    only advice a bare `False` supports -- sends them to `chmod` a file that
+    was never unwritable.
+
+    Args:
+        key: Warning identifier to suppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `None` when the save succeeded, otherwise a short phrase naming the
+            cause, suitable for interpolating into a user-facing message.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3578,6 +3670,20 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
 
             if "warnings" not in data:
                 data["warnings"] = {}
+            # A hand-edited `warnings = [...]` (or any non-table) would make
+            # `.get("suppress")` below raise `AttributeError`, and the callers'
+            # detached tasks cannot surface a raised exception — report the
+            # failure so the caller can fall back to an in-app warning.
+            if not isinstance(data["warnings"], dict):
+                # Warning, not debug: this is a user-fixable config error whose
+                # only other symptom is a preference that silently fails to
+                # save.
+                logger.warning(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(data["warnings"]).__name__,
+                )
+                return f"[warnings] in {config_path} is not a table"
             suppress_list = data["warnings"].get("suppress", [])
             if not isinstance(suppress_list, list):
                 logger.debug(
@@ -3599,10 +3705,13 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except tomllib.TOMLDecodeError:
         logger.exception("Could not save warning suppression for '%s'", key)
-        return False
-    return True
+        return f"{config_path} is not valid TOML"
+    except OSError:
+        logger.exception("Could not save warning suppression for '%s'", key)
+        return f"{config_path} could not be written"
+    return None
 
 
 def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
@@ -3619,7 +3728,8 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3632,7 +3742,15 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
 
-            suppress_list = data.get("warnings", {}).get("suppress", [])
+            warnings_section = data.get("warnings", {})
+            if not isinstance(warnings_section, dict):
+                logger.debug(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(warnings_section).__name__,
+                )
+                return False
+            suppress_list = warnings_section.get("suppress", [])
             if not isinstance(suppress_list, list):
                 logger.debug(
                     "[warnings].suppress in %s should be a list, got %s",
@@ -3644,7 +3762,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
                 return True  # already unsuppressed
 
             suppress_list.remove(key)
-            data.setdefault("warnings", {})["suppress"] = suppress_list
+            warnings_section["suppress"] = suppress_list
 
             fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
             try:

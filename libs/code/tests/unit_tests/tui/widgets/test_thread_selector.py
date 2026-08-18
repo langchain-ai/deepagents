@@ -613,54 +613,33 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
-                scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_select = screen.query_one("#thread-sort-select", Select)
-                thread_id_switch = screen.query_one(
-                    f"#{ThreadSelectorScreen._switch_id('thread_id')}",
-                    Checkbox,
-                )
-                agent_name_switch = screen.query_one(
-                    f"#{ThreadSelectorScreen._switch_id('agent_name')}",
-                    Checkbox,
-                )
-                messages_switch = screen.query_one(
-                    f"#{ThreadSelectorScreen._switch_id('messages')}",
-                    Checkbox,
-                )
-
-                agent_select = screen.query_one("#thread-agent-select", Select)
+                expected_controls = [
+                    screen.query_one("#thread-scope-select", Select),
+                    screen.query_one("#thread-sort-select", Select),
+                    screen.query_one("#thread-agent-select", Select),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('thread_id')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('agent_name')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('messages')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('created_at')}", Checkbox
+                    ),
+                    screen.query_one(
+                        f"#{ThreadSelectorScreen._switch_id('updated_at')}", Checkbox
+                    ),
+                    screen.query_one("#thread-relative-time", Checkbox),
+                ]
                 assert filter_input.has_focus
 
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert scope_select.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert sort_select.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert agent_select.has_focus
-
-                relative_time_switch = screen.query_one(
-                    "#thread-relative-time", Checkbox
-                )
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert relative_time_switch.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert thread_id_switch.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert agent_name_switch.has_focus
-
-                screen.action_focus_next_filter()
-                await pilot.pause()
-                assert messages_switch.has_focus
+                for control in expected_controls:
+                    screen.action_focus_next_filter()
+                    await pilot.pause()
+                    assert control.has_focus
 
     async def test_shift_tab_moves_focus_backward_through_controls(self) -> None:
         """Shift+Tab should move focus backward through the controls."""
@@ -820,10 +799,7 @@ class TestThreadSelectorTabSort:
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
                 filter_input = screen.query_one("#thread-filter", Input)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
 
@@ -847,10 +823,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
 
@@ -877,10 +850,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
 
@@ -909,10 +879,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
+                relative_switch.focus()
                 await pilot.pause()
                 assert relative_switch.has_focus
                 assert relative_switch.value is True
@@ -2929,6 +2896,85 @@ class TestThreadSelectorColumnConfig:
             screen = ThreadSelectorScreen(current_thread=None)
         assert screen._columns == THREAD_COLUMN_DEFAULTS
 
+    async def test_relative_time_follows_timestamp_columns(self) -> None:
+        """Relative timestamps should appear after both timestamp columns."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                toggle_ids = [
+                    toggle.id
+                    for toggle in screen.query(".thread-column-toggle").results(
+                        Checkbox
+                    )
+                ]
+
+                created_id = screen._switch_id("created_at")
+                updated_id = screen._switch_id("updated_at")
+                relative_index = toggle_ids.index("thread-relative-time")
+                assert toggle_ids[relative_index - 2 : relative_index] == [
+                    created_id,
+                    updated_id,
+                ]
+
+    async def test_relative_time_visibility_tracks_timestamp_columns(self) -> None:
+        """Relative timestamps should hide unless a timestamp column is enabled."""
+        from deepagents_code.model_config import THREAD_COLUMN_DEFAULTS
+
+        columns = {
+            **THREAD_COLUMN_DEFAULTS,
+            "created_at": False,
+            "updated_at": False,
+        }
+        with (
+            _patch_list_threads(),
+            _patch_columns(columns),
+            patch(
+                "deepagents_code.model_config.save_thread_columns",
+                return_value=True,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                created_switch = screen.query_one(
+                    f"#{screen._switch_id('created_at')}", Checkbox
+                )
+                updated_switch = screen.query_one(
+                    f"#{screen._switch_id('updated_at')}", Checkbox
+                )
+                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
+
+                assert relative_switch.display is False
+                assert relative_switch not in screen._filter_focus_order()
+
+                created_switch.value = True
+                await pilot.pause()
+                assert relative_switch.display is True
+                assert relative_switch in screen._filter_focus_order()
+                # Value must be reasserted when un-hidden so the first visible
+                # frame renders the persisted check state, not a stale box.
+                assert relative_switch.value is True
+                assert relative_switch.value == screen._relative_time
+
+                updated_switch.value = True
+                created_switch.value = False
+                await pilot.pause()
+                assert relative_switch.display is True
+
+                updated_switch.value = False
+                await pilot.pause()
+                assert relative_switch.display is False
+                assert relative_switch not in screen._filter_focus_order()
+
     async def test_switch_toggles_column_and_persists(self) -> None:
         """Clicking a column switch should hide the column and save the choice."""
         with (
@@ -3314,12 +3360,27 @@ class TestResumeThread:
     def _switch_app() -> DeepAgentsApp:
         from textual.css.query import NoMatches as _NoMatches
 
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
         app._session_state = _mock_session_state("old-thread")
+        # Seed server-backed output so `_mount_previous_thread_hint`'s
+        # `had_agent_output` gate passes; cases that need the no-work path
+        # reset the store themselves. Load-bearing for every hint assertion
+        # in this class, so do not drop it as unused setup.
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="existing response")
+        )
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        _app_test_double(app)._clear_messages = AsyncMock()
+        # A faithful double: the real `_clear_messages` empties the store, and
+        # the hint gate is only correct because `_resume_thread` samples the
+        # store *before* calling it. A bare `AsyncMock` here would let the
+        # sample move below the clear with every test still green.
+        _app_test_double(app)._clear_messages = AsyncMock(
+            side_effect=lambda *_, **__: app._message_store.clear()
+        )
         _app_test_double(app)._update_status = MagicMock()
         mock_payload = MagicMock()
         mock_payload.messages = []
@@ -3407,6 +3468,142 @@ class TestResumeThread:
         linked = schedule.call_args.args[0]
         assert _get_widget_text(linked) == hint
         assert any(widget is linked for widget in mounted)
+
+    @pytest.mark.parametrize(
+        "local_only_type",
+        ["USER", "APP"],
+        ids=["user-only", "app-only"],
+    )
+    async def test_switch_omits_untouched_previous_thread(
+        self, local_only_type: str
+    ) -> None:
+        """A thread the user did no work in does not get a return hint.
+
+        Covers `/clear` then a bare `/threads -r`: the thread being left was
+        created moments ago and holds only local widgets. `thread_exists` is
+        stubbed `True` on purpose — server-mode thread registration writes a
+        checkpoint row for a brand-new thread, so the checkpoint check alone
+        would let the hint through.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = self._switch_app()
+        app._message_store.clear()
+        app._message_store.append(
+            MessageData(type=MessageType[local_only_type], content="/threads -r")
+        )
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert not any(text.startswith("Previous thread:") for text in contents)
+        schedule.assert_not_called()
+        # Distinguishes "suppressed by the work gate" from "suppressed by the
+        # resumability check" — the primary assertion above cannot tell them
+        # apart, and the stub would have said the thread *is* resumable.
+        thread_exists.assert_not_awaited()
+        # A suppressed hint must not derail the switch itself.
+        assert app._session_state is not None
+        assert app._session_state.thread_id == "new-thread"
+
+    async def test_switch_omits_previous_thread_with_only_shell_output(self) -> None:
+        """`!` shell output is not agent work, despite rendering as ASSISTANT.
+
+        Non-incognito `!` borrows `AssistantMessage` for markdown rendering, so
+        a thread where the user only ran a shell command would otherwise look
+        like it held a real turn.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = self._switch_app()
+        app._message_store.clear()
+        app._message_store.append(MessageData(type=MessageType.USER, content="!ls"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="```text\nREADME.md\n```",
+                assistant_local_only=True,
+            )
+        )
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert not any(text.startswith("Previous thread:") for text in contents)
+        schedule.assert_not_called()
+        thread_exists.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "output_type",
+        ["ASSISTANT", "TOOL", "SKILL"],
+    )
+    async def test_switch_hints_for_any_server_output_type(
+        self, output_type: str
+    ) -> None:
+        """Every `_SERVER_OUTPUT_MESSAGE_TYPES` member counts as work done.
+
+        A turn can leave behind tool calls or a skill invocation without any
+        assistant text, so narrowing the constant to `ASSISTANT` would strand
+        those threads.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = self._switch_app()
+        app._message_store.clear()
+        # `MessageData.__post_init__` requires a name for TOOL and SKILL.
+        app._message_store.append(
+            MessageData(
+                type=MessageType[output_type],
+                content="output",
+                tool_name="Read" if output_type == "TOOL" else None,
+                skill_name="review" if output_type == "SKILL" else None,
+            )
+        )
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert any(text.startswith("Previous thread: old-thread") for text in contents)
+        thread_exists.assert_awaited_once_with("old-thread")
 
     async def test_switch_mounts_previous_thread_hint_after_history(self) -> None:
         """The hint lands below the restored transcript, not above it.
@@ -3565,11 +3762,9 @@ class TestResumeThread:
         app = self._switch_app()
         mount_message = AsyncMock()
         _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(side_effect=error)
 
-        with patch(
-            "deepagents_code.sessions.thread_exists",
-            AsyncMock(side_effect=error),
-        ):
+        with patch("deepagents_code.sessions.thread_exists", thread_exists):
             await app._resume_thread("new-thread")
 
         contents = [
@@ -3579,6 +3774,9 @@ class TestResumeThread:
         assert app._session_state.thread_id == "new-thread"
         assert not any(text.startswith("Previous thread:") for text in contents)
         assert not any("Failed to switch" in text for text in contents)
+        # Anchor: without this the test passes when the work gate suppresses
+        # the hint before the lookup, never reaching the failure it covers.
+        thread_exists.assert_awaited_once_with("old-thread")
 
     async def test_switch_survives_previous_thread_hint_mount_failure(self) -> None:
         """A hint that cannot be mounted must not fail the switch.
@@ -3588,10 +3786,13 @@ class TestResumeThread:
         """
         app = self._switch_app()
         mounted: list[str] = []
+        mount_raised = False
 
         def mount(widget: Static) -> None:
+            nonlocal mount_raised
             text = _get_widget_text(widget)
             if text.startswith("Previous thread:"):
+                mount_raised = True
                 msg = "container is detached"
                 raise MountError(msg)
             mounted.append(text)
@@ -3614,6 +3815,9 @@ class TestResumeThread:
         assert app._session_state is not None
         assert app._session_state.thread_id == "new-thread"
         assert not any("Failed to switch" in text for text in mounted)
+        # Anchor: without this the test passes when the hint is suppressed
+        # before mounting, so the MountError branch is never exercised.
+        assert mount_raised
 
     async def test_successful_switch_rearms_already_on_thread_toast(self) -> None:
         """A real switch clears suppression so the next no-op toasts again.
@@ -3948,6 +4152,35 @@ class TestFetchThreadHistoryData:
 
         assert payload.model_spec == ""
 
+    async def test_extracts_cache_endpoint_identity(self) -> None:
+        """Persisted cache endpoint should propagate to the restore payload."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {
+            "messages": raw_messages,
+            "_last_model_request_at": "2026-08-11T12:30:00+00:00",
+            "_last_cache_endpoint": "https://api.anthropic.com/v1",
+        }
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_code.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.cache_state is not None
+        assert (
+            payload.cache_state["_last_cache_endpoint"]
+            == "https://api.anthropic.com/v1"
+        )
+
     async def test_none_context_tokens_coerced_to_zero(self) -> None:
         """`_context_tokens: None` in checkpoint should coerce to 0."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
@@ -4064,6 +4297,31 @@ class TestLoadThreadHistory:
         assert app._thread_restored_cost_usd == pytest.approx(1.25)
         assert app._displayed_cost_usd == pytest.approx(1.25)
         assert app._thread_stats.request_count == 0
+
+    async def test_resume_restores_cache_endpoint_identity(self) -> None:
+        """Resumed threads retain the endpoint used for their cached prefix."""
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp(thread_id="tid-1")
+        preloaded = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=8500,
+            model_spec="anthropic:claude-sonnet-4-6",
+            cache_state={
+                "_last_model_request_at": "2026-08-11T12:30:00+00:00",
+                "_last_cache_model_spec": "anthropic:claude-sonnet-4-6",
+                "_last_cache_endpoint": "https://api.anthropic.com/v1",
+                "_model_spec": "anthropic:claude-sonnet-4-6",
+                "_model_params": None,
+            },
+        )
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=preloaded,
+        )
+
+        assert app._last_cache_endpoint == "https://api.anthropic.com/v1"
 
     async def test_zero_context_tokens_does_not_overwrite_cache(self) -> None:
         """Loading a payload with 0 tokens should not reset an existing cache."""
@@ -4737,10 +4995,11 @@ class TestConvertMessagesToData:
         result = DeepAgentsApp._convert_messages_to_data(msgs)
 
         assert len(result) == 1
-        assert result[0].type == MessageType.TOOL
-        assert result[0].tool_name == "read_file"
-        assert result[0].tool_status == ToolStatus.SUCCESS
-        assert result[0].tool_output == "file contents"
+        assert result[0].type == MessageType.TOOL_GROUP
+        tool = result[0].tool_group_messages[0]
+        assert tool.tool_name == "read_file"
+        assert tool.tool_status == ToolStatus.SUCCESS
+        assert tool.tool_output == "file contents"
 
     def test_reloaded_ask_user_row_keeps_its_questions(self) -> None:
         """A reloaded `ask_user` row needs its questions to render answers.
@@ -4838,7 +5097,7 @@ class TestConvertMessagesToData:
 
     def test_mixed_message_sequence(self) -> None:
         """Full conversation with mixed message types should convert correctly."""
-        from deepagents_code.tui.widgets.message_store import MessageType, ToolStatus
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         msgs = [
             self._make_human("What files are here?"),
@@ -4855,8 +5114,7 @@ class TestConvertMessagesToData:
         assert result[0].type == MessageType.USER
         assert result[1].type == MessageType.ASSISTANT
         assert result[1].content == "Let me check."
-        assert result[2].type == MessageType.TOOL
-        assert result[2].tool_status == ToolStatus.SUCCESS
+        assert result[2].type == MessageType.TOOL_GROUP
         assert result[3].type == MessageType.ASSISTANT
         assert result[3].content == "I found 2 files."
 

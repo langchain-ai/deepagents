@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
+    from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
     from deepagents_code.mcp_tools import MCPServerInfo
@@ -1376,6 +1377,21 @@ _FS_TOOL_USAGE_INSTRUCTIONS: tuple[tuple[FsToolName, str], ...] = (
 )
 """dcode filesystem-tool preferences included in the generated prompt."""
 
+_WEB_SEARCH_TOOL_GUIDANCE = (
+    "\n\n### Web Search Tool Usage\n\n"
+    "When you use the web_search tool:\n\n"
+    "1. The tool will return search results with titles, URLs, and content excerpts\n"
+    "2. You MUST read and process these results, then respond naturally to the user\n"
+    "3. NEVER show raw JSON or tool results directly to the user\n"
+    "4. Synthesize the information from multiple sources into a coherent answer\n"
+    "5. Cite your sources by mentioning page titles or URLs when relevant\n"
+    "6. If the search doesn't find what you need, explain what you found and ask "
+    "clarifying questions\n\n"
+    "The user only sees your text responses - not tool results. Always provide a "
+    "complete, natural language answer after using web_search."
+)
+"""Usage guidance included only when the Tavily-backed tool is available."""
+
 
 def _build_fs_tool_prompt_guidance(fs_tools: list[FsToolName] | None) -> str:
     """Build dcode prompt guidance for the enabled filesystem tools.
@@ -1529,6 +1545,7 @@ def get_system_prompt(
         unsupported_modalities=settings.model_unsupported_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
+    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if settings.has_tavily else ""
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -1582,6 +1599,7 @@ def get_system_prompt(
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
         .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
+        .replace("{web_search_tool_guidance}", web_search_tool_guidance)
     )
 
     # Detect unreplaced placeholders (defense-in-depth for template typos)
@@ -2203,6 +2221,7 @@ def create_cli_agent(
     auto_classifier_model: str | BaseChatModel | None = None,
     recursion_limit: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    store: BaseStore | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
@@ -2254,8 +2273,8 @@ def create_cli_agent(
 
             If `False`, tools pause for user confirmation via the approval menu.
             See `_add_interrupt_on` for the full list of gated tools.
-        auto_mode_enabled: Install classifier-backed Auto for the local Textual
-            runtime. Callers must leave this disabled for headless, remote, and
+        auto_mode_enabled: Install classifier-backed Auto for local TUI or ACP
+            runtimes. Callers must leave this disabled for headless and
             sandbox-backed graphs.
         interrupt_shell_only: If `True`, all HITL interrupts are disabled;
             shell commands are validated inline by `ShellAllowListMiddleware`
@@ -2342,6 +2361,7 @@ def create_cli_agent(
             in `config.toml`, then the default via `resolve_recursion_limit`.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
+        store: Optional LangGraph Store for runtime approval state.
         mcp_server_info: MCP server metadata to surface in the system prompt.
         cwd: Override the working directory for the agent's filesystem backend
             and system prompt.
@@ -2372,10 +2392,9 @@ def create_cli_agent(
     """
     tools = tools or []
     mcp_tools = tuple(mcp_tools or ())
-    if auto_mode_enabled and (not interactive or sandbox is not None):
+    if auto_mode_enabled and sandbox is not None:
         logger.warning(
-            "Classifier-backed Auto is unavailable outside the local interactive "
-            "runtime; using Manual HITL"
+            "Classifier-backed Auto is unavailable with a sandbox; using Manual HITL"
         )
         auto_mode_enabled = False
     effective_cwd = (
@@ -3072,6 +3091,7 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         context_schema=CLIContextSchema,
         checkpointer=checkpointer,
+        store=store,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
     ).with_config({**config, "recursion_limit": effective_recursion_limit})

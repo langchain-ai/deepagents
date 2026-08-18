@@ -38,6 +38,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    compile_grep_include_glob,
     create_file_data,
     perform_string_replacement,
     slice_read_response,
@@ -631,17 +632,24 @@ class ContextHubBackend(BackendProtocol):
         return GrepResult(matches=matches)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: ARG002
-        """Return files matching `pattern` (`path` unused — flat namespace)."""
+        """Return files matching `pattern` (`path` unused — flat namespace).
+
+        Matching uses the shared backend contract (`compile_grep_include_glob`),
+        so a bare pattern matches the basename at any depth, a pattern with `/`
+        matches the namespace-relative path, and a leading `/` anchors. Plain
+        `fnmatch` would diverge on all three: its `*` crosses `/`, so `/*.py`
+        would widen to every depth instead of anchoring to the top level.
+        """
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return GlobResult(error=f"Hub unavailable: {exc}")
-        results: list[FileInfo] = [
-            FileInfo(path=f"/{file_path}", is_dir=False)
-            for file_path in cache
-            if fnmatch.fnmatch(f"/{file_path}", pattern) or fnmatch.fnmatch(file_path, pattern)
-        ]
+        try:
+            matcher = compile_grep_include_glob(pattern)
+        except ValueError as exc:
+            return GlobResult(error=f"Invalid glob pattern: {exc}")
+        results: list[FileInfo] = [FileInfo(path=f"/{file_path}", is_dir=False) for file_path in cache if matcher(file_path)]
         return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:

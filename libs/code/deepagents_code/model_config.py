@@ -2709,14 +2709,11 @@ class ModelConfig:
             user_mode = config_path.stat().st_mode if config_path.exists() else None
         except OSError:
             user_mode = 0
-        if user_mode is not None and user_mode & 0o444 == 0:
+        user_unreadable = user_mode is not None and user_mode & 0o444 == 0
+        if user_unreadable:
             logger.warning(
                 "Could not read config file %s: permission denied", config_path
             )
-            config = cls()
-            if is_default:
-                _default_config_cache = config
-            return config
 
         sources = get_config_sources(
             user_path=config_path,
@@ -2735,7 +2732,12 @@ class ModelConfig:
                 config_path,
                 sources.user.status.detail or "unknown read error",
             )
-        data, _ = sources.merged()
+        if user_unreadable:
+            # Do not let a privileged process read a config the owning user has
+            # made unavailable, but preserve administrator-managed policy.
+            data = sources.managed.data
+        else:
+            data, _ = sources.merged()
         try:
             models_section = data.get("models", {})
             stored_classifier = models_section.get("auto_classifier")

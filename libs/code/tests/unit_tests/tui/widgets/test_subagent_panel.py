@@ -380,9 +380,17 @@ class TestHeaderToggle:
             header = _render(pilot.app.query_one("#subagent-header-summary", Static))
             assert "2 phases" in header
 
-    async def test_narrow_header_preserves_full_toggle_hint(self) -> None:
-        async with PanelApp().run_test(size=(80, 24)) as pilot:
+    # 34 columns is the supported floor: the hint plus its 2-cell margin claims
+    # 29 of the 30 content columns, leaving the summary at its 1-cell minimum.
+    # Narrower than that and the hint is pushed past the panel edge.
+    @pytest.mark.parametrize("width", [80, 40, 34])
+    async def test_narrow_header_preserves_full_toggle_hint(self, width: int) -> None:
+        async with PanelApp().run_test(size=(width, 24)) as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
+            # A second phase and a failure inflate the summary past any of these
+            # widths; finalize_running() cancels the still-running "b", which
+            # both widens the summary further and stops the spinner timer so the
+            # header stops re-rendering under us.
             panel.on_subagent_event(_start("a", "E1"))
             panel.on_subagent_event(_error("a", "E1"))
             panel.on_subagent_event(_start("b", "E2"))
@@ -392,10 +400,27 @@ class TestHeaderToggle:
             summary = pilot.app.query_one("#subagent-header-summary", Static)
             hint = pilot.app.query_one("#subagent-header-hint", Static)
             text = "click or Ctrl+G to collapse"
+            # `_render` returns the unclipped content, so this is the "summary
+            # really is overflowing" precondition; the ellipsis assertion below
+            # reads the painted strip, which is where truncation happens.
             assert summary.size.width < len(_render(summary))
+            assert "\u2026" in summary.render_line(0).text
             assert _render(hint) == text
             assert hint.size.width == len(text)
             assert hint.region.right <= panel.content_region.right
+
+    async def test_click_on_header_toggles(self) -> None:
+        async with PanelApp().run_test(size=(80, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            await pilot.pause()
+            assert panel.expanded
+
+            panel.on_click(
+                cast("Any", _FakeClick(row_y=0, target_id="subagent-header"))
+            )
+            await pilot.pause()
+            assert not panel.expanded
 
 
 class TestReset:

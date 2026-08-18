@@ -251,9 +251,7 @@ class SubagentPanel(Vertical):
 
     SubagentPanel #subagent-header-summary {
         width: 1fr;
-        min-width: 0;
         height: 1;
-        overflow-x: hidden;
         text-wrap: nowrap;
         text-overflow: ellipsis;
     }
@@ -724,7 +722,13 @@ class SubagentPanel(Vertical):
         self._refresh_agents()
 
     def _refresh_header(self) -> None:
-        """Render the header: status icon, label, whole-turn totals, toggle hint."""
+        """Render the header: status icon, label, whole-turn totals, toggle hint.
+
+        The summary and hint are separate widgets so that layout, rather than
+        manual padding, decides what gives when the panel is narrow: the hint
+        keeps its natural width and the `1fr` summary ellipsizes. Merging them
+        back into one `Static` would truncate the hint instead.
+        """
         colors = get_theme_colors(self)
         glyphs = get_glyphs()
         caret = (

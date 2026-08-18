@@ -2718,6 +2718,14 @@ class ChatInput(Vertical):
             True if the keystroke was consumed as a mode selector without
             inserting the character, otherwise False.
         """
+        # The first slash enters command mode without being inserted. A second
+        # slash at the same offset can be the leading separator of a UNC-style
+        # path replayed as key events, so retain it rather than consuming both
+        # characters as mode triggers.
+        if char == "/" and self.mode == "command":
+            self.suppress_next_prefix_detection()
+            return False
+
         detected_prefix = detect_mode_prefix(char)
         if detected_prefix is None:
             return False

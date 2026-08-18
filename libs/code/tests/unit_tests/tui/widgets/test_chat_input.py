@@ -2506,8 +2506,8 @@ class TestModePrefixStripping:
             # Non-trigger characters are never consumed.
             assert chat.handle_mode_prefix_keystroke("a") is False
 
-    async def test_redundant_typed_slash_keystroke_stays_command_mode(self) -> None:
-        """A redundant `/` at the command prompt is consumed as a mode selector."""
+    async def test_second_typed_slash_stays_in_command_text(self) -> None:
+        """A second `/` is retained so key-event path pastes keep both slashes."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2521,7 +2521,7 @@ class TestModePrefixStripping:
             await pilot.press("/")
             await _pause_for_strip(pilot)
             assert chat.mode == "command"
-            assert chat._text_area.text == ""
+            assert chat._text_area.text == "/"
 
     async def test_typed_bang_keystroke_skips_strip_round_trip(
         self, monkeypatch: pytest.MonkeyPatch
@@ -6160,6 +6160,32 @@ class TestPasteBurstPromotion:
             assert ta.text == str(missing)
             assert chat.mode == "normal"
             assert chat.value == str(missing)
+
+    async def test_rapid_double_slash_path_keeps_both_leading_slashes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key-event UNC-style path does not lose its second slash to mode handling.
+
+        The second slash is text rather than another mode trigger.
+        """
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "//host/share"
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in payload:
+                await ta._on_key(events.Key(char, char))
+            await pilot.pause(0.35)
+
+            assert ta.text == payload
+            assert chat.value == payload
 
     async def test_run_just_below_the_promote_threshold_stays_visible(
         self, monkeypatch: pytest.MonkeyPatch

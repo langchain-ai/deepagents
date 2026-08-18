@@ -216,6 +216,7 @@ def _row_from_instance(
     is_enabled: bool,
     instance: PluginInstance | None,
     mcp_server_info: Sequence[MCPServerInfo],
+    mcp_connecting: bool,
     loaded_plugin_ids: AbstractSet[str],
     load_error: str | None = None,
     display_name: str = "",
@@ -237,8 +238,12 @@ def _row_from_instance(
         display_name=display_name,
         skill_count=len(skill_names) if instance else None,
         skill_names=skill_names,
+        # Tri-state: `None` means "unknown, render nothing". While the
+        # session is still connecting, `mcp_server_info` is not yet
+        # trustworthy, so report unknown rather than a false "not connected"
+        # that would show a bogus "run /reload to connect" hint.
         mcp_connected=_plugin_mcp_connected(instance, mcp_server_info)
-        if instance and session_loaded
+        if instance and session_loaded and not mcp_connecting
         else None,
         mcp_server_names=mcp_names,
         mcp_login_servers=login_servers,
@@ -252,6 +257,7 @@ def _row_from_instance(
 def _load_manager_state(
     mcp_server_info: Sequence[MCPServerInfo] = (),
     *,
+    mcp_connecting: bool = False,
     loaded_plugin_ids: AbstractSet[str] = frozenset(),
 ) -> _ManagerState:
     records = load_marketplace_records()
@@ -329,6 +335,7 @@ def _load_manager_state(
                 is_enabled=is_enabled,
                 instance=instance,
                 mcp_server_info=mcp_server_info,
+                mcp_connecting=mcp_connecting,
                 loaded_plugin_ids=loaded_plugin_ids,
                 load_error=load_error,
                 display_name=_plugin_display_name(

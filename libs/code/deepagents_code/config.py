@@ -1324,6 +1324,8 @@ class Glyphs:
     error: str  # ✗ vs [X]
     circle_empty: str  # ○ vs [ ]
     circle_filled: str  # ● vs [*]
+    checkbox_empty: str  # ☐ vs [ ]
+    checkbox_checked: str  # ☑ vs [x]
     output_prefix: str  # ⎿ vs L
     spinner_frames: tuple[str, ...]  # Braille vs ASCII spinner
     pause: str  # ⏸ vs ||
@@ -1357,6 +1359,8 @@ UNICODE_GLYPHS = Glyphs(
     error="✗",
     circle_empty="○",
     circle_filled="●",
+    checkbox_empty="☐",
+    checkbox_checked="☑",
     output_prefix="⎿",
     spinner_frames=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
     pause="⏸",
@@ -1388,6 +1392,8 @@ ASCII_GLYPHS = Glyphs(
     error="[X]",
     circle_empty="[ ]",
     circle_filled="[*]",
+    checkbox_empty="[ ]",
+    checkbox_checked="[x]",
     output_prefix="L",
     spinner_frames=("(-)", "(\\)", "(|)", "(/)"),
     pause="||",
@@ -4594,10 +4600,7 @@ def _get_provider_kwargs(
     from deepagents_code.model_config import ModelConfig
 
     config = ModelConfig.load()
-    result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
-    base_url = config.get_base_url(provider)
-    if base_url:
-        result["base_url"] = base_url
+    result = config.get_effective_kwargs(provider, model_name=model_name)
     from deepagents_code.model_config import (
         OPTIONAL_AUTH_ENV,
         PROVIDER_API_KEY_ENV,

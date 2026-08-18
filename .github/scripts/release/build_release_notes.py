@@ -643,9 +643,17 @@ MAX_GIT_LOG_BYTES = 25000
 MAX_SUBJECT_LENGTH = 200
 
 # Kept separate from MAX_COMMITS even though the values match: this one bounds
-# the GitHub API budget (up to 2 calls per commit), so raising the git-log cap
-# must not silently multiply the number of API calls.
+# the GitHub API budget, so raising the git-log cap must not silently multiply
+# the number of API calls. Budget per scanned commit is 2 calls (commit->PR,
+# then `gh pr view`). Closed-issue author lookups have their own global cap
+# below, because a single PR can reference arbitrarily many issues.
+
 MAX_CONTRIBUTOR_COMMITS = 100
+
+# A PR can close an unbounded number of distinct issues. Keep those follow-up
+# requests bounded independently from the commit walk so release-note creation
+# cannot stall on a large closing-reference payload or rate-limit retries.
+MAX_ISSUE_AUTHOR_LOOKUPS = 100
 
 
 def generate_git_log(
@@ -928,11 +936,40 @@ def _parse_socials(pr_body: str) -> Socials:
     return Socials(twitter_match.group(1) if twitter_match else "", linkedin)
 
 
+class ClosedIssue(NamedTuple):
+    """A linked issue resolved to the repository it actually lives in.
+
+    `repository` is normally identical to the released repo, but a
+    `closingIssuesReferences` entry can point at another repository, and the
+    lookup and rendered link must target that one.
+    """
+
+    repository: str
+    number: int
+
+
+class IssueReporter(NamedTuple):
+    """An issue author thanked in the Special thanks section.
+
+    `issues` holds the closed issues, deduped and sorted by repository then
+    number. The commit-order guarantee in :func:`collect_contributors` applies
+    to the reporter list, not to this field.
+    """
+
+    login: str
+    issues: tuple[ClosedIssue, ...]
+
+
 class Contributors(NamedTuple):
-    """The community/internal split credited in the release notes."""
+    """The community, internal, and issue-reporter credits in the release notes.
+
+    The three are disjoint: an org member is credited only as internal, never
+    in *community* and never in *issue_reporters*.
+    """
 
     community: list[Contributor]
     internal: list[str]
+    issue_reporters: list[IssueReporter]
 
 
 def collect_contributors(
@@ -947,14 +984,15 @@ def collect_contributors(
 ) -> Contributors:
     """Collect community and internal contributors from merged PRs.
 
-    *internal* comes back sorted; *community* keeps commit order. The two are
-    disjoint: an org member is credited only as internal, regardless of what
-    labels their other PRs carry.
+    *internal* comes back sorted; *community* and *issue_reporters* keep commit
+    order. An org member is credited only as internal, regardless of what labels
+    their other PRs carry -- never in *community*, and never in
+    *issue_reporters*.
 
     Appends diagnostics to *warnings*.
     """
     if offline:
-        return Contributors([], [])
+        return Contributors([], [], [])
 
     range_spec = f"{prev_tag}..{release_commit}" if prev_tag else release_commit
     commits_result = _git_run(repo, "rev-list", range_spec, "--", working_dir)
@@ -963,7 +1001,7 @@ def collect_contributors(
             f"contributor lookup: git rev-list failed for range '{range_spec}'"
             f" ({commits_result.stderr.strip()}); no contributors will be credited"
         )
-        return Contributors([], [])
+        return Contributors([], [], [])
     all_shas = [
         line.strip() for line in commits_result.stdout.splitlines() if line.strip()
     ]
@@ -979,9 +1017,20 @@ def collect_contributors(
 
     contributors: dict[str, Contributor] = {}
     internal_users: set[str] = set()
+    # Insertion order mirrors the newest-first commit walk, so reporters render
+    # in the same order convention as community contributors.
+    reporters: dict[str, set[ClosedIssue]] = {}
+    # Two PRs in one release can close the same issue; memoizing the author
+    # keeps that to one API call and keeps the budget statable.
+    issue_authors: dict[ClosedIssue, str] = {}
+    issue_author_lookups = 0
+    issue_author_lookup_limit_reached = False
     seen_prs: set[str] = set()
     failed_lookups = 0
+    failed_issue_lookups = 0
+    first_issue_error = ""
     consecutive_failures = 0
+    consecutive_view_failures = 0
     first_api_error = ""
 
     # Counts commits consumed by the loop. `seen_prs` cannot stand in for this:
@@ -1013,13 +1062,46 @@ def collect_contributors(
             continue
         seen_prs.add(pr_num)
 
-        pr_data, view_error = _gh_pr_view(pr_num, repository, "author,body,labels")
+        pr_data, view_error = _gh_pr_view(
+            pr_num, repository, "author,body,labels,closingIssuesReferences"
+        )
         if pr_data is None:
             failed_lookups += 1
+            # Counted apart from `consecutive_failures`: the commits->PR call
+            # above resets that on every success, so a `gh pr view` that always
+            # fails -- an unknown `--json` field takes out the whole walk --
+            # would never accumulate there.
+            consecutive_view_failures += 1
+            first_api_error = first_api_error or view_error
             warnings.append(
                 f"contributor lookup: gh pr view #{pr_num} failed: {view_error}"
             )
+            if consecutive_view_failures >= MAX_CONSECUTIVE_GH_FAILURES:
+                warnings.append(
+                    "contributor lookup: abandoned after"
+                    f" {consecutive_view_failures} consecutive gh pr view"
+                    f" failures ({view_error}); {len(shas) - processed} commits"
+                    " were left unchecked; the contributor list is INCOMPLETE"
+                )
+                break
             continue
+        consecutive_view_failures = 0
+
+        issue_failures, issue_error, issue_lookups, lookup_limit_reached = (
+            _collect_issue_reporters(
+                pr_num,
+                pr_data,
+                repository,
+                reporters,
+                issue_authors,
+                MAX_ISSUE_AUTHOR_LOOKUPS - issue_author_lookups,
+                warnings,
+            )
+        )
+        failed_issue_lookups += issue_failures
+        first_issue_error = first_issue_error or issue_error
+        issue_author_lookups += issue_lookups
+        issue_author_lookup_limit_reached |= lookup_limit_reached
 
         author = pr_data.get("author")
         if not isinstance(author, dict):
@@ -1092,19 +1174,214 @@ def collect_contributors(
             " INCOMPLETE"
         )
 
+    if failed_issue_lookups:
+        detail = f" (first error: {first_issue_error})" if first_issue_error else ""
+        # Carries the INCOMPLETE token so main()'s warning sort floats this
+        # ahead of the per-issue lines; GitHub renders only the first 10
+        # annotations, and those lines alone would be truncated away.
+        warnings.append(
+            f"contributor lookup: {failed_issue_lookups} closed-issue author"
+            f" lookups failed{detail}; the Special thanks section is INCOMPLETE"
+        )
+
+    if issue_author_lookup_limit_reached:
+        warnings.append(
+            "contributor lookup: stopped after"
+            f" {MAX_ISSUE_AUTHOR_LOOKUPS} closed-issue author lookups; the"
+            " Special thanks section is INCOMPLETE"
+        )
+
     # Internal contributors are org members regardless of what labels their
     # other PRs carry, so they are credited only in the internal list.
     for user in internal_users:
         contributors.pop(user, None)
+        reporters.pop(user, None)
 
-    return Contributors(list(contributors.values()), sorted(internal_users))
+    issue_reporters = [
+        IssueReporter(
+            login, tuple(sorted(issues, key=lambda i: (i.repository, i.number)))
+        )
+        for login, issues in reporters.items()
+    ]
+    return Contributors(
+        list(contributors.values()), sorted(internal_users), issue_reporters
+    )
+
+
+def _collect_issue_reporters(
+    pr_num: str,
+    pr_data: dict,
+    repository: str,
+    reporters: dict[str, set[ClosedIssue]],
+    author_cache: dict[ClosedIssue, str],
+    remaining_author_lookups: int,
+    warnings: list[str],
+) -> tuple[int, str, int, bool]:
+    """Fold a PR's closed-issue authors into *reporters*.
+
+    Returns the number of author lookups that failed, the first such error, the
+    number of author API calls made, and whether the global lookup budget was
+    exhausted. :func:`collect_contributors` uses these to report an aggregate
+    rather than leaving the section quietly short.
+
+    Runs before the author/labels gates in :func:`collect_contributors`, so a
+    bot-authored or `internal`-labeled PR still credits the human who filed the
+    issue it closed; the internal sweep afterwards drops reporters who are
+    themselves internal to this release.
+
+    `closingIssuesReferences` covers both the `Closes`/`Fixes`/`Resolves`
+    keywords and issues linked manually in the PR's Development section, but
+    the payload carries no nested `author` (see :func:`_resolve_closed_issue`
+    for the shape observed on gh 2.97.0). The author therefore comes from one
+    follow-up `gh api repos/{repo}/issues/{number}` call per distinct closed
+    issue (`_run_gh`'s rate-limit retry applies), memoized in *author_cache*
+    so two PRs closing the same issue cost one call. Bots are filtered by the
+    `[bot]` login suffix. A missing or null field warns rather than being read
+    as "no closed issues": schema drift must not silently empty the section.
+    """
+    failures = 0
+    first_error = ""
+    author_lookups = 0
+    if pr_data.get("closingIssuesReferences") is None:
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} returned no"
+            " closingIssuesReferences field; the special-thanks section may be"
+            " incomplete"
+        )
+    issues = pr_data.get("closingIssuesReferences") or []
+    if not isinstance(issues, list):
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} has an unexpected"
+            " closingIssuesReferences payload; its closed issues will not be"
+            " credited"
+        )
+        return failures, first_error, author_lookups, False
+    for issue in issues:
+        if not isinstance(issue, dict):
+            warnings.append(
+                f"contributor lookup: PR #{pr_num} has an unexpected"
+                f" closingIssuesReferences entry ({type(issue).__name__});"
+                " that issue's reporter will not appear in release notes"
+            )
+            continue
+        closed = _resolve_closed_issue(issue, repository, pr_num, warnings)
+        if closed is None:
+            continue
+        login = author_cache.get(closed)
+        if login is None:
+            if author_lookups >= remaining_author_lookups:
+                return failures, first_error, author_lookups, True
+            login, error = _gh_api(
+                f"/repos/{closed.repository}/issues/{closed.number}",
+                jq=".user.login // empty",
+            )
+            author_lookups += 1
+            if error:
+                failures += 1
+                first_error = first_error or error
+                warnings.append(
+                    f"contributor lookup: issue {closed.repository}"
+                    f"#{closed.number} author lookup failed ({error}); reporter"
+                    " will not appear in release notes"
+                )
+                continue
+            author_cache[closed] = login
+        if not login:
+            warnings.append(
+                f"contributor lookup: PR #{pr_num} closes an issue with no"
+                " author login; reporter will not appear in release notes"
+            )
+            continue
+        if login.endswith("[bot]"):
+            continue
+        reporters.setdefault(login, set()).add(closed)
+    return failures, first_error, author_lookups, False
+
+
+def _resolve_closed_issue(
+    issue: dict, default_repo: str, pr_num: str, warnings: list[str]
+) -> ClosedIssue | None:
+    """Resolve one `closingIssuesReferences` entry to its repository and number.
+
+    A closing reference can belong to another repository (a PR here closing an
+    issue filed against another LangChain repo), so the released repo is never
+    assumed: guessing it would query an unrelated issue that happens to share
+    the number and publicly thank the wrong person.
+
+    Observed `gh pr view --json closingIssuesReferences` output (gh 2.97.0)
+    nests the owner rather than a slug::
+
+        {"number": 4978,
+         "repository": {"name": "deepagents", "owner": {"login": "langchain-ai"}},
+         "url": "https://github.com/langchain-ai/deepagents/issues/4978"}
+
+    so the slug is composed from `repository.owner.login` and
+    `repository.name`. A flat `nameWithOwner` is accepted first because the
+    GraphQL type does expose one and a future gh release may surface it. The
+    `url` is the last resort: it carries `/{owner}/{name}/issues/{number}` and
+    so still identifies the owner when the repository object is unusable.
+    Entries that resolve to none of these are dropped with a warning.
+    """
+    number = issue.get("number")
+    # `bool` subclasses `int`, and a non-positive number is never a real issue.
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} closes an issue with no"
+            " usable number; reporter will not appear in release notes"
+        )
+        return None
+
+    repo = _issue_repo_slug(issue.get("repository")) or _repo_from_issue_url(
+        issue.get("url")
+    )
+    if not repo:
+        warnings.append(
+            f"contributor lookup: PR #{pr_num} closes issue #{number} with no"
+            " resolvable repository; reporter will not appear in release notes"
+        )
+        return None
+    # Repo slugs are case-insensitive, so normalize before the value is used as
+    # a set element and compared against the released repo when rendering.
+    return ClosedIssue(repo.lower(), number)
+
+
+def _issue_repo_slug(issue_repo: object) -> str:
+    """Compose an `owner/name` slug from a closing reference's repository."""
+    if not isinstance(issue_repo, dict):
+        return ""
+    flat = issue_repo.get("nameWithOwner")
+    if isinstance(flat, str) and flat:
+        return flat
+    owner = issue_repo.get("owner")
+    login = owner.get("login") if isinstance(owner, dict) else None
+    name = issue_repo.get("name")
+    if isinstance(login, str) and login and isinstance(name, str) and name:
+        return f"{login}/{name}"
+    return ""
+
+
+def _repo_from_issue_url(url: object) -> str:
+    """Extract an `owner/name` slug from a GitHub issue URL."""
+    if not isinstance(url, str):
+        return ""
+    match = re.search(r"github\.com/([^/]+/[^/]+)/issues/", url)
+    return match.group(1) if match else ""
 
 
 def _merged_by(repository: str, pr_num: str, warnings: list[str]) -> str:
     """Return the login of whoever merged *pr_num*, or `""` with a warning."""
     result = _run_gh(
-        ["pr", "view", pr_num, "--repo", repository,
-         "--json", "mergedBy", "--jq", ".mergedBy.login // empty"]
+        [
+            "pr",
+            "view",
+            pr_num,
+            "--repo",
+            repository,
+            "--json",
+            "mergedBy",
+            "--jq",
+            ".mergedBy.login // empty",
+        ]
     )
     if result is None or result.returncode != 0:
         warnings.append(
@@ -1179,6 +1456,11 @@ def resolve_releaser(
 # margin is not compensating for the byte/character mismatch — it is slack for
 # anything the release action might add around the body we hand it.
 MAX_RELEASE_BODY_BYTES = 120000
+# Keep issue acknowledgements comfortably below the release-body budget. A
+# closing reference list is unbounded, and this section is assembled from up
+# to 100 commits, so rendering every link can otherwise make the GitHub
+# release request fail after the package has been published.
+MAX_SPECIAL_THANKS_BYTES = 20_000
 
 _COMPACT_GIT_LOG = (
     "<details>\n"
@@ -1203,6 +1485,60 @@ def _build_contributor_entry(contributor: Contributor) -> str:
     return f"@{contributor.login}"
 
 
+def _build_reporter_entry(reporter: IssueReporter, repository: str) -> str:
+    """Format a single issue-reporter entry with links to their issues."""
+    links = ", ".join(_build_issue_link(i, repository) for i in reporter.issues)
+    return f"@{reporter.login} ({links})"
+
+
+def _build_special_thanks_section(
+    issue_reporters: list[IssueReporter], repository: str
+) -> str:
+    """Render a bounded acknowledgement section for issue reporters.
+
+    Complete reporter entries are kept in their existing order. When the
+    section reaches its budget, the remaining reporters are summarized rather
+    than emitting partial Markdown links.
+    """
+    intro = (
+        "**Special thanks** to everyone who reported the issues addressed"
+        " in this release: "
+    )
+    entries: list[str] = []
+    for index, reporter in enumerate(issue_reporters):
+        entry = _build_reporter_entry(reporter, repository)
+        candidate = ", ".join([*entries, entry])
+        if len(f"{intro}{candidate}".encode()) <= MAX_SPECIAL_THANKS_BYTES:
+            entries.append(entry)
+            continue
+
+        remaining = len(issue_reporters) - index
+        summary = f"and {remaining} additional issue reporter"
+        if remaining != 1:
+            summary += "s"
+        while (
+            entries
+            and len(f"{intro}{', '.join([*entries, summary])}".encode())
+            > MAX_SPECIAL_THANKS_BYTES
+        ):
+            entries.pop()
+            remaining += 1
+            summary = f"and {remaining} additional issue reporters"
+        return f"{intro}{', '.join([*entries, summary])}"
+
+    return f"{intro}{', '.join(entries)}"
+
+
+def _build_issue_link(issue: ClosedIssue, released_repo: str) -> str:
+    """Link a closed issue, labeling it when it lives outside the released repo."""
+    url = f"https://github.com/{issue.repository}/issues/{issue.number}"
+    # `issue.repository` is lowercased at construction; the released repo comes
+    # from the workflow, so normalize it here rather than trusting its casing.
+    if issue.repository == released_repo.lower():
+        return f"[#{issue.number}]({url})"
+    return f"[{issue.repository}#{issue.number}]({url})"
+
+
 def build_base_body(
     *,
     pkg_name: str,
@@ -1211,6 +1547,7 @@ def build_base_body(
     is_prerelease: bool,
     community: list[Contributor],
     internal: list[str],
+    issue_reporters: list[IssueReporter],
     releaser: str,
     base_branch: str,
     default_branch: str,
@@ -1236,6 +1573,12 @@ def build_base_body(
         entries = ", ".join(_build_contributor_entry(c) for c in community)
         body += f"\n\n---\n\nThanks to our community contributors: {entries}"
         separator_added = True
+
+    if issue_reporters:
+        if not separator_added:
+            body += "\n\n---"
+            separator_added = True
+        body += f"\n\n{_build_special_thanks_section(issue_reporters, repository)}"
 
     if internal:
         if not separator_added:
@@ -1475,6 +1818,7 @@ def build_release_notes(
         warnings.append("Offline mode: skipping contributor and releaser lookups.")
         community: list[Contributor] = []
         internal: list[str] = []
+        issue_reporters: list[IssueReporter] = []
         releaser = ""
     else:
         # Deliberately bounded by release_commit, not release_sha: the git log
@@ -1482,7 +1826,7 @@ def build_release_notes(
         # release commit so commits merged after it are not credited here. For
         # a stable release the two differ whenever anything landed between the
         # changelog bump and the release SHA.
-        community, internal = collect_contributors(
+        community, internal, issue_reporters = collect_contributors(
             repo_root,
             working_dir,
             release_commit,
@@ -1501,6 +1845,11 @@ def build_release_notes(
             )
         if internal:
             print(f"Found internal maintainers: {', '.join(internal)}", file=sys.stderr)
+        if issue_reporters:
+            print(
+                "Found issue reporters: " + ", ".join(r.login for r in issue_reporters),
+                file=sys.stderr,
+            )
         if releaser:
             print(f"Found releaser: @{releaser}", file=sys.stderr)
 
@@ -1511,6 +1860,7 @@ def build_release_notes(
         is_prerelease=is_pre,
         community=community,
         internal=internal,
+        issue_reporters=issue_reporters,
         releaser=releaser,
         base_branch=base_branch,
         default_branch=default_branch,
@@ -1633,7 +1983,7 @@ def _write_out_file(path: str, body: str) -> None:
         tmp.replace(target)
     except OSError as err:
         tmp.unlink(missing_ok=True)
-        # Never lose the body: it cost up to 200 API calls to build, and a
+        # Never lose the body: it cost hundreds of API calls to build, and a
         # truncating rewrite would also have destroyed any previous good copy.
         print(
             f"::error::Could not write {path}: {err}; body follows on stdout",

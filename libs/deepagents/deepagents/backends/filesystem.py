@@ -1272,8 +1272,20 @@ class FilesystemBackend(BackendProtocol):
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
+        Pattern matching uses the shared backend contract (same as grep
+        include-glob):
+
+        - Patterns without `/` match the basename at any depth under `path`
+          (e.g. `'*.py'` matches nested files).
+        - Patterns containing `/` match paths relative to `path`, with `**`
+          support. A leading `/` anchors to the search root.
+        - Leading-dot names need an explicit leading `.` in the pattern segment.
+          `**` does not descend into dot-directories, so `'*.yml'` matches
+          `.github/workflows/ci.yml` while `'**/*.yml'` does not.
+
         Args:
-            pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
+            pattern: Glob pattern to match files against (e.g., `'*.py'`,
+                `'**/*.txt'`, `'src/**/*.py'`).
             path: Base directory to search from.
 
                 Defaults to `root_dir` / `cwd`.
@@ -1282,10 +1294,10 @@ class FilesystemBackend(BackendProtocol):
             `GlobResult` with matching files. `truncated` is `True` (and
             `matches` is partial) when the walk exceeded its wall-clock budget.
         """
-        if pattern.startswith("/"):
-            pattern = pattern.lstrip("/")
-
-        if self.virtual_mode and ".." in Path(pattern).parts:
+        # Detect traversal on the raw pattern (including a leading `/` anchor)
+        # before compilation. Do not strip the leading `/` here: the matcher
+        # uses it for search-root anchoring (`/*.py` → top-level only).
+        if self.virtual_mode and ".." in Path(pattern.lstrip("/")).parts:
             msg = "Path traversal not allowed in glob pattern"
             raise ValueError(msg)
 
@@ -1307,11 +1319,15 @@ class FilesystemBackend(BackendProtocol):
         # than `rglob(pattern)`: `rglob(pattern)` only surfaces matches, so a
         # sparse or zero-match search over a huge tree traverses the whole tree
         # without ever checking the deadline. `rglob("*")` yields on every entry,
-        # letting us honour the deadline while matching with `rglob` semantics.
+        # letting us honour the deadline while applying the shared glob contract
+        # ourselves -- which is deliberately *not* `rglob` semantics: bare
+        # patterns are basename-scoped and dotfiles need an explicit leading `.`.
         try:
-            # Compiled inside the try so a malformed pattern (e.g. an unbalanced
-            # brace, now that brace expansion is enabled) returns a
-            # `GlobResult(error=...)` instead of raising to a direct caller.
+            # Compiled inside the try so a pattern `wcmatch` refuses (e.g. brace
+            # expansion past its limit, which raises `PatternLimitException`)
+            # returns a `GlobResult(error=...)` instead of raising to a direct
+            # caller. Most malformed patterns (`*.{py`, `[a-`) do not raise at
+            # all -- they compile and simply match nothing.
             matches_pattern = compile_recursive_glob(pattern)
             for matched_path in search_path.rglob("*"):
                 if time.monotonic() > deadline:

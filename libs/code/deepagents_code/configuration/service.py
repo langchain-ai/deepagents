@@ -43,7 +43,35 @@ class ConfigSources:
             lower_source="config.toml",
             higher_source="managed config",
             union_paths=_UNION_PATHS,
+            higher_leaf_is_valid=_is_valid_managed_scalar,
         )
+
+
+def _is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
+    """Return whether a managed scalar has the declared type for its path.
+
+    Unknown and structured paths retain the deep-merger's existing behavior;
+    their dedicated readers own validation. Manifest-backed scalar leaves are
+    validated before they displace a lower-precedence value.
+    """
+    from deepagents_code.config_manifest import (
+        _INVALID,
+        OptionKind,
+        _coerce_toml,
+        get_config_options,
+    )
+
+    option = next(
+        (
+            candidate
+            for candidate in get_config_options()
+            if candidate.toml_keys == path
+        ),
+        None,
+    )
+    if option is None or option.kind is OptionKind.STRUCTURED:
+        return True
+    return _coerce_toml(option, value, source="managed config") is not _INVALID
 
 
 class ManagedConfigError(RuntimeError):

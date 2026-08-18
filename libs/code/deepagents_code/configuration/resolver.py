@@ -7,6 +7,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from deepagents_code.configuration.providers import ConfigProvider
 from deepagents_code.configuration.types import Found, Invalid, ResolvedValue, Unset
 
@@ -105,6 +107,7 @@ def merge_toml_tables(
     higher_source: str,
     union_paths: frozenset[tuple[str, ...]] = frozenset(),
     lower_provenance: dict[str, str] | None = None,
+    higher_leaf_is_valid: Callable[[tuple[str, ...], object], bool] | None = None,
     _path: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Deep-merge TOML tables with higher-precedence leaf provenance.
@@ -149,6 +152,7 @@ def merge_toml_tables(
                     for leaf, source in provenance.items()
                     if leaf == dotted or leaf.startswith(f"{dotted}.")
                 },
+                higher_leaf_is_valid=higher_leaf_is_valid,
                 _path=path,
             )
             merged[key] = nested
@@ -165,6 +169,13 @@ def merge_toml_tables(
                     union.append(deepcopy(item))
             merged[key] = union
             provenance[dotted] = _combined_source(lower_source, higher_source)
+            continue
+        if (
+            key in merged
+            and higher_leaf_is_valid is not None
+            and not isinstance(value, dict)
+            and not higher_leaf_is_valid(path, value)
+        ):
             continue
         merged[key] = deepcopy(value)
         for leaf in tuple(provenance):

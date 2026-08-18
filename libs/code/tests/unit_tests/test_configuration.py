@@ -483,6 +483,29 @@ def test_managed_skill_dirs_outrank_environment_override(
         service.invalidate_config_sources()
 
 
+def test_invalid_managed_scalar_keeps_valid_user_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed managed scalar does not erase a valid user preference."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[threads]\nrelative_time = false\n", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[threads]\nrelative_time = "invalid"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.invalidate_thread_config_cache()
+    try:
+        assert model_config.load_thread_relative_time() is False
+    finally:
+        service.invalidate_config_sources()
+        model_config.invalidate_thread_config_cache()
+
+
 def test_managed_scalar_enforced_over_user_table_shape_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

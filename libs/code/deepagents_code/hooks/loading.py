@@ -36,10 +36,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, override
 
 from pydantic import ValidationError
-from typing_extensions import override
 
 from deepagents_code.hooks.migration import (
     is_legacy_hooks_document,

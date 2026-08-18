@@ -8,7 +8,7 @@ version = "0.1.57"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11,<4.0"
+requires-python = ">=3.12,<4.0"
 keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -16,7 +16,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -216,7 +215,7 @@ langchain-runloop = { path = "../partners/runloop", editable = true }
 langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
-python-version = "3.11"
+python-version = "3.12"
 extra-paths = [
     "../deepagents",
     "../partners/daytona",
@@ -235,6 +234,9 @@ division-by-zero = "error"
 # "unused suppression" warnings; silence that rule so suppressions are stable
 # across environments.
 unused-ignore-comment = "ignore"
+
+[tool.ruff]
+target-version = "py312"
 
 [tool.ruff.format]
 docstring-code-format = true

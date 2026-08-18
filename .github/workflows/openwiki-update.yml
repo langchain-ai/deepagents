@@ -52,6 +52,12 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No OpenWiki changes to commit."
+            # The generated docs now match the base branch, so any open update
+            # PR proposes obsolete content. Close it and delete its branch.
+            if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+              echo "Closing obsolete PR for $BRANCH."
+              gh pr close "$BRANCH" --delete-branch
+            fi
             exit 0
           fi
 

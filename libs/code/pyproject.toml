@@ -155,7 +155,7 @@ dcode = "deepagents_code:cli_main"
 
 [project.urls]
 Homepage = "https://www.langchain.com/dcode"
-Documentation = "https://reference.langchain.com/python/deepagents/"
+Documentation = "https://docs.langchain.com/oss/deepagents/code/overview"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md"

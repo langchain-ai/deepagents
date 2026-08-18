@@ -21961,6 +21961,14 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
+    async def action_open_model_selector(self) -> None:
+        """Open the model picker from the status bar."""
+        await self._show_model_selector()
+
+    async def action_open_effort_selector(self) -> None:
+        """Open the reasoning effort picker from the status bar."""
+        await self._show_effort_selector("/effort")
+
     def _build_model_selector_screen(
         self,
         *,

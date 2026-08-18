@@ -8,7 +8,7 @@ import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.content import Content
-from textual.geometry import Size
+from textual.geometry import Offset, Size
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -28,11 +28,21 @@ def reset_glyphs_between_tests() -> Iterator[None]:
     reset_glyphs_cache()
 
 
-class StatusBarApp(App):
+class StatusBarApp(App[None]):
     """Minimal app that mounts a StatusBar for testing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.opened_pickers: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status-bar")
+
+    def action_open_model_selector(self) -> None:
+        self.opened_pickers.append("model")
+
+    def action_open_effort_selector(self) -> None:
+        self.opened_pickers.append("effort")
 
 
 class TestTwoLineMetrics:
@@ -969,6 +979,78 @@ class TestModelLabelPrefixStripping:
             await pilot.pause()
             rendered = str(label.render())
             assert "accounts/fireworks/models/kimi-k2p6" in rendered
+
+
+class TestModelLabelClickTargets:
+    """Tests for the model and effort status-bar click targets."""
+
+    @staticmethod
+    def _offset_for_action(label: ModelLabel, action: str) -> Offset:
+        x = label.content_region.x - label.region.x
+        for segment in label.render_line(0):
+            if segment.style is not None and segment.style.meta.get("@click") == action:
+                return Offset(x, 0)
+            x += segment.cell_length
+        msg = f"No rendered segment for {action}"
+        raise AssertionError(msg)
+
+    async def test_model_and_effort_have_distinct_actions(self) -> None:
+        """Each visible label should route to its corresponding app picker."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            rendered = label.render()
+            assert isinstance(rendered, Content)
+            actions = {
+                rendered.plain[span.start : span.end]: span.style.meta["@click"]
+                for span in rendered.spans
+                if not isinstance(span.style, str) and "@click" in span.style.meta
+            }
+            assert actions == {
+                "openai:gpt-5.5": "app.open_model_selector",
+                "high": "app.open_effort_selector",
+            }
+
+    async def test_clicks_dispatch_distinct_app_actions(self) -> None:
+        """Textual should broker each span click to the corresponding app action."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            model_offset = self._offset_for_action(label, "app.open_model_selector")
+            effort_offset = self._offset_for_action(label, "app.open_effort_selector")
+            await pilot.click(label, offset=model_offset)
+            await pilot.click(label, offset=effort_offset)
+            await pilot.pause()
+
+            assert app.opened_pickers == ["model", "effort"]
+
+    async def test_hidden_effort_has_no_click_target(self) -> None:
+        """The narrow-layout fallback should expose only the visible model action."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "o1"
+            label.effort = "medium"
+            label.styles.width = 6
+            await pilot.pause()
+
+            rendered = label.render()
+            assert isinstance(rendered, Content)
+            actions = {
+                rendered.plain[span.start : span.end]: span.style.meta["@click"]
+                for span in rendered.spans
+                if not isinstance(span.style, str) and "@click" in span.style.meta
+            }
+            assert actions == {"o1": "app.open_model_selector"}
 
 
 class TestConnectionIndicator:

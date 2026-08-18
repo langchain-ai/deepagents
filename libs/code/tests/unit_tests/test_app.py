@@ -2540,6 +2540,34 @@ class TestStartupSequence:
         )
 
 
+class TestStatusBarPickerActions:
+    """Tests for status-bar actions that open existing picker flows."""
+
+    async def test_model_action_opens_model_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The model click action should reuse the `/model` selector path."""
+        app = DeepAgentsApp()
+        show_selector = AsyncMock()
+        monkeypatch.setattr(app, "_show_model_selector", show_selector)
+
+        await app.action_open_model_selector()
+
+        show_selector.assert_awaited_once_with()
+
+    async def test_effort_action_opens_effort_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The effort click action should reuse the `/effort` selector path."""
+        app = DeepAgentsApp()
+        show_selector = AsyncMock()
+        monkeypatch.setattr(app, "_show_effort_selector", show_selector)
+
+        await app.action_open_effort_selector()
+
+        show_selector.assert_awaited_once_with("/effort")
+
+
 class TestStartupFocus:
     """Tests for focus selection before the app starts processing input."""
 

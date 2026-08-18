@@ -11,6 +11,7 @@ from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.reactive import reactive
+from textual.style import Style
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -43,6 +44,9 @@ CONNECTION_STATES = frozenset(get_args(ConnectionState))
 """Runtime view of `ConnectionState` for `set_connection`'s defensive guard.
 
 Derived from the `Literal` so the two can never drift."""
+
+_MODEL_CLICK_STYLE = Style.from_meta({"@click": "app.open_model_selector"})
+_EFFORT_CLICK_STYLE = Style.from_meta({"@click": "app.open_effort_selector"})
 
 StatusMessageSource = Literal["agent", "hooks"]
 """Owners that may write the shared status-message slot."""
@@ -105,6 +109,25 @@ class ModelLabel(Widget):
         """
         return f"{text} {self.effort}" if self.effort else text
 
+    def _clickable_content(self, model: str, *, include_effort: bool = True) -> Content:
+        """Render model and effort as distinct click targets.
+
+        Args:
+            model: Model text after provider stripping and width truncation.
+            include_effort: Whether to append the effort click target when present.
+
+        Returns:
+            Styled model content with an optional effort suffix.
+        """
+        model_content = Content.styled(model, _MODEL_CLICK_STYLE)
+        if include_effort and self.effort:
+            return Content.assemble(
+                model_content,
+                " ",
+                Content.styled(self.effort, _EFFORT_CLICK_STYLE),
+            )
+        return model_content
+
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
 
@@ -135,18 +158,21 @@ class ModelLabel(Widget):
         full_with_effort = self._with_effort(full)
         model_with_effort = self._with_effort(model)
         if len(full_with_effort) <= width:
-            return Content(full_with_effort)
+            return self._clickable_content(full)
         if len(model_with_effort) <= width:
-            return Content(model_with_effort)
+            return self._clickable_content(model)
         suffix = f" {self.effort}" if self.effort else ""
         if suffix and width > len(suffix) + 1:
             model_width = width - len(suffix)
-            return Content(f"\u2026{model[-(model_width - 1) :]}{suffix}")
+            truncated_model = f"\u2026{model[-(model_width - 1) :]}"
+            return self._clickable_content(truncated_model)
         if len(model) <= width:
-            return Content(model)
+            return self._clickable_content(model, include_effort=False)
         if width > 1:
-            return Content("\u2026" + model[-(width - 1) :])
-        return Content("\u2026")
+            return self._clickable_content(
+                "\u2026" + model[-(width - 1) :], include_effort=False
+            )
+        return self._clickable_content("\u2026", include_effort=False)
 
 
 class BranchLabel(Widget):
@@ -382,6 +408,11 @@ class StatusBar(Vertical):
         padding: 0 0 0 2;
         color: $text-muted;
         text-align: right;
+        link-color: $text-muted;
+        link-style: not underline;
+        link-color-hover: $text;
+        link-background-hover: transparent;
+        link-style-hover: not bold underline;
     }
 
     StatusBar BranchLabel {

@@ -155,22 +155,28 @@ class PasteBurstTextArea(TextArea):
     def _restart_blink(self) -> None:
         """Keep the cursor hidden while the text area is unfocused.
 
-        Textual's `TextArea._draw_cursor` is
+        Outside read-only mode Textual's `TextArea._draw_cursor` is
         `(has_focus and not cursor_blink) or (cursor_blink and _cursor_visible)`,
         so with blinking on (the default) it paints the cursor from
         `_cursor_visible` alone and never consults focus. Any `_restart_blink()`
         on an unfocused text area therefore shows a blinking cursor in a field
         that cannot accept keys.
 
-        `TextArea._end_mouse_selection` (mouse-up) restarts the blink
-        unconditionally, which hits every click that lands while a
+        `TextArea._on_mouse_down` sets `_selecting` unconditionally, so the
+        matching mouse-up always reaches `_restart_blink()` through
+        `_end_mouse_selection`. That hits every click landing while a
         focus-trapping widget is open: the `edit_file` approval menu re-grabs
         focus on blur between mouse-down and mouse-up, so the click left a
         phantom blinking cursor in the chat input. Programmatic multi-character
         `insert()` into an unfocused input has the same effect.
 
+        `_pause_blink(visible=False)` also parks the blink timer. Textual's
+        `_watch_has_focus` re-arms it when focus returns, so the cursor resumes
+        blinking rather than coming back solid.
+
         Deliberately overrides Textual's private `_restart_blink`; verified
-        against Textual 8.2.8. Re-verify on major Textual upgrades.
+        against Textual 8.2.8. Re-verify these attribute names on every Textual
+        bump — `TestCursorHiddenWhileUnfocused` fails if this stops holding.
         """
         if not self.has_focus:
             self._pause_blink(visible=False)

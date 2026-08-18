@@ -61,6 +61,11 @@ upstream.
     masking; it stays until Textual grows one.
 
 Imported for side effect from `app.py` before any `App()` is created.
+
+Not every Textual-internals workaround lives here: subclasses that shadow a
+private base method carry theirs inline, each flagged with a "Deliberately
+overrides/shadows Textual's private ..." note. Grep for that phrase alongside
+this module when auditing a Textual bump.
 """
 
 from __future__ import annotations

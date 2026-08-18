@@ -200,6 +200,50 @@ def test_config_toml_sections_are_discoverable(
     assert option.toml_keys == toml_keys
 
 
+def test_negative_retry_count_is_not_reported_as_effective(caplog) -> None:
+    """A retry value the runtime rejects must not appear active in `config`."""
+    import logging
+
+    option = get_option("retries.max_retries")
+    assert option is not None
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(option, toml_data={"retries": {"max_retries": -1}}) == (
+            None,
+            "default",
+        )
+    assert any(
+        "[retries].max_retries" in record.getMessage() for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("key", ["agents.default", "agents.recent"])
+def test_blank_saved_agent_is_not_reported_as_effective(key: str, caplog) -> None:
+    """Blank agent preferences fall through just as the launch loader does."""
+    import logging
+
+    option = get_option(key)
+    assert option is not None
+    field = key.removeprefix("agents.")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(option, toml_data={"agents": {field: "   "}}) == (
+            None,
+            "default",
+        )
+    assert any(f"[agents].{field}" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("key", ["agents.default", "agents.recent"])
+def test_saved_agent_is_trimmed_like_the_launch_loader(key: str) -> None:
+    """The manifest reports the normalized saved-agent value used at launch."""
+    option = get_option(key)
+    assert option is not None
+    field = key.removeprefix("agents.")
+    assert resolve_scalar(option, toml_data={"agents": {field: "  coder  "}}) == (
+        "coder",
+        "config.toml",
+    )
+
+
 def test_show_message_timestamps_env_overrides_config(monkeypatch) -> None:
     """The env var must outrank a persisted `/timestamps` toggle."""
     option = get_option("display.show_message_timestamps")

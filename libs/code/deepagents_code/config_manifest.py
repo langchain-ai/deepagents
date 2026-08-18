@@ -139,7 +139,8 @@ class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
-    `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
+    `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`, `STR`, and
+    `NON_EMPTY_STR`) are coerced inline by
     `_coerce_env`/`_coerce_toml`. `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
@@ -159,9 +160,15 @@ class OptionKind(Enum):
 
     INT = "int"
 
+    NON_NEGATIVE_INT = "non_negative_int"
+    """An integer count that must be zero or greater."""
+
     FLOAT = "float"
 
     STR = "str"
+
+    NON_EMPTY_STR = "non_empty_str"
+    """A string stripped of surrounding whitespace; blank values are unset."""
 
     LOG_LEVEL_DELEGATE = "log_level"
     """Validates log levels and resolves the default from debug mode."""
@@ -192,8 +199,10 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.BOOL: "bool",
     OptionKind.BOOL_PRESENCE: "bool",
     OptionKind.INT: "int",
+    OptionKind.NON_NEGATIVE_INT: "int (>= 0)",
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
+    OptionKind.NON_EMPTY_STR: "non-empty str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
@@ -218,8 +227,10 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.BOOL: (bool,),
     OptionKind.BOOL_PRESENCE: (bool,),
     OptionKind.INT: (int,),
+    OptionKind.NON_NEGATIVE_INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.NON_EMPTY_STR: (str,),
     OptionKind.CURSOR_STYLE_DELEGATE: (str,),
     OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
@@ -361,15 +372,21 @@ class ConfigOption:
         if expected is None:
             # Delegate kinds validate their own (immutable) default shapes.
             return
-        # `bool` is an `int` subclass; an INT/FLOAT default must not be a bool.
+        # `bool` is an `int` subclass; integer/float defaults must not be bools.
         if not isinstance(default, expected) or (
-            self.kind in {OptionKind.INT, OptionKind.FLOAT}
+            self.kind in {OptionKind.INT, OptionKind.NON_NEGATIVE_INT, OptionKind.FLOAT}
             and isinstance(default, bool)
         ):
             msg = (
                 f"{self.key}: default {default!r} is not valid for kind "
                 f"{self.kind.value}"
             )
+            raise TypeError(msg)
+        if self.kind is OptionKind.NON_NEGATIVE_INT and default < 0:
+            msg = f"{self.key}: default {default!r} must be >= 0"
+            raise TypeError(msg)
+        if self.kind is OptionKind.NON_EMPTY_STR and not default.strip():
+            msg = f"{self.key}: default must not be blank"
             raise TypeError(msg)
 
     def _validate_invert_toml_bool(self) -> None:
@@ -474,6 +491,12 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         return bool(raw)
     if kind is OptionKind.STR:
         return raw
+    if kind is OptionKind.NON_EMPTY_STR:
+        value = raw.strip()
+        if value:
+            return value
+        logger.warning("Ignoring %s=%r (expected non-empty string)", name, raw)
+        return _INVALID
     if kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._debug import LOG_LEVELS
 
@@ -489,6 +512,16 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         except ValueError:
             logger.warning("Ignoring %s=%r (expected int)", name, raw)
             return _INVALID
+    if kind is OptionKind.NON_NEGATIVE_INT:
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
+            return _INVALID
+        if value >= 0:
+            return value
+        logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
+        return _INVALID
     if kind is OptionKind.FLOAT:
         try:
             return float(raw.strip())
@@ -564,12 +597,18 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
     elif kind is OptionKind.INT:
         if isinstance(raw, int) and not isinstance(raw, bool):
             return raw
+    elif kind is OptionKind.NON_NEGATIVE_INT:
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+            return raw
     elif kind is OptionKind.FLOAT:
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             return float(raw)
     elif kind is OptionKind.STR:
         if isinstance(raw, str):
             return raw
+    elif kind is OptionKind.NON_EMPTY_STR:
+        if isinstance(raw, str) and (value := raw.strip()):
+            return value
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
         if isinstance(raw, list):
             from deepagents_code.config import _parse_extra_skills_dirs
@@ -1392,7 +1431,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
             "Default provider retry count; override per provider with "
             "`[retries.<provider>]`."
         ),
-        kind=OptionKind.INT,
+        kind=OptionKind.NON_NEGATIVE_INT,
         toml_keys=("retries", "max_retries"),
     ),
     # --- Agents ---------------------------------------------------------
@@ -1400,14 +1439,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="agents.default",
         group="Agents",
         summary="Agent used at launch when `--agent` is omitted.",
-        kind=OptionKind.STR,
+        kind=OptionKind.NON_EMPTY_STR,
         toml_keys=("agents", "default"),
     ),
     ConfigOption(
         key="agents.recent",
         group="Agents",
         summary="Most recently switched-to agent (managed by the app).",
-        kind=OptionKind.STR,
+        kind=OptionKind.NON_EMPTY_STR,
         toml_keys=("agents", "recent"),
     ),
     ConfigOption(

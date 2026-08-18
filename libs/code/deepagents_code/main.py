@@ -266,25 +266,27 @@ def _should_check_teardown_thread(
 
 
 def _resume_term_program() -> str | None:
-    """Return a `TERM_PROGRAM` value safe to echo inside the resume hint.
-
-    The value is read from `LAUNCH_TERM_PROGRAM` — the snapshot `cli_main`
-    takes at process entry — rather than live `TERM_PROGRAM`, so only a value
-    the launch environment supplied (inline prefix, terminal export, or shell
-    alias) is echoed back. A `TERM_PROGRAM` that appears later, from a project
-    or global `.env` file, never reaches the hint.
+    """Return an enabled `TERM_PROGRAM` value safe for the resume hint.
 
     Returns:
-        The launch-time value when it is set and fully printable, else `None`.
-        A value carrying control characters is dropped rather than stripped:
-        stripping would both write raw escape sequences into teardown output
-        and name a terminal the environment never actually contained. Native
-        Windows shells also return `None`: VS Code and WezTerm set
-        `TERM_PROGRAM` on every platform, so its presence under `win32` does
-        not imply a POSIX shell, and the `VAR=value` prefix would be executed
-        as a command by `cmd.exe`/PowerShell. POSIX markers (`SHELL` from
-        git-bash/MSYS, `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
+        The printable launch-time value when the feature is enabled, else `None`.
+        Native Windows shells also return `None` because they cannot parse the
+        POSIX `VAR=value` prefix. POSIX markers (`SHELL` from git-bash/MSYS,
+        `MSYSTEM`, `WSL_DISTRO_NAME`) restore the prefix there.
     """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("features.resume_term_program")
+    if option is None:
+        return None
+    enabled, _ = resolve_scalar(option, toml_data=load_config_toml())
+    if not enabled:
+        return None
+
     raw = os.environ.get(LAUNCH_TERM_PROGRAM, "").strip()
     if not raw or not raw.isprintable():
         return None
@@ -352,15 +354,6 @@ def _render_teardown_thread_hints(
     # Echo the command the user actually launched (a shim or the
     # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
     resume_command = shlex.join([invoked_name(), "-r", str(thread_id)])
-    # A shell alias that exports `TERM_PROGRAM` (to select a theme, say) is
-    # invisible to `invoked_name`, since an alias does not change `argv[0]`, so
-    # the bare command would resume without it. Carry the launch-time value as
-    # an env prefix to keep the line pasteable as-is; the launch snapshot (not
-    # the live variable) is what keeps a `.env`-supplied `TERM_PROGRAM` out of
-    # the hint. The prefix uses POSIX syntax, so `_resume_term_program`
-    # withholds it on native Windows, where terminals (VS Code, WezTerm) set
-    # the variable even under `cmd.exe`/PowerShell and those shells cannot
-    # parse a `VAR=value` command prefix.
     term_program = _resume_term_program()
     if term_program is not None:
         resume_command = f"TERM_PROGRAM={shlex.quote(term_program)} {resume_command}"

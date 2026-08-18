@@ -138,8 +138,8 @@ class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
-    `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
-    `_coerce_env`/`_coerce_toml`. `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
+    `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced
+    inline by `_coerce_env`/`_coerce_toml`. `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
@@ -152,6 +152,9 @@ class OptionKind(Enum):
     BOOL = "bool"
     """Recognized truthy (`1`/`true`/`yes`/`on`) or falsy (`0`/`false`/`no`/`off`)
     tokens; an unrecognized value is logged and skipped to the next layer."""
+
+    BOOL_MODE_DEFAULT = "bool_mode_default"
+    """Boolean whose default follows experimental or debug mode."""
 
     BOOL_PRESENCE = "bool_presence"
     """Any non-empty env value enables the flag (e.g. debug injectors)."""
@@ -189,6 +192,7 @@ class OptionKind(Enum):
 
 _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.BOOL: "bool",
+    OptionKind.BOOL_MODE_DEFAULT: "bool",
     OptionKind.BOOL_PRESENCE: "bool",
     OptionKind.INT: "int",
     OptionKind.FLOAT: "float",
@@ -215,6 +219,7 @@ if _KIND_TYPE_LABEL.keys() != set(OptionKind):
 # output shape and are validated by those parsers, so they are omitted here.
 _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.BOOL: (bool,),
+    OptionKind.BOOL_MODE_DEFAULT: (bool,),
     OptionKind.BOOL_PRESENCE: (bool,),
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
@@ -336,7 +341,10 @@ class ConfigOption:
                 f"strings, got {self.fallback_env_vars!r}"
             )
             raise TypeError(msg)
-        if self.empty_env_is_false and self.kind is not OptionKind.BOOL:
+        if self.empty_env_is_false and self.kind not in {
+            OptionKind.BOOL,
+            OptionKind.BOOL_MODE_DEFAULT,
+        }:
             msg = f"{self.key}: empty_env_is_false requires a bool option kind"
             raise TypeError(msg)
 
@@ -459,7 +467,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         The typed value, or `_INVALID` when the raw value cannot be coerced.
     """
     kind = option.kind
-    if kind is OptionKind.BOOL:
+    if kind in {OptionKind.BOOL, OptionKind.BOOL_MODE_DEFAULT}:
         classified = classify_env_bool(raw)
         if classified is None:
             # Unrecognized boolean token: log and fall through like every other
@@ -557,7 +565,11 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
     kind = option.kind
     label = option.toml_path or option.key
 
-    if kind in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
+    if kind in {
+        OptionKind.BOOL,
+        OptionKind.BOOL_MODE_DEFAULT,
+        OptionKind.BOOL_PRESENCE,
+    }:
         if isinstance(raw, bool):
             return not raw if option.invert_toml_bool else raw
     elif kind is OptionKind.INT:
@@ -730,6 +742,11 @@ def resolve_scalar(
             value = _coerce_toml(option, raw)
             if value is not _INVALID:
                 return value, "config.toml"
+
+    if option.kind is OptionKind.BOOL_MODE_DEFAULT:
+        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
+
+        return is_env_truthy(DEBUG) or is_env_truthy(EXPERIMENTAL), "default"
 
     if option.kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._env_vars import DEBUG, is_env_truthy
@@ -1430,6 +1447,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.EXPERIMENTAL,
+    ),
+    ConfigOption(
+        key="features.resume_term_program",
+        group="Tools",
+        summary=(
+            "Include launch-time TERM_PROGRAM in resume hints; defaults on in "
+            "experimental or debug mode."
+        ),
+        kind=OptionKind.BOOL_MODE_DEFAULT,
+        default=False,
+        env_var=_env_vars.RESUME_TERM_PROGRAM,
+        empty_env_is_false=True,
+        toml_keys=("features", "resume_term_program"),
     ),
     ConfigOption(
         key="events.external_socket",

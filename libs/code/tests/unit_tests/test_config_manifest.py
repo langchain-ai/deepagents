@@ -429,6 +429,75 @@ def test_invalid_goal_auto_accept_env_falls_through(
     assert resolve_scalar(option, toml_data=toml_data) == expected
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [(None, False), (_env_vars.DEBUG, True), (_env_vars.EXPERIMENTAL, True)],
+)
+def test_resume_term_program_resolves_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str | None,
+    expected: bool,
+) -> None:
+    """The resume prefix defaults on only in experimental or debug mode."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.RESUME_TERM_PROGRAM, raising=False)
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    if mode is not None:
+        monkeypatch.setenv(mode, "1")
+
+    assert resolve_scalar(option, toml_data={}) == (expected, "default")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", True), ("0", False), ("", False)])
+def test_resume_term_program_env_overrides_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    expected: bool,
+) -> None:
+    """An explicit feature env value wins over mode and TOML values."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.DEBUG, "1")
+    monkeypatch.setenv(_env_vars.EXPERIMENTAL, "1")
+    monkeypatch.setenv(_env_vars.RESUME_TERM_PROGRAM, raw)
+
+    assert resolve_scalar(
+        option,
+        toml_data={"features": {"resume_term_program": not expected}},
+    ) == (expected, f"env ({_env_vars.RESUME_TERM_PROGRAM})")
+
+
+@pytest.mark.parametrize(
+    ("configured", "mode", "expected"),
+    [
+        (True, None, True),
+        (False, _env_vars.DEBUG, False),
+        (False, _env_vars.EXPERIMENTAL, False),
+    ],
+)
+def test_resume_term_program_toml_overrides_mode_default(
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    mode: str | None,
+    expected: bool,
+) -> None:
+    """An explicit config.toml value wins over the mode-dependent default."""
+    option = get_option("features.resume_term_program")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.RESUME_TERM_PROGRAM, raising=False)
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    monkeypatch.delenv(_env_vars.EXPERIMENTAL, raising=False)
+    if mode is not None:
+        monkeypatch.setenv(mode, "1")
+
+    assert resolve_scalar(
+        option,
+        toml_data={"features": {"resume_term_program": configured}},
+    ) == (expected, "config.toml")
+
+
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
     """The effective log level follows debug mode when no level is explicit."""
     option = get_option("debug.log_level")

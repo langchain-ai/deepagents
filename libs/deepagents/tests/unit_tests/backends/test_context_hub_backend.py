@@ -479,9 +479,7 @@ def test_ls_nonexistent_path_sets_error() -> None:
     Mirrors the FilesystemBackend contract from #3573 so that a missing path is
     distinguishable from a genuinely empty directory.
     """
-    backend, _ = _make_backend(
-        **{"existing/notes.md": FileEntry(type="file", content="hi")}
-    )
+    backend, _ = _make_backend(**{"existing/notes.md": FileEntry(type="file", content="hi")})
 
     result = backend.ls("/missing/")
 

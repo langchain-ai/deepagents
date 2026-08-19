@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
@@ -11,6 +10,7 @@ from deepagents_code.extensions.models import SourceInfo
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from pathlib import Path
 
     from deepagents_code.plugins.models import PluginInstance
 

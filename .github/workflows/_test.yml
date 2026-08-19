@@ -116,10 +116,56 @@ jobs:
         shell: bash
         run: uv sync --group test
 
-      - name: "🔍 Install ripgrep"
-        if: runner.os == 'Linux'
+      - name: "🔍 Install ripgrep (strict)"
+        if: >-
+          runner.os == 'Linux' &&
+          (github.event_name != 'pull_request' ||
+          startsWith(github.head_ref, 'release-please--') ||
+          startsWith(github.event.pull_request.title, 'release('))
         shell: bash
         run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: "🔍 Install ripgrep (non-release PR)"
+        id: ripgrep-install
+        if: >-
+          runner.os == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          !startsWith(github.head_ref, 'release-please--') &&
+          !startsWith(github.event.pull_request.title, 'release(')
+        shell: bash
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_PYTHON: ${{ matrix.python-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=10s 120s bash -c \
+            'sudo apt-get update && sudo apt-get install -y ripgrep'
+          status=$?
+          set -e
+
+          echo "timed-out=false" >> "$GITHUB_OUTPUT"
+          if [ "$status" -eq 124 ]; then
+            echo "timed-out=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::ripgrep installation exceeded two minutes; continuing without ripgrep"
+            package="${WORKING_DIRECTORY//\//-}"
+            artifact="ripgrep-timeout-${package}-${MATRIX_OS}-${MATRIX_PYTHON}"
+            marker="$RUNNER_TEMP/$artifact/warning.txt"
+            mkdir -p "$(dirname "$marker")"
+            printf '%s\n' "$artifact" > "$marker"
+            echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+            echo "marker=$marker" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$status"
+
+      - name: "📤 Record ripgrep install timeout"
+        if: steps.ripgrep-install.outputs.timed-out == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.ripgrep-install.outputs.artifact }}
+          path: ${{ steps.ripgrep-install.outputs.marker }}
+          retention-days: 1
 
       # Maintainer escape hatch: a PR labeled `bypass-warnings-check` runs
       # pytest with `-W default`, demoting the ini `filterwarnings` policy

@@ -737,6 +737,9 @@ jobs:
           fi
           VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="-v"
         working-directory: ${{ env.WORKING_DIR }}

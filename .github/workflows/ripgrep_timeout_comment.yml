@@ -1,0 +1,114 @@
+name: Ripgrep timeout warning
+
+on:
+  workflow_run:
+    workflows: ["🔧 CI"]
+    types: [completed]
+
+permissions:
+  actions: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: >-
+    ripgrep-timeout-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  manage-comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Manage PR warning comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const marker = '<!-- ripgrep-install-timeout -->';
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run;
+            let prNumber = run.pull_requests?.[0]?.number;
+            if (!prNumber) {
+              const associated = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                { owner, repo, commit_sha: run.head_sha, per_page: 100 },
+              );
+              const pullRequest = associated.find(
+                candidate => candidate.head.sha === run.head_sha &&
+                  candidate.base.repo.full_name === `${owner}/${repo}`,
+              );
+              prNumber = pullRequest?.number;
+            }
+            if (!prNumber) {
+              core.warning(`CI run ${run.id} has no associated pull request; cannot manage the ripgrep timeout comment.`);
+              return;
+            }
+
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+            if (pullRequest.head.sha !== run.head_sha) {
+              core.info(`Ignoring stale CI run ${run.id}; PR #${prNumber} now points at ${pullRequest.head.sha}.`);
+              return;
+            }
+
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: run.id, per_page: 100 },
+            );
+            const timeoutArtifacts = artifacts.filter(
+              artifact => !artifact.expired && artifact.name.startsWith('ripgrep-timeout-'),
+            );
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: prNumber, per_page: 100 },
+            );
+            const existing = comments.find(
+              comment => comment.user?.login === 'github-actions[bot]' &&
+                (comment.body ?? '').startsWith(marker),
+            );
+
+            if (timeoutArtifacts.length === 0) {
+              if (existing) {
+                await github.rest.issues.deleteComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                });
+                core.info('Removed the obsolete ripgrep timeout warning comment.');
+              }
+              return;
+            }
+
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${run.id}`;
+            const body = [
+              marker,
+              '**Warning: ripgrep installation timed out in CI.**',
+              '',
+              'Installation exceeded two minutes on one or more non-release PR test runners. Those runners continued without ripgrep, so ripgrep-specific tests may have been skipped and filesystem searches used the slower Python fallback.',
+              '',
+              'Release PRs and release-workflow tests still require ripgrep installation to succeed without this timeout.',
+              '',
+              `[View the CI run](${runUrl})`,
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info('Updated the ripgrep timeout warning comment.');
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body,
+              });
+              core.info('Created the ripgrep timeout warning comment.');
+            }

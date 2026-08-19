@@ -1226,13 +1226,26 @@ async function checkCuratedState({
     // (the setFailed message / failures list) reported right after this. The
     // gate still fails closed via those.
     let lastError = null;
+    let warningComments = comments;
     for (let attempt = 0; attempt <= warningCommentRetries; attempt += 1) {
       try {
-        await warnForNewEntries({ github, owner, repo, number, comments, head: pr.head.sha, fingerprint: currentFingerprint });
+        await warnForNewEntries({ github, owner, repo, number, comments: warningComments, head: pr.head.sha, fingerprint: currentFingerprint });
         return;
       } catch (error) {
         lastError = error;
-        if (attempt < warningCommentRetries) await sleep(warningCommentRetryIntervalMs);
+        if (attempt >= warningCommentRetries) break;
+        await sleep(warningCommentRetryIntervalMs);
+        // The create may have succeeded server-side while the client saw a
+        // timeout; the local snapshot then still lacks the marker and the retry
+        // would post a duplicate. Re-read comments and only retry when a fresh
+        // read still shows no marker. If the re-read itself fails, the next
+        // read could still be stale, so stop here instead of risking a
+        // duplicate courtesy comment.
+        try {
+          warningComments = await listComments(github, owner, repo, number);
+        } catch {
+          break;
+        }
       }
     }
     core.warning(`Could not post the new-entries warning comment: ${lastError instanceof Error ? lastError.message : String(lastError)}`);

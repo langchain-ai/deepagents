@@ -2532,6 +2532,16 @@ def create_cli_agent(
             )
         return middleware
 
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+    from deepagents_code.model_config import ModelConfig
+
+    model_policy = ModelConfig.load()
+    if (
+        isinstance(auto_classifier_model, str)
+        and auto_classifier_model.strip()
+        and auto_classifier_model != INHERIT_CLASSIFIER_MODEL
+    ):
+        model_policy.require_model_allowed(auto_classifier_model.strip())
     for subagent_meta in list_subagents(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
@@ -2547,6 +2557,7 @@ def create_cli_agent(
             "system_prompt": subagent_meta["system_prompt"],
         }
         if model_spec:
+            model_policy.require_model_allowed(model_spec)
             subagent["model"] = model_spec
         subagent_middleware = _subagent_cli_middleware(
             has_explicit_model=has_explicit_model,
@@ -3062,6 +3073,8 @@ def create_cli_agent(
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.
+    if isinstance(rubric_model, str):
+        model_policy.require_model_allowed(rubric_model)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",

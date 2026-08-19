@@ -2588,7 +2588,22 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
         A one-line problem description, or `None` when the spec looks usable.
     """
     from deepagents_code.config import detect_provider
-    from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+    from deepagents_code.model_config import (
+        ModelConfig,
+        ModelNotAllowedError,
+        ModelSpec,
+        get_provider_auth_status,
+    )
+
+    policy = ModelConfig.load()
+    if not policy.is_model_allowed(spec):
+        return str(
+            ModelNotAllowedError(
+                model_spec=spec,
+                source=policy.allowed_models_source,
+                allowed_models=policy.allowed_models or (),
+            )
+        )
 
     parsed = ModelSpec.try_parse(spec)
     provider = parsed.provider if parsed else detect_provider(spec)

@@ -117,7 +117,16 @@ def coerce_environment_value(
         if raw in VALID_CURSOR_STYLES:
             return Found(raw)
         return Invalid(f"Ignoring {name}={raw!r} (expected 'block' or 'underline')")
-    if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
+    if kind in {
+        OptionKind.MODEL_LIST_DELEGATE,
+        OptionKind.PTC_DELEGATE,
+        OptionKind.STRUCTURED,
+    }:
+        # None of these kinds declares an `env_var`, so the `if option.env_var`
+        # guard upstream means this is unreachable today. If a future option
+        # ever adds an env var for one of these, reject rather than pass the
+        # raw string through: an uncoerced value would bypass the delegate
+        # parser's validation. Falling back to the validated default is safe.
         return Invalid(f"{option.key} is not env-backed; ignoring {name}={raw!r}")
     if kind is OptionKind.STARTUP_MODE_DELEGATE:
         from deepagents_code.model_config import VALID_STARTUP_MODES
@@ -171,6 +180,13 @@ def coerce_toml_value(
     elif kind is OptionKind.NON_EMPTY_STR:
         if isinstance(raw, str) and (value := raw.strip()):
             return Found(value)
+    elif kind is OptionKind.MODEL_LIST_DELEGATE:
+        from deepagents_code.model_config import parse_model_allowlist
+
+        try:
+            return Found(parse_model_allowlist(raw))
+        except (TypeError, ValueError) as exc:
+            return Invalid(f"Ignoring {label} in {source}: {exc}")
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
         if isinstance(raw, list):
             from deepagents_code.config import _parse_extra_skills_dirs

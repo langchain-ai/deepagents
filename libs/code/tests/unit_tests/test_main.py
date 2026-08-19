@@ -2802,6 +2802,28 @@ class TestRunTextualCliAsyncMcp:
 
         assert captured_kwargs["mcp_preload_kwargs"] is None
 
+    def test_auto_classifier_problem_reports_model_policy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Startup diagnostics identify an administrator-blocked classifier."""
+        from deepagents_code.main import _auto_classifier_spec_problem
+        from deepagents_code.model_config import ModelConfig
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        problem = _auto_classifier_spec_problem("openai:blocked")
+
+        assert problem is not None
+        assert "administrator-managed" in problem
+
     async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:
         """The TUI and server receive the same effective env/TOML classifier."""
         app_result = AppResult(return_code=0, thread_id="thread-123")

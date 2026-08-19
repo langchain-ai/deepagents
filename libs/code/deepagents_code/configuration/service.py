@@ -221,6 +221,7 @@ ENFORCED_MANAGED_KEYS = (
     "interpreter.enable_interpreter",
     "interpreter.ptc",
     "interpreter.ptc_acknowledge_unsafe",
+    "models.allowed",
     "models.auto_classifier",
     "runtime.recursion_limit",
     "sandboxes.default",
@@ -343,6 +344,30 @@ def managed_policy_violations(
             # the bounded resolver when the agent is built, so an out-of-range
             # managed value would otherwise be assigned verbatim.
             violations.append(key)
+
+    allowed_option = get_option("models.allowed")
+    if (
+        allowed_option is not None
+        and managed_declaration(managed_data, allowed_option.toml_keys or ())
+        == "declared"
+    ):
+        allowed_value, allowed_source = resolve_scalar(
+            allowed_option,
+            toml_data={},
+            managed_toml_data=managed_data,
+        )
+        if allowed_source == "managed config" and isinstance(allowed_value, tuple):
+            models = managed_data.get("models")
+            if isinstance(models, dict):
+                allowed = set(allowed_value)
+                for field in ("default", "recent", "auto_classifier"):
+                    candidate = models.get(field)
+                    if (
+                        isinstance(candidate, str)
+                        and candidate.strip()
+                        and candidate.strip() not in allowed
+                    ):
+                        violations.append(f"models.{field}")
     return tuple(sorted(set(violations)))
 
 

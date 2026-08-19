@@ -132,6 +132,40 @@ class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
 
 
+class ModelNotAllowedError(ModelConfigError):
+    """Raised when a model is outside the effective `models.allowed` policy."""
+
+    def __init__(
+        self,
+        *,
+        model_spec: str,
+        source: str | None,
+        allowed_models: tuple[str, ...],
+    ) -> None:
+        """Initialize an actionable policy error."""
+        if source == "managed config":
+            policy = "the administrator-managed models.allowed policy"
+        elif source:
+            policy = f"models.allowed from {source}"
+        else:
+            policy = "the active models.allowed policy"
+        if not allowed_models:
+            message = (
+                f"Model {model_spec!r} is blocked because {policy} allows no models."
+            )
+        elif ModelSpec.try_parse(model_spec.strip()) is None:
+            message = (
+                f"Model {model_spec!r} cannot be matched against {policy}; "
+                "use a fully qualified provider:model spec."
+            )
+        else:
+            message = f"Model {model_spec!r} is not included in {policy}."
+        super().__init__(message)
+        self.model_spec = model_spec
+        self.source = source
+        self.allowed_models = allowed_models
+
+
 class NoCredentialsConfiguredError(ModelConfigError):
     """Raised when no credentials are configured for any default-resolvable provider.
 
@@ -405,6 +439,45 @@ class ModelSpec:
     def __str__(self) -> str:
         """Return the model spec as a string in `provider:model` format."""
         return f"{self.provider}:{self.model}"
+
+
+def parse_model_allowlist(value: object) -> tuple[str, ...]:
+    """Parse an ordered exact-model allowlist.
+
+    Args:
+        value: Raw TOML value to validate.
+
+    Returns:
+        Canonical model specs in declaration order with duplicates removed.
+
+    Raises:
+        TypeError: If the value is not a list.
+        ValueError: If an entry is not an exact `provider:model` string.
+    """
+    if not isinstance(value, list):
+        msg = "expected a list of provider:model strings"
+        raise TypeError(msg)
+
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            msg = "every entry must be a non-empty provider:model string"
+            raise ValueError(msg)
+        normalized = entry.strip()
+        parsed = ModelSpec.try_parse(normalized)
+        if (
+            parsed is None
+            or parsed.provider != parsed.provider.strip()
+            or parsed.model != parsed.model.strip()
+        ):
+            msg = f"invalid model spec {entry!r}; expected provider:model"
+            raise ValueError(msg)
+        canonical = str(parsed)
+        if canonical not in seen:
+            seen.add(canonical)
+            allowed.append(canonical)
+    return tuple(allowed)
 
 
 class ModelProfileEntry(TypedDict):
@@ -1342,6 +1415,19 @@ def get_available_models() -> dict[str, list[str]]:
                 if name == "openai":
                     reordered[CODEX_PROVIDER] = codex_models
             available = reordered
+
+    if config.allowed_models is not None:
+        available = {
+            provider: [
+                model
+                for model in models
+                if config.is_model_allowed(f"{provider}:{model}")
+            ]
+            for provider, models in available.items()
+        }
+        available = {
+            provider: models for provider, models in available.items() if models
+        }
 
     _available_models_cache = available
     return available
@@ -2836,6 +2922,12 @@ class ModelConfig:
     differ from the classifier Auto actually reviews with.
     """
 
+    allowed_models: tuple[str, ...] | None = None
+    """Ordered exact model specs, `None` when model use is unrestricted."""
+
+    allowed_models_source: str | None = None
+    """Configuration layer that supplied `allowed_models`."""
+
     def __post_init__(self) -> None:
         """Freeze the providers dict into a read-only proxy."""
         if not isinstance(self.providers, MappingProxyType):
@@ -2928,6 +3020,22 @@ class ModelConfig:
             if sources.managed.data
             else str(config_path)
         )
+
+        from deepagents_code.config_manifest import resolve_scalar
+
+        allowed_models: tuple[str, ...] | None = None
+        allowed_models_source: str | None = None
+        allowed_option = get_option("models.allowed")
+        if allowed_option is not None:
+            allowed_value, allowed_source = resolve_scalar(
+                allowed_option,
+                toml_data=user_data,
+                managed_toml_data=sources.managed.data,
+            )
+            if isinstance(allowed_value, tuple):
+                allowed_models = cast("tuple[str, ...]", allowed_value)
+                allowed_models_source = allowed_source
+
         try:
             models_section = cast(
                 "Any", _resolve_models_section(sources, user_data=user_data)
@@ -2999,6 +3107,8 @@ class ModelConfig:
                     path=config_path,
                     source_label=source_label,
                 ),
+                allowed_models=allowed_models,
+                allowed_models_source=allowed_models_source,
             )
         except (AttributeError, TypeError) as e:
             # Syntactically valid TOML can still have the wrong shape (e.g. a
@@ -3116,6 +3226,27 @@ class ModelConfig:
                         name,
                         key,
                     )
+
+    def is_model_allowed(self, model_spec: str) -> bool:
+        """Return whether an exact model spec is allowed by active policy."""
+        if self.allowed_models is None:
+            return True
+        parsed = ModelSpec.try_parse(model_spec.strip())
+        return parsed is not None and str(parsed) in self.allowed_models
+
+    def require_model_allowed(self, model_spec: str) -> None:
+        """Raise when an exact model spec is outside active policy.
+
+        Raises:
+            ModelNotAllowedError: If `model_spec` is not in the active allowlist.
+        """
+        if self.allowed_models is None or self.is_model_allowed(model_spec):
+            return
+        raise ModelNotAllowedError(
+            model_spec=model_spec,
+            source=self.allowed_models_source,
+            allowed_models=self.allowed_models,
+        )
 
     def is_provider_enabled(self, provider_name: str) -> bool:
         """Check whether a provider should appear in the model switcher.
@@ -3509,8 +3640,16 @@ def _save_model_field(
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        True if save succeeded, False if it failed due to I/O errors.
+        True if save succeeded, False if it failed due to I/O errors or policy.
     """
+    config = ModelConfig.load(config_path)
+    if not config.is_model_allowed(model_spec):
+        logger.warning(
+            "Refusing to save [models].%s=%r because it is outside models.allowed",
+            field,
+            model_spec,
+        )
+        return False
     return _save_toml_field("models", field, model_spec, config_path)
 
 
@@ -5816,10 +5955,16 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
     raw = data.get("models") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         return []
+    config = ModelConfig.load()
     seen: set[str] = set()
     out: list[str] = []
     for entry in raw:
-        if not isinstance(entry, str) or ":" not in entry or entry in seen:
+        if (
+            not isinstance(entry, str)
+            or ":" not in entry
+            or entry in seen
+            or not config.is_model_allowed(entry)
+        ):
             continue
         seen.add(entry)
         out.append(entry)
@@ -5843,7 +5988,11 @@ def touch_recent_model(model_spec: str, state_dir: Path | None = None) -> bool:
     Returns:
         `True` on success, `False` on I/O error or invalid spec.
     """
-    if not model_spec or ":" not in model_spec:
+    if (
+        not model_spec
+        or ":" not in model_spec
+        or not ModelConfig.load().is_model_allowed(model_spec)
+    ):
         return False
     existing = load_recent_models(state_dir)
     deduped = [entry for entry in existing if entry != model_spec]

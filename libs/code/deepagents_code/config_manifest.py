@@ -178,6 +178,9 @@ class OptionKind(Enum):
     NON_EMPTY_STR = "non_empty_str"
     """A string stripped of surrounding whitespace; blank values are unset."""
 
+    MODEL_LIST_DELEGATE = "model_list"
+    """Validates an ordered list of exact `provider:model` specifications."""
+
     LOG_LEVEL_DELEGATE = "log_level"
     """Validates log levels and resolves the default from debug mode."""
 
@@ -220,6 +223,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
+    OptionKind.MODEL_LIST_DELEGATE: "list[provider:model]",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
@@ -1735,6 +1739,13 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.ONBOARDING_INTEGRATIONS_SCREEN,
     ),
     # --- Models --------------------------------------------------------
+    ConfigOption(
+        key="models.allowed",
+        group="Models",
+        summary="Exact model specs ('provider:model') available to dcode.",
+        kind=OptionKind.MODEL_LIST_DELEGATE,
+        toml_keys=("models", "allowed"),
+    ),
     ConfigOption(
         key="models.default",
         group="Models",

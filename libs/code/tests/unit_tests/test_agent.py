@@ -5171,6 +5171,78 @@ class TestCreateCliAgentInterpreterWiring:
         assert compiled_tool is canonical_tool
         assert auto._trusted_compaction_tool is compiled_tool
 
+    def test_rejects_disallowed_explicit_subagent_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Local subagent frontmatter cannot bypass model construction policy."""
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.agent.list_subagents",
+            lambda **_kwargs: [
+                {
+                    "name": "blocked",
+                    "description": "Blocked model",
+                    "system_prompt": "Help.",
+                    "model": "openai:blocked",
+                }
+            ],
+        )
+
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            self._capture_middleware(tmp_path)
+
+    def test_rejects_disallowed_auto_classifier_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit Auto classifier is checked before middleware creation."""
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="managed config",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
+            self._capture_middleware(
+                tmp_path,
+                auto_mode_enabled=True,
+                auto_classifier_model="openai:blocked",
+            )
+
+    def test_rejects_disallowed_rubric_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A direct rubric model string is checked before middleware creation."""
+        from deepagents_code.model_config import ModelConfig, ModelNotAllowedError
+
+        policy = ModelConfig(
+            allowed_models=("anthropic:allowed",),
+            allowed_models_source="config.toml",
+        )
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls, _path=None: policy),
+        )
+
+        with pytest.raises(ModelNotAllowedError, match=r"config\.toml"):
+            self._capture_middleware(tmp_path, rubric_model="openai:blocked")
+
     def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool

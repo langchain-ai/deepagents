@@ -164,6 +164,126 @@ def test_managed_provider_failure_is_fail_closed(
         invalidate_config_sources()
 
 
+def test_managed_model_allowlist_replaces_user_list() -> None:
+    """Managed allowlists replace rather than union with user grants."""
+    from deepagents_code.config_manifest import get_option
+
+    option = get_option("models.allowed")
+    assert option is not None
+    value, source = resolve_scalar(
+        option,
+        toml_data={"models": {"allowed": ["openai:gpt-5.6-terra"]}},
+        managed_toml_data={"models": {"allowed": ["anthropic:claude-sonnet-5"]}},
+    )
+
+    assert value == ("anthropic:claude-sonnet-5",)
+    assert source == "managed config"
+
+
+def test_explicit_model_config_path_excludes_managed_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit-path tooling reads remain isolated from machine policy."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    explicit = tmp_path / "isolated.toml"
+    explicit.write_text(
+        '[models]\nallowed = ["openai:isolated"]\n',
+        encoding="utf-8",
+    )
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:managed"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    invalidate_config_sources()
+    try:
+        config = model_config.ModelConfig.load(explicit)
+        assert config.allowed_models == ("openai:isolated",)
+        assert config.allowed_models_source == "config.toml"
+    finally:
+        invalidate_config_sources()
+
+
+def test_malformed_managed_model_allowlist_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed administrator list blocks startup."""
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[models]\nallowed = ["openai:gpt", "broken"]\n')
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    invalidate_config_sources()
+    try:
+        with pytest.raises(ManagedConfigError, match=r"models\.allowed"):
+            require_healthy_managed_config(refresh=True)
+    finally:
+        invalidate_config_sources()
+
+
+def test_rejected_model_allowlist_reload_keeps_previous_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed reload cannot replace the last enforceable model ceiling."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:allowed"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        require_healthy_managed_config(refresh=True)
+        assert model_config.ModelConfig.load().allowed_models == ("anthropic:allowed",)
+
+        managed.write_text(
+            '[models]\nallowed = ["not-qualified"]\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ManagedConfigError, match=r"models\.allowed"):
+            require_healthy_managed_config(refresh=True)
+
+        model_config.clear_caches()
+        assert model_config.ModelConfig.load().allowed_models == ("anthropic:allowed",)
+    finally:
+        invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_managed_default_must_be_in_managed_model_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A contradictory managed default is unenforceable policy."""
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n'
+        'default = "openai:gpt-5.6-terra"\n'
+    )
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    invalidate_config_sources()
+    try:
+        with pytest.raises(ManagedConfigError, match=r"models\.default"):
+            require_healthy_managed_config(refresh=True)
+    finally:
+        invalidate_config_sources()
+
+
 def test_deep_merge_tracks_managed_leaf_provenance() -> None:
     """Ordinary tables merge per leaf while managed values win conflicts."""
     merged, provenance = merge_toml_tables(

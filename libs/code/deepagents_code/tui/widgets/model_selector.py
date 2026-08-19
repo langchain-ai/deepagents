@@ -757,7 +757,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 else recommended_models
             )
             for spec in sorted(recommendations):
-                if spec in existing_specs:
+                if spec in existing_specs or not config.is_model_allowed(spec):
                     continue
                 provider = spec.split(":", 1)[0]
                 try:
@@ -805,6 +805,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # degrades to "nothing stored", matching the launch warning that
             # ignores a blank value.
             stored_default = stored_default.strip() or None
+        if stored_default is not None and not config.is_model_allowed(stored_default):
+            stored_default = None
         return _ModelData(
             all_models,
             stored_default,
@@ -1189,7 +1191,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 empty_content: Content = Content.styled("Loading models…", "dim")
             else:
                 typed = self._filter_text.strip()
-                if typed and ":" in typed:
+                policy = ModelConfig.load()
+                if policy.allowed_models is not None and not policy.is_model_allowed(
+                    typed
+                ):
+                    owner = (
+                        "administrator-managed"
+                        if policy.allowed_models_source == "managed config"
+                        else "configured"
+                    )
+                    empty_content = Content.styled(
+                        f"No matching models allowed by the {owner} "
+                        "models.allowed policy",
+                        "dim",
+                    )
+                elif typed and ":" in typed:
                     empty_content = Content.assemble(
                         ("No matching models — press ", "dim"),
                         ("Enter", "bold"),

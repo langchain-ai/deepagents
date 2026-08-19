@@ -786,7 +786,10 @@ def test_workflow_mirrors_release_install_flags() -> None:
     assert 'INSTALL_ARGS=(--index-url "https://pypi.org/simple"' in freshness
     assert 'if [ "$PACKAGE_NAME" = "deepagents-talon" ]; then' in freshness
     assert 'INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")' in freshness
-    assert 'VIRTUAL_ENV="$VENV_PATH" uv pip install "${INSTALL_ARGS[@]}"' in freshness
+    assert (
+        'env -u UV_PYTHON VIRTUAL_ENV="$VENV_PATH" uv pip install "${INSTALL_ARGS[@]}"'
+        in freshness
+    )
 
     assert "deepagents-code|deepagents-talon)" in release
     assert "DEEPAGENTS_CODE_BUILD_COMMIT:" in release
@@ -796,3 +799,8 @@ def test_workflow_mirrors_release_install_flags() -> None:
         'env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"'
         in release
     )
+ # pass if either one reverted.
+    release_install = (
+        'env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"'
+    )
+    assert release.count(release_install) == 2

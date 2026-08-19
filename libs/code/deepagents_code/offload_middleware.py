@@ -143,11 +143,22 @@ def unchanged_offload_result(
         status: A non-compacting outcome.
         messages: Messages left in the conversation.
         tokens: Context estimate, unchanged by definition.
-        error: Reason, for `denied` and `failed`.
+        error: Reason, required for `denied` and `failed`.
 
     Returns:
         Typed result containing unchanged context statistics.
+
+    Raises:
+        ValueError: If a refusal carries no reason.
     """
+    if status in {"denied", "failed"} and not error:
+        # `error` is `str | None` on every status because the wire shape is one
+        # flat object, so the checker cannot make "a refusal has a reason" a
+        # compile-time fact. Enforce it at the single construction point
+        # instead: a reasonless refusal renders as the client's generic "the
+        # server rejected the operation", which tells the user nothing.
+        msg = f"An offload {status!r} result must carry a reason."
+        raise ValueError(msg)
     return {
         "status": status,
         "messages_offloaded": 0,

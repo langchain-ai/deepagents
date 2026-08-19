@@ -431,6 +431,25 @@ class TestOffloadCommand:
             remote.aoffload.assert_not_awaited()
 
 
+def test_a_reasonless_refusal_cannot_be_built() -> None:
+    """A `denied`/`failed` result with no reason must not be constructible.
+
+    The wire shape is one flat object, so `error` is `str | None` on every
+    status and the checker cannot make "a refusal has a reason" a compile-time
+    fact. A reasonless refusal reaches the user as the client's generic "the
+    server rejected the operation", which says nothing, so the single
+    construction point enforces it.
+    """
+    from deepagents_code.offload_middleware import unchanged_offload_result
+
+    for status in ("denied", "failed"):
+        with pytest.raises(ValueError, match="must carry a reason"):
+            unchanged_offload_result(status, messages=1, tokens=2)  # ty: ignore[invalid-argument-type]
+
+    # Unchanged, non-refusal outcomes legitimately carry no reason.
+    assert unchanged_offload_result("empty", messages=0, tokens=0)["error"] is None
+
+
 class TestServerOffloadReporting:
     """The server path must describe its estimates on the seeded path's terms."""
 

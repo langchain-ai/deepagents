@@ -124,7 +124,10 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     middleware = ReadFileContinuationNoticeMiddleware()
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
-        return ToolMessage(content="1|alpha\n2|beta\n3|gamma", tool_call_id="call_1")
+        return ToolMessage(
+            content="@@ lines 10-12 @@\nalpha\nbeta\ngamma\n@@ end lines 10-12 @@",
+            tool_call_id="call_1",
+        )
 
     result = middleware.wrap_tool_call(
         _request("read_file", {"file_path": "/x.txt", "limit": 3, "offset": 9}),

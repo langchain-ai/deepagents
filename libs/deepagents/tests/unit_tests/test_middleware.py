@@ -34,6 +34,7 @@ from deepagents.backends.utils import (
     TRUNCATION_GUIDANCE,
     create_file_data,
     format_content_with_line_numbers,
+    format_content_with_line_range,
     sanitize_tool_call_id,
     slice_read_response,
     truncate_if_too_long,
@@ -1366,6 +1367,13 @@ class TestFilesystemMiddleware:
 
         assert updated_file_data["created_at"] == initial_file_data["created_at"]
 
+    def test_format_content_with_line_range_encloses_raw_source(self):
+        content = ["    def foo():", "        return 1"]
+
+        assert format_content_with_line_range(content, start_line=100) == (
+            "@@ lines 100-101 @@\n    def foo():\n        return 1\n@@ end lines 100-101 @@"
+        )
+
     def test_format_content_with_line_numbers_short_lines(self):
         """Test that short lines (<=5000 chars) are displayed normally."""
         content = ["short line 1", "short line 2", "short line 3"]
@@ -1532,7 +1540,9 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1|one\n2|two\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
+        assert result.content == (
+            "@@ lines 1-2 @@\none\ntwo\n@@ end lines 1-2 @@\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]"
+        )
 
     def test_read_file_full_window_omits_remaining_lines_notice(self):
         files = {
@@ -1548,7 +1558,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 10})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "1|one\n2|two\n3|three"
+        assert result.content == "@@ lines 1-3 @@\none\ntwo\nthree\n@@ end lines 1-3 @@"
         assert "remaining from offset" not in result.content
 
     def test_read_file_offset_window_reports_source_line_range(self):
@@ -1565,7 +1575,9 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 2, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("3|three\n4|four\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
+        assert result.content == (
+            "@@ lines 3-4 @@\nthree\nfour\n@@ end lines 3-4 @@\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]"
+        )
 
     def test_read_file_single_line_window_uses_singular_read_unit(self):
         files = {
@@ -1581,7 +1593,9 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1|one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
+        assert result.content == (
+            "@@ lines 1-1 @@\none\n@@ end lines 1-1 @@\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]"
+        )
 
     def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
         """Invoke `read_file` against a fixed 3-line file with the given window."""
@@ -1666,19 +1680,22 @@ class TestFilesystemMiddleware:
         """A clamped offset still reads, and says so.
 
         The window reaches EOF here, which suppresses the pagination notice, so
-        the disclosure has to come from its own notice or the model gets a
-        gutter starting at line 1 with no sign its request was reinterpreted.
+        the disclosure has to come from its own notice or the model gets a range
+        starting at line 1 with no sign its request was reinterpreted.
         """
         result = self._read_notes(offset=-1, limit=100)
 
         assert result.status == "success"
-        assert result.content == ("1|one\n2|two\n3|three\n\n[Requested offset -1 is before the start of the file; read from line 1 instead.]")
+        assert result.content == (
+            "@@ lines 1-3 @@\none\ntwo\nthree\n@@ end lines 1-3 @@\n\n"
+            "[Requested offset -1 is before the start of the file; read from line 1 instead.]"
+        )
 
     def test_read_file_non_negative_offset_has_no_clamp_notice(self):
         """The clamp notice must not appear on ordinary reads."""
         result = self._read_notes(offset=0, limit=100)
 
-        assert result.content == "1|one\n2|two\n3|three"
+        assert result.content == "@@ lines 1-3 @@\none\ntwo\nthree\n@@ end lines 1-3 @@"
 
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
@@ -1695,7 +1712,7 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "1|one\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
+        assert result.content == "@@ lines 1-1 @@\none\n@@ end lines 1-1 @@\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
 
     def test_read_file_truncation_omits_notice_when_no_complete_line_fits(self):
         backend, _ = _make_backend()
@@ -1735,8 +1752,8 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if line.partition("|")[0].isdigit()]
-        last_displayed_line = int(numbered_lines[-1].partition("|")[0])
+        footer = next(line for line in result.content.splitlines() if line.startswith("@@ end lines "))
+        last_displayed_line = int(footer.removesuffix(" @@").rsplit("-", maxsplit=1)[1])
         assert last_displayed_line < 100
         assert f"remaining from offset {last_displayed_line}.]" in result.content
 
@@ -1759,10 +1776,10 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if line.partition("|")[0].isdigit()]
-        last_displayed_line = int(numbered_lines[-1].partition("|")[0])
+        footer = next(line for line in result.content.splitlines() if line.startswith("@@ end lines "))
+        last_displayed_line = int(footer.removesuffix(" @@").rsplit("-", maxsplit=1)[1])
         assert last_displayed_line < 100
-        assert numbered_lines[-1].endswith("x" * 80)
+        assert f"line {last_displayed_line}: " + "x" * 80 in result.content
         assert f"remaining from offset {last_displayed_line}.]" in result.content
 
     def test_read_file_truncation_never_splits_a_wrapped_source_line(self):

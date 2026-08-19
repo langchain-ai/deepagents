@@ -2881,6 +2881,9 @@ class ToolCallMessage(Vertical):
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
+        if output.startswith("@@ lines "):
+            return output
+
         lines = output.split("\n")
         parsed: list[tuple[str, str] | None] = []
         found_gutter = False

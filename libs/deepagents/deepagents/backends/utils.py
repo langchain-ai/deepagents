@@ -226,6 +226,34 @@ def format_content_with_line_numbers(
     return "\n".join(f"{marker}|{line}" for marker, line in rows)
 
 
+def format_content_with_line_range(
+    content: str | list[str],
+    start_line: int = 1,
+) -> str:
+    """Format file content as raw source enclosed by a source-line range.
+
+    Args:
+        content: File content as a string or list of lines.
+        start_line: Source line number of the first line.
+
+    Returns:
+        Source content enclosed in `@@ lines start-end @@` markers.
+    """
+    if isinstance(content, str):
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+    else:
+        lines = content
+
+    if not lines:
+        return ""
+
+    end_line = start_line + len(lines) - 1
+    marker = f"{start_line}-{end_line}"
+    return f"@@ lines {marker} @@\n" + "\n".join(lines) + f"\n@@ end lines {marker} @@"
+
+
 def check_empty_content(content: str) -> str | None:
     """Check if content is empty and return warning message.
 

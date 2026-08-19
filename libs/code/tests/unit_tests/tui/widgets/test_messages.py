@@ -4042,6 +4042,14 @@ class TestToolCallMessageFileOutput:
 
         assert compacted == "5|42  meaning\n10|ok"
 
+    def test_compact_line_gutter_preserves_range_enclosed_source(self) -> None:
+        output = (
+            "@@ lines 100-101 @@\n1  source text\n2  more source\n"
+            "@@ end lines 100-101 @@"
+        )
+
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
         """Output without a gutter is returned unchanged."""
         output = "plain text\nno line numbers here"

@@ -77,6 +77,27 @@ def _make_tool_page(
     return page
 
 
+def _sole_mcp_failure_warning(
+    caplog: pytest.LogCaptureFixture,
+    detail: str,
+) -> logging.LogRecord:
+    """Return the one `mcp_tools` WARNING that reports `detail`, asserting it is alone.
+
+    Scoped to the failure detail rather than to logger and level alone: the
+    wrapper also warns when retry-session cleanup fails, and that warning must
+    not read as a duplicate of the tool failure.
+    """
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "deepagents_code.mcp_tools"
+        and record.levelno == logging.WARNING
+        and detail in record.getMessage()
+    ]
+    assert len(records) == 1, f"expected exactly one warning reporting {detail!r}"
+    return records[0]
+
+
 @pytest.fixture
 def valid_config_data() -> dict:
     """Fixture providing a valid stdio server configuration."""
@@ -3526,133 +3547,6 @@ class TestCachedSessionProxy:
         assert manager is not None
         await manager.cleanup()
 
-    async def test_non_transient_failure_logs_warning(
-        self,
-        write_config: Callable[..., str],
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """A non-transient tool failure is warning-logged once, with traceback.
-
-        Exercises `ainvoke` (not `coroutine()` directly) so the tool's
-        `handle_tool_error` callback runs — that is the path real tool calls
-        take, and the single warning must come from there.
-        """
-        path = write_config(
-            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
-        )
-        call_counter = {"n": 0}
-
-        def _new_session(*, fail: bool) -> AsyncMock:
-            session = AsyncMock()
-            session.initialize = AsyncMock()
-            session.list_tools = AsyncMock(
-                return_value=_make_tool_page([_make_mcp_tool("echo")])
-            )
-            error = OSError("socket glitch") if fail else None
-            session.call_tool = AsyncMock(side_effect=error)
-            return session
-
-        @asynccontextmanager
-        async def _fake(
-            _connection: dict[str, Any],
-            *,
-            _mcp_callbacks: object | None = None,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            call_counter["n"] += 1
-            yield _new_session(fail=(call_counter["n"] == 2))
-
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
-            tools, manager, _ = await get_mcp_tools(path)
-            tool: Any = tools[0]
-            expected = (
-                "MCP tool 'srv_echo' failed on server 'srv': OSError: socket glitch"
-            )
-            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
-                result = await tool.ainvoke({})
-
-        assert result == expected
-        warnings = [
-            record
-            for record in caplog.records
-            if record.name == "deepagents_code.mcp_tools"
-            and record.levelno == logging.WARNING
-        ]
-        assert len(warnings) == 1
-        assert "recoverable ToolException" in warnings[0].getMessage()
-        assert expected in warnings[0].getMessage()
-        assert warnings[0].exc_info is not None
-        assert call_counter["n"] == 2
-        assert manager is not None
-        await manager.cleanup()
-
-    async def test_retry_failure_logs_warning(
-        self,
-        write_config: Callable[..., str],
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """A failure after a transient retry is warning-logged once, with traceback.
-
-        Exercises `ainvoke` (not `coroutine()` directly) so the tool's
-        `handle_tool_error` callback runs — that is the path real tool calls
-        take, and the single warning must come from there.
-        """
-        from anyio import ClosedResourceError
-
-        path = write_config(
-            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
-        )
-        call_counter = {"n": 0}
-
-        def _new_session(*, attempt: int) -> AsyncMock:
-            session = AsyncMock()
-            session.initialize = AsyncMock()
-            session.list_tools = AsyncMock(
-                return_value=_make_tool_page([_make_mcp_tool("echo")])
-            )
-            if attempt == 2:
-                session.call_tool = AsyncMock(side_effect=ClosedResourceError())
-            elif attempt == 3:
-                session.call_tool = AsyncMock(side_effect=RuntimeError("retry boom"))
-            else:
-                session.call_tool = AsyncMock()
-            return session
-
-        @asynccontextmanager
-        async def _fake(
-            _connection: dict[str, Any],
-            *,
-            _mcp_callbacks: object | None = None,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            call_counter["n"] += 1
-            yield _new_session(attempt=call_counter["n"])
-
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
-            tools, manager, _ = await get_mcp_tools(path)
-            tool: Any = tools[0]
-            expected = (
-                "MCP tool 'srv_echo' failed after one retry on server 'srv': "
-                "RuntimeError: retry boom"
-            )
-            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
-                result = await tool.ainvoke({})
-
-        assert result == expected
-        warnings = [
-            record
-            for record in caplog.records
-            if record.name == "deepagents_code.mcp_tools"
-            and record.levelno == logging.WARNING
-        ]
-        assert len(warnings) == 1
-        assert "recoverable ToolException" in warnings[0].getMessage()
-        assert expected in warnings[0].getMessage()
-        assert warnings[0].exc_info is not None
-        assert call_counter["n"] == 3
-        assert manager is not None
-        await manager.cleanup()
-
     async def test_transient_error_invalidates_and_retries(
         self,
         write_config: Callable[..., str],
@@ -3702,8 +3596,14 @@ class TestCachedSessionProxy:
     async def test_repeated_transient_error_surfaces_tool_message(
         self,
         write_config: Callable[..., str],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A second transient failure becomes a tool-local error message."""
+        """A second transient failure becomes a tool-local error message.
+
+        The failure must also be warning-logged exactly once, with a traceback.
+        `handle_tool_error` owns that log, so `coroutine` must not log before it
+        raises; the single-warning assertion guards against a duplicate.
+        """
         from anyio import ClosedResourceError
         from langchain_core.messages import ToolMessage
 
@@ -3735,22 +3635,33 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            result = await tools[0].ainvoke(
-                {"args": {}, "id": "call-1", "type": "tool_call"}
-            )  # ty: ignore
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+                result = await tools[0].ainvoke(
+                    {"args": {}, "id": "call-1", "type": "tool_call"}
+                )  # ty: ignore
 
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "failed after one retry" in result.content
         assert call_counter["n"] == 3
+        warning = _sole_mcp_failure_warning(caplog, "failed after one retry")
+        assert warning.exc_info is not None, (
+            "the failure must be logged with its traceback"
+        )
         await manager.cleanup()
 
     async def test_generic_oserror_is_not_retried(
         self,
         write_config: Callable[..., str],
         fake_tool_result: Any,  # noqa: ANN401
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Generic `OSError`s do not trigger session invalidation and retry."""
+        """Generic `OSError`s do not trigger session invalidation and retry.
+
+        The failure must also be warning-logged exactly once, with a traceback.
+        `handle_tool_error` owns that log, so `coroutine` must not log before it
+        raises; the single-warning assertion guards against a duplicate.
+        """
         from langchain_core.messages import ToolMessage
 
         path = write_config(
@@ -3783,14 +3694,21 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            result = await tools[0].ainvoke(
-                {"args": {}, "id": "call-1", "type": "tool_call"}
-            )  # ty: ignore
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+                result = await tools[0].ainvoke(
+                    {"args": {}, "id": "call-1", "type": "tool_call"}
+                )  # ty: ignore
 
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "socket glitch" in result.content
         assert call_counter["n"] == 2
+        warning = _sole_mcp_failure_warning(
+            caplog, "failed on server 'srv': OSError: socket glitch"
+        )
+        assert warning.exc_info is not None, (
+            "the failure must be logged with its traceback"
+        )
         await manager.cleanup()
 
     async def test_logical_tool_exception_is_not_retried(

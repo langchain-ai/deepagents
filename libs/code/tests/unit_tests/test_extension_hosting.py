@@ -37,7 +37,13 @@ def test_extension_units_merge_without_overriding_internal_names(
     tmp_path: Path,
 ) -> None:
     """Built-ins win collisions while safe routes and unique units are hosted."""
-    source = SourceInfo(tmp_path / "extension.py")
+    source = SourceInfo(
+        tmp_path / "extension.py",
+        scope="plugin",
+        plugin_id="memory@test",
+        plugin_version="1.0.0",
+        package_root=tmp_path,
+    )
     registry = ExtensionRegistry()
     registry.add_tool(_existing, source)
     registry.add_tool(_unique, source)
@@ -82,6 +88,7 @@ def test_extension_units_merge_without_overriding_internal_names(
     assert any(item.name == "extension-middleware" for item in kwargs["middleware"])
     assert "/memories/" in backend.routes
     assert "/artifacts/" not in backend.routes
+    assert registry.backend_routes[0].source.plugin_id == "memory@test"
 
 
 async def test_server_lifespan_releases_extensions() -> None:

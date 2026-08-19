@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code.extensions.discovery import (
     discover_extension_files,
     project_extensions_dir,
@@ -43,6 +44,8 @@ def _prepare(
     project_root: Path | None,
     project_trust_granted: bool,
 ) -> tuple[list[SourceInfo], Path] | None:
+    if not is_env_truthy(EXPERIMENTAL):
+        return None
     settings = load_extension_settings()
     if not settings.enabled:
         return None
@@ -55,8 +58,13 @@ def _prepare(
         )
         if trusted:
             project_dir = project_extensions_dir(project_root)
+    from deepagents_code.plugins import discover_plugins
+
+    plugin_result = discover_plugins()
+    for warning in plugin_result.warnings:
+        logger.warning("Plugin extension discovery: %s", warning)
     sources = discover_extension_files(
-        extra_paths=settings.paths,
+        plugins=plugin_result.plugins,
         project_dir=project_dir,
     )
     return (sources, Path.cwd() if cwd is None else cwd) if sources else None

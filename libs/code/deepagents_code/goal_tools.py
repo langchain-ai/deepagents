@@ -523,6 +523,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         # to the model, so keeping them costs nothing and preserves alignment.
         # A malformed event is nulled above, so nothing is sliced and the whole
         # list is fair game.
+        #
+        # `is_goal_state_message` also matches on the `SYSTEM_MESSAGE_PREFIX`
+        # text, not just the metadata source, so this can in principle drop a
+        # human turn that opens with that exact sentence. The prefix arm is kept
+        # because legacy notices predate the metadata and are the reason the
+        # filter exists; the residual risk is a user pasting that sentence
+        # verbatim as the start of a message, which only affects the transient
+        # request window and never the checkpoint.
         filter_floor = 0 if malformed_event else (cutoff or 0)
         filtered = [
             message

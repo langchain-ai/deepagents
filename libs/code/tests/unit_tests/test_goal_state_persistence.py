@@ -189,6 +189,43 @@ async def test_compaction_cutoff_repins_once() -> None:
     updater.aupdate_state.assert_not_awaited()
 
 
+@pytest.mark.parametrize("cutoff_index", [-1, 99, "1", True, None])
+async def test_out_of_range_cutoff_treats_a_matching_notice_as_visible(
+    cutoff_index: object,
+) -> None:
+    """An unusable cutoff must not discount a notice the model can see.
+
+    `_summarization_cutoff` is called with `message_count`, so an out-of-range,
+    negative, or non-int cutoff degrades to `0` rather than being trusted.
+    Without that, a stale index would mark the tail notice invisible and the
+    predicate would rewrite it on every turn. Dropping the `message_count`
+    argument breaks nothing else in the suite, so this pins it.
+    """
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    notice = build_goal_state_notice(state, event_id="goal-event-current")
+    checkpoint = {
+        **state,
+        "messages": [HumanMessage(content="continue", id="user-1"), notice],
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": cutoff_index,
+        },
+    }
+
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    updater.aupdate_state.assert_not_awaited()
+
+
 @pytest.mark.parametrize("parallel_calls", [False, True])
 async def test_notice_defers_for_incomplete_tool_result_batch(
     parallel_calls: bool,

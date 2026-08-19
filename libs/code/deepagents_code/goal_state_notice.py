@@ -73,6 +73,10 @@ class GoalStateNoticeInfo(TypedDict):
     event_id: str
     state_fingerprint: str
     schema_version: int
+    """Always `GOAL_MESSAGE_SCHEMA_VERSION`: `goal_state_notice_info` returns
+    `None` for any other value, so an instance cannot carry a stale one. Not a
+    `Literal`, because it would have to name the constant, which is not a valid
+    type expression."""
 
 
 def _field(message: object, name: str) -> object:

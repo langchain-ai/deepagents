@@ -335,12 +335,29 @@ class SlashCommandController:
         if not self._suggestions:
             return False
 
-        # Insert the machine name (aligned by index), not the displayed label.
-        command = self._suggestion_names[self._selected_index]
+        command = self.completion_value_at(self._selected_index)
+        if command is None:
+            return False
         # Replace from start to cursor with the command
         self._view.replace_completion_range(0, cursor_index, command)
         self.reset()
         return True
+
+    def completion_value_at(self, index: int) -> str | None:
+        """Return the canonical insertion value at a suggestion index.
+
+        Popup labels may be friendlier than the command value accepted by the
+        input, so click handlers must use this value rather than the label.
+
+        Args:
+            index: Index of the visible completion suggestion.
+
+        Returns:
+            The canonical completion value, or `None` for an invalid index.
+        """
+        if 0 <= index < len(self._suggestion_names):
+            return self._suggestion_names[index]
+        return None
 
     def apply_name_prefix_completion(
         self, match: CommandEntry, cursor_index: int

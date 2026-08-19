@@ -3694,7 +3694,22 @@ class ChatInput(Vertical):
         # Determine replacement range based on completion type.
         # Slash completions use completion-space coordinates and are translated
         # through the completion view adapter.
-        if label.startswith("/"):
+        if self.mode == "skill":
+            if self._completion_view is None or self._skill_controller is None:
+                logger.warning(
+                    "Skill completion clicked before its controller was initialized; "
+                    "this indicates a widget lifecycle issue."
+                )
+                return
+            completion = self._skill_controller.completion_value_at(index)
+            if completion is None:
+                logger.warning("Skill completion clicked with invalid suggestion index")
+                return
+            _, virtual_cursor = self._completion_text_and_cursor()
+            self._completion_view.replace_completion_range(
+                0, virtual_cursor, completion
+            )
+        elif label.startswith("/"):
             if self._completion_view is None:
                 logger.warning(
                     "Slash completion clicked but _completion_view is not "

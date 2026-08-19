@@ -4942,6 +4942,37 @@ class TestChatInputTypingBubble:
 class TestSkillCompletion:
     """Test skill-only completion wiring."""
 
+    async def test_click_completion_inserts_canonical_namespaced_skill(self) -> None:
+        """Clicking a skill popup option should use its canonical name."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry(
+                        "/skill:my-plugin:deploy",
+                        "Deploy through a plugin",
+                        "deploy",
+                        "",
+                        "/skill:deploy",
+                    )
+                ],
+            )
+
+            chat._text_area.insert("$dep")
+            await _pause_for_strip(pilot)
+
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+            await pilot.pause()
+
+            assert chat._text_area.text == "my-plugin:deploy "
+
     async def test_update_commands_keeps_dollar_picker_skill_only(self) -> None:
         """`$` receives skills while `/` retains every command."""
         from deepagents_code.command_registry import CommandEntry

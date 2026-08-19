@@ -45,6 +45,7 @@ Version 4 rejects oversized new state and replaces any legacy oversized notice
 with bounded recovery guidance. Version 5 counts HTML-escaped embedded text in
 that budget, so version 4 notices with escape-heavy text are superseded.
 """
+_MALFORMED_EVENT_LOG_LIMIT: Final = 200
 _GOAL_MESSAGE_SCHEMA_KEY: Final = "goal_message_schema_version"
 _GOAL_MESSAGE_KIND_KEY: Final = "goal_message_kind"
 _GOAL_INTERNAL_SOURCES = frozenset(
@@ -343,6 +344,36 @@ def summarization_cutoff(
     """
     cutoff = validated_summarization_cutoff(event, message_count=message_count)
     return cutoff if cutoff is not None else 0
+
+
+def log_malformed_summarization_event(event: object, message_count: int) -> None:
+    """Record that a restored summarization event was discarded.
+
+    Dropping the event also drops its `summary_message`, so the next request
+    re-sends the whole untrimmed history. That is a large, silent token and
+    latency cost whose only symptom is a slow, expensive turn, and the causes
+    worth chasing — a checkpoint written by another schema, a partial write, a
+    cutoff recorded against a different message list — all look identical from the
+    outside. Log it so a repeat is diagnosable.
+
+    Shared with the client rather than kept in the middleware: the client is the
+    side that reads possibly-malformed *remote snapshot* dicts, so it is the more
+    likely place to meet one, and a discard that is loud on one side and silent on
+    the other is worse than either.
+    """
+    cutoff = event.get("cutoff_index") if isinstance(event, Mapping) else event
+    # A non-Mapping event can be any object, so bound the repr rather than
+    # spilling a whole message list into the log.
+    detail = repr(cutoff)
+    if len(detail) > _MALFORMED_EVENT_LOG_LIMIT:
+        detail = f"{detail[:_MALFORMED_EVENT_LOG_LIMIT]}... (truncated)"
+    logger.warning(
+        "Discarding malformed `_summarization_event` (cutoff_index=%s, "
+        "messages=%d); its summary is dropped, so the next request re-sends "
+        "the full history.",
+        detail,
+        message_count,
+    )
 
 
 def _clean_text(state: Mapping[str, object], key: str) -> str | None:

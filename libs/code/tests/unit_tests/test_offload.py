@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import stat
 import tempfile
@@ -3277,6 +3278,57 @@ class TestOffloadHelpers:
             )
             == messages
         )
+
+    def test_effective_conversation_logs_a_discarded_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Dropping the event drops the summary, so it must not be silent.
+
+        The middleware already logs this. The client is the side that reads
+        possibly-malformed remote snapshot dicts, so it meets a corrupt event
+        sooner, and the next request silently re-sends the whole untrimmed
+        history.
+        """
+        from deepagents_code.app import _effective_conversation
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.goal_state_notice"
+        ):
+            assert _effective_conversation(["m0", "m1"], {"cutoff_index": "x"}) == [
+                "m0",
+                "m1",
+            ]
+
+        assert "Discarding malformed `_summarization_event`" in caplog.text
+
+    def test_effective_conversation_does_not_log_without_an_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No event is the normal case, not a discard."""
+        from deepagents_code.app import _effective_conversation
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.goal_state_notice"
+        ):
+            _effective_conversation(["m0"], None)
+
+        assert "Discarding malformed" not in caplog.text
+
+    def test_malformed_event_log_bounds_a_huge_value(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-Mapping event is repr'd, so it must not spill into the log."""
+        from deepagents_code.goal_state_notice import (
+            log_malformed_summarization_event,
+        )
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.goal_state_notice"
+        ):
+            log_malformed_summarization_event(["x" * 5_000], 3)
+
+        assert "(truncated)" in caplog.text
+        assert len(caplog.text) < 1_000
 
     def test_effective_conversation_cutoff_past_end(self) -> None:
         """An out-of-bounds cutoff deliberately diverges from the SDK.

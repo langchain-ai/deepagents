@@ -580,7 +580,7 @@ def test_discarding_malformed_summarization_event_is_logged(
         "messages": [HumanMessage(content="m0")],
     }
 
-    with caplog.at_level(logging.WARNING, logger="deepagents_code.goal_tools"):
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.goal_state_notice"):
         update = GoalToolsMiddleware()._notice_update(
             cast("AgentState[Any]", state),
         )

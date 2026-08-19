@@ -108,6 +108,7 @@ from deepagents_code.goal_state_notice import (
     is_internal_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
+    log_malformed_summarization_event as _log_malformed_summarization_event,
     notice_text_sections,
     project_goal_state,
     summarization_cutoff as _summarization_cutoff,
@@ -578,7 +579,8 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     slices and prepends.
 
     An unusable event — a `None` summary, or a cutoff that is not a
-    non-negative int within bounds — returns the full list. The bounds case
+    non-negative int within bounds — is logged and returns the full list. The
+    bounds case
     diverges deliberately from the SDK, which reads a cutoff past the end as
     "everything was summarized" and returns `[summary]` alone. A shorter list
     than the cutoff means history was removed after the summary was written
@@ -595,7 +597,10 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     Returns:
         The effective message list.
     """
+    if event is None:
+        return list(messages)
     if not isinstance(event, dict):
+        _log_malformed_summarization_event(event, len(messages))
         return list(messages)
     summary = event.get("summary_message")
     cutoff = _validated_summarization_cutoff(
@@ -603,6 +608,7 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
         message_count=len(messages),
     )
     if summary is None or cutoff is None:
+        _log_malformed_summarization_event(event, len(messages))
         return list(messages)
     return [summary, *messages[cutoff:]]
 
@@ -12821,10 +12827,18 @@ class DeepAgentsApp(App):
             latest = latest_goal_state_notice(messages)
             latest_candidate = latest_goal_state_message_index(messages)
             fingerprint = goal_state_fingerprint(desired_state)
-            cutoff = _summarization_cutoff(
-                state_values.get("_summarization_event"),
+            event = state_values.get("_summarization_event")
+            validated_cutoff = _validated_summarization_cutoff(
+                event,
                 message_count=len(messages),
             )
+            if event is not None and validated_cutoff is None:
+                # Collapsing to 0 makes the `latest[0] >= cutoff` test below
+                # trivially true, so a stale notice counts as visible and the
+                # durable write is skipped. Silent here and loud in the middleware
+                # would make the two sides disagree for no visible reason.
+                _log_malformed_summarization_event(event, len(messages))
+            cutoff = validated_cutoff or 0
             if (
                 latest is not None
                 and latest[0] == latest_candidate

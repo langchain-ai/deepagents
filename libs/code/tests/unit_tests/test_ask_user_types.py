@@ -287,6 +287,25 @@ class TestRenderAskUserTranscriptForDisplay:
             is None
         )
 
+    def test_returns_none_when_an_answer_quotes_a_later_block(self) -> None:
+        """A text answer can legitimately contain transcript-like text.
+
+        Without the uniqueness check the parser anchors on the quoted copy, so
+        the real multi-select block folds into the first answer and the display
+        shows `["fake"]` as the second answer.
+        """
+        questions: list[Question] = [
+            {"question": "Paste it?", "type": "text"},
+            {"question": "Where?", "type": "multi_select", "choices": []},
+            {"question": "Why?", "type": "text"},
+        ]
+        quoted = 'here it is\n\nQ: Where?\nA: ["fake"]\n\nQ: Why?\nA: copied verbatim'
+        transcript = format_ask_user_transcript(
+            questions, [quoted, encode_multi_select_answer(["Austin"]), "because"]
+        )
+
+        assert render_ask_user_transcript_for_display(questions, transcript) is None
+
     def test_returns_none_for_no_questions(self) -> None:
         assert render_ask_user_transcript_for_display([], "") is None
 

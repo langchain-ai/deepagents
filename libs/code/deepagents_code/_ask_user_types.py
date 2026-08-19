@@ -440,6 +440,10 @@ def render_ask_user_transcript_for_display(
     anchors on the known question text, the mitigation that docstring
     prescribes, and gives up rather than guessing: a transcript that does not
     match the questions exactly returns `None` and must be rendered literally.
+    An answer may itself contain a later `Q: ...` block verbatim (pasting
+    transcript-like text into a text answer is legitimate), so a separator must
+    be unique to be trusted — with duplicates, the first occurrence would
+    swallow the real blocks into the wrong answer and misattribute the rest.
     The result is display-only and feeds no trust decision.
 
     Args:
@@ -463,7 +467,7 @@ def render_ask_user_transcript_for_display(
         if index + 1 < len(anchors):
             separator = f"\n\n{anchors[index + 1]}"
             end = transcript.find(separator, position)
-            if end == -1:
+            if end == -1 or transcript.find(separator, end + 2) != -1:
                 return None
             answers.append(transcript[position:end])
             position = end + 2

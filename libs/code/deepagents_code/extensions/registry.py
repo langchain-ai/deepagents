@@ -3,21 +3,48 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-from deepagents_code.extensions.models import RegisteredUnit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from deepagents.backends.protocol import BackendProtocol
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
-    from deepagents_code.extensions.models import SourceInfo
-
 logger = logging.getLogger(__name__)
 RegistrySnapshot = tuple[int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceInfo:
+    """An extension entry file, ownership, and import shape."""
+
+    path: Path
+    is_package: bool = False
+    plugin_id: str | None = None
+
+    @property
+    def label(self) -> str:
+        """Short extension label."""
+        if self.plugin_id is not None:
+            return self.plugin_id
+        return self.path.parent.name if self.is_package else self.path.stem
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredUnit[T]:
+    """A registered unit paired with its source."""
+
+    name: str
+    unit: T
+    source: SourceInfo
+
+
+class ExtensionError(Exception):
+    """Raised when an extension cannot be loaded."""
 
 
 class ExtensionRegistry:

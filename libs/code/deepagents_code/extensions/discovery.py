@@ -6,10 +6,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-from deepagents_code.extensions.models import SourceInfo
+from deepagents_code.extensions.registry import SourceInfo
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Sequence
     from pathlib import Path
 
     from deepagents_code.plugins.models import PluginInstance
@@ -34,70 +34,15 @@ def _scan(directory: Path) -> list[SourceInfo]:
     for entry in entries:
         try:
             if entry.is_file() and entry.suffix == ".py":
-                sources.append(
-                    SourceInfo(
-                        entry,
-                        scope="project",
-                        package_root=directory,
-                    )
-                )
+                sources.append(SourceInfo(entry))
             elif entry.is_dir():
                 for filename in ("__init__.py", "extension.py"):
                     candidate = entry / filename
                     if candidate.is_file():
-                        sources.append(
-                            SourceInfo(
-                                candidate,
-                                is_package=True,
-                                scope="project",
-                                package_root=directory,
-                            )
-                        )
+                        sources.append(SourceInfo(candidate, is_package=True))
                         break
         except OSError:
             logger.debug("Skipping unreadable extension %s", entry, exc_info=True)
-    return sources
-
-
-def _resolve(paths: Iterable[Path]) -> list[SourceInfo]:
-    sources: list[SourceInfo] = []
-    for path in paths:
-        expanded = path.expanduser()
-        try:
-            if expanded.is_file():
-                sources.append(
-                    SourceInfo(
-                        expanded,
-                        scope="project",
-                        package_root=expanded.parent,
-                    )
-                )
-            elif expanded.is_dir():
-                sources.extend(_scan(expanded))
-        except OSError:
-            logger.debug("Could not inspect extension path %s", expanded, exc_info=True)
-    return sources
-
-
-def _plugin_sources(plugins: Sequence[PluginInstance]) -> list[SourceInfo]:
-    """Return manifest-declared Python entries from enabled plugins."""
-    sources: list[SourceInfo] = []
-    for plugin in plugins:
-        manifest = plugin.manifest
-        if manifest is None:
-            continue
-        sources.extend(
-            SourceInfo(
-                path,
-                is_package=path.name == "__init__.py",
-                scope="plugin",
-                plugin_id=plugin.plugin_id,
-                plugin_version=plugin.version,
-                package_root=plugin.root,
-                data_dir=plugin.data_dir,
-            )
-            for path in manifest.python_extensions
-        )
     return sources
 
 
@@ -118,9 +63,25 @@ def discover_extension_files(
     """
     if not is_env_truthy(EXPERIMENTAL):
         return []
-    sources = _plugin_sources(plugins)
+    sources = [
+        SourceInfo(
+            path,
+            is_package=path.name == "__init__.py",
+            plugin_id=plugin.plugin_id,
+        )
+        for plugin in plugins
+        if plugin.manifest is not None
+        for path in plugin.manifest.python_extensions
+    ]
     if project_dir is not None:
-        sources.extend(_resolve([project_dir]))
+        expanded = project_dir.expanduser()
+        try:
+            if expanded.is_file():
+                sources.append(SourceInfo(expanded))
+            elif expanded.is_dir():
+                sources.extend(_scan(expanded))
+        except OSError:
+            logger.debug("Could not inspect extension path %s", expanded, exc_info=True)
 
     unique: list[SourceInfo] = []
     seen: set[Path] = set()

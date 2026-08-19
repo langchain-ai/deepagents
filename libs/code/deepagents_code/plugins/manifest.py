@@ -23,7 +23,6 @@ _MANIFEST_RELATIVE_PATHS = (
     Path(".codex-plugin") / "plugin.json",
 )
 _PATH_COMPONENT_FIELDS = {"skills", "mcpServers", "hooks"}
-_DCODE_EXTENSION_KEY = "com.langchain.deepagents.code"
 _PYTHON_EXTENSIONS_FIELD = "pythonExtensions"
 _UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
     "agents",
@@ -284,7 +283,7 @@ def load_manifest(
     display_name_value = raw.get("displayName")
     extension_settings = raw.get("extensions")
     if isinstance(extension_settings, dict):
-        extension_settings = extension_settings.get(_DCODE_EXTENSION_KEY)
+        extension_settings = extension_settings.get("com.langchain.deepagents.code")
     python_extensions = _python_extensions(extension_settings, root, warnings)
     if python_extensions and version is None:
         warnings.append(

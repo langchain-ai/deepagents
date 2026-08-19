@@ -27,6 +27,10 @@ dependencies = [
     # pin its floor explicitly since harbor's extra leaves it unconstrained.
     "harbor[langsmith]>=0.20.0,<0.21.0",
     "harbor-langsmith>=0.3.0,<0.4.0",
+    # Pier (Datacurve's Harbor fork) for DeepSWE air-gapped tasks. Provides the
+    # BaseAgent contract + per-agent network allowlists that `deepagents_pier`
+    # implements. Import name is `pier`; the distribution is `datacurve-pier`.
+    "datacurve-pier>=0.3.1,<0.4.0",
     # LangSmith for observability
     "langsmith>=0.10.9",
     # Sandbox runtimes
@@ -89,7 +93,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["deepagents_harbor*", "deepagents_evals*"]
+include = ["deepagents_harbor*", "deepagents_evals*", "deepagents_pier*"]
 
 [tool.setuptools.package-data]
 deepagents_evals = ["categories.json"]
@@ -132,6 +136,12 @@ override-dependencies = [
     # Blockbuster active, and it does not reach the sandbox venv, which installs
     # `deepagents-code` directly and so resolves filelock under that cap.
     "filelock>=3.30.3",
+    # datacurve-pier requires pydantic>=2.13.3, but fireworks-ai (all releases,
+    # incl. 1.2.9) caps pydantic<2.13. That cap is conservative — fireworks-ai
+    # only uses pydantic v1-era BaseModel patterns that are unchanged in 2.13 —
+    # so lift it here to let pier coexist. Scoped to this harness; does not
+    # reach sandbox venvs (which don't install pier).
+    "pydantic>=2.13.3",
 ]
 
 [tool.uv.sources]
@@ -221,7 +231,7 @@ ban-relative-imports = "all"
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-known-first-party = ["deepagents_evals", "deepagents_harbor"]
+known-first-party = ["deepagents_evals", "deepagents_harbor", "deepagents_pier"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

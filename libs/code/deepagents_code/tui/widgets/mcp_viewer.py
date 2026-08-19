@@ -1137,12 +1137,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if self._selected_index >= len(self._row_widgets):
             self._selected_index = max(0, len(self._row_widgets) - 1)
 
-        # `_build_help_text` is cheap and reads `_pending_reconnect`,
-        # so re-render the footer whenever the caller supplied a new
-        # value — saves comparing against the prior state.
-        if pending_reconnect is not None:
-            help_static = self.query_one(".mcp-viewer-help", Static)
-            help_static.update(self._build_help_text(glyphs))
+        self._update_help_text()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Rebuild the visible tool list whenever the filter input changes.
@@ -1161,6 +1156,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         self._selected_index = min(
             self._selected_index, max(0, len(self._row_widgets) - 1)
         )
+        self._update_help_text()
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual requires an instance method
         """Compose the screen layout.
@@ -1248,27 +1244,43 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
         self.call_after_refresh(_focus)
 
-    def _build_help_text(self, glyphs: Glyphs) -> str:
-        """Compose the help-footer string from the current `_pending_reconnect`.
+    def _selected_enter_hint(self) -> str | None:
+        """Return the Enter hint for the currently selected row."""
+        if not self._row_widgets:
+            return None
+        row = self._row_widgets[self._selected_index]
+        if isinstance(row, MCPToolItem):
+            return "Enter expand/collapse"
+        server = row.server
+        if server.status == "unauthenticated":
+            return "Enter log in"
+        if server.status == "ok" and _can_start_login(server):
+            return "Enter re-auth"
+        if server.status == "error":
+            return "Enter details"
+        return None
 
-        Single source of truth so `_mount_body` (initial) and
-        `apply_server_disable_toggle` (incremental) stay in sync — F2
-        flips the reconnect-pending state, and the footer must update
-        without a full re-mount.
+    def _build_help_text(self, glyphs: Glyphs) -> str:
+        """Compose help text for the selected row and reconnect state.
 
         Returns:
             The rendered help line for the modal footer.
         """
-        help_parts = [
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-            "Enter expand/login/re-auth/details",
-            "F2 disable/enable",
-            "Ctrl+E expand all",
-        ]
+        help_parts = [f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"]
+        enter_hint = self._selected_enter_hint()
+        if enter_hint is not None:
+            help_parts.append(enter_hint)
+        help_parts.extend(["F2 disable/enable", "Ctrl+E expand all"])
         if self._pending_reconnect:
             help_parts.append(f"{MCP_RECONNECT_KEY_LABEL} reconnect")
         help_parts.extend(["type to filter", "Esc close"])
         return f" {glyphs.bullet} ".join(help_parts)
+
+    def _update_help_text(self) -> None:
+        """Refresh the footer after the selected row or its state changes."""
+        help_static = next(iter(self.query(".mcp-viewer-help")), None)
+        if isinstance(help_static, Static):
+            help_static.update(self._build_help_text(get_glyphs()))
 
     def _populate_scroll(self, scroll: VerticalScroll, query: str) -> None:
         """Mount filtered server headers + tool items into `scroll`.
@@ -1354,6 +1366,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if old != index:
             self._row_widgets[old].set_selected(False)
             self._row_widgets[index].set_selected(True)
+            self._update_help_text()
             # Caller (action) is responsible for any viewport pin — different
             # navigation directions want different anchors (top for down,
             # bottom for up).

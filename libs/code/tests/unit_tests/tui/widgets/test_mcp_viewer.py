@@ -1471,6 +1471,8 @@ class TestMCPViewerScreen:
             # `unauthenticated` servers are floated to the top, so github
             # is now the first row and starts selected.
             assert screen._row_widgets[0]._server.name == "github"  # ty: ignore
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter log in" in _widget_text(help_widget)
 
             await pilot.press("enter")
             await pilot.pause()
@@ -1500,6 +1502,8 @@ class TestMCPViewerScreen:
             header = screen._row_widgets[0]
             assert isinstance(header, MCPServerHeaderItem)
             assert "Enter to re-auth" in _widget_text(header)
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter re-auth" in _widget_text(help_widget)
 
             await pilot.press("enter")
             await pilot.pause()
@@ -1526,6 +1530,8 @@ class TestMCPViewerScreen:
             text = _widget_text(header)
             assert "Enter for details" in text
             assert "Connection refused" not in text
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter details" in _widget_text(help_widget)
 
     async def test_enter_on_error_header_opens_detail_modal(self) -> None:
         """Activating an error-status header opens a detail modal."""
@@ -1576,6 +1582,8 @@ class TestMCPViewerScreen:
             await pilot.press("down")
             await pilot.pause()
             assert screen._row_widgets[1]._server.name == "notion"  # ty: ignore
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter" not in _widget_text(help_widget)
 
             await pilot.press("enter")
             await pilot.pause()
@@ -1597,6 +1605,8 @@ class TestMCPViewerScreen:
 
             assert isinstance(screen._row_widgets[0], MCPServerHeaderItem)
             assert screen._selected_index == 0
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter" not in _widget_text(help_widget)
 
             # Press Enter on the header — must be a no-op and must not
             # affect any tool's expansion state.
@@ -1763,8 +1773,8 @@ class TestMCPViewerScreen:
             # the rebuilt widget list starts collapsed again.
             assert all(not w._expanded for w in screen._tool_widgets)
 
-    async def test_help_text_lists_all_keybindings(self) -> None:
-        """Footer mentions navigate, expand, expand all, filter, and close."""
+    async def test_help_text_matches_selected_row(self) -> None:
+        """Footer describes the Enter action for the selected row."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=_sample_info())
@@ -1773,14 +1783,22 @@ class TestMCPViewerScreen:
 
             help_widgets = list(screen.query(".mcp-viewer-help"))
             assert len(help_widgets) == 1
-            text = _widget_text(help_widgets[0]).lower()
+            help_widget = help_widgets[0]
+            text = _widget_text(help_widget).lower()
             assert "navigate" in text
-            assert "enter" in text
-            assert "re-auth" in text
+            assert "enter" not in text
             assert "f2" in text
             assert "ctrl+e" in text
             assert "filter" in text
             assert "esc" in text
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert "enter expand/collapse" in _widget_text(help_widget).lower()
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert "enter re-auth" in _widget_text(help_widget).lower()
 
     async def test_status_indicators_render(self) -> None:
         """Each `MCPServerStatus` produces a visually distinct header line.

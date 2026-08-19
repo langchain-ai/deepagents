@@ -177,8 +177,14 @@ jobs:
           # A killed apt can leave dpkg mid-transaction. Unwind it so later
           # steps don't trip over the lock, then check what actually landed:
           # "the bound was hit" and "ripgrep is missing" are different facts,
-          # and only the second one should warn.
-          sudo dpkg --configure -a || true
+          # and only the second one should warn. The recovery itself is
+          # bounded: `dpkg --configure -a` can wait on the same lock or
+          # maintainer script that stalled the install, and without its own
+          # timeout the supposedly bounded step can burn the rest of the job's
+          # 20 minutes. A failed recovery is tolerated here — the
+          # `rg --version` probe below is what decides the warning.
+          sudo timeout --signal=TERM --kill-after=10s 60s \
+            dpkg --configure -a || true
           if rg --version >/dev/null 2>&1; then
             echo "timed-out=false" >> "$GITHUB_OUTPUT"
             echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"

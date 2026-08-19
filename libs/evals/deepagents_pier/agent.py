@@ -12,15 +12,19 @@ Design notes:
 
 - ``Dcode`` subclasses Pier's ``BaseAgent`` directly rather than
   ``BaseInstalledAgent``. ``BaseInstalledAgent`` is for agents that are CLI
-  binaries installed into the image at build time; dcode is a LangGraph graph
-  constructed in-process, so the declarative ``install_spec``/``CliFlag``
-  machinery does not fit.
+  binaries driving the task via their own command; dcode is a LangGraph graph,
+  so we only need the ``install_spec()`` build hook, not its ``CliFlag``/
+  command-construction machinery.
+- DeepSWE tasks are air-gapped (``[agent] network_mode = "no-network"``), so
+  **all** network-dependent setup happens in ``install_spec()``, which Pier
+  inlines into the agent image build (host-side, networked). ``setup()`` and
+  ``run()`` are offline: they only copy sources in and execute the graph.
 - The graph runner (``langgraph_runner.py``) is read from the installed
   ``harbor`` package at setup time and uploaded into the container, avoiding a
   vendored copy that would drift as Harbor evolves.
-- ``network_allowlist()`` returns the model-API host (the LangSmith proxy for
-  our setup), which is the single egress hole DeepSWE's air-gapped
-  ``allow_internet = false`` containers require.
+- ``network_allowlist()`` returns the build-time hosts (uv/CPython/PyPI) plus
+  the model-API host (the LangSmith proxy for our setup). Pier's
+  filtered-egress proxy opens exactly these holes for the air-gapped container.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from pier.agents.base import BaseAgent
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.network import NetworkAllowlist
 from pier.models.trial.paths import EnvironmentPaths
 
@@ -94,6 +99,23 @@ _BASE_URL_ENV_VARS = (
     "ANTHROPIC_BASE_URL",
     "LANGSMITH_ENDPOINT",
 )
+
+# Pinned uv build for the in-container agent venv. Pinned (not /install.sh
+# latest) so the build is reproducible and the allowlist stays stable.
+_UV_VERSION = "0.7.13"
+
+# Build-time egress: agent setup installs uv + Python deps into the image.
+# When the agent phase is air-gapped, Pier builds the agent image under the
+# same filtered-egress proxy that the run phase uses, so these hosts must be
+# allowlisted alongside the model API.
+_BUILD_TIME_DOMAINS = [
+    "astral.sh",  # uv installer
+    "static.astral.sh",  # uv-managed CPython distributions
+    "github.com",  # uv binary + python-build-standalone releases redirect here
+    "objects.githubusercontent.com",  # GitHub release asset CDN
+    "pypi.org",  # dependency metadata
+    "files.pythonhosted.org",  # dependency wheels/sdists
+]
 
 # Files/dirs excluded when staging the project into the container.
 _IGNORE_NAMES = {
@@ -182,21 +204,27 @@ class Dcode(BaseAgent):
             return None
 
     def network_allowlist(self) -> NetworkAllowlist:
-        """Return the model-API host this agent needs egress to.
+        """Return the hosts this agent needs egress to.
 
-        DeepSWE task containers are air-gapped (``allow_internet = false``), so
-        the only egress required is to the model API. For our setup that is the
-        LangSmith proxy host (from ``OPENAI_BASE_URL``/``LANGSMITH_ENDPOINT``),
-        not ``api.openai.com``.
+        DeepSWE task containers are air-gapped (``allow_internet = false``), and
+        Pier builds the agent image under the same filtered-egress proxy as the
+        run phase. So the allowlist covers two phases:
+
+        - build time (``install_spec``): uv, CPython, and PyPI hosts needed to
+          construct the agent venv;
+        - run time: the model-API host (the LangSmith proxy for our setup, from
+          ``OPENAI_BASE_URL``/``LANGSMITH_ENDPOINT``), not ``api.openai.com``.
         """
+        domains = list(_BUILD_TIME_DOMAINS)
         for var in _BASE_URL_ENV_VARS:
             raw = os.environ.get(var)
             if not raw:
                 continue
             host = urlparse(raw).hostname
             if host:
-                return NetworkAllowlist(domains=[host])
-        return NetworkAllowlist()
+                domains.append(host)
+                break
+        return NetworkAllowlist(domains=domains)
 
     def _staged_project_dir(self) -> Path:
         """Copy the project into the logs dir, excluding local env/VCS noise."""
@@ -235,19 +263,86 @@ class Dcode(BaseAgent):
             return f"{provider}:{model}"
         return self.model_name
 
+    def _langgraph_dependencies(self) -> list[str]:
+        """Return the PyPI-resolvable deps from ``langgraph.json``.
+
+        The ``./.local_deps/...`` relative-path entries point at staged local
+        packages that are uploaded at ``setup()`` time (not present in the
+        build-time context), so they are excluded here and installed offline in
+        ``setup()`` with ``--no-deps``.
+        """
+        config_path = self.project_path / self.config
+        config = json.loads(config_path.read_text())
+        deps = config.get("dependencies", [])
+        return [
+            dep
+            for dep in deps
+            if isinstance(dep, str) and not dep.startswith(".")
+        ]
+
+    def install_spec(self) -> AgentInstallSpec:
+        """Build the agent venv in the task image (host-side, networked).
+
+        Pier inlines these steps into the agent image build, which runs on the
+        host *with* network — the only phase where dependency installation is
+        possible for DeepSWE's air-gapped (``network_mode = "no-network"``)
+        tasks. Installs a pinned uv, a managed CPython, and all PyPI deps from
+        ``langgraph.json``. The local ``deepagents``/``deepagents-code`` sources
+        are layered on top later in ``setup()`` (offline).
+        """
+        venv_dir = shlex.quote(self._REMOTE_VENV_DIR.as_posix())
+        python_version = shlex.quote(self._python_version)
+        deps = " ".join(shlex.quote(d) for d in self._langgraph_dependencies())
+        agent_run = f"""
+set -euo pipefail
+curl -LsSf https://astral.sh/uv/{_UV_VERSION}/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv python install {python_version}
+uv venv {venv_dir} --python {python_version} --clear
+. {venv_dir}/bin/activate
+uv pip install --prerelease=if-necessary langgraph python-dotenv {deps}
+"""
+        return AgentInstallSpec(
+            agent_name=self.name(),
+            version=self.version(),
+            steps=[
+                InstallStep(
+                    user="root",
+                    env={"DEBIAN_FRONTEND": "noninteractive"},
+                    run=(
+                        "if command -v apt-get &>/dev/null; then "
+                        "apt-get update && apt-get install -y curl ca-certificates; "
+                        "elif command -v apk &>/dev/null; then "
+                        "apk add --no-cache curl bash ca-certificates; "
+                        "elif command -v yum &>/dev/null; then "
+                        "yum install -y curl ca-certificates; "
+                        "elif command -v dnf &>/dev/null; then "
+                        "dnf install -y curl ca-certificates; fi"
+                    ),
+                ),
+                InstallStep(user="agent", run=agent_run),
+            ],
+            verification_command=(
+                f"{shlex.quote((self._REMOTE_VENV_DIR / 'bin' / 'python').as_posix())} "
+                "-c \"import langgraph; print('ok')\""
+            ),
+        )
+
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Stage the project and runner, then build the in-container venv."""
+        """Stage the project/runner and install local sources (offline).
+
+        No network here: the venv and its PyPI deps were already built into the
+        image by ``install_spec()``. This only copies the ``langgraph_project``
+        and runner in, then installs the local ``.local_deps`` packages with
+        ``--no-deps`` so the dcode/deepagents sources match this checkout.
+        """
         agent_user = str(environment.default_user or "root")
         quoted_agent_user = shlex.quote(agent_user)
         staged_project = self._staged_project_dir()
         runner_copy = self._load_runner_script()
 
         await environment.exec(
-            f"rm -rf {shlex.quote(self._REMOTE_PROJECT_DIR.as_posix())} "
-            f"{shlex.quote(self._REMOTE_RUNNER_PATH.as_posix())} "
-            f"{shlex.quote(self._REMOTE_VENV_DIR.as_posix())} && "
-            f"mkdir -p {shlex.quote(self._REMOTE_PROJECT_DIR.as_posix())} "
-            f"{shlex.quote(self._REMOTE_VENV_DIR.as_posix())}",
+            f"mkdir -p {shlex.quote(self._REMOTE_PROJECT_DIR.as_posix())}",
             user="root",
         )
         await environment.upload_dir(
@@ -264,36 +359,26 @@ class Dcode(BaseAgent):
         )
 
         project_dir = shlex.quote(self._REMOTE_PROJECT_DIR.as_posix())
-        venv_dir = shlex.quote(self._REMOTE_VENV_DIR.as_posix())
-        python_version = shlex.quote(self._python_version)
+        venv_python = shlex.quote((self._REMOTE_VENV_DIR / "bin" / "python").as_posix())
+        config_name = shlex.quote(self.config)
         install_program = (
-            "import json, subprocess, sys\n"
+            "import json, os, subprocess\n"
             f"project_dir = {project_dir!r}\n"
-            f"config_name = {self.config!r}\n"
-            "installer = ['uv', 'pip', 'install', '--prerelease=if-necessary']\n"
-            "with open(__import__('os').path.join(project_dir, config_name)) as f:\n"
+            f"config_name = {config_name!r}\n"
+            "with open(os.path.join(project_dir, config_name)) as f:\n"
             "    config = json.load(f)\n"
             "for dep in config.get('dependencies', []):\n"
-            "    dep_path = __import__('os').path.join(project_dir, dep) "
-            "if isinstance(dep, str) else None\n"
-            "    if dep_path and __import__('os').path.isdir(dep_path):\n"
-            "        subprocess.check_call([*installer, '-e', dep_path])\n"
-            "    elif isinstance(dep, str):\n"
-            "        subprocess.check_call([*installer, dep])\n"
+            "    dep_path = os.path.join(project_dir, dep) if isinstance(dep, str) else None\n"
+            "    if dep_path and os.path.isdir(dep_path):\n"
+            "        subprocess.check_call(['uv', 'pip', 'install', '--no-deps', '-e', dep_path])\n"
         )
         result = await environment.exec(
             "set -euo pipefail; "
-            "curl -LsSf https://astral.sh/uv/install.sh | sh; "
-            'if [ -f "$HOME/.local/bin/env" ]; then . "$HOME/.local/bin/env"; fi; '
             'export PATH="$HOME/.local/bin:$PATH"; '
-            f"uv python install {python_version}; "
-            f"uv venv {venv_dir} --python {python_version} --clear; "
-            f". {venv_dir}/bin/activate; "
-            "uv pip install langgraph python-dotenv; "
-            f"python - <<'PY'\n{install_program}PY",
+            f"{venv_python} - <<'PY'\n{install_program}PY",
         )
         if result.return_code != 0:
-            stderr = result.stderr or result.stdout or "dcode env install failed"
+            stderr = result.stderr or result.stdout or "dcode local-source install failed"
             raise RuntimeError(stderr)
 
     def _runtime_env(self, environment: BaseEnvironment, model: str | None) -> dict[str, str]:

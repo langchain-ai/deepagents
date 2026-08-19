@@ -451,7 +451,11 @@ def _build_runtime_factory(
 def _build_graph_factory(
     builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
 ) -> Callable[[], Awaitable[Any]]:
-    """Build a cached graph factory for `langgraph.json`.
+    """Build a cached graph factory, for tests.
+
+    `langgraph.json` references the module-level `make_graph`, which delegates to
+    `get_server_runtime`; nothing in production calls this. It survives so unit
+    tests can inject a builder.
 
     Args:
         builder: Optional alternate runtime builder used by unit tests.
@@ -471,7 +475,18 @@ _get_runtime = _build_runtime_factory()
 
 
 async def get_server_runtime() -> ServerRuntime:
-    """Return resources shared by the graph and dcode operation routes."""
+    """Return resources shared by the graph and dcode operation routes.
+
+    Builds once and caches. A construction failure is converted into a
+    startup-error marker (scraped by the parent app process) before
+    `sys.exit(1)`, which is right for the `langgraph.json` graph factory at
+    startup. Callers in request scope must contain that exit -- `SystemExit` is a
+    `BaseException` -- as `offload_api._execute_offload` does, mapping it to a 503
+    rather than killing the server mid-request.
+
+    Returns:
+        The cached server runtime.
+    """
     return await _get_runtime()
 
 

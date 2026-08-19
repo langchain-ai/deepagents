@@ -1,10 +1,12 @@
 """Estimate and persist cumulative model cost for each thread.
 
-The server owns the durable total. `CostTrackingMiddleware` writes ordinary
-graph deltas, while `prepare_operation_cost` gives server-owned operations a
+The graph owns the durable total. `CostTrackingMiddleware` writes ordinary graph
+deltas, while `prepare_operation_cost` gives server-owned operations a
 rollback-safe delta to commit with their state update. Each cost update therefore
-rides a server checkpoint and works for local, headless, and remote execution
-without a client-side state update.
+rides a graph checkpoint and works for local, headless, and remote execution
+without a client-side state update -- the middleware also runs in local
+in-process agents, where there is no server and the delta rides the local
+checkpoint.
 The client is a reader: it renders the streamed total and never maintains its own
 lifetime figure.
 

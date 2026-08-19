@@ -145,8 +145,10 @@ class CLIContext(TypedDict, total=False):
     This is set by the client, not graph state, so model-generated calls cannot
     grant themselves permission to execute during the hidden compaction turn.
 
-    Only the seeded driver sets it (local in-process agents). A server-backed
-    `/offload` uses the dcode HTTP operation and leaves this `None`.
+    Set by the seeded driver: local in-process agents, and any server without
+    the built-in offload route (a custom `graph_ref`, an older server, a
+    protocol-version skew, or a failed capability probe). A built-in dcode
+    server uses the HTTP operation and leaves this `None`.
     """
 
     hooks_snapshot_id: str | None

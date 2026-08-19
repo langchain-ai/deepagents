@@ -131,7 +131,7 @@ def agent_error_type(exc: BaseException) -> str:
 
 
 def format_agent_exception(exc: BaseException) -> str:
-    """Render an exception from `RemoteAgent.astream` for the UI.
+    """Render an exception from any `RemoteAgent` call for the UI.
 
     The LangGraph server serializes non-allowlisted exceptions as
     `{"error": <ExceptionType>, "message": <text or "An internal error occurred">}`
@@ -140,7 +140,8 @@ def format_agent_exception(exc: BaseException) -> str:
     Python dict repr in the UI.
 
     Args:
-        exc: The exception caught from the agent stream.
+        exc: The exception caught from an agent call -- the SSE stream, or an
+            HTTP operation such as the offload route and its capability probe.
 
     Returns:
         `"<ErrorType>: <message>"` for `RemoteException` dict payloads,

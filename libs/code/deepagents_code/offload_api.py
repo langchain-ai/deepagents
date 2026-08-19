@@ -38,6 +38,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _OFFLOAD_API_VERSION = 1
+"""Protocol version this route speaks.
+
+Must equal `client.remote_client._OFFLOAD_PROTOCOL_VERSION`; the duplication is
+deliberate so neither side imports the other, and
+`test_remote_client.test_client_and_server_protocol_versions_agree` pins the two
+together. Bump both, or that test fails.
+"""
 _thread_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 # One client for the process. `get_client` builds a fresh `httpx.AsyncClient`
@@ -421,7 +428,6 @@ async def _execute_offload(
             )
             raise _OffloadConflictError(msg)
 
-        # `_OffloadState` already subclasses `CostState`, so no cast is needed.
         prepared = prepare_operation_cost(state, thread_id)
         update: dict[str, Any] = {**execution.update, **prepared.update}
         if "messages" in update:
@@ -445,6 +451,15 @@ async def _execute_offload(
             # to `before` would instead branch from a stale checkpoint if
             # a run completed in the narrow window after our final check,
             # potentially hiding its newly appended messages.
+            #
+            # `as_node` is left unpinned, unlike every other write in dcode.
+            # LangGraph then infers the node from `checkpoint["versions_seen"]`,
+            # which raises `InvalidUpdateError("Ambiguous update, specify
+            # as_node")` if the last superstep left two nodes at the same
+            # version -- and it would raise *after* the summarizer has been
+            # billed. Today's middleware layout resolves unambiguously (the real
+            # server integration test exercises it), so this is an unguarded
+            # dependency on that layout rather than a known bug.
             await client.threads.update_state(
                 thread_id,
                 update,
@@ -488,6 +503,15 @@ async def _execute_offload(
 def capability(_request: Request) -> JSONResponse:
     """Report the dcode server-operation protocol version.
 
+    Answers `{"offload": true, "version": <int>}`. The client parses this in
+    `RemoteAgent._offload_capability_supported`; a missing route (404) or a
+    version it does not speak selects the seeded compatibility fallback.
+
+    Deliberately cheap: it does not resolve the server runtime, so a probe never
+    pays for building the agent. An unbuildable runtime surfaces as a 503 from
+    the operation itself rather than as "no capability", because the seeded
+    fallback needs that same runtime and so cannot help.
+
     Returns:
         JSON capability response.
     """
@@ -496,6 +520,35 @@ def capability(_request: Request) -> JSONResponse:
 
 async def offload(request: Request) -> JSONResponse:
     """Handle one thread offload or hook-resume round.
+
+    Request body: `operation_id` (non-empty string, stable across the rounds of
+    one attempt), `context` (runtime model and Hooks v2 context), and
+    `hook_responses` (replies accumulated so far, keyed by invocation id).
+    The thread comes from the path, never the body.
+
+    A round either completes or returns a hook request to answer. There is no
+    suspended coroutine server-side: a resume round **re-executes the operation
+    from the top**, and `_invoke_hook` replays already-answered invocations from
+    `hook_responses` instead of raising again. That is what makes the loop
+    terminate, and it is why the dispatched call's id must be stable across
+    rounds (`_forced_offload_call_id`).
+
+    Status codes, and what each means for whether state committed:
+
+    - 200 -- completed, or a resumable hook request; no state written in the
+      latter case.
+    - 422 -- malformed request, named by field. Nothing ran.
+    - 409 -- thread conflict: active, interrupted, holding pending graph work,
+      unregistered, or advanced past the checkpoint read. Nothing committed.
+    - 503 -- the server runtime could not be built. Nothing ran.
+    - 500 -- either an indeterminate write (compaction happened and the commit
+      cannot be confirmed; the detail says so and is user-actionable) or an
+      unexpected server fault.
+
+    Invariants this boundary owns: it reads and hydrates checkpoint state itself,
+    it commits only the channels `OffloadStateUpdate` permits and refuses any
+    `messages` write outright, and it settles the drained cost records on every
+    exit path. See THREAT_MODEL.md C18 (TB10/DF27).
 
     Returns:
         JSON operation response.

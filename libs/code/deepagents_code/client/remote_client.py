@@ -29,7 +29,13 @@ how many runs are active.
 """
 
 _OFFLOAD_MAX_RESUME_ROUNDS = 32
-"""Bound hook transport rounds for a single server operation."""
+"""Bound hook transport rounds for a single server operation.
+
+Counts *hook fulfillments*, not POSTs: the loop runs one extra iteration so the
+round that follows the last fulfillment can observe completion. Exceeding this
+many distinct invocations means either genuinely many hooks or an unstable
+invocation-id derivation server-side.
+"""
 
 _OFFLOAD_PROTOCOL_VERSION = 1
 """Offload operation protocol version this client speaks.
@@ -355,6 +361,11 @@ class RemoteAgent:
                 round_index,
                 invocation_id,
             )
+            if round_index == _OFFLOAD_MAX_RESUME_ROUNDS:
+                # The extra iteration exists to POST the last fulfillment and
+                # read the result, not to answer one more hook. Without this the
+                # loop fulfills 33 hooks and then reports "after 32 rounds".
+                break
             hook_responses[invocation_id] = await fulfill_hook(request)
         # The server only re-requests an invocation id it has not been given, so
         # exhaustion means this many *distinct* ids. That is either genuinely

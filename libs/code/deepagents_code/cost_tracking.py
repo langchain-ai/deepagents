@@ -59,7 +59,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -1974,12 +1974,23 @@ def _restore_recorded_costs(
 
 @dataclass(slots=True)
 class PreparedOperationCost:
-    """A priced side-operation delta pending checkpoint persistence."""
+    """A priced side-operation delta pending checkpoint persistence.
+
+    Use exactly once: every prepare must be either committed (its `update`
+    persisted) or rolled back. `_drain_recorded_costs` is destructive, so a
+    prepare that is neither deletes that spend from the thread's lifetime total
+    permanently, and nothing can detect the loss afterwards.
+
+    `_settled` is `init=False` so a caller cannot construct a pre-neutralized
+    instance whose `rollback` is already a no-op. The class stays unfrozen only
+    because marking settlement on a frozen dataclass needs
+    `object.__setattr__`, which this project's lint rules reject.
+    """
 
     thread_id: str
     records: list[_ModelCallRecord]
     delta_usd: float
-    _settled: bool = False
+    _settled: bool = field(default=False, init=False)
 
     @property
     def update(self) -> dict[str, float]:

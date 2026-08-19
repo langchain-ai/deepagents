@@ -864,6 +864,28 @@ class TestExecuteOffload:
             )
 
 
+def test_validated_context_fields_exist_on_the_schema() -> None:
+    """The validator's field lists must not drift from `CLIContextSchema`.
+
+    The names are hand-written string tuples, so a rename in the dataclass would
+    leave this route validating a key nobody sends -- forever, with no test
+    failing. The protocol version is pinned the same way; this closes the other
+    hand-maintained list.
+    """
+    from dataclasses import fields
+
+    from deepagents_code import offload_api
+    from deepagents_code._cli_context import CLIContextSchema
+
+    declared = {f.name for f in fields(CLIContextSchema)}
+    validated = {
+        *offload_api._CONTEXT_STR_OR_NONE_FIELDS,
+        *offload_api._CONTEXT_DICT_FIELDS,
+    }
+
+    assert validated <= declared, validated - declared
+
+
 class TestOffloadRoute:
     """The HTTP layer maps operation outcomes onto distinct status codes."""
 

@@ -9423,6 +9423,22 @@ class DeepAgentsApp(App):
         self._session_state.approval_mode_key = live_key
         return True
 
+    async def _persist_startup_approval_mode(self, mode: ApprovalMode) -> None:
+        """Persist a safe app-selected mode for the next bare launch."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.model_config import save_recent_startup_mode
+
+        if mode is ApprovalMode.YOLO:
+            return
+        if not await asyncio.to_thread(save_recent_startup_mode, mode.value):
+            self.notify(
+                "Approval mode changed for this session, but the startup "
+                "preference could not be saved. Check permissions for "
+                "~/.deepagents/.",
+                severity="warning",
+                markup=False,
+            )
+
     def _warn_live_approval_mode_unavailable(self, message: str) -> None:
         """Surface live approval-mode degradation to the user."""
         self.notify(message, severity="warning", timeout=8, markup=False)
@@ -9555,6 +9571,7 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
+        await self._persist_startup_approval_mode(ApprovalMode.AUTO)
         self._notify_auto_classifier_active()
         await self._auto_accept_pending_goal_rubric()
         return True
@@ -20883,6 +20900,7 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode = target
         if self._status_bar:
             self._status_bar.set_approval_mode(target.value)
+        await self._persist_startup_approval_mode(target)
         if target is ApprovalMode.AUTO:
             self._notify_auto_classifier_active()
             if should_persist_live:

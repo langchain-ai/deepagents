@@ -30188,6 +30188,61 @@ class TestLiveApprovalModeWrites:
                 warn.assert_called_once()
                 assert "YOLO could not be persisted" in str(warn.call_args.args[0])
 
+    @pytest.mark.parametrize("mode_value", ["manual", "auto"])
+    async def test_set_approval_mode_persists_safe_startup_mode(
+        self, mode_value: str
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        mode = ApprovalMode(mode_value)
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ) as save_recent,
+            patch.object(app, "_notify_auto_classifier_active"),
+        ):
+            assert await app._set_approval_mode(mode) is True
+
+        save_recent.assert_called_once_with(mode_value)
+
+    async def test_set_approval_mode_warns_when_startup_mode_save_fails(
+        self,
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=False,
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.MANUAL) is True
+
+        notify.assert_called_once_with(
+            "Approval mode changed for this session, but the startup preference "
+            "could not be saved. Check permissions for ~/.deepagents/.",
+            severity="warning",
+            markup=False,
+        )
+
+    async def test_set_approval_mode_does_not_persist_yolo_as_recent(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        with (
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode"
+            ) as save_recent,
+            patch.object(app, "_warn_yolo_active"),
+        ):
+            assert await app._set_approval_mode(ApprovalMode.YOLO) is True
+
+        save_recent.assert_not_called()
+
     async def test_prompt_yolo_push_failure_surfaces_and_allows_retry(self) -> None:
         """A push_screen failure warns the user and never latches the guard."""
         app = DeepAgentsApp()
@@ -30330,6 +30385,10 @@ class TestLiveApprovalModeWrites:
                     "deepagents_code.approval_mode.save_auto_mode_notice",
                     return_value=True,
                 ) as save_notice,
+                patch(
+                    "deepagents_code.model_config.save_recent_startup_mode",
+                    return_value=True,
+                ) as save_recent_mode,
             ):
                 # The method awaits the modal result, so start it as a task
                 # and press Enter to confirm.
@@ -30342,6 +30401,7 @@ class TestLiveApprovalModeWrites:
                 )
                 assert app._approval_mode is not ApprovalMode.AUTO
                 save_notice.assert_not_called()
+                save_recent_mode.assert_called_once_with(ApprovalMode.AUTO.value)
                 await pilot.press("enter")
                 result = await task
                 assert result is True

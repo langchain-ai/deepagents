@@ -64,6 +64,7 @@ from deepagents_code.model_config import (
     save_effort_for_model,
     save_recent_agent,
     save_recent_model,
+    save_recent_startup_mode,
     save_thread_columns,
     suppress_warning,
     suppress_warning_reason,
@@ -8585,6 +8586,50 @@ class TestLoadStartupMode:
         config.write_text("[threads]\nsort_order = 'created_at'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
 
+    @pytest.mark.parametrize("mode", [STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO])
+    def test_recent_mode_is_restored(self, tmp_path: Path, mode: str) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nrecent = '{mode}'\n")
+        assert load_startup_mode(config) == mode
+
+    def test_explicit_mode_outranks_recent(self, tmp_path: Path) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'manual'\nrecent = 'auto'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    @pytest.mark.parametrize("recent", ["yolo", "hands-off"])
+    def test_unsafe_or_invalid_recent_mode_fails_closed(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        recent: str,
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(f"[startup]\nrecent = '{recent}'\n")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+        assert any(
+            "[startup].recent" in record.getMessage() for record in caplog.records
+        )
+
+    @pytest.mark.parametrize("mode", [STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO])
+    def test_save_recent_startup_mode_round_trip(
+        self, tmp_path: Path, mode: str
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text("[models]\ndefault = 'openai:gpt-5.5'\n")
+
+        assert save_recent_startup_mode(mode, config) is True
+        with config.open("rb") as file:
+            data = tomllib.load(file)
+        assert data["startup"]["recent"] == mode
+        assert data["models"]["default"] == "openai:gpt-5.5"
+        assert load_startup_mode(config) == mode
+
+    def test_save_recent_startup_mode_rejects_yolo(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Invalid recent startup mode"):
+            save_recent_startup_mode(STARTUP_MODE_YOLO, tmp_path / "config.toml")
+
     def test_explicit_manual(self, tmp_path: Path) -> None:
         """`mode = 'manual'` is returned verbatim."""
         config = tmp_path / "config.toml"
@@ -8610,9 +8655,9 @@ class TestLoadStartupMode:
     def test_invalid_value_returns_default(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """An unrecognized mode logs a warning and falls back to the default."""
+        """An invalid explicit mode fails closed instead of restoring recent Auto."""
         config = tmp_path / "config.toml"
-        config.write_text("[startup]\nmode = 'hands-off'\n")
+        config.write_text("[startup]\nmode = 'hands-off'\nrecent = 'auto'\n")
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
             assert load_startup_mode(config) == STARTUP_MODE_MANUAL
         assert any("startup" in r.getMessage().lower() for r in caplog.records)

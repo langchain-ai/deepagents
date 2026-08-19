@@ -2327,6 +2327,13 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("startup", "read_project_dotenv"),
     ),
     ConfigOption(
+        key="startup.recent",
+        group="Startup",
+        summary="Most recently selected Manual or Auto mode (managed by the app).",
+        kind=OptionKind.STR,
+        toml_keys=("startup", "recent"),
+    ),
+    ConfigOption(
         key="startup.yolo_switcher",
         group="Startup",
         summary=(

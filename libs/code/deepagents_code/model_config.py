@@ -5621,16 +5621,19 @@ VALID_STARTUP_MODES = frozenset(
 )
 """Accepted values for the `[startup].mode` config option."""
 
+RECENT_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO})
+"""Modes the app may restore implicitly from `[startup].recent`."""
+
 DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
-"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
+"""Fallback startup mode when `[startup]` has no valid configured mode."""
 
 
 def load_startup_mode(config_path: Path | None = None) -> str:
-    """Load the default startup approval mode from config.toml.
+    """Load the startup approval mode from config.toml.
 
-    Reads `[startup].mode`, which accepts fail-closed `manual`, classifier-backed
-    `auto`, or unrestricted `yolo`. The removed `dangerously-auto` spelling is
-    invalid and falls back to `manual`.
+    An explicit `[startup].mode` remains the intentional default and outranks the
+    app-managed `[startup].recent` value. Recent mode restores only `manual` or
+    classifier-backed `auto`; unrestricted `yolo` must remain explicitly configured.
 
     Args:
         config_path: Path to config file.
@@ -5646,10 +5649,9 @@ def load_startup_mode(config_path: Path | None = None) -> str:
     try:
         data, _ = _load_effective_config_data(config_path)
         startup = data.get("startup")
-        value = startup.get("mode") if isinstance(startup, dict) else None
-        # `value` may be any TOML type; guard against non-strings (e.g. an
-        # array or table) before the frozenset membership test, which would
-        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if not isinstance(startup, dict):
+            return DEFAULT_STARTUP_MODE
+        value = startup.get("mode")
         if isinstance(value, str) and value in VALID_STARTUP_MODES:
             return value
         if value is not None:
@@ -5657,9 +5659,37 @@ def load_startup_mode(config_path: Path | None = None) -> str:
                 "Ignoring [startup].mode=%r (expected 'manual', 'auto', or 'yolo')",
                 value,
             )
+            return DEFAULT_STARTUP_MODE
+        recent = startup.get("recent")
+        if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
+            return recent
+        if recent is not None:
+            logger.warning(
+                "Ignoring [startup].recent=%r (expected 'manual' or 'auto')",
+                recent,
+            )
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug("Could not read startup mode config", exc_info=True)
     return DEFAULT_STARTUP_MODE
+
+
+def save_recent_startup_mode(mode: str, config_path: Path | None = None) -> bool:
+    """Save the most recently selected safe startup approval mode.
+
+    Args:
+        mode: `"manual"` or `"auto"`.
+        config_path: Path to config file.
+
+    Returns:
+        `True` when the preference was saved, otherwise `False`.
+
+    Raises:
+        ValueError: If `mode` is not eligible for implicit startup restoration.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        msg = f"Invalid recent startup mode: {mode!r}"
+        raise ValueError(msg)
+    return _save_toml_field("startup", "recent", mode, config_path)
 
 
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:

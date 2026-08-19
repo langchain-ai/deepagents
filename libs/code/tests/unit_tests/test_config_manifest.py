@@ -336,6 +336,7 @@ def test_toml_only_bool_display_options_declare_no_env_var() -> None:
         ("agents.default", ("agents", "default")),
         ("agents.recent", ("agents", "recent")),
         ("agents.async_subagents", ("async_subagents",)),
+        ("startup.recent", ("startup", "recent")),
         ("sandboxes.default", ("sandboxes", "default")),
         ("sandboxes.providers", ("sandboxes", "providers")),
     ],

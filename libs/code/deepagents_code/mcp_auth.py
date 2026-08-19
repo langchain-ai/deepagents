@@ -764,6 +764,40 @@ class FileTokenStorage(TokenStorage):
                 )
 
 
+class _FreshLoginTokenStorage(FileTokenStorage):
+    """`FileTokenStorage` that hides stored tokens to force a full re-auth.
+
+    An explicit login must re-run the authorization flow even when the
+    persisted access token is still valid. Without this, the SDK loads that
+    token, the handshake succeeds without ever prompting, and the user is
+    told they logged in again when nothing happened.
+
+    Tokens are hidden rather than deleted so an aborted or failed flow leaves
+    the working credential on disk untouched. Only the token getters are
+    overridden: client registration, OAuth metadata, and the loopback port
+    still come from disk, so the handshake reuses the existing registration
+    instead of re-running DCR against a new redirect URI. A successful flow
+    writes through `set_tokens`, replacing the hidden token.
+    """
+
+    @override
+    async def get_tokens(self) -> OAuthToken | None:
+        """Return `None` so the provider runs a full authorization flow."""
+        return None
+
+    @override
+    async def get_tokens_with_expiry(
+        self,
+    ) -> tuple[OAuthToken | None, float | None]:
+        """Return no token and no expiry, matching `get_tokens`."""
+        return None, None
+
+    @override
+    async def get_expires_at(self) -> float | None:
+        """Return `None` so no hidden token looks refreshable."""
+        return None
+
+
 RedirectHandler = Callable[[str], Awaitable[None]]
 CallbackHandler = Callable[[], Awaitable[tuple[str, str | None]]]
 _LOOPBACK_BIND_HOST = "127.0.0.1"
@@ -2159,10 +2193,14 @@ async def login(
         await ui.show_success(success_message)
         return
 
+    # Hide any still-valid stored token so this login actually re-authorizes
+    # instead of silently succeeding on the existing credential. `run_login`
+    # above keeps the real storage — providers preseed client info and tokens
+    # through it.
     provider = build_oauth_provider(
         server_name=server_name,
         server_url=resolved_config["url"],
-        storage=storage,
+        storage=_FreshLoginTokenStorage(server_name, server_url=resolved_config["url"]),
         extra_auth_params=result.extra_auth_params or None,
         ui=ui,
     )

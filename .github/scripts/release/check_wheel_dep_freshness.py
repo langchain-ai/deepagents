@@ -199,6 +199,12 @@ def _intersection_omits_only_unreleased_minors(
     (the dependency rejects the release's install floor), in the middle of the
     claimed range, or covering already-released minors still fails.
 
+    Failing probes are kept at full-version granularity: a patch-level
+    exclusion on a released line (for example the wheel claims `>=3.12` but
+    the dependency requires `>=3.12.1`) must not hide behind a working later
+    patch of the same minor, so any released minor with a failed probe
+    disqualifies the warning.
+
     Args:
         wheel_requires_python: `Requires-Python` declared by the release wheel.
         published_constraints: `requires_python` values from the published files.
@@ -216,6 +222,7 @@ def _intersection_omits_only_unreleased_minors(
     )
     wheel_minors: set[tuple[int, ...]] = set()
     dep_minors: set[tuple[int, ...]] = set()
+    failed_minors: set[tuple[int, ...]] = set()
     for version in _supported_python_versions(
         wheel_requires_python,
         additional_constraints=published_constraints,
@@ -227,6 +234,11 @@ def _intersection_omits_only_unreleased_minors(
             for specifier in dep_specifiers
         ):
             dep_minors.add(minor)
+        else:
+            failed_minors.add(minor)
+    first_unreleased = current_minor + 1
+    if any(minor[1] <= current_minor for minor in failed_minors):
+        return False
     missing = sorted(wheel_minors - dep_minors)
     if not missing:
         return False
@@ -237,7 +249,6 @@ def _intersection_omits_only_unreleased_minors(
     )
     if missing[0][1] <= floor:
         return False
-    first_unreleased = current_minor + 1
     return missing[0][1] == first_unreleased and [
         minor for minor in sorted(wheel_minors) if minor[1] >= first_unreleased
     ] == missing
@@ -799,8 +810,9 @@ def compare_wheel_with_pypi(
     `requires-python<3.15` against the wheel's `<4.0`), degrades to a warning:
     resolvers already refuse that extra on the unreleased interpreter, so the
     release is not blocked on another project widening its bound. Gaps at real
-    installation targets (the wheel's minimum, or any minor the dependency
-    excludes in the middle of the range) stay hard failures.
+    installation targets (the wheel's minimum, any minor the dependency excludes
+    in the middle of the range, or a patch-level exclusion on a released line
+    such as `>=3.12.1` against the wheel's `>=3.12`) stay hard failures.
 
     Args:
         metadata: Parsed metadata from the package being released.

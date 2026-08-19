@@ -195,6 +195,22 @@ def test_compare_warns_when_third_party_caps_only_unreleased_minors(
     assert "deepagents-code 0.1.58 requires Python >=3.12,<4.0" in checks[0].message
 
 
+def test_compare_fails_when_patch_exclusion_hides_unreleased_cap() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            name="deepagents-code",
+            version="0.1.58",
+            requires_python=">=3.12,<4.0",
+            requirements=("demo>=1",),
+        ),
+        {"demo": _payload(("1.0", ">=3.12.1,<3.15"))},
+    )
+
+    assert len(checks) == 1
+    assert not checks[0].passed
+    assert not checks[0].warning
+
+
 def test_compare_fails_when_third_party_excludes_existing_minor() -> None:
     checks = compare_wheel_with_pypi(
         _metadata(

@@ -1516,7 +1516,7 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     return message.model_copy(update={"content": evicted})
 
 
-class FilesystemMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]):
+class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
@@ -1578,7 +1578,7 @@ class FilesystemMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]):
         ```
     """
 
-    state_schema: type[AgentState] = FilesystemState
+    state_schema: type[FilesystemState] = FilesystemState
 
     def __init__(
         self,
@@ -1649,7 +1649,10 @@ class FilesystemMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]):
                 "CompositeBackend(...), or another BackendProtocol instance instead."
             )
             raise TypeError(msg)
-        self.state_schema = _state_schema_for_backend(self.backend, AgentState, FilesystemState)
+        self.state_schema = cast(
+            "type[FilesystemState]",
+            _state_schema_for_backend(self.backend, AgentState, FilesystemState),
+        )
         if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
             msg = (
                 "FilesystemMiddleware does not yet support permissions with backends that "

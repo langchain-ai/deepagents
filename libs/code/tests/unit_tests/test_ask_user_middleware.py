@@ -142,7 +142,7 @@ class TestValidateQuestions:
             _validate_questions([])
 
     def test_allows_comma_in_multiple_choice_value(self) -> None:
-        """Single-selection answers are unambiguous, so commas are fine there."""
+        """Choice values are returned as-is, so a comma needs no special handling."""
         _validate_questions(
             [
                 {
@@ -756,6 +756,24 @@ class TestAskUserTool:
             ASK_USER_AUTHORIZATION_METADATA_KEY
             not in _extract_tool_message(command).additional_kwargs
         )
+
+    def test_rejected_call_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The model retries against the error, so the loop must be visible."""
+        ask_tool = cast("Any", AskUserMiddleware().tools[0])
+        runtime = SimpleNamespace(
+            context={"thread_id": "thread-1", "turn_id": "turn-1"},
+            execution_info=SimpleNamespace(thread_id="thread-1"),
+            tool_call_id="ask-1",
+            state=_turn_state("turn-1"),
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.ask_user"),
+            pytest.raises(ToolException),
+        ):
+            ask_tool.func(questions=[], tool_call_id="ask-1", runtime=runtime)
+
+        assert "at least one question" in caplog.text
 
     def test_tool_sets_handle_tool_error(self) -> None:
         """Without this the `ToolException` conversion below cannot happen."""

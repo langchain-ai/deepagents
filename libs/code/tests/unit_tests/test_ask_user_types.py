@@ -108,6 +108,14 @@ class TestMultiSelectAnswerEncoding:
         )
         assert decode_multi_select_answer(encoded) == values
 
+    def test_round_trips_values_containing_brackets(self) -> None:
+        """Brackets collide with the encoding's own delimiters."""
+        values = ["[bracket]", "[", "]", '["nested"]']
+
+        encoded = encode_multi_select_answer(values)
+
+        assert decode_multi_select_answer(encoded) == values
+
     def test_round_trips_an_empty_selection(self) -> None:
         """An untouched optional multi-select encodes as `[]`, not `""`."""
         assert encode_multi_select_answer([]) == "[]"
@@ -131,6 +139,27 @@ class TestMultiSelectAnswerEncoding:
     def test_decode_rejects_a_bare_json_string(self) -> None:
         """A JSON string is decodable but is not a multi-select answer."""
         assert decode_multi_select_answer('"a"') is None
+
+    def test_decode_rejects_the_empty_string(self) -> None:
+        """The old encoding of an untouched question must not decode to `[]`.
+
+        `textual_adapter` still synthesizes `""` answers on its error and cancel
+        paths, so a lenient decode here would quietly resurrect the pre-JSON
+        semantics.
+        """
+        assert decode_multi_select_answer("") is None
+
+    def test_decode_rejects_json_scalars(self) -> None:
+        assert decode_multi_select_answer("null") is None
+        assert decode_multi_select_answer("1") is None
+        assert decode_multi_select_answer("true") is None
+
+    def test_decode_rejects_nested_arrays(self) -> None:
+        assert decode_multi_select_answer('[["a"]]') is None
+        assert decode_multi_select_answer('["a", ["b"]]') is None
+
+    def test_decode_rejects_a_null_element(self) -> None:
+        assert decode_multi_select_answer("[null]") is None
 
 
 class TestAskUserAnswerIsEmpty:

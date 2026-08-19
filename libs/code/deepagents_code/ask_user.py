@@ -453,8 +453,19 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
+
+            Raises:
+                ToolException: If `questions` is malformed. `handle_tool_error`
+                    turns this into an error `ToolMessage` the model retries
+                    against, so log it on the way past: a model looping on the
+                    same bad payload would otherwise burn the recursion limit
+                    silently, leaving an error that names none of the causes.
             """
-            _validate_questions(questions)
+            try:
+                _validate_questions(questions)
+            except ToolException as exc:
+                logger.warning("ask_user rejected a call: %s", exc)
+                raise
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,

@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 import re
-import threading
+import time
 from pathlib import Path
 from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
@@ -1033,9 +1033,16 @@ async def test_connection_refresh_waits_for_initial_refresh(
 ) -> None:
     """A settled snapshot cannot be overwritten by the initial loading one."""
     screen = PluginManagerScreen(mcp_connecting=True)
-    initial_started = threading.Event()
-    release_initial = threading.Event()
-    settled_loaded = threading.Event()
+    loop = asyncio.get_running_loop()
+    # `asyncio.Event`s set via `call_soon_threadsafe` (thread-safe on every
+    # supported Python), rather than `threading.Event`s awaited via `to_thread`:
+    # the await side must not depend on the default executor, which the blocked
+    # initial load can starve on a loaded CI runner.
+    initial_started = asyncio.Event()
+    settled_applied = asyncio.Event()
+    # Read from the load thread and written once on the event loop; a one-element
+    # list acts as the cross-thread release cell (item assignment is atomic).
+    release_initial: list[bool] = []
     snapshots: list[bool] = []
     loading_state = _ManagerState((), (), (), ("loading",))
     settled_state = _ManagerState((), (), (), ("settled",))
@@ -1048,10 +1055,17 @@ async def test_connection_refresh_waits_for_initial_refresh(
     ) -> _ManagerState:
         snapshots.append(mcp_connecting)
         if mcp_connecting:
-            initial_started.set()
-            release_initial.wait(timeout=1)
+            loop.call_soon_threadsafe(initial_started.set)
+            # Block the initial load (not a fixed sleep) so the ordering under
+            # test — connection refresh queued behind it — holds no matter how
+            # long CI takes to schedule the next await.
+            while not release_initial:
+                time.sleep(0.005)
             return loading_state
-        settled_loaded.set()
+
+        # The connection refresh has been dequeued and rerun with the settled
+        # snapshot; signal the await side before returning the settled state.
+        loop.call_soon_threadsafe(settled_applied.set)
         return settled_state
 
     monkeypatch.setattr(
@@ -1063,12 +1077,34 @@ async def test_connection_refresh_waits_for_initial_refresh(
     )
     monkeypatch.setattr(screen, "_refresh_view", MagicMock())
 
+    async def wait_for(event: asyncio.Event, what: str) -> None:
+        """Await `event`, failing with context instead of hanging on a bug."""
+        try:
+            async with asyncio.timeout(10):
+                await event.wait()
+        except TimeoutError:
+            msg = f"timed out waiting for {what}; snapshots so far: {snapshots}"
+            raise AssertionError(msg) from None
+
     initial_refresh = asyncio.create_task(screen._refresh_state())
-    await asyncio.wait_for(asyncio.to_thread(initial_started.wait), timeout=1)
+    # The initial load has entered `load_state` and is holding the refresh lock.
+    await wait_for(initial_started, "the initial load to start")
+    # Queue the settled connection refresh behind the initial load's lock.
     screen.update_connection_state([], mcp_connecting=False)
-    release_initial.set()
+    # Release the initial load; once it finishes, the queued settled refresh runs.
+    release_initial.append(True)
     await initial_refresh
-    await asyncio.wait_for(asyncio.to_thread(settled_loaded.wait), timeout=1)
+    # Wait for the settled refresh to finish and apply its snapshot. `settled_applied`
+    # is set from the load thread, so also yield once to let the connection task run
+    # its `_state` assignment (the continuation after `await asyncio.to_thread(...)`).
+    await wait_for(settled_applied, "the settled refresh")
+    for _ in range(100):
+        if screen._state == settled_state:
+            break
+        await asyncio.sleep(0)
+    else:
+        msg = f"settled load ran but `_state` was not applied; snapshots: {snapshots}"
+        raise AssertionError(msg)
 
     assert snapshots == [True, False]
     assert screen._state == settled_state

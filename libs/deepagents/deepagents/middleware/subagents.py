@@ -697,7 +697,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         # Build system prompt with available agents
         if system_prompt and subagents:
             agents_desc = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
-            self.system_prompt = system_prompt + "\n\nAvailable subagent types:\n\n" + agents_desc
+            available_agents = "Available subagent types:\n\n" + agents_desc
+            self.system_prompt = system_prompt.replace("{available_agents}", available_agents)
         else:
             self.system_prompt = system_prompt
 

@@ -37,10 +37,9 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, assert_never, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from deepagents_code import _env_vars
-from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -140,7 +139,8 @@ class OptionKind(Enum):
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
-    `STR`, and `NON_EMPTY_STR`) are coerced inline by `_coerce_env`/`_coerce_toml`.
+    `STR`, and `NON_EMPTY_STR`) are coerced by the source providers behind the
+    compatibility `_coerce_env`/`_coerce_toml` wrappers.
     `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
@@ -532,223 +532,38 @@ def toml_lookup(
 
 
 def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
-    """Coerce a raw environment-variable string by the option's kind.
+    """Delegate environment coercion to the provider boundary.
 
     Returns:
         The typed value, or `_INVALID` when the raw value cannot be coerced.
     """
-    kind = option.kind
-    if kind in {OptionKind.BOOL, OptionKind.BOOL_MODE_DEFAULT}:
-        classified = classify_env_bool(raw)
-        if classified is None:
-            # Unrecognized boolean token: log and fall through like every other
-            # malformed scalar, so `config` reports the real source
-            # (config.toml/default) instead of crediting the env var with a
-            # value it did not actually supply.
-            logger.warning("Ignoring %s=%r (expected bool)", name, raw)
-            return _INVALID
-        return classified
-    if kind is OptionKind.BOOL_PRESENCE:
-        return bool(raw)
-    if kind is OptionKind.STR:
-        return raw
-    if kind is OptionKind.NON_EMPTY_STR:
-        value = raw.strip()
-        if value:
-            return value
-        logger.warning("Ignoring %s=%r (expected non-empty string)", name, raw)
-        return _INVALID
-    if kind is OptionKind.LOG_LEVEL_DELEGATE:
-        from deepagents_code._debug import LOG_LEVELS
+    from deepagents_code.configuration.providers import coerce_environment_value
+    from deepagents_code.configuration.types import Found, Invalid
 
-        level = raw.strip().upper()
-        if level in LOG_LEVELS:
-            return level
-        valid = ", ".join(LOG_LEVELS)
-        logger.warning("Ignoring %s=%r (expected one of %s)", name, raw, valid)
-        return _INVALID
-    if kind is OptionKind.INT:
-        try:
-            return int(raw.strip())
-        except ValueError:
-            logger.warning("Ignoring %s=%r (expected int)", name, raw)
-            return _INVALID
-    if kind is OptionKind.NON_NEGATIVE_INT:
-        try:
-            value = int(raw.strip())
-        except ValueError:
-            logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
-            return _INVALID
-        if value >= 0:
-            return value
-        logger.warning("Ignoring %s=%r (expected int >= 0)", name, raw)
-        return _INVALID
-    if kind is OptionKind.FLOAT:
-        try:
-            return float(raw.strip())
-        except ValueError:
-            logger.warning("Ignoring %s=%r (expected number)", name, raw)
-            return _INVALID
-    if kind is OptionKind.SHELL_LIST_DELEGATE:
-        from deepagents_code.config import parse_shell_allow_list
-
-        try:
-            return parse_shell_allow_list(raw)
-        except ValueError:
-            logger.warning("Ignoring invalid %s", name)
-            return _INVALID
-    if kind is OptionKind.SKILLS_DIRS_DELEGATE:
-        from deepagents_code.config import _parse_extra_skills_dirs
-
-        try:
-            return _parse_extra_skills_dirs(raw, None)
-        except (ValueError, RuntimeError):
-            # `Path.expanduser()` raises on an unresolvable `~user`, `.resolve()`
-            # on a NUL byte; fall back rather than crash resolution/startup.
-            logger.warning("Ignoring %s (could not resolve a path)", name)
-            return _INVALID
-    if kind is OptionKind.THEME_DELEGATE:
-        # Resolved upstream in `resolve_scalar` and never reaches here; the raw
-        # passthrough is a defensive fallback only.
-        return raw
-    if kind is OptionKind.CURSOR_STYLE_DELEGATE:
-        if raw in VALID_CURSOR_STYLES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r (expected 'block' or 'underline')",
-            name,
-            raw,
-        )
-        return _INVALID
-    if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
-        # Neither kind declares an `env_var`, so the `if option.env_var` guard in
-        # `resolve_scalar` means this is unreachable today. If a future option
-        # ever adds an env var for one of these, return `_INVALID` rather than
-        # the raw string: passing an uncoerced value into a typed `Settings`
-        # field (e.g. `interpreter_ptc`) would bypass the delegate parser's
-        # validation. Falling back to the validated default is the safe choice.
-        logger.warning("%s is not env-backed; ignoring %s=%r", option.key, name, raw)
-        return _INVALID
-    if kind is OptionKind.STARTUP_MODE_DELEGATE:
-        from deepagents_code.model_config import VALID_STARTUP_MODES
-
-        if raw in VALID_STARTUP_MODES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r (expected 'manual', 'auto', or 'yolo')",
-            name,
-            raw,
-        )
-        return _INVALID
-    assert_never(kind)
+    result = coerce_environment_value(option, raw, name)
+    if isinstance(result, Found):
+        return result.value
+    if isinstance(result, Invalid):
+        logger.warning("%s", result.reason)
+    return _INVALID
 
 
 def _coerce_toml(
     option: ConfigOption, raw: object, *, source: str = "config.toml"
 ) -> object:
-    """Coerce a raw TOML value by the option's kind, logging on mismatch.
+    """Delegate TOML coercion to the provider boundary.
 
     Returns:
         The typed value, or `_INVALID` when the raw value has the wrong shape.
     """
-    kind = option.kind
-    label = option.toml_path or option.key
+    from deepagents_code.configuration.providers import coerce_toml_value
+    from deepagents_code.configuration.types import Found, Invalid
 
-    if kind in {
-        OptionKind.BOOL,
-        OptionKind.BOOL_MODE_DEFAULT,
-        OptionKind.BOOL_PRESENCE,
-    }:
-        if isinstance(raw, bool):
-            return not raw if option.invert_toml_bool else raw
-    elif kind is OptionKind.INT:
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            return raw
-    elif kind is OptionKind.NON_NEGATIVE_INT:
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
-            return raw
-    elif kind is OptionKind.FLOAT:
-        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            return float(raw)
-    elif kind is OptionKind.STR:
-        if isinstance(raw, str):
-            return raw
-    elif kind is OptionKind.NON_EMPTY_STR:
-        if isinstance(raw, str) and (value := raw.strip()):
-            return value
-    elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
-        if isinstance(raw, list):
-            from deepagents_code.config import _parse_extra_skills_dirs
-
-            try:
-                # `raw` is a TOML list of unknown element type; the callee
-                # guards each entry with `isinstance(p, str)`.
-                return _parse_extra_skills_dirs(None, cast("list[str]", raw))
-            except (ValueError, RuntimeError):
-                # Unresolvable `~user` / NUL byte in a path string: fall back
-                # rather than crash resolution.
-                logger.warning(
-                    "Ignoring %s in %s (could not resolve a path)", label, source
-                )
-                return _INVALID
-    elif kind is OptionKind.PTC_DELEGATE:
-        from deepagents_code.config import _parse_interpreter_ptc
-
-        try:
-            return _parse_interpreter_ptc(raw)
-        except ValueError as exc:
-            logger.warning("Ignoring %s in %s: %s", label, source, exc)
-            return _INVALID
-    elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
-        if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r in %s (expected 'block' or 'underline')",
-            label,
-            raw,
-            source,
-        )
-        return _INVALID
-    elif kind is OptionKind.STARTUP_MODE_DELEGATE:
-        from deepagents_code.model_config import VALID_STARTUP_MODES
-
-        if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
-            return raw
-        logger.warning(
-            "Ignoring %s=%r in %s (expected 'manual', 'auto', or 'yolo')",
-            label,
-            raw,
-            source,
-        )
-        return _INVALID
-    elif kind is OptionKind.STRUCTURED:
-        # Passed through verbatim for display; parsed by a dedicated loader.
-        return raw
-    elif kind is OptionKind.SHELL_LIST_DELEGATE:
-        from deepagents_code.config import (
-            parse_shell_allow_list,
-            parse_shell_allow_list_items,
-        )
-
-        # A TOML array is the natural spelling for this key, so it must honor
-        # the same `all`/`recommended` sentinels and the same "`all` cannot be
-        # combined" rule as the string form. Elements are parsed individually:
-        # joining them into the comma-separated form would split an entry like
-        # `my,tool` into two commands, broadening the administrator's policy.
-        try:
-            if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-                return parse_shell_allow_list_items(cast("list[str]", raw))
-            if isinstance(raw, str):
-                return parse_shell_allow_list(raw)
-        except ValueError as exc:
-            logger.warning("Ignoring %s in %s: %s", label, source, exc)
-            return _INVALID
-    # Any other (future) kind falls through to the warning below, so a missing
-    # branch logs and falls back rather than passing a raw value through.
-
-    logger.warning(
-        "Ignoring %s=%r in %s (expected %s)", label, raw, source, option.type
-    )
+    result = coerce_toml_value(option, raw, source=source)
+    if isinstance(result, Found):
+        return result.value
+    if isinstance(result, Invalid):
+        logger.warning("%s", result.reason)
     return _INVALID
 
 

@@ -5223,6 +5223,22 @@ class TestStripFrontmatter:
         assert _strip_frontmatter(text) == ""
 
 
+class TestSkillMessageAppearance:
+    """Skill invocation rows align their slash marker with the transcript edge."""
+
+    async def test_has_flush_left_marker_with_right_padding(self) -> None:
+        """The skill slash has no left inset while content keeps its right inset."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SkillMessage(skill_name="web-research")
+
+        async with _Harness().run_test() as pilot:
+            message = pilot.app.query_one(SkillMessage)
+            assert message.styles.padding.left == 0
+            assert message.styles.padding.right == 1
+
+
 class TestSkillMessageMarkupSafety:
     """Test SkillMessage handles content with brackets safely."""
 

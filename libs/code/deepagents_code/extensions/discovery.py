@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code.extensions.models import SourceInfo
 
 if TYPE_CHECKING:
@@ -78,6 +79,8 @@ def discover_extension_files(
     Returns:
         Extension sources in deterministic load order.
     """
+    if not is_env_truthy(EXPERIMENTAL):
+        return []
     paths = [user_extensions_dir() if user_dir is None else user_dir, *extra_paths]
     sources = _resolve(paths)
     if project_dir is not None:

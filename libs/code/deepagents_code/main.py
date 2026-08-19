@@ -4250,6 +4250,10 @@ def _check_project_extensions_trust(
         Whether project extensions may load, `INTERRUPTED` on Ctrl+C, or
             `CANCELLED` when startup is aborted.
     """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return False
     from rich.console import Console
 
     from deepagents_code.extensions.discovery import project_extensions_dir

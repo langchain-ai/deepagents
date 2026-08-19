@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.extensions.settings import ExtensionSettings, TrustPolicy
 from deepagents_code.main import (
     _check_project_extensions_trust,
@@ -14,9 +15,20 @@ from deepagents_code.main import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _enable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(EXPERIMENTAL, "1")
+
+
 def _project(tmp_path: Path) -> SimpleNamespace:
     (tmp_path / ".deepagents" / "extensions").mkdir(parents=True)
     return SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+
+
+def test_experimental_mode_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disabled extensions do not inspect projects or prompt for trust."""
+    monkeypatch.delenv(EXPERIMENTAL)
+    assert not _check_project_extensions_trust(trust_flag=True)
 
 
 def test_never_policy_overrides_explicit_flag(tmp_path: Path) -> None:

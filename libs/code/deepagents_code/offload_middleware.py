@@ -114,6 +114,7 @@ class OffloadStateUpdate(TypedDict, total=False):
     """
 
     _summarization_event: dict[str, Any]
+    _summarization_session_id: str
     _session_cost_usd: float
 
 
@@ -1381,7 +1382,13 @@ class OffloadOperation:
             "archive_ephemeral": offload_storage_is_ephemeral(),
             "error": None,
         }
-        # Forward only the permitted channel rather than the SDK's whole update
+        # Forward only the permitted channels rather than the SDK's whole update
         # dict, so a future SDK change that adds keys (`messages` above all)
         # cannot reach the checkpoint write through this operation.
-        return OffloadExecution({"_summarization_event": new_event}, result)
+        return OffloadExecution(
+            {
+                "_summarization_event": new_event,
+                "_summarization_session_id": update["_summarization_session_id"],
+            },
+            result,
+        )

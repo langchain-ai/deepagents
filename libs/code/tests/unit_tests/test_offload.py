@@ -2430,7 +2430,10 @@ class TestOffloadOperation:
         event = _summary_event(2)
         middleware, compaction, _hooks = self._middleware()
         compaction.arun_forced_compaction_update = AsyncMock(
-            return_value={"_summarization_event": event}
+            return_value={
+                "_summarization_event": event,
+                "_summarization_session_id": "archive-1",
+            }
         )
         state = {
             "messages": _make_dict_messages(4),
@@ -2444,6 +2447,7 @@ class TestOffloadOperation:
         state_arg = await_args.args[0]
         assert state_arg is state
         assert "messages" not in execution.update
+        assert execution.update["_summarization_session_id"] == "archive-1"
         assert execution.result["status"] == "compacted"
         assert execution.result["messages_offloaded"] == 2
 
@@ -2456,7 +2460,10 @@ class TestOffloadOperation:
         """
         middleware, compaction, _hooks = self._middleware()
         compaction.arun_forced_compaction_update = AsyncMock(
-            return_value={"_summarization_event": _summary_event(5)}
+            return_value={
+                "_summarization_event": _summary_event(5),
+                "_summarization_session_id": "archive-1",
+            }
         )
         state = {
             "messages": _make_dict_messages(6),

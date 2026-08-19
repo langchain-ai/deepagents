@@ -187,7 +187,10 @@ class TestExecuteOffload:
         operation = SimpleNamespace(
             execute=AsyncMock(
                 return_value=OffloadExecution(
-                    {"_summarization_event": {"cutoff_index": 1}},
+                    {
+                        "_summarization_event": {"cutoff_index": 1},
+                        "_summarization_session_id": "archive-1",
+                    },
                     _result(),  # ty: ignore[invalid-argument-type]
                 )
             )
@@ -231,6 +234,7 @@ class TestExecuteOffload:
             "thread-1",
             {
                 "_summarization_event": {"cutoff_index": 1},
+                "_summarization_session_id": "archive-1",
                 "_session_cost_usd": 0.25,
             },
         )

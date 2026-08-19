@@ -121,11 +121,20 @@ jobs:
       # label is read from the live GitHub API rather than
       # `github.event.pull_request.labels` because re-running a job replays the
       # original event payload, which would miss a label added after the fact.
-      # Non-PR events (`push`, `merge_group`) carry no PR label context, so this
-      # step is skipped there and the strict install below always fails loudly.
+      #
+      # The condition is the intersection of "this is a `pull_request`" and the
+      # strict step's own `if:` below. Running anywhere else would annotate legs
+      # that have no strict install to bypass -- an `::error::` about a check
+      # that is not enforced there, once per matrix leg. `push` and
+      # `merge_group` carry no PR label context at all, so they skip this step
+      # and the strict install always fails loudly for them.
       - name: "🏷️ Resolve ripgrep bypass"
         id: ripgrep-bypass
-        if: github.event_name == 'pull_request'
+        if: >-
+          runner.os == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          (startsWith(github.head_ref, 'release-please--') ||
+          startsWith(github.event.pull_request.title, 'release('))
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -195,7 +204,7 @@ jobs:
           # fail as before. The label only exists on a `pull_request`, so
           # `push`/`merge_group` always take the strict path.
           if [ "$BYPASS" != "true" ]; then
-            echo "::error::ripgrep install failed on a release-sensitive run and no 'bypass-ripgrep-check' label is present."
+            echo "::error::ripgrep install failed (apt exit $status) on a release-sensitive run and no 'bypass-ripgrep-check' label is present."
             exit "$status"
           fi
           # Bypassed: run the same dpkg unwind and `rg` probe as the
@@ -212,7 +221,10 @@ jobs:
             exit 0
           fi
           echo "timed-out=true" >> "$GITHUB_OUTPUT"
-          echo "::warning::ripgrep install failed on release PR; 'bypass-ripgrep-check' present — continuing without ripgrep (rg-gated tests will skip)"
+          # Log the apt status: the bypass tolerates every non-zero status, so
+          # the status is the only thing that separates a mirror flake from a
+          # permanently broken install that will be bypassed on every re-run.
+          echo "::warning::ripgrep install failed (apt exit $status) on release PR; 'bypass-ripgrep-check' present — continuing without ripgrep (rg-gated tests will skip)"
           package="${WORKING_DIRECTORY//\//-}"
           artifact="ripgrep-timeout-${package}-${MATRIX_OS}-${MATRIX_PYTHON}"
           marker="$RUNNER_TEMP/$artifact/warning.txt"
@@ -296,7 +308,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           # Whichever install step reported `timed-out` is the one that set
-          # `artifact`/`marker`; the other's outputs are empty here.
+          # `artifact`/`marker`; the other's outputs are empty here, because the
+          # two steps' `if:` conditions are exact complements and a skipped
+          # step's outputs are the empty string. Relax either condition and
+          # this fallback stops being unambiguous.
           name: ${{ steps.ripgrep-install.outputs.artifact || steps.ripgrep-strict.outputs.artifact }}
           path: ${{ steps.ripgrep-install.outputs.marker || steps.ripgrep-strict.outputs.marker }}
           retention-days: 1

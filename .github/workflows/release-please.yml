@@ -1113,14 +1113,18 @@ jobs:
             RELEASE_PR_NUMBER="$pr_number"
           }
 
-          # Fail-closed: a non-zero return means "do NOT skip the SDK pin check".
+          # Fail-closed: a non-zero return means "do NOT skip the caller's check".
           # Every error path (PR unresolved, label-read API failure) returns
           # non-zero, so a transient API blip can never flip the dangerous bypass
           # on — it only ever turns on for a positively-matched label.
+          #
+          # `$2` names the check that stays enforced. The helper serves more than
+          # one bypass label now, so a hardcoded subject would point an operator
+          # debugging a ripgrep-label failure at the SDK pin check instead.
           release_pr_has_label() {
-            local label="$1" labels="" rc=0
+            local label="$1" subject="$2" labels="" rc=0
             if ! resolve_release_pr_number; then
-              echo "::warning::Could not resolve release PR for $RELEASE_SHA; SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' not read)."
+              echo "::warning::Could not resolve release PR for $RELEASE_SHA; $subject will be ENFORCED (bypass label '$label' not read)."
               return 1
             fi
             # Capture the label read separately so an API failure is distinguishable
@@ -1129,7 +1133,7 @@ jobs:
             labels=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR_NUMBER}/labels" \
               --jq '.[].name' 2>/dev/null) || rc=$?
             if [ "$rc" -ne 0 ]; then
-              echo "::warning::Could not read labels for PR #$RELEASE_PR_NUMBER (gh api exit $rc); SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' treated as absent)."
+              echo "::warning::Could not read labels for PR #$RELEASE_PR_NUMBER (gh api exit $rc); $subject will be ENFORCED (bypass label '$label' treated as absent)."
               return 1
             fi
             printf '%s\n' "$labels" | grep -Fxq "$label"
@@ -1143,8 +1147,8 @@ jobs:
           }
 
           # The ripgrep bypass applies to every package's publish run — each one
-          # runs the same strict `Install ripgrep` step in release.yml. Reads the
-          # job-global AUTO_SKIP_RIPGREP_CHECK at call time (set below).
+          # runs the same strict `Install ripgrep` step in release.yml, so unlike
+          # `skip_applies_to` this takes no package argument.
           ripgrep_skip_applies() {
             [ "$AUTO_SKIP_RIPGREP_CHECK" = "true" ]
           }
@@ -1264,7 +1268,7 @@ jobs:
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
 
           AUTO_SKIP_SDK_PIN_CHECK=false
-          if [ "$CODE_RELEASE" = "true" ] && release_pr_has_label "$SDK_PIN_BYPASS_LABEL"; then
+          if [ "$CODE_RELEASE" = "true" ] && release_pr_has_label "$SDK_PIN_BYPASS_LABEL" "the SDK pin check for deepagents-code"; then
             AUTO_SKIP_SDK_PIN_CHECK=true
             echo "Release PR has '$SDK_PIN_BYPASS_LABEL'; dispatching deepagents-code with dangerous-skip-sdk-pin-check=true."
           fi
@@ -1272,7 +1276,7 @@ jobs:
           # Not package-gated like the SDK-pin check: every package's publish run
           # shares the same strict ripgrep install, so the label softens them all.
           AUTO_SKIP_RIPGREP_CHECK=false
-          if release_pr_has_label "$RIPGREP_BYPASS_LABEL"; then
+          if release_pr_has_label "$RIPGREP_BYPASS_LABEL" "the strict ripgrep install"; then
             AUTO_SKIP_RIPGREP_CHECK=true
             echo "Release PR has '$RIPGREP_BYPASS_LABEL'; dispatching with dangerous-skip-ripgrep-check=true."
           fi

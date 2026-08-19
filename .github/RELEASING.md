@@ -1007,14 +1007,14 @@ If the older pin is intentional, add the `release: skip sdk pin check` label to 
 
 ### Release Failed: Ripgrep Install
 
-The strict ripgrep install in CI (and the `Install ripgrep` step in `release.yml`) runs with no timeout on release-sensitive paths, because the rg-gated tests — including the symlink containment check — must exercise the real binary rather than the Python fallback. A transient apt or mirror failure therefore fails the job even though nothing is wrong with the code.
+On release-sensitive paths, the ripgrep install itself runs with no timeout. This applies to the strict step in CI and to the `Install ripgrep` step in `release.yml`. The rg-gated tests must exercise the real binary, not the Python fallback; one of them checks symlink containment. An apt or mirror failure therefore fails the job even though the code is fine.
 
-If the failure is genuinely transient infrastructure flake, add the `bypass-ripgrep-check` label to the release PR and re-run CI. With the label present:
+If the apt log shows a mirror or network error, add the `bypass-ripgrep-check` label to the release PR and re-run CI. With the label present:
 
-- **In CI** (`_test.yml`): the strict install still runs, but a failure becomes a tolerated continue. `DEEPAGENTS_RIPGREP_EXPECTED` is left unset, so `require_ripgrep()` skips the gated tests on that leg instead of failing them. The run posts a sticky comment on the PR recording which legs ran without ripgrep.
-- **At dispatch** (`release-please.yml`): the automatic release dispatch passes `dangerous-skip-ripgrep-check=true` to `release.yml`, so the publish run's `Install ripgrep` step tolerates the same apt failure and its rg-gated artifact tests skip rather than re-failing on the flake.
+- **In CI** (`_test.yml`): the strict install still runs, but a failure becomes a tolerated continue. The step then unwinds `dpkg` and probes for a usable `rg`. If one is present, the leg keeps full coverage. If not, `DEEPAGENTS_RIPGREP_EXPECTED` is left unset, so `require_ripgrep()` skips the gated tests on that leg instead of failing them. The run posts a sticky comment on the PR that records which legs ran without ripgrep.
+- **At dispatch** (`release-please.yml`): the automatic release dispatch passes `dangerous-skip-ripgrep-check=true` to `release.yml`. The publish run's `Install ripgrep` step then tolerates the same apt failure. It applies the same `rg` probe, and when the binary really is missing it writes a "Published without ripgrep coverage" block to the run summary.
 
-The label is honored only on release PRs (`pull_request` with a `release-please--` branch or `release(` title). `push`-to-`main` and merge-queue runs have no PR label to read, so they always enforce the strict install. Remove the label and re-run CI to restore full ripgrep coverage before relying on the result.
+The label is honored only on release PRs — a `pull_request` with a `release-please--` branch or a `release(` title. `push`-to-`main` and merge-queue runs have no PR label to read, so they always enforce the strict install. The dispatch reads the label at merge time: remove it before merging and the publish run enforces the strict install again. Remove the label and re-run CI to restore full ripgrep coverage before you rely on the result.
 
 ### "Untagged, merged release PRs outstanding" Error
 

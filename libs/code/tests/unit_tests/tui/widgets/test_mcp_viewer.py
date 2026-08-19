@@ -51,6 +51,7 @@ def _sample_info() -> list[MCPServerInfo]:
             name="remote-api",
             transport="sse",
             tools=(MCPToolInfo(name="search", description="Search the web"),),
+            uses_oauth=True,
         ),
     ]
 
@@ -1479,13 +1480,20 @@ class TestMCPViewerScreen:
 
             assert dismissed_with == ["github"]
 
-    async def test_enter_on_authenticated_remote_reauthenticates(self) -> None:
-        """Activating a healthy remote server starts OAuth again."""
+    @pytest.mark.parametrize("transport", ["http", "sse"])
+    async def test_enter_on_oauth_remote_reauthenticates(self, transport: str) -> None:
+        """Activating a healthy OAuth-backed remote server starts OAuth again.
+
+        Both remote transports are covered because `_can_start_login` gates on
+        the normalized `transport` string, which `mcp_tools` derives two modules
+        away — `http` alone would not pin `sse`.
+        """
         info = [
             MCPServerInfo(
                 name="slack",
-                transport="http",
+                transport=transport,
                 tools=(MCPToolInfo(name="search", description="Search Slack"),),
+                uses_oauth=True,
             )
         ]
         app = MCPViewerTestApp()
@@ -1506,6 +1514,77 @@ class TestMCPViewerScreen:
             assert "Enter re-auth" in _widget_text(help_widget)
 
             await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == ["slack"]
+
+    async def test_enter_on_non_oauth_remote_is_noop(self) -> None:
+        """A healthy remote server not backed by OAuth offers no re-auth.
+
+        A static `Authorization` header takes precedence over stored OAuth
+        tokens, and a public server has no flow to run, so the affordance
+        would be a lie.
+        """
+        info = [
+            MCPServerInfo(
+                name="public-api",
+                transport="http",
+                tools=(MCPToolInfo(name="search", description="Search"),),
+                uses_oauth=False,
+            )
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            header = screen._row_widgets[0]
+            assert isinstance(header, MCPServerHeaderItem)
+            assert "re-auth" not in _widget_text(header)
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter" not in _widget_text(help_widget)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == []
+
+    async def test_click_on_selected_oauth_header_reauthenticates(self) -> None:
+        """Re-clicking a selected OAuth remote header starts login.
+
+        `on_click` shares the `_can_start_login` gate with `action_toggle_expand`
+        but is a separate activation path, so it needs its own coverage.
+        """
+        info = [
+            MCPServerInfo(
+                name="slack",
+                transport="http",
+                tools=(MCPToolInfo(name="search", description="Search Slack"),),
+                uses_oauth=True,
+            )
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            header = screen._row_widgets[0]
+            assert isinstance(header, MCPServerHeaderItem)
+            assert screen._selected_index == 0
+
+            await pilot.click(header)
             await pilot.pause()
 
             assert dismissed_with == ["slack"]

@@ -171,9 +171,17 @@ def _sort_servers_for_display(
 
 
 def _can_start_login(server: MCPServerInfo) -> bool:
-    """Return whether activating `server` should start OAuth login."""
+    """Return whether activating `server` should start OAuth login.
+
+    A healthy server qualifies only when OAuth actually backs its connection
+    (`uses_oauth`). Offering re-authentication for a server authenticated by a
+    static `Authorization` header would be a lie — that header takes precedence
+    over stored OAuth tokens — and a public server has no flow to run.
+    """
     return server.needs_attention() or (
-        server.status == "ok" and server.transport in {"http", "sse"}
+        server.status == "ok"
+        and server.transport in {"http", "sse"}
+        and server.uses_oauth
     )
 
 
@@ -747,8 +755,8 @@ class MCPServerHeaderItem(Static):
 
         Headers are not expandable. Clicking once moves the cursor;
         clicking the already-selected header starts login for an
-        unauthenticated or authenticated remote server, or opens details
-        for an `error` server.
+        unauthenticated or OAuth-backed remote server (see
+        `_can_start_login`), or opens details for an `error` server.
 
         Args:
             event: The click event.
@@ -1245,8 +1253,20 @@ class MCPViewerScreen(ModalScreen[str | None]):
         self.call_after_refresh(_focus)
 
     def _selected_enter_hint(self) -> str | None:
-        """Return the Enter hint for the currently selected row."""
+        """Return the Enter hint for the currently selected row.
+
+        Mirrors `action_toggle_expand`'s dispatch, in the same order — keep
+        the two in step or the footer will advertise an action Enter does not
+        take.
+
+        Returns:
+            The hint to show, or `None` when Enter does nothing on this row
+            (a healthy non-OAuth server, or one awaiting reconnect/disabled)
+            so the caller can omit it from the footer.
+        """
         if not self._row_widgets:
+            return None
+        if not 0 <= self._selected_index < len(self._row_widgets):
             return None
         row = self._row_widgets[self._selected_index]
         if isinstance(row, MCPToolItem):
@@ -1254,7 +1274,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         server = row.server
         if server.status == "unauthenticated":
             return "Enter log in"
-        if server.status == "ok" and _can_start_login(server):
+        if _can_start_login(server):
             return "Enter re-auth"
         if server.status == "error":
             return "Enter details"
@@ -1542,9 +1562,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """Toggle a tool, start server login, or show server error details.
 
         Tool rows expand or collapse. Activating an unauthenticated server
-        starts login, while activating an authenticated HTTP or SSE server
-        starts re-authentication. Error headers open a read-only detail modal;
-        awaiting-reconnect, disabled, and healthy stdio headers remain no-ops.
+        starts login, while activating a healthy OAuth-backed remote server
+        starts re-authentication (see `_can_start_login`). Error headers open
+        a read-only detail modal. `awaiting_reconnect`, `disabled`, healthy
+        non-remote, and healthy non-OAuth headers remain no-ops.
         """
         if not self._row_widgets:
             return

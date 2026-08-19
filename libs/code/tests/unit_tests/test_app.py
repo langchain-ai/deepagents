@@ -32134,14 +32134,14 @@ class TestMCPLoginCommand:
             )
 
     async def test_viewer_enter_on_remote_server_routes_to_reauth(self) -> None:
-        """End-to-end: Enter on a healthy remote server starts OAuth again."""
+        """End-to-end: Enter on a healthy OAuth server starts OAuth again."""
         from deepagents_code.mcp_tools import MCPServerInfo
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._mcp_server_info = [
-                MCPServerInfo(name="slack", transport="http", tools=())
+                MCPServerInfo(name="slack", transport="http", tools=(), uses_oauth=True)
             ]
             with patch.object(
                 app, "_start_mcp_login", return_value=True

@@ -277,7 +277,13 @@ async def _write_landed(
     try:
         current = await client.threads.get_state(thread_id)
         return _checkpoint_id(current) != checkpoint_id
-    except Exception:
+    except BaseException:
+        # `BaseException`, not `Exception`: this runs inside the caller's
+        # settlement handler, so an escape here -- a `CancelledError` from a
+        # disconnect or a shutdown re-delivering cancellation while that handler
+        # unwinds -- would skip the rollback entirely and delete the drained
+        # cost records from the thread's lifetime total with no trace.
+        #
         # An unreadable thread cannot rule the write out, so stay on the
         # conservative side and treat the outcome as indeterminate.
         logger.exception(
@@ -421,7 +427,7 @@ async def _execute_offload(
                 thread_id,
                 update,
             )
-        except BaseException:
+        except BaseException as exc:
             # The write may have applied server-side before the failure reached
             # us (response decode, timeout, cancellation). Restoring the cost
             # records in that case would let the next drain price this same
@@ -436,6 +442,10 @@ async def _execute_offload(
                     checkpoint_id,
                     len(prepared.records),
                 )
+                if isinstance(exc, asyncio.CancelledError):
+                    # Cost records stay claimed either way, but suppressing a
+                    # cancellation would leave the task never observing it.
+                    raise
                 msg = (
                     "Offload compacted the conversation but could not confirm "
                     "the state write. Run /context to check whether the "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -487,6 +488,93 @@ class TestExecuteOffload:
             pytest.raises(
                 offload_api._OffloadIndeterminateError, match="could not confirm"
             ),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        prepared.rollback.assert_not_called()
+
+    async def test_cancelled_probe_still_settles_the_cost_records(self) -> None:
+        """A cancel inside the write-landed probe must not skip settlement.
+
+        `prepare_operation_cost` drains the recorder destructively, so a prepare
+        that is neither committed nor rolled back deletes that spend from the
+        thread's lifetime total permanently. The probe runs inside the
+        settlement handler, so an escape from it -- a disconnect or a shutdown
+        re-delivering cancellation while the handler unwinds -- would take both
+        branches off the table and lose the records with no trace.
+        """
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(side_effect=[before, before, asyncio.CancelledError()]),
+            update_state=AsyncMock(side_effect=RuntimeError("boom")),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {"_summarization_event": {"cutoff_index": 1}},
+                    _result(),  # ty: ignore[invalid-argument-type]
+                )
+            )
+        )
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+        )
+
+        with (
+            self._patched(offload_api, threads, operation, prepared),
+            pytest.raises(offload_api._OffloadIndeterminateError),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        # Unreadable means indeterminate, so the records stay claimed rather
+        # than being restored -- but a decision was reached either way.
+        prepared.rollback.assert_not_called()
+
+    async def test_a_cancelled_write_is_not_converted_to_a_runtime_error(
+        self,
+    ) -> None:
+        """Cancellation must propagate so the task actually observes it."""
+        from deepagents_code import offload_api
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(
+                side_effect=[
+                    _thread_state("before"),
+                    _thread_state("before"),
+                    _thread_state("after"),
+                ]
+            ),
+            update_state=AsyncMock(side_effect=asyncio.CancelledError()),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(
+                return_value=OffloadExecution(
+                    {"_summarization_event": {"cutoff_index": 1}},
+                    _result(),  # ty: ignore[invalid-argument-type]
+                )
+            )
+        )
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+        )
+
+        with (
+            self._patched(offload_api, threads, operation, prepared),
+            pytest.raises(asyncio.CancelledError),
         ):
             await offload_api._execute_offload(
                 "thread-1",

@@ -3531,9 +3531,12 @@ class TestCachedSessionProxy:
         write_config: Callable[..., str],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A non-transient tool failure is warning-logged with its traceback."""
-        from langchain_core.tools import ToolException
+        """A non-transient tool failure is warning-logged once, with traceback.
 
+        Exercises `ainvoke` (not `coroutine()` directly) so the tool's
+        `handle_tool_error` callback runs — that is the path real tool calls
+        take, and the single warning must come from there.
+        """
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
         )
@@ -3565,21 +3568,19 @@ class TestCachedSessionProxy:
             expected = (
                 "MCP tool 'srv_echo' failed on server 'srv': OSError: socket glitch"
             )
-            with (
-                caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
-                pytest.raises(ToolException) as exc_info,
-            ):
-                await tool.coroutine()
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+                result = await tool.ainvoke({})
 
-        assert str(exc_info.value) == expected
+        assert result == expected
         warnings = [
             record
             for record in caplog.records
             if record.name == "deepagents_code.mcp_tools"
             and record.levelno == logging.WARNING
-            and record.getMessage() == f"MCP tool call failed: {expected}"
         ]
         assert len(warnings) == 1
+        assert "recoverable ToolException" in warnings[0].getMessage()
+        assert expected in warnings[0].getMessage()
         assert warnings[0].exc_info is not None
         assert call_counter["n"] == 2
         assert manager is not None
@@ -3590,9 +3591,13 @@ class TestCachedSessionProxy:
         write_config: Callable[..., str],
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A failure after a transient retry is warning-logged with traceback."""
+        """A failure after a transient retry is warning-logged once, with traceback.
+
+        Exercises `ainvoke` (not `coroutine()` directly) so the tool's
+        `handle_tool_error` callback runs — that is the path real tool calls
+        take, and the single warning must come from there.
+        """
         from anyio import ClosedResourceError
-        from langchain_core.tools import ToolException
 
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
@@ -3630,21 +3635,19 @@ class TestCachedSessionProxy:
                 "MCP tool 'srv_echo' failed after one retry on server 'srv': "
                 "RuntimeError: retry boom"
             )
-            with (
-                caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
-                pytest.raises(ToolException) as exc_info,
-            ):
-                await tool.coroutine()
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+                result = await tool.ainvoke({})
 
-        assert str(exc_info.value) == expected
+        assert result == expected
         warnings = [
             record
             for record in caplog.records
             if record.name == "deepagents_code.mcp_tools"
             and record.levelno == logging.WARNING
-            and record.getMessage() == f"MCP tool call failed: {expected}"
         ]
         assert len(warnings) == 1
+        assert "recoverable ToolException" in warnings[0].getMessage()
+        assert expected in warnings[0].getMessage()
         assert warnings[0].exc_info is not None
         assert call_counter["n"] == 3
         assert manager is not None

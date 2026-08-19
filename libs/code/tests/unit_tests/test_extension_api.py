@@ -132,3 +132,42 @@ def test_plugin_manifest_rejects_python_entry_outside_install(
     assert manifest is not None
     assert not manifest.python_extensions
     assert any("must not contain '..'" in warning for warning in warnings)
+
+
+def test_plugin_python_extension_requires_version(tmp_path: Path) -> None:
+    """User-wide executable extensions must have a plugin version."""
+    path = tmp_path / "extension.py"
+    path.touch()
+    (tmp_path / "plugin.json").write_text(
+        '{"name":"example","extensions":'
+        '{"com.langchain.deepagents.code":'
+        '{"pythonExtensions":"./extension.py"}}}',
+        encoding="utf-8",
+    )
+
+    manifest, _, warnings = load_manifest(tmp_path)
+
+    assert manifest is not None
+    assert not manifest.python_extensions
+    assert any("require a non-empty plugin version" in warning for warning in warnings)
+
+
+def test_plugin_manifest_rejects_python_entry_symlink_escape(tmp_path: Path) -> None:
+    """A plugin entry symlink cannot escape the installed snapshot."""
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.touch()
+    (plugin / "extension.py").symlink_to(outside)
+    (plugin / "plugin.json").write_text(
+        '{"name":"example","version":"1.0.0","extensions":'
+        '{"com.langchain.deepagents.code":'
+        '{"pythonExtensions":"./extension.py"}}}',
+        encoding="utf-8",
+    )
+
+    manifest, _, warnings = load_manifest(plugin)
+
+    assert manifest is not None
+    assert not manifest.python_extensions
+    assert any("escapes plugin root" in warning for warning in warnings)

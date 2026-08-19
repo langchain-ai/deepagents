@@ -1794,20 +1794,39 @@ class TestModelConfigLoad:
         assert config.providers == {}
         assert any("structurally invalid" in r.getMessage() for r in caplog.records)
 
-    def test_returns_empty_config_when_providers_is_not_a_table(self, tmp_path, caplog):
-        """Valid TOML with a non-table `providers` falls back instead of raising.
+    def test_ignores_a_non_table_providers_and_keeps_its_siblings(
+        self, tmp_path, caplog
+    ):
+        """A non-table `providers` degrades to `{}` without discarding the rest.
 
-        This shape raises a TypeError from the dataclass constructor
-        (`MappingProxyType(5)`), the other post-parse failure mode.
+        `_validate` iterates `providers`, and it runs outside the constructor's
+        guard, so this shape used to raise `AttributeError` out of a loader every
+        caller treats as total. Coercing the one field keeps `default` usable.
         """
         config_path = tmp_path / "config.toml"
-        config_path.write_text("[models]\nproviders = 5\n")
+        config_path.write_text('[models]\nproviders = 5\ndefault = "anthropic:x"\n')
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
             config = ModelConfig.load(config_path)
 
         assert config.providers == {}
-        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
+        assert config.default_model == "anthropic:x"
+        assert any(
+            "Ignoring [models].providers" in r.getMessage() for r in caplog.records
+        )
+
+    def test_ignores_a_non_string_default_model(self, tmp_path, caplog):
+        """A table where a model spec belongs cannot reach `create_model`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models.default]\noops = true\n")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert any(
+            "Ignoring [models].default" in r.getMessage() for r in caplog.records
+        )
 
     def test_loads_default_model(self, tmp_path):
         """Loads default model from config."""

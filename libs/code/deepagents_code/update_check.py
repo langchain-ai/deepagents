@@ -903,7 +903,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
+    value = file_entry.get("upload_time_iso_8601")
     return value if isinstance(value, str) else None
 
 
@@ -3671,16 +3671,66 @@ async def perform_install_package(
 # ---------------------------------------------------------------------------
 
 
+def _managed_update_value(key: str) -> tuple[bool, bool]:
+    """Return one managed update boolean, failing closed on any policy error.
+
+    An unreadable or corrupt managed file, or a present value that is not a
+    boolean, reports `(True, False)`, which turns the setting off. Policy that
+    cannot be read must not be treated as absent, and this is the safe
+    direction for a feature that reaches the network and installs binaries. The
+    condition is logged, because "disabled by policy" and "policy unreadable"
+    are otherwise indistinguishable to the user.
+
+    Returns:
+        Whether managed config decides the value, and the value.
+    """
+    from deepagents_code.configuration.service import get_managed_snapshot
+
+    snapshot = get_managed_snapshot()
+    if not snapshot.status.usable:
+        logger.error(
+            "Managed config %s is %s (%s); disabling [update].%s until it is repaired",
+            snapshot.status.path,
+            snapshot.status.health.value,
+            snapshot.status.detail or "no detail",
+            key,
+        )
+        return True, False
+    section = snapshot.data.get("update")
+    if not isinstance(section, dict) or key not in section:
+        return False, False
+    value = section[key]
+    if isinstance(value, bool):
+        return True, value
+    # Fail closed, exactly as the unreadable-file branch above does. Returning
+    # "managed config does not decide" handed the choice back to the user's env
+    # var and `config.toml`, so an administrator who typed `auto_update =
+    # "false"` on a locked-down fleet silently kept the permissive default —
+    # while *deleting* the file correctly forced the feature off. A present but
+    # unreadable value is a policy error, not an absent policy.
+    logger.error(
+        "Managed [update].%s is %s, not a bool; disabling it until it is repaired",
+        key,
+        type(value).__name__,
+    )
+    return True, False
+
+
 def is_update_check_enabled() -> bool:
     """Return whether update checks are enabled.
 
-    Checks `DEEPAGENTS_CODE_NO_UPDATE_CHECK` env var and the `[update].check` key
-    in `config.toml`.
+    Managed config decides first: `[update].check` in `managed_config.toml`
+    outranks both layers below, and a managed file that cannot be parsed
+    forces `False`. Otherwise, checks the `DEEPAGENTS_CODE_NO_UPDATE_CHECK`
+    env var and the `[update].check` key in `config.toml`.
 
     Defaults to enabled.
     """
     from deepagents_code._env_vars import NO_UPDATE_CHECK
 
+    managed, value = _managed_update_value("check")
+    if managed:
+        return value
     if os.environ.get(NO_UPDATE_CHECK):
         return False
     return _read_update_config().get("check", True)
@@ -3689,8 +3739,12 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-out via `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or
-    `[update].auto_update = false` in `config.toml`.
+    Editable installs are always disabled, before any layer is consulted.
+    Otherwise managed config decides first: `[update].auto_update` in
+    `managed_config.toml` outranks both layers below, and a managed file that
+    cannot be parsed forces `False`. Otherwise, opt out via the
+    `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or `[update].auto_update = false`
+    in `config.toml`.
 
     Defaults to `True`.
 
@@ -3700,14 +3754,15 @@ def is_auto_update_enabled() -> bool:
     If `config.toml` exists but cannot be parsed, returns `False` (fail-closed):
     a corrupt file may hold an explicit opt-out, so it is not treated as the
     permissive default. A genuinely absent config falls through to `True`.
-
-    Always disabled for editable installs.
     """
     from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
     from deepagents_code.config import _is_editable_install
 
     if _is_editable_install():
         return False
+    managed, value = _managed_update_value("auto_update")
+    if managed:
+        return value
     if AUTO_UPDATE in os.environ:
         raw = os.environ[AUTO_UPDATE]
         classified = classify_env_bool(raw)
@@ -3744,33 +3799,25 @@ def set_auto_update(enabled: bool) -> None:
 
     Args:
         enabled: Whether auto-update should be enabled.
+
+    Raises:
+        OSError: If the user config cannot be updated atomically.
     """
-    import contextlib
-    import tempfile
-    from pathlib import Path
+    from deepagents_code.configuration.writer import update_user_config
 
-    import tomli_w
+    def mutate(data: dict[str, Any]) -> bool:
+        section = data.get("update")
+        if not isinstance(section, dict):
+            section = {}
+            data["update"] = section
+        if section.get("auto_update") is enabled:
+            return False
+        section["auto_update"] = enabled
+        return True
 
-    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if DEFAULT_CONFIG_PATH.exists():
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    else:
-        data = {}
-
-    if "update" not in data:
-        data["update"] = {}
-    data["update"]["auto_update"] = enabled
-
-    fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            tomli_w.dump(data, f)
-        Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            Path(tmp_path).unlink()
-        raise
+    result = update_user_config(mutate, config_path=DEFAULT_CONFIG_PATH)
+    if not result.ok:
+        raise OSError(result.error or f"could not update {DEFAULT_CONFIG_PATH}")
 
 
 class _ConfigReadError(Exception):
@@ -3819,14 +3866,23 @@ def _read_update_config() -> dict[str, bool]:
 
 
 def is_auto_update_explicitly_set() -> bool:
-    """Return whether the user explicitly chose an auto-update preference.
+    """Return whether an explicit auto-update preference is in force.
 
-    `True` when `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean or
+    `True` when managed policy decides the value, when
+    `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean, or when
     `[update].auto_update` is present in `config.toml`. Distinguishes a
     deliberate opt-in/out from the implicit opt-out default.
+
+    Managed policy counts: it is the most explicit preference there is, and
+    omitting it made `should_announce_auto_update_default` tell the user that
+    the implicit default was in force on a machine where an administrator had
+    set the value.
     """
     from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
 
+    managed, _ = _managed_update_value("auto_update")
+    if managed:
+        return True
     if (
         AUTO_UPDATE in os.environ
         and classify_env_bool(os.environ[AUTO_UPDATE]) is not None

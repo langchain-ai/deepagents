@@ -27,12 +27,12 @@ import functools
 import logging
 import re
 from dataclasses import dataclass, fields
-from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     from textual.app import App
 
@@ -519,7 +519,11 @@ def _load_user_themes(
     *,
     config_path: Path | None = None,
 ) -> None:
-    """Load user-defined themes from `config.toml` into `builtins` (mutated).
+    """Load user and managed themes into `builtins` (mutated).
+
+    Reads the merge of `managed_config.toml` over `~/.deepagents/config.toml`,
+    so a managed `[themes.*]` entry outranks the user's and survives a user
+    config that cannot be parsed.
 
     **New themes** — each `[themes.<name>]` section (where `<name>` is not a
     built-in) must have:
@@ -540,7 +544,7 @@ def _load_user_themes(
     Invalid themes (bad hex, missing required keys) are logged as warnings
     and skipped — they never crash startup.
 
-    Example `config.toml` snippet:
+    Example config snippet (either file):
 
     ```toml
     # New custom theme
@@ -558,31 +562,41 @@ def _load_user_themes(
     Args:
         builtins: Mutable dict to update (new themes are added, built-in
             overrides replace existing entries).
-        config_path: Override for the config file path (testing).
+        config_path: Override for the config file path (testing). Passing a
+            path also excludes managed policy from this read, so production
+            callers must pass `None`.
     """
+    is_default = config_path is None
     if config_path is None:
         try:
-            config_path = Path.home() / ".deepagents" / "config.toml"
+            from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+            config_path = DEFAULT_CONFIG_PATH
         except RuntimeError:
             logger.debug("Cannot determine home directory; skipping user theme loading")
             return
 
-    import tomllib
+    from deepagents_code.configuration.service import get_config_sources
 
-    try:
-        if not config_path.exists():
-            return
-
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
+    if not sources.user.status.usable:
         logger.warning(
             "Could not read %s for user themes: %s",
             config_path,
-            exc,
+            sources.user.status.detail or sources.user.status.health.value,
         )
-        return
-
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
+    data, _ = sources.merged()
     themes_section: Any = data.get("themes")
     if not isinstance(themes_section, dict) or not themes_section:
         return

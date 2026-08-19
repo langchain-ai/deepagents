@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import tomllib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -1054,30 +1053,45 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     ```
 
     Args:
-        config_path: Path to config file.
+        config_path: Path to config file. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
 
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         List of `AsyncSubAgent` specs (empty if section is absent or invalid).
     """
+    is_default = config_path is None
     if config_path is None:
-        config_path = Path.home() / ".deepagents" / "config.toml"
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
-    if not config_path.exists():
-        return []
+        config_path = DEFAULT_CONFIG_PATH
 
-    try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, PermissionError, OSError) as e:
-        logger.warning("Could not read async subagents from %s: %s", config_path, e)
+    from deepagents_code.configuration.service import get_config_sources
+
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
+    if not sources.user.status.usable:
+        detail = sources.user.status.detail or sources.user.status.health.value
+        logger.warning(
+            "Could not read async subagents from %s: %s", config_path, detail
+        )
         console.print(
             f"[bold yellow]Warning:[/bold yellow] Could not read async subagents "
-            f"from {config_path}: {e}",
+            f"from {config_path}: {detail}",
         )
-        return []
-
+        # Managed policy parsed cleanly and must still apply, so keep
+        # going with the merged data (managed-only when the user file
+        # failed) instead of discarding it with the user's file.
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
+    data, _ = sources.merged()
     section = data.get("async_subagents")
     if not isinstance(section, dict):
         return []

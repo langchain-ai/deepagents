@@ -410,6 +410,11 @@ def _build_graph_factory(
         async with lock:
             if graph is missing:
                 try:
+                    from deepagents_code.configuration.service import (
+                        require_healthy_managed_config,
+                    )
+
+                    require_healthy_managed_config(refresh=True)
                     graph = await (builder or _make_graph)()
                 except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
                     emit_startup_failure(exc)

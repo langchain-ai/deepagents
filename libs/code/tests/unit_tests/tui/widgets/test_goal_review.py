@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -537,6 +538,32 @@ class TestGoalReviewMenu:
             assert "combined" in help_text
             assert "Remove at least" in help_text
             assert "Ctrl+X external editor" in help_text
+
+    async def test_hint_without_a_help_widget_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Without the widget the rejection is invisible, so it must be logged.
+
+        `_submit_edit` has already returned without submitting by this point, so
+        Enter appears to do nothing at all. A refactor that drops the
+        `logger.warning` restores a fully silent failure, and the widget-present
+        path above would not notice.
+        """
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            menu._help_widget = None
+
+            with caplog.at_level(
+                logging.WARNING,
+                logger="deepagents_code.tui.widgets.goal_review",
+            ):
+                menu._hint_invalid_submission("Remove at least 5 characters.")
+
+        assert "Suppressed goal-review validation hint" in caplog.text
+        assert "Remove at least 5 characters." in caplog.text
 
     async def test_empty_rejection_does_not_submit(self) -> None:
         """Submitting blank rejection feedback should keep the editor open."""

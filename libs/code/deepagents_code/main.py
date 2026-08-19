@@ -1300,6 +1300,18 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
     return resolved
 
 
+# The standalone `validate_rubric` above is sufficient here, unlike `/rubric next`,
+# which additionally runs the combined notice check via `_next_rubric_size_error`.
+# That check exists because an in-session one-shot rubric is embedded in the notice
+# beside an actionable goal's objective and status note, and the pair can exceed
+# `GOAL_NOTICE_TEXT_CHAR_LIMIT` even when each fits alone. `--rubric` cannot reach
+# that state: it requires `-n`, and `run_non_interactive` takes no resume or
+# thread-id argument, so it always starts a fresh thread with no checkpointed goal.
+# `--goal` is rejected alongside `--rubric` and is interactive-only, so no goal
+# objective can be set on this path either. Add the combined check here if the
+# non-interactive path ever gains thread resumption.
+
+
 def _warn_if_interpreter_tools_without_interpreter(
     args: argparse.Namespace, *, enable_interpreter: bool
 ) -> None:

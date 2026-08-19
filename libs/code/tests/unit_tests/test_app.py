@@ -12079,6 +12079,55 @@ class TestGoalCommand:
             assert app._active_goal == "existing goal"
             assert app._active_rubric == "- existing rubric"
 
+    @pytest.mark.parametrize("size_error", [True, False])
+    async def test_goal_proposal_worker_error_keeps_a_size_limit_message(
+        self, size_error: bool
+    ) -> None:
+        """A limit the user can act on must survive the worker-error net.
+
+        `_propose_goal_rubric` handles its own errors and normally ends in
+        SUCCESS, so this branch only runs when something already went wrong —
+        which is when an unhelpful "failed unexpectedly" costs the most. Only the
+        turn-handler twin of this branch was covered.
+        """
+        from textual.worker import WorkerState
+
+        from deepagents_code.goal_state_limits import GoalStateSizeError
+
+        error: Exception = (
+            GoalStateSizeError(
+                label="Goal objective and criteria combined",
+                actual=12_500,
+                limit=12_000,
+            )
+            if size_error
+            else RuntimeError("boom")
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            worker = SimpleNamespace(
+                group="",
+                error=error,
+                state=WorkerState.ERROR,
+            )
+            app._goal_proposal_worker = worker  # ty: ignore[invalid-assignment]
+
+            app.on_worker_state_changed(
+                SimpleNamespace(worker=worker, state=WorkerState.ERROR),  # ty: ignore[invalid-argument-type]
+            )
+            await pilot.pause()
+
+            rendered = " ".join(str(w._content) for w in app.query(ErrorMessage))
+            if size_error:
+                assert "Remove at least 500 characters" in rendered
+                assert "shorten the objective" in rendered
+                assert "failed unexpectedly" not in rendered
+            else:
+                assert "Drafting acceptance criteria failed unexpectedly" in rendered
+            # The worker handle is released either way, so a retry is possible.
+            assert app._goal_proposal_worker is None
+
     async def test_goal_accept_warns_when_persist_fails(self) -> None:
         """A failed write warns and continues without replaying the user turn."""
         app = DeepAgentsApp(agent=MagicMock())

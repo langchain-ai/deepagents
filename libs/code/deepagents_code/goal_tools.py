@@ -176,6 +176,12 @@ def _update_goal_command(
     # instruction from resting on prose alone. Project exactly as the renderer
     # does, or the check passes against text the notice does not carry, which is
     # why this goes through the shared helper rather than projecting again here.
+    #
+    # The refusal covers an oversized `_goal_status_note` too, which the model
+    # itself wrote on an earlier turn. It cannot replace that note with a shorter
+    # one, because this is the call that would do it. Recovery is deliberately
+    # user-only (`/goal clear`): the alternative is letting the model rewrite
+    # state the notice has already told it is unavailable.
     exc = goal_notice_size_error(state)
     if exc is not None:
         return Command(

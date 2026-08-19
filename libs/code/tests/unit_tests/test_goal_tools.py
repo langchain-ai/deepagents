@@ -199,6 +199,36 @@ def test_update_goal_refuses_when_saved_state_is_too_large() -> None:
     assert "Rubric is" in content
 
 
+def test_update_goal_refuses_when_a_legacy_status_note_is_too_large() -> None:
+    """The model cannot shorten its own oversized note; only the user can.
+
+    An actionable goal embeds `_goal_status_note` in its notice, so a legacy
+    checkpoint carrying an oversized one trips the same guard as an oversized
+    rubric — and `update_goal` is the only surface the model has to replace it.
+    Recovery is therefore user-only, via `/goal clear`. Every other oversized test
+    triggers on the objective or the rubric, so this pins the one case where the
+    model's own prior write is what locks it out.
+    """
+    command = _update_goal_command(
+        status="blocked",
+        note="a short new blocker",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_status_note": "x" * (GOAL_STATUS_NOTE_CHAR_LIMIT + 1),
+        },
+    )
+
+    assert command.update is not None
+    assert set(command.update) == {"messages"}
+    content = command.update["messages"][0].content
+    assert "too large to use" in content
+    # The message must point at the user action, since no model action can fix it.
+    assert "clear and recreate the goal" in content
+    assert "Goal status note is" in content
+
+
 def test_update_goal_commits_when_state_fits_the_notice_budget() -> None:
     """The oversized guard must not block a normal blocker report."""
     command = _update_goal_command(

@@ -59,21 +59,44 @@ Administrators can enforce any supported `config.toml` setting with a read-only
   variable is ignored, because any user can change it.
 - Linux and other supported POSIX systems: `/etc/dcode/managed_config.toml`
 
-Managed values override explicit CLI flags, `DEEPAGENTS_CODE_` and compatibility
-environment variables, and `~/.deepagents/config.toml`. Tables merge recursively.
-Deny lists are unioned. An explicitly managed allow or trust list replaces
-lower-precedence grants, including an empty-list lockdown. A managed value of the
-wrong type is ignored, and the lower-precedence value stays in effect. `dcode`
-never writes the managed file. Users can still save a preference, but the UI
-reports when a managed value keeps it from becoming effective.
+Managed values override `DEEPAGENTS_CODE_` and compatibility environment
+variables, and `~/.deepagents/config.toml`. For an agent launch they also
+override the model, auto-classifier model, sandbox, interpreter, programmatic
+tool-calling list, recursion limit, shell allow list, and startup mode supplied
+as CLI flags. Subcommand display flags such as `dcode threads --relative` are
+not overridden.
 
-A missing managed file is normal. If one exists but is unreadable, not UTF-8, or
-invalid TOML, an agent launch fails closed. Subcommands stay available for
-recovery, including `--help`, `--version`, `config`, and `doctor`. A managed file
-that becomes unreadable later also blocks `/reload`, which keeps the settings
-resolved while the file was still readable. Use `dcode config path` and `dcode doctor`
-to inspect its fixed path and parse health. Individual values with the wrong type
-are ignored without discarding valid sibling settings. A corrupt
+Tables merge recursively. Deny lists are unioned. An explicitly managed allow or
+trust list replaces lower-precedence grants. An empty managed list is a
+lockdown: it removes every lower-precedence grant.
+
+A managed value whose type contradicts the manifest is ignored, and the
+lower-precedence value stays in effect. Two exceptions:
+
+- The privilege-affecting keys (`startup.mode`, `shell.allow_list`,
+  `interpreter.enable_interpreter`, `interpreter.ptc`,
+  `runtime.recursion_limit`) stop the launch instead. Ignoring them would leave
+  the user's flag in force, which grants the escalation the policy forbade.
+- Inside structured tables (`[models.providers]`, `[themes]`,
+  `[async_subagents]`, `[sandboxes.providers]`) the dedicated typed reader
+  validates instead, so a wrong-typed managed leaf can displace a valid user
+  leaf and fall back to the built-in default.
+
+`dcode` never writes the managed file. Users can still save a preference. The
+theme, terminal-mapping, UI-toggle, auto-update, and MCP-server screens report
+when a managed value keeps a saved preference from taking effect; other save
+paths do not.
+
+A missing managed file applies no policy. If one exists but is unreadable, not
+UTF-8, or invalid TOML, every command fails closed except the ones needed to
+diagnose it: `--help`, `--version`, `help`, `config`, `doctor`, and
+`auth path`. A managed file that becomes unreadable later also blocks
+`/reload`, and the session keeps the policy that was in force while the file
+was still readable. Use `dcode config path` and `dcode doctor` to inspect its
+fixed path and parse health; `dcode config` also warns when the file exists but
+could not be parsed.
+
+A deny list that cannot be read denies everything rather than nothing. A corrupt
 `~/.deepagents/config.toml` does not disable managed policy: the user file is
 ignored and managed values still apply.
 

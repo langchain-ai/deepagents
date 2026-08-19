@@ -519,7 +519,11 @@ def _load_user_themes(
     *,
     config_path: Path | None = None,
 ) -> None:
-    """Load user-defined themes from `config.toml` into `builtins` (mutated).
+    """Load user and managed themes into `builtins` (mutated).
+
+    Reads the merge of `managed_config.toml` over `~/.deepagents/config.toml`,
+    so a managed `[themes.*]` entry outranks the user's and survives a user
+    config that cannot be parsed.
 
     **New themes** — each `[themes.<name>]` section (where `<name>` is not a
     built-in) must have:
@@ -540,7 +544,7 @@ def _load_user_themes(
     Invalid themes (bad hex, missing required keys) are logged as warnings
     and skipped — they never crash startup.
 
-    Example `config.toml` snippet:
+    Example config snippet (either file):
 
     ```toml
     # New custom theme
@@ -558,7 +562,9 @@ def _load_user_themes(
     Args:
         builtins: Mutable dict to update (new themes are added, built-in
             overrides replace existing entries).
-        config_path: Override for the config file path (testing).
+        config_path: Override for the config file path (testing). Passing a
+            path also excludes managed policy from this read, so production
+            callers must pass `None`.
     """
     is_default = config_path is None
     if config_path is None:

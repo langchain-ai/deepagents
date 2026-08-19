@@ -1,8 +1,11 @@
 """Fixed operating-system paths for managed configuration."""
 
+import logging
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _PROGRAM_DATA_DEFAULT = "C:/ProgramData"
 
@@ -24,9 +27,23 @@ def _program_data_from_registry() -> str | None:
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
         ) as key:
             value, _ = winreg.QueryValueEx(key, "Common AppData")
-    except (ImportError, OSError):
+    except (ImportError, OSError) as exc:
+        logger.warning(
+            "Could not read ProgramData from the registry (%s); falling back to "
+            "%s. Managed policy stored elsewhere will not be found.",
+            type(exc).__name__,
+            _PROGRAM_DATA_DEFAULT,
+        )
         return None
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and value:
+        return value
+    logger.warning(
+        "Registry ProgramData value is unusable (%r); falling back to %s. "
+        "Managed policy stored elsewhere will not be found.",
+        value,
+        _PROGRAM_DATA_DEFAULT,
+    )
+    return None
 
 
 def _windows_program_data(environ: Mapping[str, str] | None) -> str:

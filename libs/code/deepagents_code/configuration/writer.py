@@ -63,9 +63,16 @@ def update_user_config(
                     data = tomllib.load(handle)
             else:
                 data = {}
-            changed = mutate(data)
-            if not changed:
-                return WriteResult(True, False)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            return WriteResult(False, False, f"could not update {config_path}: {exc}")
+        # Outside the exception handling on purpose: a `TypeError` or
+        # `ValueError` raised inside a caller's closure is a bug in that
+        # caller, and reporting it as "could not update <path>" sends the user
+        # to check permissions and disk space for a defect in a lambda.
+        changed = mutate(data)
+        if not changed:
+            return WriteResult(True, False)
+        try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             descriptor, temporary = tempfile.mkstemp(
                 dir=config_path.parent,

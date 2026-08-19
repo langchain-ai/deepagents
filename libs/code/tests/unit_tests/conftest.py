@@ -575,13 +575,15 @@ def _isolate_managed_config(
     unrelated tests change behavior. The snapshot is cached process-wide, so it
     is also cleared on both sides of every test.
     """
-    from deepagents_code.configuration import service
+    from deepagents_code.configuration import paths, service
 
-    monkeypatch.setattr(
-        service,
-        "managed_config_path",
-        lambda: tmp_path / "absent-managed_config.toml",
-    )
+    absent = tmp_path / "absent-managed_config.toml"
+    # Patch both the definition and the name `service` bound at import time.
+    # Patching only `service.managed_config_path` leaves every other importer
+    # — `client.commands.config` among them — reading the developer's real
+    # host path.
+    monkeypatch.setattr(paths, "managed_config_path", lambda **_kwargs: absent)
+    monkeypatch.setattr(service, "managed_config_path", lambda **_kwargs: absent)
     service.invalidate_config_sources()
     yield
     service.invalidate_config_sources()

@@ -1,102 +1,17 @@
-"""Pure precedence and merge logic for configuration providers."""
+"""Pure deep-merge logic for layered TOML configuration.
+
+Precedence itself lives in `service.ConfigSources.merged` and in
+`config_manifest.resolve_scalar`; this module only composes two tables once a
+caller has decided which one outranks the other.
+"""
 
 from __future__ import annotations
 
 from copy import deepcopy
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from deepagents_code.configuration.providers import ConfigProvider
-from deepagents_code.configuration.types import Found, Invalid, ResolvedValue, Unset
-
-
-class MergeStrategy(StrEnum):
-    """How values from multiple providers compose."""
-
-    REPLACE = "replace"
-    DEEP_MERGE = "deep_merge"
-    UNION = "union"
-
-
-class ConfigResolver:
-    """Resolve ranked provider snapshots without provider-specific masking."""
-
-    def __init__(self, providers: tuple[ConfigProvider[Any], ...]) -> None:
-        """Create a resolver ordered by ascending rank."""
-        self._providers = tuple(sorted(providers, key=lambda provider: provider.rank))
-
-    def resolve[T](
-        self,
-        key: str,
-        *,
-        default: T,
-        strategy: MergeStrategy = MergeStrategy.REPLACE,
-    ) -> ResolvedValue[T]:
-        """Resolve `key` using the requested merge strategy.
-
-        Returns:
-            Effective value, source, provenance, and invalid-layer metadata.
-
-        Raises:
-            TypeError: If a provider returns an unsupported result type.
-        """
-        found: list[Found[Any]] = []
-        invalid: list[Invalid] = []
-        for provider in self._providers:
-            result = provider.get(key)
-            if isinstance(result, Invalid):
-                invalid.append(result)
-            elif isinstance(result, Found):
-                found.append(result)
-            elif not isinstance(result, Unset):
-                msg = f"Unsupported provider result: {type(result).__name__}"
-                raise TypeError(msg)
-        if not found:
-            return ResolvedValue(default, "default", invalid=tuple(invalid))
-        if strategy is MergeStrategy.REPLACE:
-            selected = found[0]
-            return ResolvedValue(
-                cast("T", selected.value),
-                selected.source,
-                invalid=tuple(invalid),
-            )
-        if strategy is MergeStrategy.UNION:
-            merged: list[Any] = []
-            for item in reversed(found):
-                values = item.value
-                if not isinstance(values, (list, tuple, set, frozenset)):
-                    invalid.append(
-                        Invalid(item.source, "union values must be sequences")
-                    )
-                    continue
-                for value in values:
-                    if value not in merged:
-                        merged.append(value)
-            sources = " + ".join(item.source for item in found)
-            return ResolvedValue(cast("T", merged), sources, invalid=tuple(invalid))
-        merged_value: dict[str, Any] = {}
-        provenance: dict[str, str] = {}
-        for item in reversed(found):
-            if not isinstance(item.value, dict):
-                invalid.append(Invalid(item.source, "deep-merge values must be tables"))
-                continue
-            merged_value, provenance = merge_toml_tables(
-                merged_value,
-                item.value,
-                lower_source="default",
-                higher_source=item.source,
-                lower_provenance=provenance,
-            )
-        sources = " + ".join(item.source for item in found)
-        return ResolvedValue(
-            cast("T", merged_value),
-            sources,
-            provenance,
-            tuple(invalid),
-        )
 
 
 def merge_toml_tables(
@@ -208,6 +123,8 @@ def merge_toml_tables(
 def _overriding_table_is_scalar_only(table: dict[str, Any]) -> bool:
     """Return `True` when `table` holds no non-empty nested tables at any depth.
 
+    Only direct children need checking: a nested table at any depth makes its
+    own parent chain non-empty, so an empty direct child cannot hide one.
     Empty nested tables carry no lower values worth preserving, so they do not
     stop a higher-precedence scalar from replacing the table.
     """

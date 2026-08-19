@@ -1053,7 +1053,9 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     ```
 
     Args:
-        config_path: Path to config file.
+        config_path: Path to config file. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
 
             Defaults to `~/.deepagents/config.toml`.
 

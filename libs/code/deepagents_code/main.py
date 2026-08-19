@@ -4248,8 +4248,18 @@ def _verify_interpreter_or_exit() -> None:
 
 
 def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
-    """Replace lower-tier runtime arguments with valid managed values."""
+    """Replace lower-tier runtime arguments with managed values.
+
+    A managed value that the manifest rejects is not simply skipped for the
+    privilege-affecting keys. Skipping leaves the user's flag in force, so an
+    administrator typo (`startup.mode = "YOLO"`) would silently grant exactly
+    the escalation the policy meant to forbid, and the CLI would report no
+    managed value for the key. Those keys stop the launch instead, the same
+    way an unparseable managed file does. Keys that cannot grant privilege
+    keep the ordinary ignore-and-fall-through rule.
+    """
     from deepagents_code.config_manifest import (
+        _is_valid_recursion_limit,
         get_option,
         load_managed_config_toml,
         resolve_scalar,
@@ -4258,6 +4268,18 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     managed_data = load_managed_config_toml()
     if not managed_data:
         return
+
+    def declared(key: str) -> bool:
+        """Return whether managed policy sets `key`, valid or not."""
+        option = get_option(key)
+        if option is None or not option.toml_keys:
+            return False
+        node: object = managed_data
+        for part in option.toml_keys:
+            if not isinstance(node, dict) or part not in node:
+                return False
+            node = node[part]
+        return True
 
     def managed_value(key: str) -> tuple[bool, object]:
         option = get_option(key)
@@ -4270,24 +4292,55 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         )
         return source == "managed config", value
 
-    mappings = {
+    # Declaring one of these and getting it wrong must never resolve in the
+    # user's favor, so a rejected value stops the launch.
+    rejected = [
+        key
+        for key in (
+            "startup.mode",
+            "shell.allow_list",
+            "interpreter.enable_interpreter",
+            "interpreter.ptc",
+            "runtime.recursion_limit",
+        )
+        if declared(key) and not managed_value(key)[0]
+    ]
+    limit_found, limit = managed_value("runtime.recursion_limit")
+    if (
+        limit_found
+        and not _is_valid_recursion_limit(limit)
+        and "runtime.recursion_limit" not in rejected
+    ):
+        # `resolve_scalar` applies no range check, and the flag outranks the
+        # bounded resolver when the agent is built, so an out-of-range managed
+        # value would otherwise be assigned verbatim.
+        rejected.append("runtime.recursion_limit")
+    if rejected:
+        sys.stderr.write(
+            "Error: managed config rejects "
+            f"{', '.join(sorted(rejected))}. "
+            "Ask your administrator to correct the value.\n"
+        )
+        sys.stderr.flush()
+        sys.exit(78)
+
+    for key, destination in {
         "models.default": "model",
         "models.auto_classifier": "auto_classifier_model",
         "interpreter.enable_interpreter": "interpreter",
-        "runtime.recursion_limit": "recursion_limit",
         "sandboxes.default": "sandbox",
-    }
-    for key, destination in mappings.items():
+    }.items():
         found, value = managed_value(key)
         if found and hasattr(args, destination):
             setattr(args, destination, value)
 
-    found, _ = managed_value("interpreter.ptc")
-    if found and hasattr(args, "interpreter_tools"):
+    if limit_found and hasattr(args, "recursion_limit"):
+        args.recursion_limit = limit
+
+    if declared("interpreter.ptc") and hasattr(args, "interpreter_tools"):
         args.interpreter_tools = None
 
-    found, _ = managed_value("shell.allow_list")
-    if found and hasattr(args, "shell_allow_list"):
+    if declared("shell.allow_list") and hasattr(args, "shell_allow_list"):
         args.shell_allow_list = None
 
     found, startup_mode = managed_value("startup.mode")
@@ -4397,6 +4450,14 @@ def cli_main() -> None:
 
             sys.exit(run_doctor_command(args))
 
+        # Every remaining command can read or act on managed policy, so none
+        # may run while that policy is unenforceable. `config`, `doctor`, and
+        # `auth path` returned above precisely because they are the tools for
+        # diagnosing a broken managed file; gating them would leave an
+        # administrator no way to see what is wrong. `help` reads no policy.
+        if command != "help":
+            _require_managed_config_or_exit()
+
         if command == "tools":
             from deepagents_code.client.commands.tools import run_tools_command
 
@@ -4429,9 +4490,7 @@ def cli_main() -> None:
         from deepagents_code.config import console, settings
 
         if command is None:
-            # Gate before applying policy: an unreadable managed file must stop
-            # the launch rather than let early-exit paths below run unpoliced.
-            _require_managed_config_or_exit()
+            # The health gate already ran above, for every command.
             _apply_managed_runtime_policy(args)
 
         if command == "auth":
@@ -4485,7 +4544,6 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
-            _require_managed_config_or_exit()
             if getattr(args, "yolo", False):
                 from deepagents_code.approval_mode import has_yolo_acknowledgement
 
@@ -4978,10 +5036,23 @@ def cli_main() -> None:
                 set_auto_update(new_state)
                 effective_state = is_auto_update_enabled()
                 if effective_state != new_state:
+                    from deepagents_code._env_vars import AUTO_UPDATE
+                    from deepagents_code.update_check import _managed_update_value
+
+                    # Managed config is only one of the layers that outrank the
+                    # saved preference. Naming it for an env-var override would
+                    # send the user to an administrator who set no policy.
+                    managed_decides, _ = _managed_update_value("auto_update")
+                    if managed_decides:
+                        blame = "managed config"
+                    elif os.environ.get(AUTO_UPDATE) is not None:
+                        blame = AUTO_UPDATE
+                    else:
+                        blame = "a higher-precedence config source"
                     effective_label = "enabled" if effective_state else "disabled"
                     console.print(
                         "Preference saved, but auto-updates remain "
-                        f"{effective_label} due to managed config."
+                        f"{effective_label} due to {blame}."
                     )
                 else:
                     label = "enabled" if new_state else "disabled"

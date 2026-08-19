@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,12 +10,8 @@ import pytest
 
 from deepagents_code.config_manifest import ConfigOption, OptionKind, resolve_scalar
 from deepagents_code.configuration.paths import managed_config_path
-from deepagents_code.configuration.providers import MappingProvider, TomlFileProvider
-from deepagents_code.configuration.resolver import (
-    ConfigResolver,
-    MergeStrategy,
-    merge_toml_tables,
-)
+from deepagents_code.configuration.providers import TomlFileProvider
+from deepagents_code.configuration.resolver import merge_toml_tables
 from deepagents_code.configuration.service import (
     ManagedConfigError,
     invalidate_config_sources,
@@ -82,7 +79,7 @@ def test_toml_provider_distinguishes_missing_corrupt_and_empty(
 ) -> None:
     """TOML snapshots keep missing, invalid, and valid-empty states distinct."""
     path = tmp_path / "managed.toml"
-    provider = TomlFileProvider("managed config", path, 100)
+    provider = TomlFileProvider("managed config", path)
     assert provider.load().status.health is ProviderHealth.MISSING
 
     path.write_text("[broken", encoding="utf-8")
@@ -100,7 +97,7 @@ def test_toml_provider_marks_unreadable(
 ) -> None:
     """An operating-system read failure is not mistaken for a missing file."""
     path = tmp_path / "managed.toml"
-    provider = TomlFileProvider("managed config", path, 100)
+    provider = TomlFileProvider("managed config", path)
 
     def denied(*_args: object, **_kwargs: object) -> Iterator[bytes]:
         raise PermissionError
@@ -125,38 +122,6 @@ def test_managed_provider_failure_is_fail_closed(
             require_healthy_managed_config(refresh=True)
     finally:
         invalidate_config_sources()
-
-
-def test_resolver_uses_ranked_replace_union_and_deep_merge() -> None:
-    """Provider resolution preserves explicit empties and strategy semantics."""
-    managed = MappingProvider(
-        "managed config",
-        100,
-        {
-            "scalar": False,
-            "deny": ["managed"],
-            "table": {"nested": {"managed": 2}},
-        },
-    )
-    user = MappingProvider(
-        "config.toml",
-        500,
-        {
-            "scalar": True,
-            "deny": ["user"],
-            "table": {"nested": {"user": 1}},
-        },
-    )
-    resolver = ConfigResolver((user, managed))
-
-    assert resolver.resolve("scalar", default=None).value is False
-    assert resolver.resolve("deny", default=[], strategy=MergeStrategy.UNION).value == [
-        "user",
-        "managed",
-    ]
-    assert resolver.resolve(
-        "table", default={}, strategy=MergeStrategy.DEEP_MERGE
-    ).value == {"nested": {"user": 1, "managed": 2}}
 
 
 def test_deep_merge_tracks_managed_leaf_provenance() -> None:
@@ -725,3 +690,342 @@ def test_shell_allow_list_array_preserves_comma_in_entry() -> None:
         "my,tool",
         "git",
     ]
+
+
+def test_corrupt_managed_config_does_not_empty_the_mcp_deny_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken managed file must not re-enable administrator-denied servers.
+
+    An unusable snapshot carries an empty table, so returning it would read as
+    "nothing is denied" and silently undo every managed deny.
+    """
+    from deepagents_code import mcp_disabled, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[broken", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        with pytest.raises(ManagedConfigError):
+            mcp_disabled.get_disabled_servers()
+        # The user-facing predicate must fail closed rather than propagate.
+        assert mcp_disabled.is_server_disabled("github") is True
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_failed_reload_keeps_the_last_healthy_managed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed file that breaks mid-session must not empty the cached policy.
+
+    Refreshing used to cache the failed load, so every later reader saw an
+    empty managed table and treated enforced denies as absent.
+    """
+    from deepagents_code import mcp_disabled, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[mcp]\ndisabled_servers = ["denied"]\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        assert mcp_disabled.get_disabled_servers() == {"denied"}
+
+        managed.write_text("[broken", encoding="utf-8")
+        with pytest.raises(ManagedConfigError):
+            require_healthy_managed_config(refresh=True)
+
+        # The failed refresh reported the error but left policy in force.
+        assert mcp_disabled.get_disabled_servers() == {"denied"}
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_union_paths_rebase_onto_an_option_subtree() -> None:
+    """Deny-list paths must still match when a merge starts below the root."""
+    from deepagents_code.configuration.service import UNION_PATHS, union_paths_under
+
+    assert ("disabled_servers",) in union_paths_under(("mcp",))
+    assert union_paths_under(()) == UNION_PATHS
+    assert union_paths_under(("models",)) == frozenset()
+
+
+def test_writer_reports_caller_bugs_separately_from_disk_errors(
+    tmp_path: Path,
+) -> None:
+    """A bug in the caller's closure must not read as a filesystem failure."""
+    config_path = tmp_path / "config.toml"
+
+    def broken(_data: dict[str, object]) -> bool:
+        msg = "bug in caller"
+        raise TypeError(msg)
+
+    with pytest.raises(TypeError, match="bug in caller"):
+        update_user_config(broken, config_path=config_path)
+
+    unchanged = update_user_config(lambda _data: False, config_path=config_path)
+    assert unchanged.ok is True
+    assert unchanged.changed is False
+    assert not config_path.exists()
+
+
+def test_writer_reports_an_unparseable_existing_config_as_an_error(
+    tmp_path: Path,
+) -> None:
+    """A corrupt file is refused so sibling sections are not truncated."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[broken", encoding="utf-8")
+
+    result = update_user_config(
+        lambda data: data.setdefault("ui", {}).update(theme="x") or True,
+        config_path=config_path,
+    )
+    assert result.ok is False
+    assert result.error is not None
+    assert "could not update" in result.error
+
+
+def _managed_policy_args() -> argparse.Namespace:
+    """Return a namespace shaped like the parsed agent-launch arguments."""
+    return argparse.Namespace(
+        model=None,
+        auto_classifier_model=None,
+        interpreter=None,
+        recursion_limit=None,
+        sandbox=None,
+        interpreter_tools=None,
+        shell_allow_list="all",
+        auto_approve=False,
+        yolo=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("managed_toml", "expected_exit"),
+    [
+        ('[startup]\nmode = "YOLO"\n', True),
+        ("[runtime]\nrecursion_limit = 3\n", True),
+        ("[shell]\nallow_list = 5\n", True),
+        ('[startup]\nmode = "manual"\n', False),
+        ("[runtime]\nrecursion_limit = 500\n", False),
+    ],
+)
+def test_rejected_managed_privilege_value_stops_the_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed_toml: str,
+    expected_exit: bool,
+) -> None:
+    """A privilege key the manifest rejects must not resolve in the user's favor.
+
+    Skipping the value left `--yolo` and `--shell-allow-list all` in force, so
+    an administrator typo granted exactly the escalation policy forbade.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(managed_toml, encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        if expected_exit:
+            with pytest.raises(SystemExit) as excinfo:
+                main._apply_managed_runtime_policy(args)
+            assert excinfo.value.code == 78
+        else:
+            main._apply_managed_runtime_policy(args)
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_startup_mode_revokes_a_user_yolo_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed policy outranks the `--yolo` flag it was written to forbid."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        main._apply_managed_runtime_policy(args)
+    finally:
+        service.invalidate_config_sources()
+
+    assert args.yolo is False
+    assert args.auto_approve is False
+
+
+def test_managed_shell_allow_list_clears_the_cli_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed allow list must displace `--shell-allow-list all`."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        main._apply_managed_runtime_policy(args)
+    finally:
+        service.invalidate_config_sources()
+
+    assert args.shell_allow_list is None
+
+
+def test_managed_recursion_limit_is_range_checked_before_it_wins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid managed limit is applied; `resolve_scalar` alone never bounds it."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[runtime]\nrecursion_limit = 500\n", encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        main._apply_managed_runtime_policy(args)
+    finally:
+        service.invalidate_config_sources()
+
+    assert args.recursion_limit == 500
+
+
+@pytest.mark.parametrize(
+    ("registry_value", "expected_root"),
+    [
+        ("D:/SharedData", "D:/SharedData"),
+        ("", "C:/ProgramData"),
+        (None, "C:/ProgramData"),
+    ],
+)
+def test_windows_program_data_comes_from_the_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    registry_value: str | None,
+    expected_root: str,
+) -> None:
+    """The Windows root is read from HKLM, never from a user-settable env var.
+
+    A relocated ProgramData is a real enterprise configuration, and reading
+    `%ProgramData%` would let any unprivileged user redirect the lookup.
+    """
+    import sys as _sys
+    import types
+
+    from deepagents_code.configuration import paths
+
+    class _FakeKey:
+        def __enter__(self) -> _FakeKey:  # noqa: PYI034 - local test double
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    def query(_key: object, _name: str) -> tuple[object, int]:
+        if registry_value is None:
+            raise OSError
+        return registry_value, 1
+
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=object(),
+        OpenKey=lambda *_a, **_k: _FakeKey(),
+        QueryValueEx=query,
+    )
+    monkeypatch.setitem(_sys.modules, "winreg", fake)
+    monkeypatch.setattr(paths.sys, "platform", "win32")
+
+    # Target the helper directly: the autouse isolation fixture replaces
+    # `managed_config_path` itself.
+    assert paths._windows_program_data(None) == expected_root
+
+
+def test_disabled_server_write_recomputes_inside_the_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale pre-lock snapshot must not drop a concurrently disabled server.
+
+    The writer recomputes the deny set from the table it parses inside the
+    lock, so a disable that landed after the caller's read still survives.
+    """
+    from deepagents_code import mcp_disabled
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[mcp]\ndisabled_servers = ["a"]\n', encoding="utf-8")
+
+    # Stand in for a concurrent writer: the caller's snapshot predates the
+    # disable of "a" that is already on disk.
+    monkeypatch.setattr(mcp_disabled, "_load_config", lambda _path: {})
+
+    ok, _detail = mcp_disabled.set_server_disabled("b", True, config_path=config_path)
+    assert ok
+
+    import tomllib
+
+    with config_path.open("rb") as handle:
+        written = tomllib.load(handle)
+    assert written["mcp"]["disabled_servers"] == ["a", "b"]
+
+
+def test_startup_gate_exits_78_on_unusable_managed_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every gated command must stop rather than run with policy unenforced."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[broken", encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            main._require_managed_config_or_exit()
+        assert excinfo.value.code == 78
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_startup_gate_accepts_a_missing_managed_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing file applies no policy and must not block any command."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    monkeypatch.setattr(
+        service, "managed_config_path", lambda: tmp_path / "absent.toml"
+    )
+    service.invalidate_config_sources()
+    try:
+        main._require_managed_config_or_exit()
+    finally:
+        service.invalidate_config_sources()

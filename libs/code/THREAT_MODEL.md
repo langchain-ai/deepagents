@@ -208,7 +208,7 @@
 | TB9  | LocalContextMiddleware → Host Env     | Bash detect script output (git info, project files, Makefile) injected into system prompt | Script is framework-generated static code; 30s timeout; exit-code check | Content of Makefile, pyproject.toml, git branch names, directory listing |
 | TB10 | RemoteAgent → LangGraph Dev Server    | CLI communicates with agent via HTTP+SSE on localhost                       | Server bound to `127.0.0.1` (`client/launch/server.py:_DEFAULT_HOST`); ephemeral per session | No authentication (`LANGGRAPH_AUTH_TYPE=noop`); any localhost process can reach the API |
 | TB11 | Config File → Code Execution          | `class_path` in `config.toml` triggers `importlib.import_module()`; project/global `.env` values are loaded into the process environment and can reach Bash startup hooks | Format validation (`module:ClassName`); `issubclass(BaseChatModel)` check; dotenv loading denies shell startup / environment-hijack keys (`BASH_ENV`, `ENV`) | Module-level side effects execute during import; user controls config file; project files in the working directory influence execution |
-| TB12 | Managed Config → Runtime              | A fixed administrator-deployed TOML file overrides CLI, environment, and user preferences | Fixed non-redirectable path; read-only application behavior; fail-closed agent startup; typed resolution; diagnostics remain available | Filesystem ownership/mode and privileged deployment are outside the CLI; a host administrator can weaken or strengthen policy |
+| TB12 | Managed Config → Runtime              | A fixed administrator-deployed TOML file overrides CLI, environment, and user preferences | Fixed non-redirectable path; the CLI never writes the file; fail-closed startup for every command except diagnostics; typed resolution; diagnostics remain available | Filesystem ownership/mode and privileged deployment are outside the CLI; a host administrator can weaken or strengthen policy |
 
 ### Boundary Details
 
@@ -265,7 +265,17 @@
 
 #### TB12: Managed Config → Runtime
 
-- **Inside**: The resolver reads one fixed OS path and never writes the managed source. Valid managed values take the highest precedence. Tables deep-merge, deny lists union, and an explicit managed allow or trust list replaces lower-precedence grants. A managed scalar replaces a colliding user table at any depth, so a user cannot defeat policy by changing the shape of a key. A wrong-typed managed value is skipped, and the lower-precedence value stays in effect. A missing file is accepted. A present unreadable, undecodable, or syntactically corrupt file blocks CLI and server agent launch, and also blocks `/reload`; all subcommands stay usable for recovery. An unusable user `config.toml` drops only the user layer, so managed policy still applies.
+- **Inside**: The resolver reads one fixed OS path and never writes the managed source. Valid managed values take the highest precedence. The rules are:
+  - Tables deep-merge. Deny lists union. An explicit managed allow or trust list replaces lower-precedence grants.
+  - A managed scalar replaces a colliding user table at any depth, so a user cannot defeat policy by changing the shape of a key.
+  - A wrong-typed managed scalar is skipped, and the lower-precedence value stays in effect.
+  - Inside a structured table the dedicated typed reader validates instead. A wrong-typed managed leaf there can displace a valid user leaf, after which the reader falls back to the built-in default.
+  - A wrong-typed managed value for a privilege-affecting key (`startup.mode`, `shell.allow_list`, `interpreter.enable_interpreter`, `interpreter.ptc`, `runtime.recursion_limit`) stops the launch. Skipping it would leave the user's CLI flag in force.
+  - A missing file is accepted and applies no policy.
+  - A present unreadable, undecodable, or syntactically corrupt file blocks every command except `config`, `doctor`, `auth path`, and `help`, and also blocks `/reload`.
+  - A failed `/reload` keeps the last snapshot that parsed cleanly, so policy is never dropped mid-session.
+  - An unusable user `config.toml` drops only the user layer, so managed policy still applies.
+  - A deny list that cannot be read is treated as denying everything, never as empty.
 - **Outside**: Ownership, permission-mode validation, privileged installation, and `sudo` policy are deployment responsibilities. Anyone who can replace the administrator-managed file can control model, sandbox, interpreter, MCP trust, and other supported runtime settings.
 - **Crossing mechanism**: Synchronous local file read through `configuration.TomlFileProvider`, followed by typed resolution and CLI/server startup gates.
 

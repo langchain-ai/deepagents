@@ -478,11 +478,22 @@ def _option_provenance(
             if user_found and isinstance(user_value, dict)
             else {}
         )
+        from deepagents_code.configuration.service import (
+            _is_valid_managed_scalar,
+            union_paths_under,
+        )
+
+        # Must match `ConfigSources.merged` exactly. Merging without the
+        # validator and the union set reports a leaf as `config.toml` that
+        # managed policy actually controls, and this is the output an
+        # administrator uses to audit what is enforced.
         _, provenance = merge_toml_tables(
             lower,
             cast("dict[str, Any]", managed_value),
             lower_source="config.toml",
             higher_source="managed config",
+            union_paths=union_paths_under(option.toml_keys or ()),
+            higher_leaf_is_valid=_is_valid_managed_scalar,
         )
         return provenance or {"effective": source}
     if user_found and isinstance(user_value, dict):
@@ -613,16 +624,40 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
     return 0
 
 
+def _managed_health_warning() -> str | None:
+    """Return a notice when managed policy exists but could not be parsed.
+
+    `load_managed_config_toml` yields an empty mapping for a broken file, so
+    every option would otherwise render as `config.toml`/`env`/`default` and
+    an administrator debugging "why is my policy not applying" would be shown
+    a clean table.
+
+    Returns:
+        A user-facing notice, or `None` when managed policy is usable.
+    """
+    from deepagents_code.configuration.service import managed_config_status
+
+    status = managed_config_status()
+    if status.usable:
+        return None
+    detail = f": {status.detail}" if status.detail else ""
+    return (
+        f"managed config at {status.path} is {status.health.value.lower()}"
+        f"{detail}; the values below do not reflect managed policy."
+    )
+
+
 def _print_store_warning(store_error: str | None) -> None:
-    """Print a warning when the `/auth` credential store was unreadable."""
-    if not store_error:
-        return
+    """Print warnings for an unreadable credential store or managed config."""
     from rich.markup import escape
 
     from deepagents_code.config import console
 
-    console.print(f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False)
-    console.print()
+    warnings = [text for text in (_managed_health_warning(), store_error) if text]
+    for text in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {escape(text)}", highlight=False)
+    if warnings:
+        console.print()
 
 
 def _print_config_table(
@@ -938,6 +973,9 @@ def _run_get(
             )
         if store_error:
             payload["store_error"] = store_error
+        managed_warning = _managed_health_warning()
+        if managed_warning:
+            payload["managed_config_error"] = managed_warning
         write_json("config get", payload)
         return 0
 
@@ -956,16 +994,26 @@ def _run_get(
         # detail lines `_print_config_verbose` emits.
         console.print(f"  {option.summary}", highlight=False, style="dim")
         console.print(f"  {_sources_line(option)}", highlight=False, style="dim")
-    if store_error:
-        console.print(
-            f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False
-        )
+    for text in (_managed_health_warning(), store_error):
+        if text:
+            console.print(f"[yellow]Warning:[/yellow] {escape(text)}", highlight=False)
     return 0
 
 
+_MANAGED_PATH_LABEL = "managed config"
+"""Row label for the managed file, matched by `_config_path_status`."""
+
+
 def _config_path_status(label: str, *, exists: bool) -> str:
-    """Return a diagnostic status for one config-path row."""
-    if label == "managed config":
+    """Return a diagnostic status for one config-path row.
+
+    The managed row reports parse health rather than mere existence, so a
+    corrupt file is not shown as present and fine.
+
+    Returns:
+        A short status word for the row.
+    """
+    if label == _MANAGED_PATH_LABEL:
         from deepagents_code.configuration.service import managed_config_status
 
         return managed_config_status(refresh=True).health.value.lower()
@@ -1080,7 +1128,7 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
     project_root = project_context.project_root or project_context.user_cwd
 
     candidates: list[tuple[str, Path | None]] = [
-        ("managed config", managed_config_path()),
+        (_MANAGED_PATH_LABEL, managed_config_path()),
         ("config.toml", DEFAULT_CONFIG_PATH),
         ("project .env", project_dotenv),
         ("global .env", _GLOBAL_DOTENV_PATH),

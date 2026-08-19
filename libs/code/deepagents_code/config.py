@@ -2058,7 +2058,10 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     Returns:
         List of allowed commands, `SHELL_ALLOW_ALL` if `'all'` was specified,
             or `None` if no allow-list configured.
-    """
+
+    Raises:
+        ValueError: If `'all'` appears alongside other commands.
+    """  # noqa: DOC502 - propagates from `parse_shell_allow_list_items`
     if not allow_list_str:
         return None
 
@@ -2772,16 +2775,16 @@ class Settings:
         from deepagents_code.configuration.service import (
             ManagedConfigError,
             get_managed_snapshot,
-            invalidate_config_sources,
             require_healthy_managed_config,
         )
 
-        invalidate_config_sources()
-        # A managed file that breaks after startup must not silently drop
-        # policy for the rest of the session: keep the previous values, which
-        # were resolved while the file was still readable.
+        # Refresh in place rather than invalidating first: dropping the cached
+        # snapshot before the reload would leave every other reader with an
+        # empty managed table if the new file fails to parse, which reads as
+        # "no policy" instead of "policy unchanged". `refresh=True` keeps the
+        # last snapshot that parsed cleanly and still raises on the failure.
         try:
-            require_healthy_managed_config()
+            require_healthy_managed_config(refresh=True)
         except ManagedConfigError as exc:
             logger.error("Keeping previous settings: %s", exc)  # noqa: TRY400
             return dict(previous)

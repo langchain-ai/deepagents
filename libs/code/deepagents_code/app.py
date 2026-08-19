@@ -230,11 +230,13 @@ def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     return parsed, None
 
 
-# Config `config.toml` writes are serialized by the single process-wide lock
-# `model_config._config_write_lock`, imported lazily at each write site (below).
-# It is shared with `model_config`'s writers so a theme/UI write here cannot
-# clobber, e.g., an effort or default-model write; a lock local to this module
-# would not mutually exclude against those. See that lock's docstring.
+# Config `config.toml` writes here go through
+# `configuration.writer.update_user_config`, which holds
+# `USER_CONFIG_WRITE_LOCK` for the whole read-modify-write.
+# `model_config._config_write_lock` is an alias for that same lock object, so a
+# theme/UI write here cannot clobber, e.g., an effort or default-model write; a
+# lock local to this module would not mutually exclude against those. See that
+# lock's docstring.
 
 _DEEPAGENTS_IMPORT_LOCK = threading.RLock()
 """Serializes process-local cold imports into the Deep Agents SDK graph.

@@ -68,12 +68,13 @@ def _load_config(config_path: Path) -> dict[str, Any]:
         raise _ConfigLoadError(msg) from exc
 
 
-def _save_disabled_entries(entries: set[str], config_path: Path) -> bool:
-    """Persist the disabled-server set through the shared writer.
+def _save_disabled_entry(server_name: str, disabled: bool, config_path: Path) -> bool:
+    """Add or remove one server name through the shared writer.
 
-    The edit runs against the parse the writer performs inside its lock, not
-    against a snapshot read before the lock was taken, so a concurrent
-    `[ui]` or `[models]` write to the same file is not clobbered.
+    The entry set is recomputed from the parse the writer performs inside its
+    lock, never from a snapshot read before the lock was taken. Writing a
+    pre-lock set would drop a concurrent disable of a *different* server, and
+    editing in place keeps a concurrent `[ui]` or `[models]` write intact.
 
     Returns:
         Whether the transaction succeeded.
@@ -85,6 +86,11 @@ def _save_disabled_entries(entries: set[str], config_path: Path) -> bool:
         if not isinstance(section, dict):
             section = {}
         before = (section.get(_KEY), _LEGACY_SECTION in current)
+        entries = _disabled_entries(current)
+        if disabled:
+            entries.add(server_name)
+        else:
+            entries.discard(server_name)
         section[_KEY] = sorted(entries)
         current[_SECTION] = section
         _remove_legacy_disabled_section(current)
@@ -121,10 +127,26 @@ def _disabled_entries(data: dict[str, Any]) -> set[str]:
 
 
 def _managed_disabled_servers() -> set[str]:
-    """Return names denied by the read-only managed source."""
-    from deepagents_code.configuration.service import get_managed_snapshot
+    """Return names denied by the read-only managed source.
 
-    return _disabled_entries(get_managed_snapshot().data)
+    Returns:
+        Server names the managed source denies.
+
+    Raises:
+        ManagedConfigError: If managed policy exists but cannot be parsed. An
+            unusable snapshot carries an empty table, which is indistinguishable
+            from "nothing is denied", so returning it would re-enable every
+            administrator-denied server. The caller must fail closed instead.
+    """
+    from deepagents_code.configuration.service import (
+        ManagedConfigError,
+        get_managed_snapshot,
+    )
+
+    snapshot = get_managed_snapshot()
+    if not snapshot.status.usable:
+        raise ManagedConfigError(snapshot.status)
+    return _disabled_entries(snapshot.data)
 
 
 def _remove_legacy_disabled_section(data: dict[str, Any]) -> None:
@@ -145,12 +167,19 @@ def get_disabled_servers(*, config_path: Path | None = None) -> set[str]:
 
     Args:
         config_path: Override the default config location; intended for tests.
+            Passing a path also excludes managed policy from this read, so
+            production callers must pass `None`.
 
     Returns:
         Union of the user and managed deny sets. Managed denies survive an
         unreadable or corrupt user config, so the result is empty only when
         nothing is denied at either layer.
-    """
+
+    Raises:
+        ManagedConfigError: If managed policy exists but cannot be parsed.
+            Callers must treat this as "deny everything", never as an empty
+            deny set.
+    """  # noqa: DOC502 - propagates from `_managed_disabled_servers`
     is_default = config_path is None
     if config_path is None:
         config_path = _DEFAULT_CONFIG_PATH
@@ -172,12 +201,25 @@ def is_server_disabled(server_name: str, *, config_path: Path | None = None) -> 
     Args:
         server_name: MCP server name from `mcpServers` config.
         config_path: Override the default config location; intended for tests.
+            Passing a path also excludes managed policy from this read, so
+            production callers must pass `None`.
 
     Returns:
-        `True` when the server is recorded as disabled, `False` otherwise
-        (including when the config cannot be read).
+        `True` when the server is recorded as disabled, and `True` when
+        managed policy exists but cannot be parsed — an unreadable deny list
+        must not read as permission. `False` when only the user config is
+        unreadable, which is the pre-existing behavior.
     """
-    return server_name in get_disabled_servers(config_path=config_path)
+    from deepagents_code.configuration.service import ManagedConfigError
+
+    try:
+        return server_name in get_disabled_servers(config_path=config_path)
+    except ManagedConfigError:
+        logger.error(  # noqa: TRY400
+            "Managed MCP policy is unreadable; treating %r as disabled.",
+            server_name,
+        )
+        return True
 
 
 def set_server_disabled(
@@ -196,6 +238,8 @@ def set_server_disabled(
         server_name: MCP server name from `mcpServers` config.
         disabled: `True` to disable, `False` to re-enable.
         config_path: Override the default config location; intended for tests.
+            Passing a path also excludes managed policy from this read, so
+            production callers must pass `None`.
 
     Returns:
         Tuple of `(ok, detail)`. `detail` is a short user-facing string
@@ -208,26 +252,30 @@ def set_server_disabled(
     if config_path is None:
         config_path = _DEFAULT_CONFIG_PATH
     try:
-        data = _load_config(config_path)
+        # Parsed only to reject a corrupt file with a specific message before
+        # any write is attempted; the writer recomputes the entries itself.
+        _load_config(config_path)
     except _ConfigLoadError as exc:
         return False, str(exc)
-    current = _disabled_entries(data)
-    previous = set(current)
-    if disabled:
-        current.add(server_name)
-    else:
-        current.discard(server_name)
-    shadowed = (
-        is_default and not disabled and server_name in _managed_disabled_servers()
-    )
+    from deepagents_code.configuration.service import ManagedConfigError
+
+    try:
+        managed_denied = is_default and server_name in _managed_disabled_servers()
+    except ManagedConfigError as exc:
+        # Re-enabling against policy that cannot be read would be a fail-open,
+        # so refuse the write rather than record a preference whose managed
+        # shadow is unknown.
+        if not disabled:
+            return False, str(exc)
+        managed_denied = False
+    shadowed = managed_denied and not disabled
     shadowed_detail = (
         f"MCP server {server_name!r} remains disabled by managed config."
         if shadowed
         else None
     )
-    if current == previous and _LEGACY_SECTION not in data:
-        return True, shadowed_detail
-
-    if _save_disabled_entries(current, config_path):
+    # The writer recomputes the set under the lock and reports "no change"
+    # itself, so there is no pre-lock equality check to make here.
+    if _save_disabled_entry(server_name, disabled, config_path):
         return True, shadowed_detail
     return False, f"could not write {config_path}"

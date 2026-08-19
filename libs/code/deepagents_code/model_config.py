@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import tomllib
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -900,7 +901,8 @@ same snapshot and the last `replace()` silently drops the other's change.
 Because the hazard is on the whole-file replace (not per-section), *every* writer
 of `config.toml` must share this one lock — a second lock guarding the same file
 would not mutually exclude, so a `[effort]` write could still clobber a `[ui]`
-write. All such helpers here and in `app.py` use this shared writer lock.
+write. Every helper that writes the user config goes through
+`configuration.writer.update_user_config`, which takes this same lock.
 
 It is reentrant so a caller can hold it across several of these helpers without
 self-deadlock. Cross-process races are out of scope (mirrors the existing
@@ -911,6 +913,9 @@ def _load_effective_config_data(
     config_path: Path | None,
 ) -> tuple[dict[str, Any], Path]:
     """Load user TOML plus managed policy for default-path reads.
+
+    Passing a non-`None` `config_path` excludes managed policy, so production
+    callers must pass `None`.
 
     Returns:
         Effective data and resolved user path.
@@ -2699,7 +2704,9 @@ class ModelConfig:
         lifetime of the process. Use `clear_caches()` to reset.
 
         Args:
-            config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
+            config_path: Path to config file. Defaults to
+                ~/.deepagents/config.toml. Passing a path also excludes managed
+                policy from this read, so production callers must pass `None`.
 
         Returns:
             Parsed `ModelConfig` instance. A user file that is missing,
@@ -2751,7 +2758,11 @@ class ModelConfig:
         if user_unreadable:
             # Do not let a privileged process read a config the owning user has
             # made unavailable, but preserve administrator-managed policy.
-            data = sources.managed.data
+            # Copy: `providers` below is retained in the cached `ModelConfig`,
+            # and the managed snapshot is shared process-wide. Handing out a
+            # live sub-dict would let a consumer mutate administrator policy
+            # for the rest of the session. The `merged()` path already copies.
+            data = deepcopy(sources.managed.data)
         else:
             data, _ = sources.merged()
         try:
@@ -4506,7 +4517,8 @@ def load_mcp_server_trust_lists(
     Args:
         config_path: Config file to read. Defaults to `DEFAULT_CONFIG_PATH`;
             callers should not point this at a project path — doing so would
-            defeat the boundary above.
+            defeat the boundary above. Passing a path also excludes managed
+            policy from this read, so production callers must pass `None`.
 
     Returns:
         The resolved `McpServerTrustLists`. A missing file yields empty lists

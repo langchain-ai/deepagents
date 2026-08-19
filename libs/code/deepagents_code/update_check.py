@@ -3716,8 +3716,10 @@ def _managed_update_value(key: str) -> tuple[bool, bool]:
 def is_update_check_enabled() -> bool:
     """Return whether update checks are enabled.
 
-    Checks `DEEPAGENTS_CODE_NO_UPDATE_CHECK` env var and the `[update].check` key
-    in `config.toml`.
+    Managed config decides first: `[update].check` in `managed_config.toml`
+    outranks both layers below, and a managed file that cannot be parsed
+    forces `False`. Otherwise, checks the `DEEPAGENTS_CODE_NO_UPDATE_CHECK`
+    env var and the `[update].check` key in `config.toml`.
 
     Defaults to enabled.
     """
@@ -3734,8 +3736,11 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-out via `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or
-    `[update].auto_update = false` in `config.toml`.
+    Managed config decides first: `[update].auto_update` in
+    `managed_config.toml` outranks both layers below, and a managed file that
+    cannot be parsed forces `False`. Otherwise, opt out via the
+    `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or `[update].auto_update = false`
+    in `config.toml`.
 
     Defaults to `True`.
 

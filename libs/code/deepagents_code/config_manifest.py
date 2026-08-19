@@ -895,7 +895,10 @@ def resolve_scalar(
     if option.toml_keys:
         found, raw = _toml_lookup(toml_data, option.toml_keys)
         if option.kind is OptionKind.STRUCTURED and managed_found:
-            from deepagents_code.configuration.service import UNION_PATHS
+            from deepagents_code.configuration.service import (
+                UNION_PATHS,
+                union_paths_under,
+            )
 
             if found and isinstance(raw, dict) and isinstance(managed_raw, dict):
                 from deepagents_code.configuration.resolver import merge_toml_tables
@@ -905,7 +908,7 @@ def resolve_scalar(
                     managed_raw,
                     lower_source="config.toml",
                     higher_source="managed config",
-                    union_paths=UNION_PATHS,
+                    union_paths=union_paths_under(option.toml_keys or ()),
                 )
                 return merged, "managed config + config.toml"
             if (

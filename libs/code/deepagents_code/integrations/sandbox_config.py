@@ -112,7 +112,8 @@ class SandboxConfig:
         """Load the `[sandboxes]` section from a config file.
 
         Args:
-            config_path: Path to config file. Defaults to
+            config_path: Passing a path also excludes managed policy from
+                this read, so production callers must pass `None`. Defaults to
                 `~/.deepagents/config.toml`.
 
         Returns:

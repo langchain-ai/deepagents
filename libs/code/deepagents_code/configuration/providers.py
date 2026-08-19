@@ -4,60 +4,16 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 from deepagents_code.configuration.types import (
-    Found,
     ProviderHealth,
-    ProviderResult,
     ProviderStatus,
     TomlSnapshot,
-    Unset,
 )
-
-
-class ConfigProvider[T](Protocol):
-    """Provider of values keyed by canonical config identifier."""
-
-    @property
-    def name(self) -> str:
-        """Human-readable source label used in provenance and diagnostics."""
-        ...
-
-    @property
-    def rank(self) -> int:
-        """Precedence rank; providers sort ascending by this value."""
-        ...
-
-    def get(self, key: str) -> ProviderResult[T]:
-        """Return this provider's result for `key`."""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class MappingProvider[T]:
-    """Immutable snapshot provider backed by a mapping."""
-
-    name: str
-    rank: int
-    values: dict[str, T]
-
-    def get(self, key: str) -> ProviderResult[T]:
-        """Return the mapped value or `Unset`."""
-        if key not in self.values:
-            return Unset()
-        return Found(self.values[key], self.name)
-
-
-class EnvProvider[T](MappingProvider[T]):
-    """Snapshot of explicitly resolved environment values."""
-
-
-class CliProvider[T](MappingProvider[T]):
-    """Snapshot of explicitly supplied CLI values."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +22,6 @@ class TomlFileProvider:
 
     name: str
     path: Path
-    rank: int
 
     def load(self) -> TomlSnapshot:
         """Parse the file and classify missing, unreadable, or corrupt states.
@@ -123,14 +78,3 @@ class TomlFileProvider:
             data,
             ProviderStatus(self.name, self.path, ProviderHealth.OK),
         )
-
-    def get_path(
-        self, data: dict[str, Any], keys: tuple[str, ...]
-    ) -> ProviderResult[Any]:
-        """Return a nested TOML value without conflating empty and missing values."""
-        node: Any = data
-        for key in keys:
-            if not isinstance(node, dict) or key not in node:
-                return Unset()
-            node = node[key]
-        return Found(node, self.name)

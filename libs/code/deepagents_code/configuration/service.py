@@ -36,6 +36,24 @@ third deny list cannot get union semantics in one place and replace in
 another.
 """
 
+MANAGED_TABLE_PATHS = frozenset(
+    {
+        ("themes",),
+        ("ui", "terminal_themes"),
+        ("models", "providers"),
+        ("async_subagents",),
+        ("sandboxes", "providers"),
+        ("threads", "columns"),
+    }
+)
+"""Structured manifest paths whose values must be TOML tables.
+
+The manifest also uses `STRUCTURED` for list-valued settings such as MCP
+allowlists, so this cannot be derived from `OptionKind` alone. Parent paths
+for every manifest option are added dynamically by
+`managed_section_shape_violations` below.
+"""
+
 
 def union_paths_under(prefix: tuple[str, ...]) -> frozenset[tuple[str, ...]]:
     """Return `UNION_PATHS` rebased onto a subtree rooted at `prefix`.
@@ -151,13 +169,12 @@ def managed_declaration(
 def managed_policy_violations(
     managed_data: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
-    """Return enforced keys whose managed value cannot be applied.
+    """Return managed settings whose declaration cannot be safely applied.
 
-    A key is a violation when managed policy declares it and the declaration
-    cannot be enforced: the manifest rejects the value, an ancestor of the path
-    is not a table, or `runtime.recursion_limit` falls outside its bounds. The
-    shape cases matter because "wrong shape" is not "absent" — reading them as
-    absent silently resolves the key in the user's favor.
+    A key is a violation when an enforced managed policy declaration cannot be
+    applied, or when a known managed section has a non-table value. The shape
+    cases matter because "wrong shape" is not "absent": merging such a value
+    can erase a user subtree before a reader falls back to a default.
 
     Args:
         managed_data: Managed table to inspect; defaults to the process
@@ -177,7 +194,7 @@ def managed_policy_violations(
     if not managed_data:
         return ()
 
-    violations: list[str] = []
+    violations = list(managed_section_shape_violations(managed_data))
     for key in ENFORCED_MANAGED_KEYS:
         option = get_option(key)
         if option is None or not option.toml_keys:
@@ -200,6 +217,38 @@ def managed_policy_violations(
             # the bounded resolver when the agent is built, so an out-of-range
             # managed value would otherwise be assigned verbatim.
             violations.append(key)
+    return tuple(sorted(set(violations)))
+
+
+def managed_section_shape_violations(
+    managed_data: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return known managed sections declared as non-table values.
+
+    Unknown leaf keys remain forward compatible. Every parent path of a
+    manifest-backed option is known to be a table, however, as are the
+    structured options that specifically represent tables. Rejecting a scalar
+    at one of those paths prevents it from replacing an entire user section.
+    """
+    from deepagents_code.config_manifest import get_config_options
+
+    table_paths: set[tuple[str, ...]] = set(MANAGED_TABLE_PATHS)
+    for option in get_config_options():
+        if option.toml_keys:
+            table_paths.update(
+                option.toml_keys[:depth] for depth in range(1, len(option.toml_keys))
+            )
+
+    violations: list[str] = []
+    for path in table_paths:
+        node: object = managed_data
+        for part in path:
+            if not isinstance(node, dict) or part not in node:
+                break
+            node = node[part]
+        else:
+            if not isinstance(node, dict):
+                violations.append(".".join(path))
     return tuple(sorted(violations))
 
 
@@ -381,14 +430,15 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     """Fail startup when present managed policy cannot be parsed or enforced.
 
     A file that parses is not necessarily enforceable: a privilege-affecting
-    key can carry a value the manifest rejects, or sit under an ancestor that
-    is not a table. Both would resolve in the user's favor, so they stop the
-    launch here rather than at each consumer.
+    key can carry a value the manifest rejects, or a known section can be a
+    scalar instead of a table. Both can otherwise resolve in the user's favor
+    or erase a user subtree, so they stop the launch here rather than at each
+    consumer.
 
     Raises:
         ManagedConfigError: If managed policy is present but unusable.
-        ManagedPolicyError: If managed policy declares an enforced key whose
-            value cannot be applied.
+        ManagedPolicyError: If managed policy declares an unenforceable key or
+            malformed known section.
     """
     snapshot = get_managed_snapshot(refresh=refresh)
     status = snapshot.status

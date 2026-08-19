@@ -87,7 +87,9 @@ lower-precedence value stays in effect. Two exceptions:
   manifest rejects, a `runtime.recursion_limit` outside its bounds, and a key
   shadowed by a scalar ancestor (`startup = "manual"` in place of `[startup]`
   and `mode`). A managed `[sandboxes].default` that names an unavailable backend
-  stops a sandboxed launch.
+  stops a sandboxed launch. A scalar at any known configuration section (for
+  example, `threads = "bad"` instead of `[threads]`) also stops launch and
+  reload rather than replacing the user's whole section.
 - Inside structured tables (`[models.providers]`, `[themes]`,
   `[async_subagents]`, `[sandboxes.providers]`) the dedicated typed reader
   validates instead, so a wrong-typed managed leaf can displace a valid user

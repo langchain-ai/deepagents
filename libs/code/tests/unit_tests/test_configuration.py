@@ -556,6 +556,34 @@ def test_managed_scalar_enforced_over_user_table_shape_collision(
         model_config.invalidate_thread_config_cache()
 
 
+@pytest.mark.parametrize(
+    "managed_toml",
+    [
+        pytest.param('threads = "bad"\n', id="manifest-parent"),
+        pytest.param('themes = "bad"\n', id="structured-table"),
+        pytest.param('mcp = "bad"\n', id="security-adjacent-parent"),
+    ],
+)
+def test_non_table_known_managed_section_stops_startup(
+    managed_toml: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scalar cannot replace a known managed section and erase user settings."""
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.service import ManagedPolicyError
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(managed_toml, encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        with pytest.raises(ManagedPolicyError):
+            require_healthy_managed_config(refresh=True)
+    finally:
+        service.invalidate_config_sources()
+
+
 def _sources(managed: dict[str, object], user: dict[str, object]) -> ConfigSources:
     """Build `ConfigSources` from two literal tables, both reported healthy."""
     from deepagents_code.configuration.types import (

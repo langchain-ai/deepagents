@@ -365,12 +365,15 @@ uv pip install --prerelease=if-necessary langgraph python-dotenv {deps}
             "import json, os, subprocess\n"
             f"project_dir = {project_dir!r}\n"
             f"config_name = {config_name!r}\n"
+            f"venv_python = {venv_python!r}\n"
             "with open(os.path.join(project_dir, config_name)) as f:\n"
             "    config = json.load(f)\n"
             "for dep in config.get('dependencies', []):\n"
             "    dep_path = os.path.join(project_dir, dep) if isinstance(dep, str) else None\n"
             "    if dep_path and os.path.isdir(dep_path):\n"
-            "        subprocess.check_call(['uv', 'pip', 'install', '--no-deps', '-e', dep_path])\n"
+            "        subprocess.check_call(\n"
+            "            ['uv', 'pip', 'install', '--python', venv_python, '--no-deps', '-e', dep_path]\n"
+            "        )\n"
         )
         result = await environment.exec(
             "set -euo pipefail; "

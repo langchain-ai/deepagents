@@ -10,6 +10,31 @@ logger = logging.getLogger(__name__)
 _PROGRAM_DATA_DEFAULT = "C:/ProgramData"
 
 
+class _PathState:
+    """Whether the last Windows path resolution fell back to the default."""
+
+    registry_fallback: str | None = None
+
+
+_path_state = _PathState()
+
+
+def managed_path_fallback() -> str | None:
+    """Return why the managed path is a guess, or `None` when it is authoritative.
+
+    A failed registry query leaves the lookup pointing at the hardcoded
+    default. On a host whose ProgramData is relocated, the guessed path holds
+    no file, which reads as "no administrator deployed policy" — the same state
+    as a machine with no policy at all. Callers that report health surface this
+    so the two are distinguishable.
+
+    Returns:
+        A short reason, or `None` when the path came from the registry or from
+        a platform that needs no registry lookup.
+    """
+    return _path_state.registry_fallback
+
+
 def _program_data_from_registry() -> str | None:
     """Read ProgramData from the Windows registry, if available.
 
@@ -28,6 +53,10 @@ def _program_data_from_registry() -> str | None:
         ) as key:
             value, _ = winreg.QueryValueEx(key, "Common AppData")
     except (ImportError, OSError) as exc:
+        _path_state.registry_fallback = (
+            f"ProgramData could not be read from the registry ({type(exc).__name__}); "
+            f"looked under {_PROGRAM_DATA_DEFAULT}"
+        )
         logger.warning(
             "Could not read ProgramData from the registry (%s); falling back to "
             "%s. Managed policy stored elsewhere will not be found.",
@@ -36,7 +65,11 @@ def _program_data_from_registry() -> str | None:
         )
         return None
     if isinstance(value, str) and value:
+        _path_state.registry_fallback = None
         return value
+    _path_state.registry_fallback = (
+        f"registry ProgramData value is unusable; looked under {_PROGRAM_DATA_DEFAULT}"
+    )
     logger.warning(
         "Registry ProgramData value is unusable (%r); falling back to %s. "
         "Managed policy stored elsewhere will not be found.",

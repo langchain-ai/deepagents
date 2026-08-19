@@ -577,16 +577,12 @@ def _load_user_themes(
             return
 
     from deepagents_code.configuration.service import get_config_sources
-    from deepagents_code.configuration.types import ProviderHealth
 
     sources = get_config_sources(
         user_path=config_path,
         include_managed=is_default,
     )
-    if sources.user.status.health in {
-        ProviderHealth.CORRUPT,
-        ProviderHealth.UNREADABLE,
-    }:
+    if not sources.user.status.usable:
         logger.warning(
             "Could not read %s for user themes: %s",
             config_path,

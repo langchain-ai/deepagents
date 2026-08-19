@@ -2219,7 +2219,7 @@ def _parse_interpreter_ptc(
 
 
 def _read_config_toml_retries() -> dict[str, Any] | None:
-    """Read and lightly validate `[retries]` from `~/.deepagents/config.toml`.
+    """Read and lightly validate `[retries]` from managed config over user config.
 
     Provider sub-table names are checked against the set of providers the app
     knows how to authenticate so a mistyped provider (e.g. `[retries.fireorks]`)
@@ -2227,11 +2227,11 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
     deferred to `_resolve_retry_kwargs`, which runs per active provider.
 
     Returns:
-        The raw `[retries]` mapping, or `None` when the section is absent or the
-            file cannot be read.
+        The merged `[retries]` mapping, or `None` when neither layer supplies
+            the section. An unusable `~/.deepagents/config.toml` drops only the
+            user layer; managed policy still applies.
     """
     from deepagents_code.configuration.service import get_config_sources
-    from deepagents_code.configuration.types import ProviderHealth
     from deepagents_code.model_config import (
         IMPLICIT_AUTH_PROVIDERS,
         NO_AUTH_REQUIRED_PROVIDERS,
@@ -2240,10 +2240,7 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
     )
 
     sources = get_config_sources()
-    if sources.user.status.health in {
-        ProviderHealth.CORRUPT,
-        ProviderHealth.UNREADABLE,
-    }:
+    if not sources.user.status.usable:
         logger.warning(
             "Could not read retries config from %s",
             sources.user.status.path,
@@ -2439,20 +2436,17 @@ def _resolve_retry_param_name(provider: str) -> str:
 
 
 def _read_config_toml_skills_dirs() -> list[str] | None:
-    """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
+    """Read `[skills].extra_allowed_dirs` from managed config over user config.
 
     Returns:
-        List of path strings, or `None` if the key is absent or the file
-            cannot be read.
+        List of path strings, or `None` when neither layer supplies the key. An
+            unusable `~/.deepagents/config.toml` drops only the user layer;
+            managed policy still applies.
     """
     from deepagents_code.configuration.service import get_config_sources
-    from deepagents_code.configuration.types import ProviderHealth
 
     sources = get_config_sources()
-    if sources.user.status.health in {
-        ProviderHealth.CORRUPT,
-        ProviderHealth.UNREADABLE,
-    }:
+    if not sources.user.status.usable:
         logger.warning(
             "Could not read skills config from %s",
             sources.user.status.path,

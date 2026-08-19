@@ -901,8 +901,9 @@ same snapshot and the last `replace()` silently drops the other's change.
 Because the hazard is on the whole-file replace (not per-section), *every* writer
 of `config.toml` must share this one lock — a second lock guarding the same file
 would not mutually exclude, so a `[effort]` write could still clobber a `[ui]`
-write. Every helper that writes the user config goes through
-`configuration.writer.update_user_config`, which takes this same lock.
+write. `configuration.writer.update_user_config` is the preferred wrapper and
+holds this same lock object; the helpers in this module still take it directly
+around their own read-modify-write.
 
 It is reentrant so a caller can hold it across several of these helpers without
 self-deadlock. Cross-process races are out of scope (mirrors the existing
@@ -928,16 +929,12 @@ def _load_effective_config_data(
     is_default = config_path is None
     resolved_path = DEFAULT_CONFIG_PATH if config_path is None else config_path
     from deepagents_code.configuration.service import get_config_sources
-    from deepagents_code.configuration.types import ProviderHealth
 
     sources = get_config_sources(
         user_path=resolved_path,
         include_managed=is_default,
     )
-    if sources.user.status.health in {
-        ProviderHealth.CORRUPT,
-        ProviderHealth.UNREADABLE,
-    }:
+    if not sources.user.status.usable:
         detail = sources.user.status.detail or sources.user.status.health.value
         if not is_default:
             raise OSError(detail)
@@ -2728,14 +2725,23 @@ class ModelConfig:
         from deepagents_code.configuration.service import get_config_sources
         from deepagents_code.configuration.types import ProviderHealth
 
+        # `0o400`, not `0o444`: the question is whether the *owner* has made
+        # the file unavailable. A file readable only by other users is not the
+        # case this guard describes, and a privileged process could read it.
+        stat_error: str | None = None
         try:
             user_mode = config_path.stat().st_mode if config_path.exists() else None
-        except OSError:
+        except OSError as exc:
+            # Not necessarily a permission problem, so report what happened
+            # rather than asserting one cause.
+            stat_error = f"{type(exc).__name__}: {exc}"
             user_mode = 0
-        user_unreadable = user_mode is not None and user_mode & 0o444 == 0
+        user_unreadable = user_mode is not None and user_mode & 0o400 == 0
         if user_unreadable:
             logger.warning(
-                "Could not read config file %s: permission denied", config_path
+                "Could not read config file %s: %s",
+                config_path,
+                stat_error or "owner has removed read permission",
             )
 
         sources = get_config_sources(
@@ -3479,15 +3485,20 @@ def load_effort_for_model(
 ) -> str | None:
     """Load the selected reasoning effort for a model.
 
+    Reads managed config merged over `config.toml`, so a managed `[effort]`
+    still applies when the user file is unusable.
+
     Args:
         model_spec: Model in `provider:model` format.
         config_path: Path to config file.
 
-            Defaults to `~/.deepagents/config.toml`.
+            Defaults to `~/.deepagents/config.toml`. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
 
     Returns:
         The persisted effort label, or `None`. `None` is returned both when no
-        preference is stored and when one exists but cannot be read (unreadable
+        preference is stored and when neither layer can supply one (unreadable
         file, invalid TOML, or a malformed `[effort]` section); the two cases
         are not distinguished by the return value, but a read failure is always
         logged rather than swallowed silently.
@@ -3630,19 +3641,22 @@ def _update_effort_for_model(
 def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
     """Check if a warning key is suppressed in the config file.
 
-    Reads the `[warnings].suppress` list from `config.toml` and checks
-    whether `key` is present.
+    Reads the `[warnings].suppress` list from managed config merged over
+    `config.toml` and checks whether `key` is present. A managed suppression
+    still applies when the user file is unusable.
 
     Args:
         key: Warning identifier to check (e.g., `'ripgrep'`).
         config_path: Path to config file.
 
-            Defaults to `~/.deepagents/config.toml`.
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers must
+            pass `None`.
 
     Returns:
         `True` if the warning is suppressed, `False` otherwise (including
-            when the file is missing, unreadable, or has a missing or
-            malformed `[warnings]` section).
+            when neither layer supplies the key, or the `[warnings]` section is
+            missing or malformed).
     """
     try:
         data, config_path = _load_effective_config_data(config_path)
@@ -4535,7 +4549,6 @@ def load_mcp_server_trust_lists(
         config_path = DEFAULT_CONFIG_PATH
 
     from deepagents_code.configuration.service import get_config_sources
-    from deepagents_code.configuration.types import ProviderHealth
 
     sources = get_config_sources(
         user_path=config_path,
@@ -4548,10 +4561,7 @@ def load_mcp_server_trust_lists(
     managed_approvals_explicit = False
     legacy_ignored: list[str] = []
     read_error: str | None = None
-    if sources.user.status.health in {
-        ProviderHealth.UNREADABLE,
-        ProviderHealth.CORRUPT,
-    }:
+    if not sources.user.status.usable:
         # The file exists but is unreadable/unparseable. Record it so callers
         # fail closed rather than silently proceeding with an empty deny list.
         read_error = (
@@ -4611,10 +4621,7 @@ def load_mcp_server_trust_lists(
             )
 
     managed_status = sources.managed.status
-    if managed_status.health in {
-        ProviderHealth.UNREADABLE,
-        ProviderHealth.CORRUPT,
-    }:
+    if not managed_status.usable:
         read_error = (
             f"Could not enforce MCP trust lists from {managed_status.path}: "
             f"{managed_status.detail or managed_status.health.value}"
@@ -4948,6 +4955,10 @@ def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
     Args:
         config_path: Path to config file.
 
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
+
     Returns:
         Dict mapping column names to visibility booleans.
     """
@@ -5016,6 +5027,10 @@ def load_thread_relative_time(config_path: Path | None = None) -> bool:
     Args:
         config_path: Path to config file.
 
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
+
     Returns:
         True if timestamps should display as relative time.
     """
@@ -5075,6 +5090,10 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
     Args:
         config_path: Path to config file.
 
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
+
     Returns:
         `"updated_at"` or `"created_at"`.
     """
@@ -5119,6 +5138,10 @@ def load_startup_mode(config_path: Path | None = None) -> str:
 
     Args:
         config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
 
     Returns:
         `"manual"`, `"auto"`, or `"yolo"`; falls back to `"manual"` when
@@ -5475,7 +5498,9 @@ def _load_agents_field(field: str, config_path: Path | None = None) -> str | Non
         field: Key under the `[agents]` table (e.g., `'recent'`, `'default'`).
         config_path: Path to config file.
 
-            Defaults to `~/.deepagents/config.toml`.
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
 
     Returns:
         The trimmed string value, or `None` if the file, section, or key

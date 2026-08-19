@@ -1293,28 +1293,25 @@ def _resolve_terminal_mapping(ui: Mapping[str, object]) -> str | None:
 def _load_terminal_default() -> str | None:
     """Return the saved default theme for the current `TERM_PROGRAM`.
 
-    Reads `[ui.terminal_themes][TERM_PROGRAM]` from `config.toml` and
-    resolves the value via `_resolve_theme_name`, so labels and case variants
-    are accepted. Used by `ThemeSelectorScreen` to badge the matching option
-    with `(default)`.
+    Reads `[ui.terminal_themes][TERM_PROGRAM]` from managed config merged over
+    `config.toml` and resolves the value via `_resolve_theme_name`, so labels
+    and case variants are accepted. A managed mapping still applies when the
+    user file is unusable. Used by `ThemeSelectorScreen` to badge the matching
+    option with `(default)`.
 
     Returns:
-        The canonical registry key, or `None` if `TERM_PROGRAM` is unset, the
-            file is missing/unreadable, no mapping is set, or the mapped value
-            doesn't match a registered theme. Read errors and misconfigurations
-            are logged at WARNING.
+        The canonical registry key, or `None` if `TERM_PROGRAM` is unset,
+            neither layer sets a mapping, or the mapped value doesn't match a
+            registered theme. Read errors and misconfigurations are logged at
+            WARNING.
     """
     if not os.environ.get("TERM_PROGRAM", "").strip():
         return None
 
     from deepagents_code.configuration.service import get_config_sources
-    from deepagents_code.configuration.types import ProviderHealth
 
     sources = get_config_sources()
-    if sources.user.status.health in {
-        ProviderHealth.CORRUPT,
-        ProviderHealth.UNREADABLE,
-    }:
+    if not sources.user.status.usable:
         logger.warning(
             "Could not read config for terminal theme default: %s",
             sources.user.status.detail or sources.user.status.health.value,
@@ -1767,12 +1764,12 @@ def _save_ui_bool_result(
 def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult:
     """Persist the timestamp-footer visibility preference.
 
-    Writes `[ui].show_message_timestamps` atomically (temp file +
-    `Path.replace`). Mirrors `_save_theme_preference_result`.
+    Persists `[ui].show_message_timestamps` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     return _save_ui_bool_result(
         toml_key="show_message_timestamps",
@@ -1785,12 +1782,12 @@ def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult
 def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
     """Persist the chat scrollbar visibility preference.
 
-    Writes `[ui].show_scrollbar` atomically (temp file +
-    `Path.replace`). Mirrors `_save_message_timestamps_visible_result`.
+    Persists `[ui].show_scrollbar` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     return _save_ui_bool_result(
         toml_key="show_scrollbar",
@@ -1803,12 +1800,12 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
 def _save_show_diff_line_numbers_result(enabled: bool) -> _ConfigWriteResult:
     """Persist the diff line-number visibility preference.
 
-    Writes `[ui].show_diff_line_numbers` atomically (temp file +
-    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+    Persists `[ui].show_diff_line_numbers` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     return _save_ui_bool_result(
         toml_key="show_diff_line_numbers",
@@ -1823,12 +1820,12 @@ def _save_show_diff_line_numbers_result(enabled: bool) -> _ConfigWriteResult:
 def _save_debug_console_click_to_copy_result(enabled: bool) -> _ConfigWriteResult:
     r"""Persist the `Ctrl+\` Debug Console click-to-copy preference.
 
-    Writes `[ui].debug_console_click_to_copy` atomically (temp file +
-    `Path.replace`). Mirrors `_save_show_scrollbar_result`.
+    Persists `[ui].debug_console_click_to_copy` through `_save_ui_bool_result`.
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     return _save_ui_bool_result(
         toml_key="debug_console_click_to_copy",

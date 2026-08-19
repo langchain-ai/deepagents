@@ -479,21 +479,35 @@ def _option_provenance(
             else {}
         )
         from deepagents_code.configuration.service import (
-            _is_valid_managed_scalar,
+            is_valid_managed_scalar,
             union_paths_under,
         )
+
+        prefix = option.toml_keys or ()
+
+        def managed_leaf_is_valid(path: tuple[str, ...], value: object) -> bool:
+            """Validate one leaf against its absolute manifest path.
+
+            Returns:
+                Whether managed policy may apply the value at this leaf.
+            """
+            return is_valid_managed_scalar((*prefix, *path), value)
 
         # Must match `ConfigSources.merged` exactly. Merging without the
         # validator and the union set reports a leaf as `config.toml` that
         # managed policy actually controls, and this is the output an
-        # administrator uses to audit what is enforced.
+        # administrator uses to audit what is enforced. Both have to be rebased
+        # onto this subtree: the merge matches paths relative to where it
+        # starts, so an absolute deny-list path never matches, and an
+        # unprefixed leaf path matches no manifest option at all — which makes
+        # the validator accept everything.
         _, provenance = merge_toml_tables(
             lower,
             cast("dict[str, Any]", managed_value),
             lower_source="config.toml",
             higher_source="managed config",
-            union_paths=union_paths_under(option.toml_keys or ()),
-            higher_leaf_is_valid=_is_valid_managed_scalar,
+            union_paths=union_paths_under(prefix),
+            higher_leaf_is_valid=managed_leaf_is_valid,
         )
         return provenance or {"effective": source}
     if user_found and isinstance(user_value, dict):

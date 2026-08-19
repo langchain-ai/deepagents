@@ -4250,13 +4250,13 @@ def _verify_interpreter_or_exit() -> None:
 def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     """Replace lower-tier runtime arguments with managed values.
 
-    A managed value that the manifest rejects is not simply skipped for the
-    privilege-affecting keys. Skipping leaves the user's flag in force, so an
-    administrator typo (`startup.mode = "YOLO"`) would silently grant exactly
-    the escalation the policy meant to forbid, and the CLI would report no
-    managed value for the key. Those keys stop the launch instead, the same
-    way an unparseable managed file does. Keys that cannot grant privilege
-    keep the ordinary ignore-and-fall-through rule.
+    An enforced key whose managed value cannot be applied is not skipped.
+    Skipping leaves the user's flag in force. An administrator typo
+    (`startup.mode = "YOLO"`) would then grant the escalation the policy
+    forbade, and the CLI would report no managed value for the key. Those keys
+    stop the launch, the same way an unparseable managed file does. See
+    `configuration.service.ENFORCED_MANAGED_KEYS`. Keys that cannot grant
+    privilege keep the ordinary ignore-and-fall-through rule.
     """
     from deepagents_code.config_manifest import (
         get_option,
@@ -5062,13 +5062,21 @@ def cli_main() -> None:
                 effective_state = is_auto_update_enabled()
                 if effective_state != new_state:
                     from deepagents_code._env_vars import AUTO_UPDATE
+                    from deepagents_code.configuration.service import (
+                        managed_config_status,
+                    )
                     from deepagents_code.update_check import _managed_update_value
 
                     # Managed config is only one of the layers that outrank the
                     # saved preference. Naming it for an env-var override would
-                    # send the user to an administrator who set no policy.
+                    # send the user to an administrator who set no policy. A
+                    # managed file that cannot be parsed also forces the setting
+                    # off, so name the parse failure rather than blaming policy
+                    # the administrator may never have written.
                     managed_decides, _ = _managed_update_value("auto_update")
-                    if managed_decides:
+                    if managed_decides and not managed_config_status().usable:
+                        blame = "a managed config file that could not be read"
+                    elif managed_decides:
                         blame = "managed config"
                     elif os.environ.get(AUTO_UPDATE) is not None:
                         blame = AUTO_UPDATE

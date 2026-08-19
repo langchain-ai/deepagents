@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from pathlib import Path
 
-from deepagents_code.configuration.paths import managed_config_path
+from deepagents_code.configuration.paths import (
+    managed_config_path,
+    managed_path_fallback,
+)
 from deepagents_code.configuration.providers import TomlFileProvider
 from deepagents_code.configuration.resolver import merge_toml_tables
 from deepagents_code.configuration.types import (
@@ -36,10 +39,11 @@ another.
 def union_paths_under(prefix: tuple[str, ...]) -> frozenset[tuple[str, ...]]:
     """Return `UNION_PATHS` rebased onto a subtree rooted at `prefix`.
 
-    `merge_toml_tables` matches paths relative to wherever it starts, so a
-    merge of one option's own subtree never matches an absolute deny-list
-    path. Passing `UNION_PATHS` there looks correct and silently does nothing,
-    which would replace a nested deny list instead of unioning it.
+    `merge_toml_tables` matches paths relative to where it starts. A merge of
+    one option's own subtree therefore never matches an absolute deny-list
+    path. Passing `UNION_PATHS` to such a merge does nothing at all. The merge
+    then replaces a nested deny list instead of unioning it, which is a
+    fail-open.
 
     Returns:
         The union paths that fall under `prefix`, relative to it.
@@ -72,11 +76,11 @@ class ConfigSources:
             lower_source="config.toml",
             higher_source="managed config",
             union_paths=UNION_PATHS,
-            higher_leaf_is_valid=_is_valid_managed_scalar,
+            higher_leaf_is_valid=is_valid_managed_scalar,
         )
 
 
-def _is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
+def is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
     """Return whether a managed scalar has the declared type for its path.
 
     Unknown and structured paths retain the deep-merger's existing behavior;
@@ -84,10 +88,9 @@ def _is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
     validated before they displace a lower-precedence value.
     """
     from deepagents_code.config_manifest import (
-        _INVALID,
         OptionKind,
-        _coerce_toml,
         get_config_options,
+        option_accepts_toml,
     )
 
     option = next(
@@ -100,7 +103,7 @@ def _is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
     )
     if option is None or option.kind is OptionKind.STRUCTURED:
         return True
-    return _coerce_toml(option, value, source="managed config") is not _INVALID
+    return option_accepts_toml(option, value, source="managed config")
 
 
 ENFORCED_MANAGED_KEYS = (
@@ -170,8 +173,8 @@ def managed_policy_violations(
         The violating keys, sorted, empty when policy is enforceable.
     """
     from deepagents_code.config_manifest import (
-        _is_valid_recursion_limit,
         get_option,
+        is_valid_recursion_limit,
         resolve_scalar,
     )
 
@@ -198,7 +201,7 @@ def managed_policy_violations(
         )
         if source != "managed config":
             violations.append(key)
-        elif key == "runtime.recursion_limit" and not _is_valid_recursion_limit(value):
+        elif key == "runtime.recursion_limit" and not is_valid_recursion_limit(value):
             # `resolve_scalar` applies no range check, and the flag outranks
             # the bounded resolver when the agent is built, so an out-of-range
             # managed value would otherwise be assigned verbatim.
@@ -244,7 +247,11 @@ class ManagedPolicyError(ManagedConfigError):
 class _SnapshotState:
     """Mutable process snapshot guarded by `_snapshot_lock`."""
 
-    managed: TomlSnapshot | None = None
+    __slots__ = ("managed",)
+
+    def __init__(self) -> None:
+        """Start with no cached snapshot."""
+        self.managed: TomlSnapshot | None = None
 
 
 _snapshot_lock = threading.RLock()
@@ -258,7 +265,22 @@ def _load_managed(path: Path | None = None) -> TomlSnapshot:
         Parsed managed snapshot and health.
     """
     resolved = managed_config_path() if path is None else path
-    return TomlFileProvider("managed config", resolved).load()
+    snapshot = TomlFileProvider("managed config", resolved).load()
+    fallback = managed_path_fallback()
+    if fallback is None or snapshot.status.health is not ProviderHealth.MISSING:
+        return snapshot
+    # "No file at a guessed path" is not "no policy deployed". Record why the
+    # path is a guess so `doctor` can say so instead of reporting a clean
+    # missing file.
+    return TomlSnapshot(
+        snapshot.data,
+        ProviderStatus(
+            snapshot.status.name,
+            snapshot.status.path,
+            snapshot.status.health,
+            fallback,
+        ),
+    )
 
 
 def get_managed_snapshot(
@@ -347,7 +369,7 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     """
     snapshot = get_managed_snapshot(refresh=refresh)
     status = snapshot.status
-    if status.health in {ProviderHealth.UNREADABLE, ProviderHealth.CORRUPT}:
+    if not status.usable:
         raise ManagedConfigError(status)
     violations = managed_policy_violations(snapshot.data)
     if violations:

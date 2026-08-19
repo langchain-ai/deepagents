@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -390,6 +392,10 @@ def test_managed_structured_preferences_reach_runtime_readers(
         model_config.invalidate_thread_config_cache()
 
 
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root reads a 0o000 file, so the unreadable case cannot be staged",
+)
 def test_managed_models_survive_an_unreadable_default_user_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -518,6 +524,26 @@ def test_managed_scalar_enforced_over_user_table_shape_collision(
         model_config.invalidate_thread_config_cache()
 
 
+def _sources(managed: dict[str, object], user: dict[str, object]) -> ConfigSources:
+    """Build `ConfigSources` from two literal tables, both reported healthy."""
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    def snapshot(name: str, data: dict[str, object]) -> TomlSnapshot:
+        return TomlSnapshot(
+            data,
+            ProviderStatus(name, None, ProviderHealth.OK),
+        )
+
+    return ConfigSources(
+        managed=snapshot("managed config", managed),
+        user=snapshot("config.toml", user),
+    )
+
+
 @pytest.mark.parametrize(
     "colliding_user_value",
     [
@@ -537,31 +563,27 @@ def test_managed_scalar_beats_a_user_table_at_any_depth(
     user defeat a managed `relative_time = false`. Typed readers then rejected
     the surviving table and fell back to the built-in default, which silently
     voided administrator policy.
-    """
-    from deepagents_code.configuration.service import _is_valid_managed_scalar
 
-    merged, provenance = merge_toml_tables(
-        {"threads": {"relative_time": colliding_user_value}},
+    Driven through `ConfigSources.merged` on purpose: calling the merger
+    directly with a hand-passed validator would stay green if `merged` stopped
+    passing one.
+    """
+    sources = _sources(
         {"threads": {"relative_time": False}},
-        lower_source="config.toml",
-        higher_source="managed config",
-        higher_leaf_is_valid=_is_valid_managed_scalar,
+        {"threads": {"relative_time": colliding_user_value}},
     )
+    merged, provenance = sources.merged()
     assert merged == {"threads": {"relative_time": False}}
     assert provenance["threads.relative_time"] == "managed config"
 
 
 def test_invalid_managed_scalar_keeps_a_nested_user_table() -> None:
     """A wrong-typed managed scalar must not discard a valid user subtree."""
-    from deepagents_code.configuration.service import _is_valid_managed_scalar
-
-    merged, _ = merge_toml_tables(
-        {"threads": {"relative_time": {"a": {"b": 1}}}},
+    sources = _sources(
         {"threads": {"relative_time": "not-a-bool"}},
-        lower_source="config.toml",
-        higher_source="managed config",
-        higher_leaf_is_valid=_is_valid_managed_scalar,
+        {"threads": {"relative_time": {"a": {"b": 1}}}},
     )
+    merged, _ = sources.merged()
     assert merged == {"threads": {"relative_time": {"a": {"b": 1}}}}
 
 
@@ -878,26 +900,6 @@ def test_union_paths_rebase_onto_an_option_subtree() -> None:
     assert union_paths_under(("models",)) == frozenset()
 
 
-def _sources(managed: dict[str, object], user: dict[str, object]) -> ConfigSources:
-    """Build `ConfigSources` from two literal tables, both reported healthy."""
-    from deepagents_code.configuration.types import (
-        ProviderHealth,
-        ProviderStatus,
-        TomlSnapshot,
-    )
-
-    def snapshot(name: str, data: dict[str, object]) -> TomlSnapshot:
-        return TomlSnapshot(
-            data,
-            ProviderStatus(name, None, ProviderHealth.OK),
-        )
-
-    return ConfigSources(
-        managed=snapshot("managed config", managed),
-        user=snapshot("config.toml", user),
-    )
-
-
 def test_merged_unions_deny_lists_across_layers() -> None:
     """Both layers' deny entries survive, and provenance names both sources.
 
@@ -1190,6 +1192,270 @@ def test_unavailable_managed_sandbox_stops_a_sandboxed_launch(
         with pytest.raises(SystemExit) as excinfo:
             main._apply_managed_runtime_policy(args)
         assert excinfo.value.code == 78
+    finally:
+        service.invalidate_config_sources()
+
+
+def _managed_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, managed_toml: str
+) -> Path:
+    """Point every layer at `tmp_path` with `managed_toml` as managed policy.
+
+    Returns:
+        The managed file path.
+    """
+    from deepagents_code import mcp_disabled, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(managed_toml, encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    return managed
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["dcode", "config", "path"],
+        ["dcode", "doctor"],
+        ["dcode", "--help"],
+        ["dcode", "help"],
+    ],
+    ids=["config", "doctor", "help-flag", "help-command"],
+)
+def test_diagnostic_commands_run_with_unusable_managed_policy(
+    argv: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The administrator must keep the tools that explain a broken policy file.
+
+    If the startup gate moved above these early returns, the only commands that
+    report the managed path and its parse health would be the ones the broken
+    file blocks.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[broken")
+    monkeypatch.setattr(sys, "argv", argv)
+    # Some of these exit and some return; neither may be the policy gate.
+    exit_code: object = None
+    try:
+        try:
+            main.cli_main()
+        except SystemExit as exc:
+            exit_code = exc.code
+    finally:
+        service.invalidate_config_sources()
+    assert exit_code != 78
+
+
+def test_agent_launch_commands_stop_on_unusable_managed_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command that runs the agent must not start without enforceable policy."""
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[broken")
+    monkeypatch.setattr(sys, "argv", ["dcode", "tools", "list"])
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            main.cli_main()
+        assert excinfo.value.code == 78
+    finally:
+        service.invalidate_config_sources()
+
+
+@pytest.mark.self_managed_update_check
+@pytest.mark.parametrize(
+    "managed_toml",
+    ["[broken", "[update]\ncheck = 5\n"],
+    ids=["unparseable", "wrong-type"],
+)
+def test_update_checks_fail_closed_on_unusable_managed_policy(
+    managed_toml: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A feature that reaches the network turns off when policy cannot be read.
+
+    A wrong type falls through to the lower layers instead, because the value
+    itself is what could not be read — not the file.
+    """
+    from deepagents_code import update_check
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, managed_toml)
+    try:
+        if managed_toml == "[broken":
+            assert update_check.is_update_check_enabled() is False
+            assert update_check.is_auto_update_enabled() is False
+        else:
+            # The file is readable, so only this key is ignored.
+            assert update_check.is_update_check_enabled() is True
+    finally:
+        service.invalidate_config_sources()
+
+
+@pytest.mark.self_managed_update_check
+def test_managed_update_policy_outranks_the_user_preference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed `[update].check = false` cannot be re-enabled locally."""
+    from deepagents_code import update_check
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[update]\ncheck = false\n")
+    try:
+        assert update_check.is_update_check_enabled() is False
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_reenabling_a_managed_denied_server_reports_the_shadow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The save succeeds, and the user is told policy keeps the server off."""
+    from deepagents_code import mcp_disabled
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, '[mcp]\ndisabled_servers = ["github"]\n')
+    try:
+        ok, detail = mcp_disabled.set_server_disabled("github", False)
+        assert ok is True
+        assert detail is not None
+        assert mcp_disabled.is_server_disabled("github") is True
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_reenabling_a_server_fails_closed_when_policy_is_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-enabling must not proceed while the deny list cannot be read."""
+    from deepagents_code import mcp_disabled
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[broken")
+    try:
+        ok, detail = mcp_disabled.set_server_disabled("github", False)
+        assert ok is False
+        assert detail is not None
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_sandbox_settings_survive_an_unusable_user_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sandbox selection is a containment boundary, so policy outlives a typo."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+    from deepagents_code.integrations import sandbox_config
+    from deepagents_code.integrations.sandbox_config import SandboxConfig
+
+    user = tmp_path / "config.toml"
+    user.write_text("[broken", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[sandboxes]\ndefault = "modal"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    # `sandbox_config` binds the default path at import, so patching
+    # `model_config` alone leaves it reading the real user config.
+    monkeypatch.setattr(sandbox_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        config = SandboxConfig.load()
+        assert config.default == "modal"
+        # The user layer failed, and that is reported without dropping policy.
+        assert config.parse_error is not None
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_managed_async_subagents_survive_an_unusable_user_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed `[async_subagents]` table still defines its agents."""
+    from deepagents_code import model_config
+    from deepagents_code.agent import load_async_subagents
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[broken", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        "[async_subagents.researcher]\n"
+        'description = "Research agent"\n'
+        'url = "https://example.langsmith.dev"\n'
+        'graph_id = "agent"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        subagents = load_async_subagents()
+        assert [entry["name"] for entry in subagents] == ["researcher"]
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_doctor_reports_managed_parse_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`doctor` must explain the file that just stopped the launch."""
+    from deepagents_code.configuration import service
+    from deepagents_code.doctor import _managed_config_diagnostic
+
+    managed = _managed_only(tmp_path, monkeypatch, "[broken")
+    try:
+        item = _managed_config_diagnostic()
+        assert item.ok is False
+        assert str(managed) in item.value
+        assert "administrator" in item.value
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_path_fallback_is_reported_as_a_guess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed registry read must not look like "no policy deployed".
+
+    The guessed path holds no file, which is the same state as a machine with
+    no managed policy at all, so the reason has to reach the status detail.
+    """
+    from deepagents_code.configuration import paths, service
+
+    monkeypatch.setattr(paths._path_state, "registry_fallback", "registry unreadable")
+    monkeypatch.setattr(
+        service, "managed_config_path", lambda: Path("/nonexistent/managed.toml")
+    )
+    service.invalidate_config_sources()
+    try:
+        status = service.managed_config_status(refresh=True)
+        assert status.health is ProviderHealth.MISSING
+        assert status.detail == "registry unreadable"
     finally:
         service.invalidate_config_sources()
 

@@ -3684,13 +3684,9 @@ def _managed_update_value(key: str) -> tuple[bool, bool]:
         Whether managed config decides the value, and the value.
     """
     from deepagents_code.configuration.service import get_managed_snapshot
-    from deepagents_code.configuration.types import ProviderHealth
 
     snapshot = get_managed_snapshot()
-    if snapshot.status.health in {
-        ProviderHealth.UNREADABLE,
-        ProviderHealth.CORRUPT,
-    }:
+    if not snapshot.status.usable:
         logger.error(
             "Managed config %s is %s (%s); disabling [update].%s until it is repaired",
             snapshot.status.path,
@@ -3736,7 +3732,8 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Managed config decides first: `[update].auto_update` in
+    Editable installs are always disabled, before any layer is consulted.
+    Otherwise managed config decides first: `[update].auto_update` in
     `managed_config.toml` outranks both layers below, and a managed file that
     cannot be parsed forces `False`. Otherwise, opt out via the
     `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or `[update].auto_update = false`
@@ -3750,8 +3747,6 @@ def is_auto_update_enabled() -> bool:
     If `config.toml` exists but cannot be parsed, returns `False` (fail-closed):
     a corrupt file may hold an explicit opt-out, so it is not treated as the
     permissive default. A genuinely absent config falls through to `True`.
-
-    Always disabled for editable installs.
     """
     from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
     from deepagents_code.config import _is_editable_install

@@ -51,17 +51,16 @@ def merge_toml_tables(
         path = (*_path, key)
         dotted = ".".join(path)
         existing = merged.get(key)
-        # A higher scalar must replace a lower table whatever the table holds:
-        # keeping the table lets a shape-colliding lower entry (e.g. a user
-        # `[threads.relative_time]` table against a managed
-        # `relative_time = false`) defeat the higher value, after which typed
-        # readers reject the table and fall back to the built-in default.
-        # Nesting the table deeper must not restore that bypass, so depth is
-        # not consulted. When the caller supplies `higher_leaf_is_valid`, the
-        # replacement is gated on it below, which keeps a wrong-typed higher
-        # scalar from discarding valid lower subtrees. Without a validator
-        # there is no type information here, so only a table that holds no
-        # nested table is displaced.
+        # A higher scalar must replace a lower table, whatever the table holds.
+        # Keeping the table lets a shape collision defeat the higher value.
+        # Typed readers then reject the table and use the built-in default.
+        #   Example: a user `[threads.relative_time]` table against a managed
+        #   `relative_time = false`.
+        # Depth is not consulted, so deeper nesting cannot restore the bypass.
+        # With `higher_leaf_is_valid`, the check below gates the replacement.
+        # That keeps a wrong-typed higher scalar from discarding a valid lower
+        # subtree. Without a validator there is no type information here, so
+        # only a table that holds no nested table is displaced.
         if (
             isinstance(existing, dict)
             and not isinstance(value, dict)

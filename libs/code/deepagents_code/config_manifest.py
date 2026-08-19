@@ -816,6 +816,12 @@ def resolve_scalar(
 ) -> tuple[Any, str]:
     """Resolve an option through managed, environment, user, and default tiers.
 
+    Resolution order is managed config, then the environment, then user
+    `config.toml`, then the typed default. An invalid value at one tier falls
+    through to the next tier, never straight to the default. An environment
+    variable that is empty or holds only whitespace counts as unset, except
+    when the option sets `empty_env_is_false`.
+
     Args:
         option: The option to resolve.
         toml_data: Parsed user `config.toml` mapping.
@@ -824,6 +830,13 @@ def resolve_scalar(
 
     Returns:
         `(value, source)` for the first valid scalar or merged structured value.
+            `source` is one of `"managed config"`, `"env (<VAR>)"`,
+            `"config.toml"`, `"default"`, or — when a structured table or a
+            union deny list draws on both layers — `"managed config +
+            config.toml"`. A `THEME_DELEGATE` option reports the richer
+            `[ui.*]` sources its own resolver produces. Callers that ask "did
+            managed policy win?" must not compare `source` with `==` for an
+            option that can produce a combined label.
     """
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
@@ -1095,8 +1108,8 @@ def resolve_auto_classifier_timeout(
 ) -> float:
     """Resolve the wall-clock budget for one Auto classifier decision batch.
 
-    Resolves `models.auto_classifier_timeout` through the standard env →
-    `config.toml` → default precedence. An out-of-range value (below
+    Resolves `models.auto_classifier_timeout` through the standard managed →
+    env → `config.toml` → default precedence. An out-of-range value (below
     `AUTO_CLASSIFIER_TIMEOUT_FLOOR` or above `AUTO_CLASSIFIER_TIMEOUT_CEILING`)
     is discarded with a logged warning and the next lower-precedence layer is
     tried, so a bad higher-precedence override cannot mask a valid TOML setting
@@ -1159,8 +1172,9 @@ def resolve_auto_classifier_model_with_source(
 
     Shares the blank-env veto with
     `config.resolve_auto_classifier_model_with_problem` so `dcode config` cannot
-    report a classifier the runtime does not use. `None` means the classifier
-    inherits the main agent model.
+    report a classifier the runtime does not use. A managed value outranks that
+    veto. `None` means the classifier inherits the main agent model; a blank
+    managed value means inherit, credited to `managed config`.
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
@@ -1206,7 +1220,26 @@ def resolve_auto_classifier_model_with_source(
     return None, source
 
 
-def _is_valid_recursion_limit(value: object) -> bool:
+def option_accepts_toml(
+    option: ConfigOption, value: object, *, source: str = "config.toml"
+) -> bool:
+    """Return whether `value` has the type `option` declares for TOML.
+
+    The public form of the coercion check, so other modules can validate a
+    value without reaching for `_coerce_toml` and the `_INVALID` sentinel.
+
+    Args:
+        option: The manifest option that owns the path.
+        value: The raw TOML value.
+        source: Source label used in the mismatch log.
+
+    Returns:
+        Whether the value would survive coercion.
+    """
+    return _coerce_toml(option, value, source=source) is not _INVALID
+
+
+def is_valid_recursion_limit(value: object) -> bool:
     """Return whether `value` is an accepted main-agent `recursion_limit`."""
     return (
         isinstance(value, int)
@@ -1222,11 +1255,17 @@ def resolve_recursion_limit(
 ) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 
-    Resolves `runtime.recursion_limit` through the standard env → `config.toml`
-    → default precedence. An out-of-range value (below `RECURSION_LIMIT_FLOOR`
-    or above `RECURSION_LIMIT_CEILING`) is discarded with a logged warning and
-    the next lower-precedence layer is tried, so a bad higher-precedence
-    override cannot mask a valid TOML setting (or the default).
+    Resolves `runtime.recursion_limit` through the standard managed → env →
+    `config.toml` → default precedence. An out-of-range value (below
+    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) is discarded
+    with a logged warning and the next lower-precedence layer is tried, so a bad
+    higher-precedence override cannot mask a valid TOML setting (or the
+    default).
+
+    An out-of-range *managed* value falls through here, but stops an agent
+    launch: `main._apply_managed_runtime_policy` treats it as unenforceable
+    policy and exits 78, because the CLI flag it would otherwise leave in force
+    outranks this bounded resolver.
 
     Args:
         toml_data: Parsed `config.toml`; loaded automatically when omitted.
@@ -1250,7 +1289,7 @@ def resolve_recursion_limit(
         toml_data=data,
         managed_toml_data=managed_data,
     )
-    if _is_valid_recursion_limit(value):
+    if is_valid_recursion_limit(value):
         return value
 
     if source == "managed config":

@@ -90,6 +90,7 @@ their stable identity, version, installation, updates, and durable data
 directory. Dcode accepts only manifest paths beginning with `./`, resolves them
 inside the installed plugin snapshot, and rejects traversal, absolute paths,
 symlink escapes, missing files, and non-Python files.
+Python entries are ignored when the plugin manifest has no non-empty `version`.
 
 Sources load in this order:
 

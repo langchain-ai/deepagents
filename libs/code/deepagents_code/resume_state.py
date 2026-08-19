@@ -70,22 +70,14 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 
+from deepagents_code.goal_state_limits import GOAL_STATUS_VALUES, GoalStatus
+
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
-
-GoalStatus = Literal["active", "paused", "blocked", "complete"]
-"""Lifecycle status of a TUI-owned goal.
-
-`active` and `blocked` are unfinished working states, `paused` preserves the goal
-without driving work, and `complete` is terminal. A blocked goal is still
-considered actionable by the goal-state notice, whereas a paused goal is
-unfinished but not actionable.
-"""
 
 GoalProposalKind = Literal["create", "amend"]
 """Whether a pending review creates a goal or amends the current one."""
 
-_GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
 _GOAL_PROPOSAL_KIND_VALUES: frozenset[str] = frozenset(get_args(GoalProposalKind))
 
 
@@ -144,11 +136,11 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     so it is surfaced rather than dropped.
 
     The goal-state notice path does not use this helper: `project_goal_state`
-    inlines the same status vocabulary (to keep `goal_state_notice` off this
-    module's heavy import chain) and defaults an unrecognized status to `active`
-    without logging, so a corrupt status there renders as an actionable goal.
-    The two normalizers must be kept in sync by hand — adding a `GoalStatus`
-    member here without adding it there makes the new status silently actionable.
+    normalizes separately (to keep `goal_state_notice` off this module's heavy
+    import chain) and defaults an unrecognized status to `active` without
+    logging, so a corrupt status there renders as an actionable goal. Both read
+    the vocabulary from `GOAL_STATUS_VALUES` in `goal_state_limits`, so adding a
+    member cannot make it actionable in one place and unknown in the other.
 
     Args:
         value: Raw value read from checkpoint state.
@@ -156,7 +148,7 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     Returns:
         The value when it is a recognized `GoalStatus`, otherwise `None`.
     """
-    if isinstance(value, str) and value in _GOAL_STATUS_VALUES:
+    if isinstance(value, str) and value in GOAL_STATUS_VALUES:
         return cast("GoalStatus", value)
     return None
 

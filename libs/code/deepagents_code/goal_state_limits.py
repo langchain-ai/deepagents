@@ -2,7 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, Literal, get_args
+
+GoalStatus = Literal["active", "paused", "blocked", "complete"]
+"""Lifecycle status of a TUI-owned goal.
+
+`active` and `blocked` are unfinished working states, `paused` preserves the goal
+without driving work, and `complete` is terminal. A blocked goal is still
+considered actionable by the goal-state notice, whereas a paused goal is
+unfinished but not actionable.
+
+Declared in this leaf module, not beside the state schema, so both normalizers
+can share one vocabulary: `resume_state.coerce_goal_status` and
+`goal_state_notice.project_goal_state`. The notice path deliberately avoids
+`resume_state`'s heavy `deepagents` import, and this module depends only on
+`typing`, so it is reachable from either side at no startup cost.
+"""
+
+GOAL_STATUS_VALUES: Final[frozenset[str]] = frozenset(get_args(GoalStatus))
+"""Every recognized `GoalStatus` value, derived so it cannot drift."""
 
 GOAL_OBJECTIVE_CHAR_LIMIT: Final = 8_000
 """Maximum characters in one persisted goal objective."""

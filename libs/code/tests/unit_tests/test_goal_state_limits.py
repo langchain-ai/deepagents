@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 import pytest
 
@@ -103,3 +103,34 @@ def test_notice_total_limit_is_reachable_only_with_a_prior_blocker() -> None:
 
     assert raised.value.actual == GOAL_NOTICE_TEXT_CHAR_LIMIT + 1
     assert raised.value.limit == GOAL_NOTICE_TEXT_CHAR_LIMIT
+
+
+def test_every_goal_status_is_recognized_by_both_normalizers() -> None:
+    """One vocabulary, so a new member cannot be actionable in only one place.
+
+    `resume_state.coerce_goal_status` discards an unknown status, while
+    `goal_state_notice.project_goal_state` defaults one to `active`. When these
+    disagreed, adding a `GoalStatus` member made it silently actionable on the
+    notice path while the read path dropped it.
+    """
+    from deepagents_code.goal_state_limits import GOAL_STATUS_VALUES, GoalStatus
+    from deepagents_code.goal_state_notice import project_goal_state
+    from deepagents_code.resume_state import coerce_goal_status
+
+    assert frozenset(get_args(GoalStatus)) == GOAL_STATUS_VALUES
+    for status in GOAL_STATUS_VALUES:
+        assert coerce_goal_status(status) == status
+        projected = project_goal_state(
+            {"_goal_objective": "ship it", "_goal_status": status},
+        )
+        assert projected["goal_status"] == status
+        assert projected["goal_actionable"] is (status in {"active", "blocked"})
+
+    # An unrecognized status is not silently carried through either path.
+    assert coerce_goal_status("archived") is None
+    assert (
+        project_goal_state(
+            {"_goal_objective": "ship it", "_goal_status": "archived"},
+        )["goal_status"]
+        == "active"
+    )

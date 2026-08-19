@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code.goal_state_limits import (
+    GOAL_STATUS_VALUES,
     GoalStateSizeError,
+    GoalStatus,
     validate_goal_notice_text,
 )
 
@@ -57,7 +59,7 @@ class GoalStateProjection(TypedDict):
     """Canonical goal/rubric fields used for notices and fingerprints."""
 
     goal_objective: str | None
-    goal_status: str | None
+    goal_status: GoalStatus | None
     goal_actionable: bool
     goal_rubric: str | None
     goal_status_note: str | None
@@ -345,15 +347,14 @@ def project_goal_state(state: Mapping[str, object]) -> GoalStateProjection:
     """
     objective = _clean_text(state, "_goal_objective")
     raw_status = state.get("_goal_status")
-    # Mirrors the canonical `GoalStatus` vocabulary in `resume_state`; kept inline
-    # (not imported) because this leaf module deliberately avoids `resume_state`'s
-    # heavy `deepagents` import to stay off the startup hot path. Keep in sync.
-    known_statuses = {"active", "paused", "blocked", "complete"}
-    status = (
-        raw_status
+    # The membership test against `GOAL_STATUS_VALUES` is the narrowing a type
+    # checker cannot see through, so the cast records it rather than widening the
+    # field back to `str`.
+    status: GoalStatus | None = (
+        cast("GoalStatus", raw_status)
         if objective is not None
         and isinstance(raw_status, str)
-        and raw_status in known_statuses
+        and raw_status in GOAL_STATUS_VALUES
         else "active"
         if objective is not None
         else None

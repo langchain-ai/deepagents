@@ -10105,7 +10105,16 @@ class DeepAgentsApp(App):
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
-            await self._handle_user_message(value)
+            from deepagents_code.skills.invocation import find_inline_skill_reference
+
+            skill_name = find_inline_skill_reference(
+                value,
+                (skill["name"] for skill in self._discovered_skills),
+            )
+            if skill_name is None:
+                await self._handle_user_message(value)
+            else:
+                await self._invoke_skill(skill_name, value)
         else:
             # Fail safe: never default to the agent dispatch path on an
             # unrecognized mode, since that would silently leak `!!`/`!`

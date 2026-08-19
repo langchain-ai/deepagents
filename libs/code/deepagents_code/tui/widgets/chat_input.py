@@ -2254,7 +2254,11 @@ class ChatInput(Vertical):
         self._slash_controller = SlashCommandController(
             get_slash_commands(), self._completion_view
         )
-        self._skill_controller = SkillCommandController([], self._completion_view)
+        self._skill_controller = SkillCommandController(
+            [],
+            self._completion_view,
+            should_submit_completion=lambda: self.mode == "skill",
+        )
         self._completion_manager = MultiCompletionManager(
             [
                 self._slash_controller,
@@ -2771,6 +2775,8 @@ class ChatInput(Vertical):
         if detected_prefix is None:
             return False
         prefix, raw_detected = detected_prefix
+        if raw_detected == "skill" and self._text_area and self._text_area.text:
+            return False
         detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
         if not strip_length:
             # An extra `!` inside an incognito command body is literal text.
@@ -3696,23 +3702,29 @@ class ChatInput(Vertical):
         text = self._text_area.text
         cursor = self._get_cursor_offset()
 
-        # Determine replacement range based on completion type.
-        # Slash completions use completion-space coordinates and are translated
+        # Determine replacement range based on completion type. Command and
+        # skill completions use completion-space coordinates and are translated
         # through the completion view adapter.
-        if self.mode == "skill":
-            if self._completion_view is None or self._skill_controller is None:
+        completion_cursor = self._completion_text_and_cursor()[1]
+        skill_completion = (
+            self._skill_controller.completion_value_at(index)
+            if self._skill_controller is not None
+            else None
+        )
+        skill_range = (
+            self._skill_controller.completion_range(completion_cursor)
+            if self._skill_controller is not None
+            else None
+        )
+        if skill_completion is not None and skill_range is not None:
+            if self._completion_view is None:
                 logger.warning(
-                    "Skill completion clicked before its controller was initialized; "
+                    "Skill completion clicked before its view was initialized; "
                     "this indicates a widget lifecycle issue."
                 )
                 return
-            completion = self._skill_controller.completion_value_at(index)
-            if completion is None:
-                logger.warning("Skill completion clicked with invalid suggestion index")
-                return
-            _, virtual_cursor = self._completion_text_and_cursor()
             self._completion_view.replace_completion_range(
-                0, virtual_cursor, completion
+                skill_range[0], skill_range[1], skill_completion
             )
         elif label.startswith("/"):
             if self._completion_view is None:

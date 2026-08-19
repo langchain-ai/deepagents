@@ -2511,6 +2511,21 @@ class TestModePrefixStripping:
             assert chat.mode == "skill"
             assert chat._text_area.text == "review"
 
+    async def test_dollar_at_start_of_existing_draft_stays_inline(self) -> None:
+        """A `$` at cursor zero enters skill mode only when the draft is empty."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.insert("existing text")
+            chat._text_area.move_cursor((0, 0))
+
+            await pilot.press("$")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "$existing text"
+
     @pytest.mark.parametrize(
         "text",
         [
@@ -5009,6 +5024,87 @@ class TestSkillCompletion:
             await pilot.pause()
 
             assert chat._text_area.text == "my-plugin:deploy "
+
+    async def test_inline_click_preserves_surrounding_prompt(self) -> None:
+        """Clicking an inline skill replaces only the active `$` fragment."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry(
+                        "/skill:my-plugin:deploy",
+                        "Deploy through a plugin",
+                        "deploy",
+                        "",
+                        "/skill:deploy",
+                    )
+                ],
+            )
+
+            chat._text_area.insert("Use $deploy before release")
+            chat._text_area.move_cursor((0, 8))
+            assert chat._completion_manager is not None
+            chat._completion_manager.on_text_changed("Use $deploy before release", 8)
+            await pilot.pause()
+
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "Use $my-plugin:deploy before release"
+
+    async def test_inline_tab_preserves_surrounding_prompt(self) -> None:
+        """Tab selection inserts a canonical inline skill reference."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry("/skill:review", "Review a change", "review", "")
+                ],
+            )
+
+            chat._text_area.insert("Use $rev")
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "Use $review "
+
+    async def test_inline_enter_selects_without_submitting(self) -> None:
+        """Enter selects an inline skill but leaves the prompt editable."""
+        from deepagents_code.command_registry import CommandEntry
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat.update_slash_commands(
+                get_slash_commands(),
+                skill_commands=[
+                    CommandEntry("/skill:review", "Review a change", "review", "")
+                ],
+            )
+
+            chat._text_area.insert("Use $rev")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.submitted == []
+            assert chat._text_area.text == "Use $review "
 
     async def test_update_commands_keeps_dollar_picker_skill_only(self) -> None:
         """`$` receives skills while `/` retains every command."""

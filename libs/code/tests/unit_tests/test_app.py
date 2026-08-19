@@ -17004,6 +17004,44 @@ class TestShellCommandInterrupt:
 
         handler.assert_awaited_once_with("echo secret", incognito=True)
 
+    async def test_process_message_routes_inline_skill_reference(self) -> None:
+        """A valid inline reference should invoke the discovered skill."""
+        app = DeepAgentsApp()
+        discovered_skills = MagicMock()
+        discovered_skills.__iter__.return_value = iter([{"name": "review"}])
+        app._discovered_skills = discovered_skills
+        prompt = "Check this and use $REVIEW before release"
+
+        with (
+            patch.object(app, "_invoke_skill", new_callable=AsyncMock) as invoke,
+            patch.object(
+                app, "_handle_user_message", new_callable=AsyncMock
+            ) as handle_user_message,
+        ):
+            await app._process_message(prompt, "normal")
+
+        invoke.assert_awaited_once_with("review", prompt)
+        handle_user_message.assert_not_awaited()
+
+    async def test_process_message_keeps_unknown_dollar_text_normal(self) -> None:
+        """Unknown dollar tokens should remain ordinary user prompts."""
+        app = DeepAgentsApp()
+        discovered_skills = MagicMock()
+        discovered_skills.__iter__.return_value = iter([{"name": "review"}])
+        app._discovered_skills = discovered_skills
+        prompt = "Keep the budget under $5k and use $unknown"
+
+        with (
+            patch.object(app, "_invoke_skill", new_callable=AsyncMock) as invoke,
+            patch.object(
+                app, "_handle_user_message", new_callable=AsyncMock
+            ) as handle_user_message,
+        ):
+            await app._process_message(prompt, "normal")
+
+        invoke.assert_not_awaited()
+        handle_user_message.assert_awaited_once_with(prompt)
+
     async def test_incognito_shell_command_does_not_mount_header(self) -> None:
         """Incognito shell commands should not echo the command before output."""
         app = DeepAgentsApp()

@@ -5331,8 +5331,8 @@ class TestStripSuccessExitLine:
 class TestUserMessageAppearance:
     """User prompts remain visually distinct from transcript output."""
 
-    async def test_has_distinct_flush_left_surface(self) -> None:
-        """A user prompt has a tinted surface with its glyph at the left edge."""
+    async def test_has_distinct_padded_flush_left_surface(self) -> None:
+        """A user prompt has a padded tint with its glyph at the left edge."""
 
         class _Harness(App[None]):
             def compose(self) -> ComposeResult:
@@ -5341,8 +5341,10 @@ class TestUserMessageAppearance:
         async with _Harness().run_test() as pilot:
             message = pilot.app.query_one(UserMessage)
             assert message.styles.background.a == pytest.approx(0.15)
-            assert message.styles.padding.left == 0
+            assert message.styles.padding.top == 1
             assert message.styles.padding.right == 1
+            assert message.styles.padding.bottom == 1
+            assert message.styles.padding.left == 0
 
 
 class TestUserMessageCancelled:
@@ -6704,14 +6706,16 @@ class TestUserMessageTruncation:
         # tail all fit on screen — `pilot.click` refuses off-screen targets.
         async with app.run_test(size=(200, 50)) as pilot:
             await pilot.pause()
-            # Locate the affordance in the wrapped output rather than computing
-            # it from the body length, which depends on terminal width.
+            # Locate the affordance in the wrapped content rather than computing
+            # it from the body length, which depends on terminal width. Pilot
+            # offsets include the widget's padding, while render_line rows do not.
             hint_row = next(
                 y
                 for y in range(msg.size.height)
                 if "show full message" in msg.render_line(y).text
             )
-            await pilot.click(UserMessage, offset=Offset(4, hint_row))
+            click_row = hint_row + msg.styles.padding.top
+            await pilot.click(UserMessage, offset=Offset(4, click_row))
             await pilot.pause()
             assert msg._expanded is True
 

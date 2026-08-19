@@ -933,8 +933,32 @@ def _managed_policy_args() -> argparse.Namespace:
         ('[startup]\nmode = "YOLO"\n', True),
         ("[runtime]\nrecursion_limit = 3\n", True),
         ("[shell]\nallow_list = 5\n", True),
+        ("[skills]\nextra_allowed_dirs = 5\n", True),
+        ("[models]\nauto_classifier = 4\n", True),
+        ("[sandboxes]\ndefault = 5\n", True),
+        ("[interpreter]\nptc = 5\n", True),
+        ("[interpreter]\nenable_interpreter = 5\n", True),
+        # A scalar where the table belongs shadows the key it should hold.
+        ('startup = "manual"\n', True),
+        ('shell = "ls"\n', True),
+        ("skills = 5\n", True),
         ('[startup]\nmode = "manual"\n', False),
         ("[runtime]\nrecursion_limit = 500\n", False),
+    ],
+    ids=[
+        "bad-startup-mode",
+        "out-of-range-limit",
+        "bad-shell-allow-list",
+        "bad-skills-dirs",
+        "bad-auto-classifier",
+        "bad-sandbox",
+        "bad-ptc",
+        "bad-interpreter-toggle",
+        "shadowed-startup",
+        "shadowed-shell",
+        "shadowed-skills",
+        "valid-startup-mode",
+        "valid-limit",
     ],
 )
 def test_rejected_managed_privilege_value_stops_the_launch(
@@ -947,6 +971,10 @@ def test_rejected_managed_privilege_value_stops_the_launch(
 
     Skipping the value left `--yolo` and `--shell-allow-list all` in force, so
     an administrator typo granted exactly the escalation policy forbade.
+
+    Regression: a *shadowed* path (`startup = "manual"` instead of `[startup]`
+    plus `mode`) read as "the administrator wrote nothing", so the same typo
+    one level up still granted the escalation, silently.
     """
     from deepagents_code import main
     from deepagents_code.configuration import service
@@ -963,6 +991,143 @@ def test_rejected_managed_privilege_value_stops_the_launch(
             assert excinfo.value.code == 78
         else:
             main._apply_managed_runtime_policy(args)
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_auto_mode_does_not_set_the_headless_incompatible_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed policy revokes flags; it never sets `--auto-approve`.
+
+    Regression: assigning the flag positively made every headless launch exit 2
+    with "--auto-approve is only supported in interactive mode", naming a flag
+    the user never passed. `_resolve_approval_mode` already ends at
+    `coerce_approval_mode(load_startup_mode())`, which reads merged managed
+    policy, so the positive value needs no flag.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "auto"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    try:
+        main._apply_managed_runtime_policy(args)
+        assert args.auto_approve is False
+        assert args.yolo is False
+        # The mode still reaches the runtime through the merged config.
+        assert model_config.load_startup_mode() == "auto"
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_managed_sandbox_default_does_not_force_a_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sandboxes.default` names a backend; it does not turn sandboxing on.
+
+    Assigning it unconditionally forced every launch into a remote sandbox,
+    which is not what the key documents.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[sandboxes]\ndefault = "modal"\n', encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    try:
+        main._apply_managed_runtime_policy(args)
+        assert args.sandbox is None
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_unavailable_managed_sandbox_stops_a_sandboxed_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed backend no provider answers to must not reach the factory.
+
+    `parse_args` validates `--sandbox`, but it runs before managed policy is
+    applied, so the managed value skipped `is_available` entirely.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[sandboxes]\ndefault = "not-a-real-provider"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    args = _managed_policy_args()
+    args.sandbox = "not-a-real-provider"
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            main._apply_managed_runtime_policy(args)
+        assert excinfo.value.code == 78
+    finally:
+        service.invalidate_config_sources()
+
+
+def _reload_previous() -> dict[str, object]:
+    """Return a `previous` mapping shaped like the reloadable settings."""
+    from deepagents_code.config import _RELOADABLE_FIELDS
+
+    previous: dict[str, object] = dict.fromkeys(_RELOADABLE_FIELDS)
+    previous["shell_allow_list"] = ["ls"]
+    previous["extra_skills_dirs"] = []
+    return previous
+
+
+@pytest.mark.parametrize(
+    "managed_toml",
+    ["[broken", "[shell]\nallow_list = 5\n"],
+    ids=["unparseable", "unenforceable"],
+)
+def test_blocked_reload_keeps_policy_and_says_so(
+    managed_toml: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reload that cannot enforce policy keeps it and reports the block.
+
+    Regression: an unenforceable managed value had no reload-time equivalent of
+    the launch-time reject, so `/reload` silently downgraded the shell allow
+    list to the user's env value. The empty change list also told the user
+    nothing had happened.
+    """
+    from deepagents_code._env_vars import SHELL_ALLOW_LIST
+    from deepagents_code.config import Settings
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(managed_toml, encoding="utf-8")
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    previous = _reload_previous()
+    try:
+        refreshed, blocked = Settings._reload_values(
+            start_path=tmp_path,
+            env={SHELL_ALLOW_LIST: "all"},
+            previous=previous,
+        )
+        assert refreshed == previous
+        assert blocked is not None
+        assert str(managed) in blocked
     finally:
         service.invalidate_config_sources()
 

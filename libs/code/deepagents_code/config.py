@@ -2761,11 +2761,16 @@ class Settings:
         start_path: Path | None,
         env: dict[str, str],
         previous: dict[str, object],
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], str | None]:
         """Resolve reloadable settings from an environment mapping.
 
+        Managed policy outranks the environment for every field it declares. A
+        managed source that is present but unenforceable keeps `previous`
+        unchanged, so a reload can never drop policy that is already in force.
+
         Returns:
-            Reloadable setting values keyed by field name.
+            Reloadable setting values keyed by field name, and a notice when
+            managed policy blocked the reload (`None` when it did not).
         """
         from deepagents_code._env_vars import (
             EXTRA_SKILLS_DIRS,
@@ -2787,7 +2792,10 @@ class Settings:
             require_healthy_managed_config(refresh=True)
         except ManagedConfigError as exc:
             logger.error("Keeping previous settings: %s", exc)  # noqa: TRY400
-            return dict(previous)
+            # Report the block to the caller. Returning only `previous` reads
+            # as "nothing changed", so the user would be told the reload
+            # succeeded while their environment edits were discarded.
+            return dict(previous), f"Kept previous settings: {exc}"
         managed_data = get_managed_snapshot().data
 
         try:
@@ -2867,7 +2875,7 @@ class Settings:
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
             "extra_skills_dirs": extra_skills_dirs,
-        }
+        }, None
 
     @staticmethod
     def _format_reload_changes(
@@ -2909,12 +2917,13 @@ class Settings:
         """
         previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
         env = _preview_dotenv_environ(start_path=start_path)
-        refreshed = self._reload_values(
+        refreshed, blocked = self._reload_values(
             start_path=start_path,
             env=env,
             previous=previous,
         )
-        return self._format_reload_changes(previous, refreshed)
+        changes = self._format_reload_changes(previous, refreshed)
+        return [blocked, *changes] if blocked else changes
 
     def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
         """Reload selected settings from environment variables and project files.
@@ -2930,20 +2939,23 @@ class Settings:
 
         !!! note
 
-            Shell-exported variables always take precedence. Values previously
-            injected from `.env` files are refreshed so an accepted cwd switch
-            can pick up the resumed project's `.env`.
+            Managed config takes precedence over shell-exported variables for
+            the fields it declares. Below managed policy, shell exports still
+            outrank `.env` values. Values previously injected from `.env` files
+            are refreshed so an accepted cwd switch can pick up the resumed
+            project's `.env`.
 
         Args:
             start_path: Directory to start project detection from (defaults to cwd).
 
         Returns:
-            A list of human-readable change descriptions.
+            A list of human-readable change descriptions. Empty when nothing
+            changed; a single notice when managed policy blocked the reload.
         """
         _load_dotenv(start_path=start_path, refresh_loaded=True)
 
         previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
-        refreshed = self._reload_values(
+        refreshed, blocked = self._reload_values(
             start_path=start_path,
             env=dict(os.environ),
             previous=previous,
@@ -2978,7 +2990,8 @@ class Settings:
         from deepagents_code.model_config import reset_env_resolution_log
 
         reset_env_resolution_log()
-        return self._format_reload_changes(previous, refreshed)
+        changes = self._format_reload_changes(previous, refreshed)
+        return [blocked, *changes] if blocked else changes
 
     @property
     def has_anthropic(self) -> bool:

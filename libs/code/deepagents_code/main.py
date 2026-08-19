@@ -4259,10 +4259,13 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     keep the ordinary ignore-and-fall-through rule.
     """
     from deepagents_code.config_manifest import (
-        _is_valid_recursion_limit,
         get_option,
         load_managed_config_toml,
         resolve_scalar,
+    )
+    from deepagents_code.configuration.service import (
+        managed_declaration,
+        managed_policy_violations,
     )
 
     managed_data = load_managed_config_toml()
@@ -4274,12 +4277,7 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         option = get_option(key)
         if option is None or not option.toml_keys:
             return False
-        node: object = managed_data
-        for part in option.toml_keys:
-            if not isinstance(node, dict) or part not in node:
-                return False
-            node = node[part]
-        return True
+        return managed_declaration(managed_data, option.toml_keys) is not None
 
     def managed_value(key: str) -> tuple[bool, object]:
         option = get_option(key)
@@ -4292,33 +4290,11 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         )
         return source == "managed config", value
 
-    # Declaring one of these and getting it wrong must never resolve in the
-    # user's favor, so a rejected value stops the launch.
-    rejected = [
-        key
-        for key in (
-            "startup.mode",
-            "shell.allow_list",
-            "interpreter.enable_interpreter",
-            "interpreter.ptc",
-            "runtime.recursion_limit",
-        )
-        if declared(key) and not managed_value(key)[0]
-    ]
-    limit_found, limit = managed_value("runtime.recursion_limit")
-    if (
-        limit_found
-        and not _is_valid_recursion_limit(limit)
-        and "runtime.recursion_limit" not in rejected
-    ):
-        # `resolve_scalar` applies no range check, and the flag outranks the
-        # bounded resolver when the agent is built, so an out-of-range managed
-        # value would otherwise be assigned verbatim.
-        rejected.append("runtime.recursion_limit")
-    if rejected:
+    violations = managed_policy_violations(managed_data)
+    if violations:
         sys.stderr.write(
             "Error: managed config rejects "
-            f"{', '.join(sorted(rejected))}. "
+            f"{', '.join(violations)}. "
             "Ask your administrator to correct the value.\n"
         )
         sys.stderr.flush()
@@ -4328,12 +4304,14 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         "models.default": "model",
         "models.auto_classifier": "auto_classifier_model",
         "interpreter.enable_interpreter": "interpreter",
-        "sandboxes.default": "sandbox",
     }.items():
         found, value = managed_value(key)
         if found and hasattr(args, destination):
             setattr(args, destination, value)
 
+    _apply_managed_sandbox(args, managed_value("sandboxes.default"))
+
+    limit_found, limit = managed_value("runtime.recursion_limit")
     if limit_found and hasattr(args, "recursion_limit"):
         args.recursion_limit = limit
 
@@ -4345,8 +4323,55 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
 
     found, startup_mode = managed_value("startup.mode")
     if found:
-        args.auto_approve = startup_mode == "auto"
-        args.yolo = startup_mode == "yolo"
+        # Only *revoke*: `_resolve_approval_mode` ends at
+        # `coerce_approval_mode(load_startup_mode())`, which already reads
+        # merged managed policy, so the positive value needs no flag. Setting
+        # the flags positively also breaks every headless launch, because
+        # `--auto-approve` with `--non-interactive-message` exits 2 — naming a
+        # flag the user never passed.
+        if startup_mode != "auto":
+            args.auto_approve = False
+        if startup_mode != "yolo":
+            args.yolo = False
+
+
+def _apply_managed_sandbox(
+    args: argparse.Namespace, resolved: tuple[bool, object]
+) -> None:
+    """Pin the sandbox backend when the launch already uses a sandbox.
+
+    `sandboxes.default` names the backend a bare `--sandbox` selects; omitting
+    the flag runs unsandboxed. Assigning it unconditionally would force every
+    launch into a sandbox, which the key does not mean, so a launch that asked
+    for no sandbox is left alone. A bare `--sandbox` needs no assignment here
+    either: `SandboxRegistry.load` reads merged managed config, so
+    `registry.default` already carries the managed value.
+
+    The value is checked against the registry first. `parse_args` validates
+    `--sandbox`, but it runs before managed policy is applied, so an
+    unavailable managed name would otherwise skip `is_available` and reach the
+    sandbox factory instead of producing a curated error.
+    """
+    found, value = resolved
+    if not found or getattr(args, "sandbox", None) is None:
+        return
+    if not isinstance(value, str) or not value:
+        return
+    if value != "none":
+        from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+        registry = SandboxRegistry.load()
+        if not registry.is_available(value):
+            available = ", ".join(registry.available_providers())
+            sys.stderr.write(
+                f"Error: managed config sets [sandboxes].default to '{value}', "
+                "which is not available on this machine.\n"
+                f"Available providers: {available}.\n"
+                "Ask your administrator to correct the value.\n"
+            )
+            sys.stderr.flush()
+            sys.exit(78)
+    args.sandbox = value
 
 
 def _require_managed_config_or_exit() -> None:

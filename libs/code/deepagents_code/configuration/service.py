@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -103,18 +103,142 @@ def _is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
     return _coerce_toml(option, value, source="managed config") is not _INVALID
 
 
+ENFORCED_MANAGED_KEYS = (
+    "interpreter.enable_interpreter",
+    "interpreter.ptc",
+    "models.auto_classifier",
+    "runtime.recursion_limit",
+    "sandboxes.default",
+    "shell.allow_list",
+    "skills.extra_allowed_dirs",
+    "startup.mode",
+)
+"""Manifest keys whose managed value must never resolve in the user's favor.
+
+Every key here either grants a privilege (approval mode, shell auto-approval,
+the interpreter and its programmatic tool-calling list) or draws a containment
+boundary (the skill-content allowlist, the sandbox backend, the recursion
+limit, and the classifier that reviews gated actions). Ignoring an unusable
+value for one of these leaves the user's own flag in force, which is the
+escalation the policy meant to forbid, so the launch stops instead.
+
+Keys that cannot grant privilege keep the ordinary ignore-and-fall-through
+rule.
+"""
+
+
+def managed_declaration(
+    managed_data: dict[str, Any], toml_keys: tuple[str, ...]
+) -> Literal["declared", "shadowed"] | None:
+    """Classify what managed policy says at one manifest path.
+
+    Returns:
+        `"declared"` when a value is present, `"shadowed"` when an ancestor is
+        not a table (so the key it should hold is unreachable), or `None` when
+        the administrator wrote nothing at this path.
+    """
+    node: object = managed_data
+    for part in toml_keys[:-1]:
+        if not isinstance(node, dict):
+            return "shadowed"
+        if part not in node:
+            return None
+        node = node[part]
+    if not isinstance(node, dict):
+        # A scalar where the parent table belongs, e.g. `startup = "manual"`
+        # instead of `[startup]` + `mode = "manual"`.
+        return "shadowed"
+    return "declared" if toml_keys[-1] in node else None
+
+
+def managed_policy_violations(
+    managed_data: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Return enforced keys whose managed value cannot be applied.
+
+    A key is a violation when managed policy declares it and the declaration
+    cannot be enforced: the manifest rejects the value, an ancestor of the path
+    is not a table, or `runtime.recursion_limit` falls outside its bounds. The
+    shape cases matter because "wrong shape" is not "absent" — reading them as
+    absent silently resolves the key in the user's favor.
+
+    Args:
+        managed_data: Managed table to inspect; defaults to the process
+            snapshot.
+
+    Returns:
+        The violating keys, sorted, empty when policy is enforceable.
+    """
+    from deepagents_code.config_manifest import (
+        _is_valid_recursion_limit,
+        get_option,
+        resolve_scalar,
+    )
+
+    if managed_data is None:
+        managed_data = get_managed_snapshot().data
+    if not managed_data:
+        return ()
+
+    violations: list[str] = []
+    for key in ENFORCED_MANAGED_KEYS:
+        option = get_option(key)
+        if option is None or not option.toml_keys:
+            continue
+        declaration = managed_declaration(managed_data, option.toml_keys)
+        if declaration is None:
+            continue
+        if declaration == "shadowed":
+            violations.append(key)
+            continue
+        value, source = resolve_scalar(
+            option,
+            toml_data={},
+            managed_toml_data=managed_data,
+        )
+        if source != "managed config":
+            violations.append(key)
+        elif key == "runtime.recursion_limit" and not _is_valid_recursion_limit(value):
+            # `resolve_scalar` applies no range check, and the flag outranks
+            # the bounded resolver when the agent is built, so an out-of-range
+            # managed value would otherwise be assigned verbatim.
+            violations.append(key)
+    return tuple(sorted(violations))
+
+
 class ManagedConfigError(RuntimeError):
     """Raised when an enforced managed source cannot be read safely."""
 
-    def __init__(self, status: ProviderStatus) -> None:
+    def __init__(self, status: ProviderStatus, message: str | None = None) -> None:
         """Build a safe startup error from provider health metadata."""
-        path = status.path or managed_config_path()
-        detail = f": {status.detail}" if status.detail else ""
-        super().__init__(
-            f"Managed config at {path} is {status.health.value}{detail}. "
-            "Ask your administrator to repair or remove the file."
-        )
+        if message is None:
+            path = status.path or managed_config_path()
+            detail = f": {status.detail}" if status.detail else ""
+            message = (
+                f"Managed config at {path} is {status.health.value}{detail}. "
+                "Ask your administrator to repair or remove the file."
+            )
+        super().__init__(message)
         self.status = status
+
+
+class ManagedPolicyError(ManagedConfigError):
+    """Raised when managed policy declares a value that cannot be enforced.
+
+    The file parses, so provider health is `OK`; the policy it states is what
+    cannot be applied. A subclass of `ManagedConfigError` so every caller that
+    already fails closed on an unreadable file fails closed here too.
+    """
+
+    def __init__(self, status: ProviderStatus, keys: tuple[str, ...]) -> None:
+        """Build a startup error naming the keys that stop the launch."""
+        path = status.path or managed_config_path()
+        super().__init__(
+            status,
+            f"Managed config at {path} rejects {', '.join(keys)}. "
+            "Ask your administrator to correct the value.",
+        )
+        self.keys = keys
 
 
 class _SnapshotState:
@@ -209,14 +333,25 @@ def invalidate_config_sources() -> None:
 
 
 def require_healthy_managed_config(*, refresh: bool = False) -> None:
-    """Fail startup when a present managed policy cannot be parsed or read.
+    """Fail startup when present managed policy cannot be parsed or enforced.
+
+    A file that parses is not necessarily enforceable: a privilege-affecting
+    key can carry a value the manifest rejects, or sit under an ancestor that
+    is not a table. Both would resolve in the user's favor, so they stop the
+    launch here rather than at each consumer.
 
     Raises:
         ManagedConfigError: If managed policy is present but unusable.
+        ManagedPolicyError: If managed policy declares an enforced key whose
+            value cannot be applied.
     """
-    status = get_managed_snapshot(refresh=refresh).status
+    snapshot = get_managed_snapshot(refresh=refresh)
+    status = snapshot.status
     if status.health in {ProviderHealth.UNREADABLE, ProviderHealth.CORRUPT}:
         raise ManagedConfigError(status)
+    violations = managed_policy_violations(snapshot.data)
+    if violations:
+        raise ManagedPolicyError(status, violations)
 
 
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:

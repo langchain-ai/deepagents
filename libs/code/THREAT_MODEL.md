@@ -267,15 +267,15 @@
 
 - **Inside**: The resolver reads one fixed OS path and never writes the managed source. Valid managed values take the highest precedence. The rules are:
   - Tables deep-merge. Deny lists union. An explicit managed allow or trust list replaces lower-precedence grants.
-  - A managed scalar replaces a colliding user table at any depth, so a user cannot defeat policy by changing the shape of a key.
+  - A managed scalar replaces a colliding user table at any depth on the top-level merge, so a user cannot defeat policy by changing the shape of a key. Inside a structured table the merge runs without the manifest validator, so a user nested table survives a colliding managed scalar and the typed reader then falls back to the built-in default.
   - A wrong-typed managed scalar is skipped, and the lower-precedence value stays in effect.
   - Inside a structured table the dedicated typed reader validates instead. A wrong-typed managed leaf there can displace a valid user leaf, after which the reader falls back to the built-in default.
-  - A wrong-typed managed value for a privilege-affecting key (`startup.mode`, `shell.allow_list`, `interpreter.enable_interpreter`, `interpreter.ptc`, `runtime.recursion_limit`) stops the launch. Skipping it would leave the user's CLI flag in force.
+  - A managed value that cannot be enforced for one of the enforced keys (`startup.mode`, `shell.allow_list`, `skills.extra_allowed_dirs`, `interpreter.enable_interpreter`, `interpreter.ptc`, `models.auto_classifier`, `runtime.recursion_limit`, `sandboxes.default`) stops the launch and blocks `/reload`. Skipping it would leave the user's CLI flag in force. This covers a wrong-typed value, a `runtime.recursion_limit` outside its bounds, and a key made unreachable by a scalar ancestor (`startup = "manual"` in place of `[startup]` and `mode`). A managed `[sandboxes].default` that names an unavailable backend stops a sandboxed launch.
   - A missing file is accepted and applies no policy.
-  - A present unreadable, undecodable, or syntactically corrupt file blocks every command except `config`, `doctor`, `auth path`, and `help`, and also blocks `/reload`.
+  - A present unreadable, undecodable, or syntactically corrupt file blocks every command except `--help`, `--version`, `help`, `config`, `doctor`, and `auth path`, and also blocks `/reload`.
   - A failed `/reload` keeps the last snapshot that parsed cleanly, so policy is never dropped mid-session.
   - An unusable user `config.toml` drops only the user layer, so managed policy still applies.
-  - A deny list that cannot be read is treated as denying everything, never as empty.
+  - A deny list that cannot be read is treated as denying everything, never as empty. This covers a managed `[mcp].disabled_servers` that is neither an array of names nor a comma-separated string, and a `[mcp]` section that is not a table.
 - **Outside**: Ownership, permission-mode validation, privileged installation, and `sudo` policy are deployment responsibilities. Anyone who can replace the administrator-managed file can control model, sandbox, interpreter, MCP trust, and other supported runtime settings.
 - **Crossing mechanism**: Synchronous local file read through `configuration.TomlFileProvider`, followed by typed resolution and CLI/server startup gates.
 

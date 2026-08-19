@@ -792,4 +792,7 @@ def test_workflow_mirrors_release_install_flags() -> None:
     assert "DEEPAGENTS_CODE_BUILD_COMMIT:" in release
     assert 'if [ "$PKG_NAME" = "deepagents-talon" ]; then' in release
     assert 'INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")' in release
-    assert 'VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"' in release
+    assert (
+        'env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"'
+        in release
+    )

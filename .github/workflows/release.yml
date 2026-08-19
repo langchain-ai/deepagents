@@ -705,7 +705,9 @@ jobs:
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the `.venv` above.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -735,7 +737,9 @@ jobs:
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the existing `.venv`.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
       # No timeout here: release artifacts must be validated with the real
       # ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1` makes the

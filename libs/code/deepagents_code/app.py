@@ -570,12 +570,22 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     A hardened local variant of
     `SummarizationMiddleware._apply_event_to_messages`, kept in the client
     because it runs against possibly-malformed remote-snapshot dicts and must
-    degrade gracefully (a `None` summary or non-int cutoff returns the full
-    list) rather than raise or emit a `None`-led list. Like the SDK method,
-    when a prior summarization event exists the effective conversation is the
-    summary message followed by the messages from `cutoff_index` onward, and it
+    degrade gracefully rather than raise or emit a `None`-led list. When the
+    event is usable the effective conversation is the summary message followed
+    by the messages from `cutoff_index` onward, matching the SDK method, and it
     works on both LangChain message objects and serialized dicts since it only
     slices and prepends.
+
+    An unusable event — a `None` summary, or a cutoff that is not a
+    non-negative int within bounds — returns the full list. The bounds case
+    diverges deliberately from the SDK, which reads a cutoff past the end as
+    "everything was summarized" and returns `[summary]` alone. A shorter list
+    than the cutoff means history was removed after the summary was written
+    (the `/offload` failure paths issue `RemoveMessage`), so the survivors are
+    the recent messages, and returning `[summary]` would hide live turns.
+    Callers here size context and detect dangling tool calls, where
+    over-reporting the window is the safe direction. `validated_summarization_cutoff`
+    holds the matching decision for the notice predicate.
 
     Args:
         messages: Full message list from state.

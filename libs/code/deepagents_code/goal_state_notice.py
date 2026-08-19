@@ -282,6 +282,13 @@ def validated_summarization_cutoff(
 ) -> int | None:
     """Return a valid absolute cutoff index from a summarization event.
 
+    A cutoff past `message_count` is rejected rather than clamped. The SDK
+    reads that state as "everything was summarized"; here it means the message
+    list shrank after the summary was written, so the survivors are live turns
+    and trusting the stale index would discount them as invisible. Rejecting
+    forces a fresh notice instead. `_effective_conversation` in `app.py` makes
+    the same call for the same reason.
+
     Args:
         event: A `_summarization_event` mapping as persisted in state, or `None`.
         message_count: Full persisted message count when bounds can be checked.

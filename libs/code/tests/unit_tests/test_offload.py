@@ -3279,10 +3279,20 @@ class TestOffloadHelpers:
         )
 
     def test_effective_conversation_cutoff_past_end(self) -> None:
+        """An out-of-bounds cutoff deliberately diverges from the SDK.
+
+        `_apply_event_to_messages` reads a cutoff past the end as "everything
+        was summarized" and returns `[summary]`. A shorter list than the cutoff
+        means messages were removed after the summary was written, so the
+        survivors are live turns; returning `[summary]` would hide them from
+        the context sizing and dangling-tool-call checks that call this.
+        """
         from deepagents_code.app import _effective_conversation
 
         event = {"summary_message": "S", "cutoff_index": 9}
         assert _effective_conversation(["m0"], event) == ["m0"]
+        # Not the SDK's reading, which would be `["S"]`.
+        assert _effective_conversation(["m0"], event) != ["S"]
 
     def test_message_text_handles_str_and_block_list(self) -> None:
         from deepagents_code.app import _message_text

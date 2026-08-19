@@ -15201,9 +15201,6 @@ class TestMessageTimestampFooters:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Scroll-up hydration of older messages builds visible footers."""
-        from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
         config = tmp_path / "config.toml"
         config.write_text("[ui]\nshow_message_timestamps = true\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -15211,33 +15208,21 @@ class TestMessageTimestampFooters:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
-            # Shrink the window so a small load archives messages above the
-            # visible range, mirroring a long thread scrolled to the bottom.
-            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
-            payload = _ThreadHistoryPayload(
-                [
-                    MessageData(
-                        type=MessageType.USER,
-                        content=f"m{index}",
-                        id=f"hist-{index}",
-                        timestamp=1_704_110_400.0 + index,
-                    )
-                    for index in range(4)
-                ],
-                0,
-                "",
-            )
-            # Suppress history loading's delayed scroll-to-bottom timer. If it
-            # fires after the explicit hydrate-above call below, the resulting
-            # scroll offset change hydrates the tail and prunes `hist-0` again.
-            with patch.object(app, "set_timer"):
-                await app._load_thread_history(
-                    thread_id="t-long", preloaded_payload=payload
-                )
+            # Mount enough history to exceed the shrunken window, mirroring a
+            # long thread scrolled to the bottom.
+            for index in range(5):
+                await app._mount_message(UserMessage(f"m{index}", id=f"hist-{index}"))
             await pilot.pause()
 
-            # Older messages start archived (no widget/footer mounted yet).
+            # Shrink the window and prune the oldest rows so history is
+            # archived above the mounted tail; the newest rows stay visible.
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
+            await app._prune_messages("above")
+            await pilot.pause()
+
+            # The oldest row is archived, so neither it nor its footer is
+            # mounted yet.
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
@@ -32132,6 +32117,26 @@ class TestMCPLoginCommand:
                 "Usage: /mcp reconnect" in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_viewer_enter_on_remote_server_routes_to_reauth(self) -> None:
+        """End-to-end: Enter on a healthy OAuth server starts OAuth again."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_server_info = [
+                MCPServerInfo(name="slack", transport="http", tools=(), uses_oauth=True)
+            ]
+            with patch.object(
+                app, "_start_mcp_login", return_value=True
+            ) as start_login:
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+
+            start_login.assert_called_once_with("slack")
 
     async def test_viewer_ctrl_r_routes_to_reconnect_handler(self) -> None:
         """End-to-end: Ctrl+R in the viewer triggers the restart path.

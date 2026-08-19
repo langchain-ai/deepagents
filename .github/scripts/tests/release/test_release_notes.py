@@ -61,7 +61,10 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
         "checks": "write",
         "contents": "read",
         "issues": "write",
-        "pull-requests": "read",
+        # The new-entries courtesy comment targets the release PR, whose branch
+        # is owned by the release-bot app installation; issues: write alone
+        # intermittently 403s there.
+        "pull-requests": "write",
     }
     job = workflow["jobs"]["curated-release-notes"]
     assert "github.event_name == 'pull_request'" in job["name"]
@@ -74,6 +77,10 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
     check_workflow = CHECK_WORKFLOW.read_text()
     assert "expectedHead: pr.head.sha" in check_workflow
     assert "initialDraftPollAttempts: context.eventName === 'issue_comment' ? 0 : 72" in check_workflow
+    # Refresh runs share one package-agnostic job name across every release PR, so the
+    # refreshed check's title/summary must name the validated package and version.
+    assert "Curated release notes are valid for ${target}" in check_workflow
+    assert "Validation result for ${target}: ${result.status}." in check_workflow
     # A cancelled/timed-out poll must not leave the refresh check spinning forever:
     # an always() finalizer closes an interrupted in_progress check.
     assert "if: always() && steps.validate.outputs.refresh_check_id != ''" in check_workflow

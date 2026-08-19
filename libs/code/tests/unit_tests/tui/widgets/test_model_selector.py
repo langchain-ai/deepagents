@@ -3426,6 +3426,7 @@ class TestGetModelDisplayName:
             ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
+            ("openrouter:z-ai/glm-5.3", "GLM 5.3"),
             ("xai:grok-4.5", "Grok 4.5"),
         ],
     )

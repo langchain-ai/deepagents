@@ -923,6 +923,47 @@ def test_failed_reload_keeps_the_last_healthy_managed_snapshot(
         service.invalidate_config_sources()
 
 
+def test_rejected_reload_keeps_the_last_enforceable_managed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reload rejected on policy grounds must not replace the cached policy.
+
+    Regression: a parseable-but-unenforceable file has health `OK`, so
+    `get_managed_snapshot(refresh=True)` cached it before
+    `require_healthy_managed_config` rejected it. The reload kept the
+    previous settings, but the process-wide cache already held the rejected
+    file, so a later non-refresh reader observed it and re-enabled a managed
+    MCP deny the edit had removed.
+    """
+    from deepagents_code import mcp_disabled, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        'startup.mode = "manual"\n[mcp]\ndisabled_servers = ["denied"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        assert mcp_disabled.get_disabled_servers() == {"denied"}
+
+        # Enforced-key violation plus removal of the managed deny, in one
+        # parseable edit. The reload is blocked, but the deny must stay.
+        managed.write_text("startup.mode = 5\n", encoding="utf-8")
+        with pytest.raises(ManagedConfigError):
+            require_healthy_managed_config(refresh=True)
+
+        assert mcp_disabled.get_disabled_servers() == {"denied"}
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_union_paths_rebase_onto_an_option_subtree() -> None:
     """Deny-list paths must still match when a merge starts below the root."""
     from deepagents_code.configuration.service import UNION_PATHS, union_paths_under

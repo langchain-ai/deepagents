@@ -288,6 +288,15 @@ def get_managed_snapshot(
     turn one broken write by an administrator into a process-wide fail-open.
     The caller still receives the failed load, so health checks see the error.
 
+    The same holds for a file that parses but cannot be enforced. Its health
+    is `OK`, so a usability check alone would cache it. When the refresh
+    raises `ManagedPolicyError` (as `require_healthy_managed_config` does),
+    the rejected candidate must not stay in the cache: the reload keeps the
+    previous settings, but a later non-refresh reader would otherwise observe
+    the rejected snapshot and, for example, re-enable a managed MCP deny the
+    edit removed. Validate enforceability before caching, so the cache holds
+    only the last enforceable snapshot.
+
     Returns:
         The cached snapshot, or the freshly loaded one when refreshing.
     """
@@ -298,7 +307,10 @@ def get_managed_snapshot(
         if not refresh and cached is not None:
             return cached
         candidate = _load_managed()
-        if candidate.status.usable:
+        # Cache only a snapshot whose declared policy can actually be enforced.
+        # `usable` admits a parseable-but-unenforceable file, so gate on the
+        # policy check too, not just provider health.
+        if candidate.status.usable and not managed_policy_violations(candidate.data):
             _snapshot_state.managed = candidate
         return candidate
 

@@ -12,6 +12,8 @@ from deepagents_code.extensions import ExtensionAPI
 from deepagents_code.extensions.discovery import discover_extension_files
 from deepagents_code.extensions.models import ExtensionError, SourceInfo
 from deepagents_code.extensions.registry import ExtensionRegistry
+from deepagents_code.plugins.manifest import load_manifest
+from deepagents_code.plugins.models import ComponentInventory, PluginInstance
 
 
 class _Middleware(AgentMiddleware):
@@ -75,15 +77,58 @@ def test_rejects_invalid_or_late_registrations(api: ExtensionAPI) -> None:
         api.register_middleware(_Middleware())
 
 
-def test_discovery_requires_experimental_mode(
+def test_plugin_extension_discovery_requires_experimental_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Extension files remain invisible until explicitly enabled."""
+    """Installed plugin entries remain invisible until explicitly enabled."""
     path = tmp_path / "example.py"
     path.touch()
+    manifest_path = tmp_path / "plugin.json"
+    manifest_path.write_text(
+        '{"name":"example","version":"1.2.3","extensions":'
+        '{"com.langchain.deepagents.code":'
+        '{"pythonExtensions":"./example.py"}}}',
+        encoding="utf-8",
+    )
+    manifest, _, warnings = load_manifest(tmp_path)
+    assert manifest is not None
+    assert not warnings
+    plugin = PluginInstance(
+        plugin_id="example@test",
+        name="example",
+        marketplace="test",
+        version=manifest.version,
+        root=tmp_path,
+        data_dir=tmp_path / "data",
+        manifest=manifest,
+        inventory=ComponentInventory(),
+    )
     monkeypatch.delenv(EXPERIMENTAL, raising=False)
-    assert not discover_extension_files(user_dir=tmp_path)
+    assert not discover_extension_files(plugins=(plugin,))
     monkeypatch.setenv(EXPERIMENTAL, "1")
-    assert [source.path for source in discover_extension_files(user_dir=tmp_path)] == [
-        path
-    ]
+    sources = discover_extension_files(plugins=(plugin,))
+    assert [source.path for source in sources] == [path.resolve()]
+    assert sources[0].plugin_id == "example@test"
+    assert sources[0].plugin_version == "1.2.3"
+    assert sources[0].package_root == tmp_path
+
+
+def test_plugin_manifest_rejects_python_entry_outside_install(
+    tmp_path: Path,
+) -> None:
+    """Plugin Python entries cannot escape the immutable install root."""
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (tmp_path / "outside.py").touch()
+    (plugin / "plugin.json").write_text(
+        '{"name":"example","extensions":'
+        '{"com.langchain.deepagents.code":'
+        '{"pythonExtensions":"./../outside.py"}}}',
+        encoding="utf-8",
+    )
+
+    manifest, _, warnings = load_manifest(plugin)
+
+    assert manifest is not None
+    assert not manifest.python_extensions
+    assert any("must not contain '..'" in warning for warning in warnings)

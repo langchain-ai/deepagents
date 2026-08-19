@@ -12,13 +12,10 @@ from deepagents_code.extensions.models import SourceInfo
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from deepagents_code.plugins.models import PluginInstance
+
 logger = logging.getLogger(__name__)
 EXTENSIONS_DIRNAME = "extensions"
-
-
-def user_extensions_dir() -> Path:
-    """Return the global user extensions directory."""
-    return Path.home() / ".deepagents" / EXTENSIONS_DIRNAME
 
 
 def project_extensions_dir(project_root: Path) -> Path:
@@ -37,12 +34,25 @@ def _scan(directory: Path) -> list[SourceInfo]:
     for entry in entries:
         try:
             if entry.is_file() and entry.suffix == ".py":
-                sources.append(SourceInfo(entry))
+                sources.append(
+                    SourceInfo(
+                        entry,
+                        scope="project",
+                        package_root=directory,
+                    )
+                )
             elif entry.is_dir():
                 for filename in ("__init__.py", "extension.py"):
                     candidate = entry / filename
                     if candidate.is_file():
-                        sources.append(SourceInfo(candidate, is_package=True))
+                        sources.append(
+                            SourceInfo(
+                                candidate,
+                                is_package=True,
+                                scope="project",
+                                package_root=directory,
+                            )
+                        )
                         break
         except OSError:
             logger.debug("Skipping unreadable extension %s", entry, exc_info=True)
@@ -55,7 +65,13 @@ def _resolve(paths: Iterable[Path]) -> list[SourceInfo]:
         expanded = path.expanduser()
         try:
             if expanded.is_file():
-                sources.append(SourceInfo(expanded))
+                sources.append(
+                    SourceInfo(
+                        expanded,
+                        scope="project",
+                        package_root=expanded.parent,
+                    )
+                )
             elif expanded.is_dir():
                 sources.extend(_scan(expanded))
         except OSError:
@@ -63,17 +79,38 @@ def _resolve(paths: Iterable[Path]) -> list[SourceInfo]:
     return sources
 
 
+def _plugin_sources(plugins: Sequence[PluginInstance]) -> list[SourceInfo]:
+    """Return manifest-declared Python entries from enabled plugins."""
+    sources: list[SourceInfo] = []
+    for plugin in plugins:
+        manifest = plugin.manifest
+        if manifest is None:
+            continue
+        sources.extend(
+            SourceInfo(
+                path,
+                is_package=path.name == "__init__.py",
+                scope="plugin",
+                plugin_id=plugin.plugin_id,
+                plugin_version=plugin.version,
+                package_root=plugin.root,
+                data_dir=plugin.data_dir,
+            )
+            for path in manifest.python_extensions
+        )
+    return sources
+
+
 def discover_extension_files(
     *,
-    user_dir: Path | None = None,
-    extra_paths: Sequence[Path] = (),
+    plugins: Sequence[PluginInstance] = (),
     project_dir: Path | None = None,
 ) -> list[SourceInfo]:
     """Return ordered, canonically deduplicated extension sources.
 
     Args:
-        user_dir: Global extension directory.
-        extra_paths: Explicit user-configured files or directories.
+        plugins: Enabled, installed plugins whose manifests may declare Python
+            entry files.
         project_dir: Trusted project extension directory, when allowed.
 
     Returns:
@@ -81,8 +118,7 @@ def discover_extension_files(
     """
     if not is_env_truthy(EXPERIMENTAL):
         return []
-    paths = [user_extensions_dir() if user_dir is None else user_dir, *extra_paths]
-    sources = _resolve(paths)
+    sources = _plugin_sources(plugins)
     if project_dir is not None:
         sources.extend(_resolve([project_dir]))
 

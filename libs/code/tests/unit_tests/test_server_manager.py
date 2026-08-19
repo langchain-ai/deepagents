@@ -549,6 +549,7 @@ class TestStartServerAndGetAgent:
         config = json.loads((tmp_path / "langgraph.json").read_text())
         assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
+        assert config["http"]["app"] == "deepagents_code.server_lifespan:app"
 
 
 class TestWritePyproject:

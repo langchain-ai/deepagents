@@ -8,6 +8,7 @@ from pathlib import Path
 
 from check_wheel_dep_freshness import (
     WheelMetadata,
+    _escape_command,
     compare_wheel_with_pypi,
     load_sibling_python_metadata,
     main,
@@ -493,6 +494,60 @@ def test_release_python_version_matches_release_workflow() -> None:
     assert release_python_version("deepagents-code") == "3.12"
     assert release_python_version("deepagents-talon") == "3.12"
     assert release_python_version("deepagents") == "3.11"
+
+
+def test_escape_command_neutralizes_workflow_command_injection() -> None:
+    payload = "sibling pyproject\n::warning::spoofed\r::error::oops 100%"
+
+    escaped = _escape_command(payload)
+
+    assert "\n" not in escaped
+    assert "\r" not in escaped
+    assert escaped == "sibling pyproject%0A::warning::spoofed%0D::error::oops 100%25"
+
+
+def test_validate_wheel_escapes_command_output(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    wheel = tmp_path / "talon.whl"
+    _write_wheel(wheel, requires_python=">=3.12")
+    config = tmp_path / "release-please-config.json"
+    _write_release_config(
+        config,
+        {
+            "libs/code": {
+                "package-name": "deepagents-code",
+                "component": "deepagents-code",
+            }
+        },
+    )
+    manifest = tmp_path / "libs/code/pyproject.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '[project]\nname = "deepagents-code"\n'
+        'requires-python = ">=3.12\\n::warning::spoofed"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary"))
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return _payload(("0.1.57", ">=3.11,<4.0"))
+
+    assert (
+        validate_wheel(
+            wheel,
+            repo_root=tmp_path,
+            config_path=config,
+            fetcher=fetcher,
+        )
+        == 1
+    )
+    out = capsys.readouterr().out
+    assert "\n::warning::" not in out
+    assert "%0A::warning::spoofed" in out
+    assert all(line.startswith("::error ") for line in out.splitlines())
 
 
 def test_validate_wheel_fetches_each_project_once_and_fails_with_summary(

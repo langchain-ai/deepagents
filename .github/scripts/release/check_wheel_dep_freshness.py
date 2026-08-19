@@ -177,12 +177,22 @@ class DependencyCheck:
     message: str
 
 
+def _escape_command(value: object) -> str:
+    """Escape a value for one GitHub Actions `::command::` line.
+
+    Runner workflow commands end at a newline, so a PR-controlled string such as
+    a `pyproject.toml` `requires-python` value must be percent-escaped before it
+    is printed, or it could inject additional annotations.
+    """
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def _notice(message: str) -> None:
-    print(f"::notice::{message}")
+    print(f"::notice::{_escape_command(message)}")
 
 
 def _error(path: Path, message: str) -> None:
-    print(f"::error file={path}::{message}")
+    print(f"::error file={_escape_command(path)}::{_escape_command(message)}")
 
 
 def parse_wheel_metadata(wheel_path: Path) -> WheelMetadata:
@@ -924,7 +934,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_path=args.config,
         )
     except (OSError, TypeError, ValueError, zipfile.BadZipFile) as err:
-        print(f"::error::Dependency metadata validation failed: {err}")
+        print(f"::error::Dependency metadata validation failed: {_escape_command(err)}")
         return 2
 
 

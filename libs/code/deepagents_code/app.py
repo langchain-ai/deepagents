@@ -14730,6 +14730,11 @@ class DeepAgentsApp(App):
             )
             return
         try:
+            # Deliberately not routed through `notice_text_sections`, unlike its
+            # two siblings. The goal is still `paused` here, so projecting it would
+            # withhold the objective and status note — exactly the text the notice
+            # will embed once the resume lands. This validates the state as it will
+            # be *after* the transition, so the fields are read directly.
             validate_goal_notice_text(
                 objective=self._active_goal,
                 criteria=self._active_rubric,

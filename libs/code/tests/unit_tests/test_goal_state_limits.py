@@ -119,6 +119,35 @@ def test_notice_total_limit_counts_html_escaped_text() -> None:
     assert raised.value.limit == GOAL_NOTICE_TEXT_CHAR_LIMIT
 
 
+def test_notice_budget_is_derived_from_its_components() -> None:
+    """`validate_goal_notice_text`'s layering depends on this equality.
+
+    The aggregate limit used to be written out as a literal. Bumping either
+    component would then have opened a gap where the per-field checks pass text the
+    aggregate rejects, or the reverse — and no test of either check alone would
+    notice.
+    """
+    assert GOAL_NOTICE_TEXT_CHAR_LIMIT == (
+        GOAL_APPLICATION_CHAR_LIMIT + GOAL_STATUS_NOTE_CHAR_LIMIT
+    )
+
+
+def test_status_note_label_is_narrower_than_the_full_size_label_set() -> None:
+    """A note overflow must not be reportable under an unrelated budget.
+
+    The label reaches the model verbatim, so naming a budget the notice does not
+    carry would tell it to shorten a field that is not the problem.
+    """
+    from deepagents_code.goal_state_limits import (
+        GoalStateSizeLabel,
+        GoalStatusNoteLabel,
+    )
+
+    note_labels = frozenset(get_args(GoalStatusNoteLabel))
+    assert note_labels == {"Goal status note", "Prior blocker"}
+    assert note_labels < frozenset(get_args(GoalStateSizeLabel))
+
+
 def test_every_goal_status_is_recognized_by_both_normalizers() -> None:
     """One vocabulary, so a new member cannot be actionable in only one place.
 

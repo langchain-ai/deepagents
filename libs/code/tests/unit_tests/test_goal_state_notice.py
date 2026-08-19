@@ -24,6 +24,7 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
+    notice_text_sections,
     project_goal_state,
     serialize_goal_state,
     summarization_cutoff,
@@ -678,3 +679,29 @@ def test_projection_invocation_rubric_precedence() -> None:
         }
     )
     assert matches_sticky["rubric_source"] == "sticky"
+
+
+def test_notice_text_sections_are_named() -> None:
+    """Named fields stop a swapped unpack from validating the wrong budget.
+
+    Every call site unpacks positionally then re-passes the parts as keyword
+    arguments to `validate_goal_notice_text`, where swapping two same-typed
+    optionals type-checks cleanly.
+    """
+    sections = notice_text_sections(
+        project_goal_state(
+            {
+                "_goal_objective": "ship it",
+                "_goal_status": "blocked",
+                "_goal_rubric": "tests pass",
+                "_goal_status_note": "waiting on docs",
+            }
+        )
+    )
+
+    assert sections.objective == "ship it"
+    assert sections.criteria == "tests pass"
+    assert sections.status_note == "waiting on docs"
+    # Tuple unpacking still works, so existing call sites are unaffected.
+    objective, criteria, status_note = sections
+    assert (objective, criteria, status_note) == tuple(sections)

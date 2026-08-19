@@ -1,4 +1,4 @@
-"""Shared size limits for model-visible goal and rubric state."""
+"""Shared size limits and status vocabulary for model-visible goal state."""
 
 from __future__ import annotations
 
@@ -35,12 +35,16 @@ GOAL_APPLICATION_CHAR_LIMIT: Final = 12_000
 GOAL_STATUS_NOTE_CHAR_LIMIT: Final = 4_000
 """Maximum characters in a completion-evidence or blocker note."""
 
-GOAL_NOTICE_TEXT_CHAR_LIMIT: Final = 16_000
+GOAL_NOTICE_TEXT_CHAR_LIMIT: Final = (
+    GOAL_APPLICATION_CHAR_LIMIT + GOAL_STATUS_NOTE_CHAR_LIMIT
+)
 """Maximum combined rendered text embedded in one goal-state notice.
 
-Equal to `GOAL_APPLICATION_CHAR_LIMIT + GOAL_STATUS_NOTE_CHAR_LIMIT`, so the
-per-field limits already sum to it. The aggregate check is therefore only
-reachable via `prior_blocker`, the one section not covered by the application
+Derived rather than written out, because `validate_goal_notice_text`'s layering
+depends on the equality and a hand-written value lets one side drift: bump either
+component and the per-field checks would pass text the aggregate rejects, or the
+reverse. The per-field limits therefore always sum to it. The aggregate check is
+only reachable via `prior_blocker`, the one section not covered by the application
 budget for ordinary text, but HTML escaping can make it live for any section.
 Raise this deliberately if a new section is ever embedded in a notice.
 """
@@ -59,6 +63,14 @@ GoalStateSizeLabel = Literal[
 A closed set rather than free text: the label reaches both the user and the
 model verbatim, so a consumer that wants to branch on which budget was
 exceeded can do so exhaustively instead of matching strings.
+"""
+
+GoalStatusNoteLabel = Literal["Goal status note", "Prior blocker"]
+"""The labels that can name the status-note budget.
+
+Narrower than `GoalStateSizeLabel` so `validate_goal_status_note` cannot be asked
+to report a note overflow under a budget that has nothing to do with notes — the
+message reaches the model verbatim, naming a field the notice does not carry.
 """
 
 
@@ -181,7 +193,7 @@ def validate_goal_application_total(objective: str, criteria: str) -> None:
 def validate_goal_status_note(
     note: str,
     *,
-    label: GoalStateSizeLabel = "Goal status note",
+    label: GoalStatusNoteLabel = "Goal status note",
 ) -> None:
     """Reject a goal status note that cannot fit its persistent context budget.
 
@@ -190,7 +202,8 @@ def validate_goal_status_note(
         label: Name of the value in the raised message. Override it when the
             note is not the live status note, because the message reaches the
             model verbatim and would otherwise name a field the notice does not
-            carry.
+            carry. Restricted to the two note budgets, so it cannot name an
+            unrelated one.
 
     Raises:
         GoalStateSizeError: If `note` exceeds `GOAL_STATUS_NOTE_CHAR_LIMIT`.

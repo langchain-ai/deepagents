@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypedDict, cast
 
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code.goal_state_limits import (
@@ -65,6 +65,14 @@ _LEGACY_CONVERSATION_CONTROL_PREFIXES = (
 
 GoalTransition = Literal["created", "amended", "resumed"]
 
+RubricSource = Literal["goal", "sticky", "invocation"]
+"""Where a notice's active criteria came from.
+
+Closed rather than `str`, because this value is hashed into the state
+fingerprint: a typo would silently change notice identity and force a fresh
+notice every turn, which no test of rendered text would catch.
+"""
+
 
 class GoalStateProjection(TypedDict):
     """Canonical goal/rubric fields used for notices and fingerprints."""
@@ -75,7 +83,22 @@ class GoalStateProjection(TypedDict):
     goal_rubric: str | None
     goal_status_note: str | None
     rubric_criteria: str | None
-    rubric_source: str | None
+    rubric_source: RubricSource | None
+
+
+class NoticeTextSections(NamedTuple):
+    """The three user-controlled text sections a goal-state notice can embed.
+
+    Named rather than a bare `tuple[str | None, str | None, str | None]`: all five
+    call sites unpack positionally and immediately re-pass the parts as keyword
+    arguments to `validate_goal_notice_text`, where swapping two of them
+    type-checks cleanly and would validate the wrong text against the wrong
+    budget. Tuple unpacking still works, so the field names cost nothing.
+    """
+
+    objective: str | None
+    criteria: str | None
+    status_note: str | None
 
 
 class GoalStateNoticeInfo(TypedDict):
@@ -438,7 +461,7 @@ def project_goal_state(state: Mapping[str, object]) -> GoalStateProjection:
     sticky_is_goal_rubric = objective is not None and sticky_rubric == goal_rubric
 
     rubric_criteria: str | None = None
-    rubric_source: str | None = None
+    rubric_source: RubricSource | None = None
     if invocation_rubric is not None:
         rubric_criteria = invocation_rubric
         if actionable and goal_rubric == invocation_rubric:
@@ -505,29 +528,30 @@ def _embedded_text(value: str) -> str:
     return html.escape(value, quote=False)
 
 
-def notice_text_sections(
-    projected: GoalStateProjection,
-) -> tuple[str | None, str | None, str | None]:
+def notice_text_sections(projected: GoalStateProjection) -> NoticeTextSections:
     """Select the user-controlled text a notice built from `projected` embeds.
 
     The objective and status note are withheld unless the goal is actionable,
     while criteria are embedded whenever a rubric is active — a one-shot rubric
-    stays applicable over a paused goal. Every caller that validates notice size
-    must project identically to the renderer, or a size check passes against text
-    the notice does not contain (or vice versa).
+    stays applicable over a paused goal.
+
+    Every caller that validates notice size must project identically to the
+    renderer, or a size check passes against text the notice does not contain (or
+    vice versa). One caller deliberately does not: `app._resume_goal` validates
+    the state as it will be *after* the resume, because projecting a still-paused
+    goal would suppress the objective and note it is about to embed.
 
     Args:
         projected: Canonical goal/rubric projection from `project_goal_state`.
 
     Returns:
-        The `(objective, criteria, status_note)` triple to embed, with `None` for
-        each section this state omits.
+        The sections to embed, with `None` for each one this state omits.
     """
     is_actionable = projected["goal_actionable"]
-    return (
-        projected["goal_objective"] if is_actionable else None,
-        projected["rubric_criteria"],
-        projected["goal_status_note"] if is_actionable else None,
+    return NoticeTextSections(
+        objective=projected["goal_objective"] if is_actionable else None,
+        criteria=projected["rubric_criteria"],
+        status_note=projected["goal_status_note"] if is_actionable else None,
     )
 
 

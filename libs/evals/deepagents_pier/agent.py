@@ -573,9 +573,11 @@ mkdir -p {wheelhouse}
             [python, self._REMOTE_RUNNER_PATH.as_posix(), *self._runner_args(model)]
         )
         log_path = (EnvironmentPaths.agent_dir / "dcode-run.log").as_posix()
+        # Route through agent_process_env so the filtered-egress proxy vars
+        # (HTTP(S)_PROXY to the allowlist proxy) reach the model API calls.
         result = await environment.exec(
             f"{runner_command} 2>&1 | stdbuf -oL tee {shlex.quote(log_path)}",
-            env=env,
+            env=environment.agent_process_env(env),
         )
         if result.return_code != 0:
             stderr = result.stderr or result.stdout or "dcode agent run failed"

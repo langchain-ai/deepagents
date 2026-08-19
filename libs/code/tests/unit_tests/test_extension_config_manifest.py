@@ -2,9 +2,8 @@
 
 from unittest.mock import patch
 
-from deepagents_code._env_vars import EXTENSIONS, EXTENSIONS_PATHS, EXTENSIONS_TRUST
+from deepagents_code._env_vars import EXTENSIONS, EXTENSIONS_TRUST
 from deepagents_code.config_manifest import (
-    NON_OPTION_ENV_VARS,
     OptionKind,
     get_option,
     resolve_scalar,
@@ -14,16 +13,13 @@ from deepagents_code.config_manifest import (
 def test_extension_options_are_cataloged() -> None:
     """The config CLI should describe every user-facing extension setting."""
     enabled = get_option("extensions.enabled")
-    paths = get_option("extensions.paths")
     trust = get_option("extensions.trust")
 
     assert enabled is not None
     assert enabled.kind is OptionKind.BOOL
-    assert paths is not None
-    assert paths.kind is OptionKind.STRUCTURED
+    assert get_option("extensions.paths") is None
     assert trust is not None
     assert trust.kind is OptionKind.EXTENSION_TRUST_DELEGATE
-    assert EXTENSIONS_PATHS in NON_OPTION_ENV_VARS
 
 
 def test_invalid_env_values_match_runtime_fallback() -> None:

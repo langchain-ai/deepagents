@@ -61,6 +61,7 @@ from deepagents_code._ask_user_types import (
     MAX_ASK_USER_AUTHORIZATION_QUESTION_CHARS,
     MAX_ASK_USER_AUTHORIZATION_QUESTION_TOTAL_CHARS,
     QUESTION_TYPES,
+    ask_user_answer_is_empty,
 )
 from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
 from deepagents_code.approval_mode import (
@@ -1267,10 +1268,15 @@ def _same_turn_user_answers(
     rows: list[dict[str, str]] = []
     question_total_chars = 0
     for question, answer in zip(questions, answers, strict=True):
-        if not answer.strip():
-            continue
         if not isinstance(question, Mapping):
             return []
+        # Emptiness is type-aware: an unselected `multi_select` encodes as the
+        # truthy string `[]`, so a bare `.strip()` would hand the classifier a
+        # question the user declined to answer, paired with something that reads
+        # like an answer. Skipping runs before the char budget below so a
+        # declined question cannot evict a real affirmative from the rows.
+        if ask_user_answer_is_empty(answer, question.get("type")):
+            continue
         question_text = question.get("question")
         if not isinstance(question_text, str) or not question_text.strip():
             return []

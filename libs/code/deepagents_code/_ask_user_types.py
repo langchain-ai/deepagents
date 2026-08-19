@@ -68,8 +68,12 @@ def encode_multi_select_answer(values: list[str]) -> str:
 
     The answer stays one string so `answers: list[str]` keeps one slot per
     question, positionally matched. JSON is self-delimiting, so values carrying
-    commas, quotes, or newlines round-trip exactly; nothing else on the path
-    needs to change.
+    commas, quotes, or newlines round-trip exactly.
+
+    The encoding is opaque to a consumer that only moves the answer around. A
+    consumer that tests whether the user answered at all must go through
+    `ask_user_answer_is_empty`: an unselected `multi_select` encodes as the
+    *truthy* string `[]`, so a bare `.strip()` reads it as answered.
 
     Args:
         values: Selected values — toggled predefined choices in choice-list
@@ -77,7 +81,8 @@ def encode_multi_select_answer(values: list[str]) -> str:
 
     Returns:
         The values as a compact JSON array, e.g. `["a", "b"]`. An empty
-        selection encodes as `[]`.
+        selection encodes as `[]`. The result never contains a newline, so it
+        cannot split a blank-line-separated transcript block.
     """
     return json.dumps(values, ensure_ascii=False)
 
@@ -90,8 +95,9 @@ def decode_multi_select_answer(raw: str) -> list[str] | None:
 
     Returns:
         The selected values, or `None` when `raw` is not a JSON array of
-            strings — malformed input must fail loudly at the caller rather
-            than be silently mis-split.
+            strings. Callers choose the policy for `None`; the one thing none of
+            them may do is fall back to splitting on `", "`, which mis-splits a
+            value that contains a comma.
     """
     try:
         decoded = json.loads(raw)
@@ -104,6 +110,36 @@ def decode_multi_select_answer(raw: str) -> list[str] | None:
     return decoded
 
 
+def ask_user_answer_is_empty(answer: str, question_type: object) -> bool:
+    """Return whether an `ask_user` answer counts as "no answer".
+
+    The single definition of emptiness for an answer, shared by the TUI (which
+    blocks submitting a required question) and by the Auto authorization path
+    (which keeps unanswered questions out of the consent evidence). Both sides
+    must agree: an answer the TUI accepts as empty must not read as consent
+    evidence downstream.
+
+    A bare `.strip()` is wrong for `multi_select`, whose empty encoding is the
+    truthy string `[]`. Every other type is empty when it is blank.
+
+    Args:
+        answer: The raw answer string for the question.
+        question_type: The paired question's `type`. Anything other than
+            `'multi_select'` — including a malformed or missing type — takes the
+            blank test.
+
+    Returns:
+        `True` when the question has no substantive answer.
+    """
+    if question_type == "multi_select":
+        # A malformed encoding counts as empty, which is the fail-closed side of
+        # both call sites: the TUI re-prompts, and Auto withholds the answer from
+        # the consent evidence rather than passing an undecodable string to the
+        # classifier.
+        return not decode_multi_select_answer(answer)
+    return not answer.strip()
+
+
 class Choice(TypedDict):
     """A single choice option for a multiple choice or multi-select question."""
 
@@ -112,9 +148,9 @@ class Choice(TypedDict):
         Field(
             description=(
                 "The display label for this choice. Also the text returned as "
-                "the answer when this choice is selected. For 'multi_select' "
-                "questions it appears verbatim in the JSON array the answer is "
-                "encoded as, so it may contain commas, quotes, and newlines."
+                "the answer when this choice is selected. A 'multi_select' answer "
+                "is a JSON array, so a value may contain commas, quotes, or "
+                "newlines; JSON escaping keeps it exact."
             )
         ),
     ]
@@ -135,9 +171,8 @@ class Question(TypedDict):
                 "'Other' free-form option automatically; multi-select can accept "
                 "multiple custom Other values (filling one reveals another). A "
                 "'multi_select' answer comes back as a JSON array of the selected "
-                "values (including any custom Other text), e.g. "
-                '["a", "b"]; if nothing is selected on an optional question the '
-                'answer is "[]".'
+                'values (including any custom Other text), e.g. ["a", "b"]; if '
+                "nothing is selected on an optional question the answer is []."
             )
         ),
     ]
@@ -357,16 +392,19 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
     thread. The TUI renders that authoritative text literally rather than trying
     to parse the unrestricted answer content back into structured data.
 
-    A `multi_select` answer is rendered verbatim as the JSON array
-    `encode_multi_select_answer` produced — a single line, so the
-    blank-line-separated block layout stays intact and the answer decodes
-    exactly with `decode_multi_select_answer`. `text` and `multiple_choice`
-    answers stay raw: they are interpolated unescaped, so for them the encoding
-    is not unambiguously decodable — an answer containing a blank line followed
-    by a literal `Q: <text>\nA:` header is indistinguishable from a real block
+    Answers of every type are interpolated unescaped, so the encoding is not
+    unambiguously decodable: an answer containing a blank line followed by a
+    literal `Q: <text>\nA:` header is indistinguishable from a real block
     boundary. Only the model reads it that way today. Any future decoder must
     anchor on the known question text rather than on a generic `Q: ` pattern,
     or a crafted answer can fabricate an extra question/answer pair.
+
+    This function does not validate answers, so the JSON encoding of a
+    `multi_select` answer buys nothing here. It applies only to answers
+    `encode_multi_select_answer` produced: the cancel and error paths in
+    `_parse_answers` substitute `(cancelled)` and `(error: ...)` placeholders for
+    every question whatever its type, and a non-TUI client resuming the interrupt
+    can put arbitrary text in a `multi_select` slot.
 
     Args:
         questions: Questions that were asked. Callers must pass questions whose

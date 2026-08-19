@@ -2614,6 +2614,108 @@ async def test_blank_answer_is_skipped_without_shifting_later_pairs(
     ]
 
 
+async def test_unselected_multi_select_is_skipped_like_a_blank_answer(
+    tmp_path: Path,
+) -> None:
+    """An unselected multi-select must not reach the classifier as an answer.
+
+    Its encoding is the truthy string `[]`, so a bare `.strip()` would admit a
+    question the user declined to answer into the consent evidence.
+    """
+    questions = [
+        "Which of these scratch files should I delete?",
+        "Rebase this branch onto origin/main?",
+    ]
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+    )
+    _append_ask_user_exchange(
+        request,
+        answers=["[]", "yes"],
+        questions=[
+            {
+                "question": questions[0],
+                "type": "multi_select",
+                "choices": [{"value": "build/old.log"}],
+            },
+            {"question": questions[1], "type": "text"},
+        ],
+    )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "question": questions[1],
+            "answer": "yes",
+        }
+    ]
+
+
+async def test_selected_multi_select_reaches_the_classifier_encoded(
+    tmp_path: Path,
+) -> None:
+    """A multi-select the user did answer stays in the evidence, JSON and all."""
+    question = "Which of these scratch files should I delete?"
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+    )
+    _append_ask_user_exchange(
+        request,
+        answers=['["build/old.log"]'],
+        questions=[
+            {
+                "question": question,
+                "type": "multi_select",
+                "choices": [{"value": "build/old.log"}],
+            }
+        ],
+    )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "question": question,
+            "answer": '["build/old.log"]',
+        }
+    ]
+
+
 async def test_bound_proposal_for_other_target_is_denied(tmp_path: Path) -> None:
     question = "Delete build/old.log?"
     other_file = str(tmp_path / "src" / "main.py")

@@ -266,6 +266,27 @@ class Dcode(BaseAgent):
             return f"{provider}:{model}"
         return self.model_name
 
+    @staticmethod
+    def _dep_name(spec: str) -> str:
+        """Extract the bare package name from a PEP 508 requirement string."""
+        for sep in (" ", "=", "<", ">", "!", "[", ";", "("):
+            spec = spec.split(sep, 1)[0]
+        return spec.strip()
+
+    @staticmethod
+    def _dedupe_deps(dep_groups: list[list[str]]) -> list[str]:
+        """Flatten dep groups into one list, later groups winning on name.
+
+        A package pinned by both an earlier and a later group keeps only the
+        later pin, so local-package requirements override ``langgraph.json``'s
+        looser/older pins for the same package.
+        """
+        ordered: dict[str, str] = {}
+        for group in dep_groups:
+            for dep in group:
+                ordered[Dcode._dep_name(dep)] = dep
+        return list(ordered.values())
+
     def _langgraph_dependencies(self) -> list[str]:
         """Return the PyPI-resolvable deps from ``langgraph.json``.
 
@@ -304,8 +325,7 @@ class Dcode(BaseAgent):
             for dep in data["project"].get("dependencies", []):
                 # Skip deps that name another local package (e.g. `deepagents==x`
                 # or `deepagents-acp>=y`); those resolve to the local checkouts.
-                name = dep.split(" ")[0].split("=")[0].split("<")[0].split(">")[0].split("[")[0].strip()
-                if name in local_names:
+                if self._dep_name(dep) in local_names:
                     continue
                 deps.append(dep)
         return deps
@@ -365,8 +385,12 @@ class Dcode(BaseAgent):
         python_version = shlex.quote(self._python_version)
         # PyPI deps from langgraph.json plus the local packages' own runtime
         # deps (langgraph.json doesn't list e.g. deepagents' wcmatch), so the
-        # venv holds the full closure before the air-gapped run.
-        all_deps = self._langgraph_dependencies() + self._local_dep_runtime_deps()
+        # venv holds the full closure before the air-gapped run. Where both name
+        # the same package, the local package's pin wins — the local checkouts
+        # are the harness source of truth and may be newer than langgraph.json.
+        all_deps = self._dedupe_deps(
+            [self._langgraph_dependencies(), self._local_dep_runtime_deps()]
+        )
         deps = " ".join(shlex.quote(d) for d in all_deps)
         agent_run = f"""
 set -euo pipefail

@@ -1,6 +1,7 @@
 """Unit tests for goal tools middleware."""
 
 import json
+import logging
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, NamedTuple, cast, get_type_hints
@@ -476,6 +477,29 @@ def test_wrap_model_call_removes_superseded_oversized_notice() -> None:
     assert len(messages) == 2
     assert "too large to include safely" in messages[-1].content
     assert len(messages[-1].content) < 2_000
+
+
+def test_discarding_malformed_summarization_event_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dropping the event also drops the summary, so it must not be silent."""
+    state: dict[str, object] = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_summarization_event": {"cutoff_index": 99, "summary_message": "SUMMARY"},
+        "messages": [HumanMessage(content="m0")],
+    }
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.goal_tools"):
+        update = GoalToolsMiddleware()._notice_update(
+            cast("AgentState[Any]", state),
+        )
+
+    assert update is not None
+    assert update["_summarization_event"] is None
+    assert "Discarding malformed `_summarization_event`" in caplog.text
+    assert "cutoff_index=99" in caplog.text
+    assert "re-sends the full history" in caplog.text
 
 
 def test_wrap_model_call_keeps_below_cutoff_notice_so_indices_stay_aligned() -> None:

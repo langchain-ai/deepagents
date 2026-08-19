@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -59,6 +60,27 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
+
+
+def _log_malformed_summarization_event(event: object, message_count: int) -> None:
+    """Record that a restored summarization event was discarded.
+
+    Dropping the event also drops its `summary_message`, so the next request
+    re-sends the whole untrimmed history. That is a large, silent token and
+    latency cost whose only symptom is a slow, expensive turn, and the causes
+    worth chasing — a checkpoint written by another schema, a partial write, a
+    cutoff recorded against a different message list — all look identical from
+    the outside. Log it so a repeat is diagnosable.
+    """
+    cutoff = event.get("cutoff_index") if isinstance(event, Mapping) else event
+    logger.warning(
+        "Discarding malformed `_summarization_event` (cutoff_index=%r, "
+        "messages=%d); its summary is dropped, so the next request re-sends "
+        "the full history.",
+        cutoff,
+        message_count,
+    )
+
 
 GOAL_TOOL_NAMES = frozenset({"update_goal"})
 """Tool names used by behavioral absence gates and middleware contract tests."""
@@ -341,6 +363,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         )
         update: dict[str, Any] = {}
         if malformed_event:
+            _log_malformed_summarization_event(event, len(messages))
             update["_summarization_event"] = None
         if notice is not None:
             update["messages"] = [notice]
@@ -436,6 +459,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             # Disable an invalid restored event in the request passed inward so
             # its Python slice cannot remove the only model-visible copy of the
             # goal state.
+            _log_malformed_summarization_event(event, len(request.messages))
             values = {**values, "_summarization_event": None}
             request = request.override(state=cast("AgentState[Any]", values))
         notice = _goal_state_notice_for(

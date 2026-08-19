@@ -220,8 +220,7 @@ def _python_extensions(
             valid = path.is_file() and path.suffix == ".py"
         except OSError as exc:
             warnings.append(
-                f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
-                f"could not inspect {path}: {exc}"
+                f"ignoring {_PYTHON_EXTENSIONS_FIELD}: could not inspect {path}: {exc}"
             )
             continue
         if not valid:

@@ -145,9 +145,29 @@ def validate_goal_application(objective: str, criteria: str) -> None:
 
     Raises:
         GoalStateSizeError: If a field or their combined text exceeds its limit.
-    """
+    """  # noqa: DOC502 - propagates from the per-field and total validators
     validate_goal_objective(objective)
     validate_rubric(criteria)
+    validate_goal_application_total(objective, criteria)
+
+
+def validate_goal_application_total(objective: str, criteria: str) -> None:
+    """Validate only the combined budget, not either field's own limit.
+
+    Split out because the two kinds of overshoot need opposite handling in the
+    criteria agent's structured-output loop: a per-field overshoot is a model
+    mistake against a limit the schema publishes, so it is worth retrying, while
+    the combined budget is not in the schema at all and half of it is the user's
+    own objective. See `_raise_terminal_goal_state_size_error`.
+
+    Args:
+        objective: Goal objective that will be activated.
+        criteria: Acceptance criteria that will be activated with the goal.
+
+    Raises:
+        GoalStateSizeError: If the combined text exceeds
+            `GOAL_APPLICATION_CHAR_LIMIT`.
+    """
     total = len(objective) + len(criteria)
     if total > GOAL_APPLICATION_CHAR_LIMIT:
         label = "Goal objective and criteria combined"

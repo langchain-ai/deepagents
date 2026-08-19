@@ -73,6 +73,7 @@ from deepagents_code.goal_rubric import (
     _GoalContextFallbackMiddleware,
     _prompt_with_conversation_context,
     _proposal_from_result,
+    _raise_terminal_goal_state_size_error,
     _RepositoryToolBudgetMiddleware,
     _rubric_interrupt_on,
     _summarize_criteria_result,
@@ -82,6 +83,7 @@ from deepagents_code.goal_rubric import (
 )
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
     RUBRIC_CHAR_LIMIT,
     GoalStateSizeError,
 )
@@ -2371,6 +2373,121 @@ class TestGoalCriteriaFallback:
                     "criteria": "x" * RUBRIC_CHAR_LIMIT,
                 }
             )
+
+    @staticmethod
+    def _rejection(objective: str, criteria: str) -> BaseException:
+        """Wrap an invalid proposal exactly as the structured-output loop does.
+
+        The layering matters and cannot be faked: pydantic converts the
+        validator's `ValueError` into a `ValidationError` without chaining the
+        original, the parser rewraps that as a plain `ValueError`, and the agent
+        builds a `StructuredOutputValidationError` that has not been raised yet,
+        so it has neither `__cause__` nor `__context__`. Anything that recovers
+        the size error by walking the exception chain passes a hand-built double
+        and fails here.
+
+        Returns:
+            The exception the agent hands to its `handle_errors` callable.
+        """
+        from langchain.agents.structured_output import (
+            StructuredOutputValidationError,
+            _parse_with_schema,
+        )
+
+        data = {"objective": objective, "criteria": criteria}
+        ai_message = AIMessage(
+            content="",
+            tool_calls=[{"name": "GoalProposal", "args": data, "id": "call-1"}],
+        )
+        try:
+            _parse_with_schema(GoalProposal, "pydantic", data)
+        except Exception as exc:  # noqa: BLE001
+            return StructuredOutputValidationError("GoalProposal", exc, ai_message)
+        pytest.fail("proposal was expected to be invalid")
+
+    def test_combined_budget_rejection_ends_the_turn(self) -> None:
+        """The limit message must reach the user, not a retry loop.
+
+        The model is never told the combined budget, so retrying it is blind. The
+        old default retried until `GraphRecursionError`, which the fallback tuple
+        logged as a context fault, spent the fallback agent on the same request,
+        and finally reported as "could not generate acceptance criteria" — the
+        character count the user has to act on never arrived.
+        """
+        rejection = self._rejection("o" * 7_000, "c" * 6_000)
+
+        with pytest.raises(GoalStateSizeError, match="Remove at least 1,000"):
+            _raise_terminal_goal_state_size_error(rejection)
+
+    def test_combined_budget_rejection_names_the_real_excess(self) -> None:
+        """The error is rebuilt from the arguments, so its numbers are the real ones."""
+        rejection = self._rejection("o" * 7_000, "c" * 6_000)
+
+        with pytest.raises(GoalStateSizeError) as caught:
+            _raise_terminal_goal_state_size_error(rejection)
+
+        assert caught.value.label == "Goal objective and criteria combined"
+        assert caught.value.actual == 13_000
+        assert caught.value.limit == GOAL_APPLICATION_CHAR_LIMIT
+
+    def test_oversized_single_field_still_retries(self) -> None:
+        """A field over its own `max_length` is feedback the model can act on.
+
+        The schema publishes both per-field limits, and shortening the overlong
+        field usually brings the combined total inside its budget too — so this
+        must stay a retry even though the combined total also overshoots here.
+        """
+        rejection = self._rejection("ship it", "x" * (RUBRIC_CHAR_LIMIT + 1))
+
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            rejection
+        )
+
+    def test_oversized_objective_still_retries(self) -> None:
+        """Symmetric to the criteria case: the objective limit is in the schema."""
+        rejection = self._rejection("o" * (GOAL_OBJECTIVE_CHAR_LIMIT + 1), "- ok")
+
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            rejection
+        )
+
+    def test_whitespace_only_field_still_retries(self) -> None:
+        """Whitespace-only output is a model mistake with no user action attached."""
+        rejection = self._rejection("   ", "- ok")
+
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            rejection
+        )
+
+    def test_error_without_tool_call_arguments_still_retries(self) -> None:
+        """An error carrying no proposal must not crash the handler."""
+        assert "Please fix your mistakes" in _raise_terminal_goal_state_size_error(
+            ValueError("malformed tool call")
+        )
+
+    @pytest.mark.parametrize(
+        "factory_kwargs",
+        [{}, {"repository_backend": None, "context_tools": []}],
+        ids=["fallback_agent", "context_agent"],
+    )
+    def test_both_criteria_agents_install_the_terminal_size_handler(
+        self, factory_kwargs: dict[str, Any]
+    ) -> None:
+        """A missing handler silently restores the retry-to-exhaustion behavior."""
+        factory = (
+            create_goal_criteria_agent
+            if factory_kwargs
+            else create_goal_criteria_fallback_agent
+        )
+        graph = MagicMock()
+        graph.with_config.return_value = "configured-graph"
+
+        with patch("langchain.agents.create_agent", return_value=graph) as create:
+            factory(model=MagicMock(), **factory_kwargs)
+
+        response_format = create.call_args.kwargs["response_format"]
+        assert response_format.schema is GoalProposal
+        assert response_format.handle_errors is _raise_terminal_goal_state_size_error
 
     @pytest.mark.parametrize("field", ["objective", "criteria"])
     def test_goal_proposal_schema_rejects_whitespace_only_field(

@@ -121,24 +121,36 @@ def is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
 ENFORCED_MANAGED_KEYS = (
     "interpreter.enable_interpreter",
     "interpreter.ptc",
+    "interpreter.ptc_acknowledge_unsafe",
     "models.auto_classifier",
     "runtime.recursion_limit",
     "sandboxes.default",
     "shell.allow_list",
     "skills.extra_allowed_dirs",
     "startup.mode",
+    "startup.yolo_switcher",
+    "tracing.langsmith_redact",
 )
 """Manifest keys whose managed value must never resolve in the user's favor.
 
-Every key here either grants a privilege (approval mode, shell auto-approval,
-the interpreter and its programmatic tool-calling list) or draws a containment
-boundary (the skill-content allowlist, the sandbox backend, the recursion
-limit, and the classifier that reviews gated actions). Ignoring an unusable
-value for one of these leaves the user's own flag in force, which is the
-escalation the policy meant to forbid, so the launch stops instead.
+Every key here either grants a privilege (approval mode, the YOLO entry in the
+Shift+Tab cycle, shell auto-approval, the interpreter and its programmatic
+tool-calling list and the acknowledgement that exposes every tool to it) or
+draws a containment boundary (the skill-content allowlist, the sandbox backend,
+the recursion limit, the
+classifier that reviews gated actions, and trace redaction). Ignoring an
+unusable value for one of these leaves the user's own flag or environment
+variable in force, which is the escalation the policy meant to forbid, so the
+launch stops instead.
+
+Enforcing `startup.mode` while leaving `startup.yolo_switcher` unenforced was
+the sharpest version of that gap: policy could pin approval mode while YOLO
+stayed one keypress away in the same file.
 
 Keys that cannot grant privilege keep the ordinary ignore-and-fall-through
-rule.
+rule. `test_every_enforced_managed_key_resolves` pins each entry to a manifest
+option, because `managed_policy_violations` skips a key it cannot resolve —
+so a rename would otherwise turn enforcement into a silent no-op.
 """
 
 

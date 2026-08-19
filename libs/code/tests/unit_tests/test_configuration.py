@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -1166,6 +1166,62 @@ def test_writer_reports_an_unparseable_existing_config_as_an_error(
     assert "could not update" in result.error
 
 
+def test_every_enforced_managed_key_resolves_to_a_manifest_option() -> None:
+    """Pin `ENFORCED_MANAGED_KEYS` to the manifest.
+
+    `managed_policy_violations` skips a key whose option it cannot resolve, and
+    it skips silently: no log, no violation, no failure. So renaming or
+    regrouping a manifest key would quietly drop fail-closed enforcement for a
+    privilege-granting setting while every other test stayed green. Nothing
+    pinned the tuple before this test.
+    """
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.service import ENFORCED_MANAGED_KEYS
+
+    unresolved = [key for key in ENFORCED_MANAGED_KEYS if get_option(key) is None]
+    assert unresolved == []
+    without_toml_keys = []
+    for key in ENFORCED_MANAGED_KEYS:
+        option = get_option(key)
+        assert option is not None
+        if not option.toml_keys:
+            without_toml_keys.append(key)
+    assert without_toml_keys == []
+
+
+def test_enforced_managed_keys_actually_produce_violations() -> None:
+    """Every enforced key must reject a value the manifest cannot apply.
+
+    Resolving to an option is necessary but not sufficient: a `STRUCTURED`
+    option always reports its managed value as managed-sourced, so listing one
+    here would imply enforcement that never fires. This asserts each key can
+    really produce a violation.
+    """
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.service import (
+        ENFORCED_MANAGED_KEYS,
+        managed_policy_violations,
+    )
+
+    unenforceable = []
+    for key in ENFORCED_MANAGED_KEYS:
+        option = get_option(key)
+        assert option is not None
+        toml_keys = option.toml_keys
+        assert toml_keys
+        managed: dict[str, Any] = {}
+        node: dict[str, Any] = managed
+        for part in toml_keys[:-1]:
+            child: dict[str, Any] = {}
+            node[part] = child
+            node = child
+        # A table is never a valid value for any manifest scalar kind.
+        node[toml_keys[-1]] = {"not": "a scalar"}
+        if key not in managed_policy_violations(managed):
+            unenforceable.append(key)
+    assert unenforceable == []
+
+
 def _managed_policy_args() -> argparse.Namespace:
     """Return a namespace shaped like the parsed agent-launch arguments.
 
@@ -1198,6 +1254,9 @@ def _managed_policy_args() -> argparse.Namespace:
         ("[sandboxes]\ndefault = 5\n", True),
         ("[interpreter]\nptc = 5\n", True),
         ("[interpreter]\nenable_interpreter = 5\n", True),
+        ('[startup]\nyolo_switcher = "false"\n', True),
+        ('[interpreter]\nptc_acknowledge_unsafe = "yes"\n', True),
+        ('[tracing]\nlangsmith_redact = "yes"\n', True),
         # A scalar where the table belongs shadows the key it should hold.
         ('startup = "manual"\n', True),
         ('shell = "ls"\n', True),
@@ -1214,6 +1273,9 @@ def _managed_policy_args() -> argparse.Namespace:
         "bad-sandbox",
         "bad-ptc",
         "bad-interpreter-toggle",
+        "bad-yolo-switcher",
+        "bad-ptc-acknowledge",
+        "bad-langsmith-redact",
         "shadowed-startup",
         "shadowed-shell",
         "shadowed-skills",

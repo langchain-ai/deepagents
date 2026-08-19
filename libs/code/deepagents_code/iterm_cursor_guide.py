@@ -2,50 +2,51 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+
+from deepagents_code.terminal_capabilities import is_iterm2
+
+logger = logging.getLogger(__name__)
 
 # iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
 # Textual takes over the terminal in alternate screen mode. We disable it at
 # module load and restore it on exit only if the active/default iTerm2 profile
 # had cursor guide enabled before launch.
 
-# Detection: check env vars AND that stderr is a TTY (avoids false positives
-# when env vars are inherited but running in non-TTY context like CI).
-_IS_ITERM = (
-    (
-        os.environ.get("LC_TERMINAL", "") == "iTerm2"
-        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-    )
-    and hasattr(os, "isatty")
-    and os.isatty(2)
-)
+_IS_ITERM = is_iterm2()
 
-# iTerm2 cursor guide escape sequences (OSC 1337)
-# Format: OSC 1337 ; HighlightCursorLine=<yes|no> ST
-# Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
-_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
-_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+_CURSOR_GUIDE_OSC = "1337"
+"""iTerm2's proprietary OSC command number."""
+
+# Payloads for `OSC 1337 ; HighlightCursorLine=<yes|no> ST`.
+_CURSOR_GUIDE_OFF = "HighlightCursorLine=no"
+_CURSOR_GUIDE_ON = "HighlightCursorLine=yes"
 _ITERM_PREFS_PATH = Path("~/Library/Preferences/com.googlecode.iterm2.plist")
 
 
-def _write_iterm_escape(sequence: str) -> None:
-    """Write an iTerm2 escape sequence to stderr.
+def _write_cursor_guide(payload: str) -> None:
+    """Send a cursor-guide `OSC 1337` command to the terminal.
 
-    Silently fails if the terminal is unavailable (redirected, closed, broken
-    pipe). This is a cosmetic feature, so failures should never crash the app.
+    Delegates to the shared escape writer, which prefers `/dev/tty` and wraps
+    the sequence in tmux's passthrough envelope. tmux only forwards the
+    handful of operating-system commands it understands and drops the rest, so
+    writing `OSC 1337` straight to stderr is a silent no-op in every pane —
+    the outer terminal is still iTerm2, but nothing reaches it.
+
+    Failures are swallowed by the shared writer: this is cosmetic, so it must
+    never crash the app.
+
+    Args:
+        payload: The `OSC 1337` command body, such as `HighlightCursorLine=no`.
     """
     if not _IS_ITERM:
         return
-    try:
-        import sys
 
-        if sys.__stderr__ is not None:
-            sys.__stderr__.write(sequence)
-            sys.__stderr__.flush()
-    except OSError:
-        # Terminal may be unavailable (redirected, closed, broken pipe).
-        pass
+    from deepagents_code.terminal_escape import write_osc
+
+    write_osc(_CURSOR_GUIDE_OSC, payload, st=True)
 
 
 def _plist_bool(value: object) -> bool | None:
@@ -140,6 +141,13 @@ def _iterm_profile_cursor_guide_enabled() -> bool:
     name = os.environ.get("ITERM_PROFILE", "").strip()
     guid = str(prefs.get("Default Bookmark Guid", ""))
     profile = _find_iterm_profile(profiles, name=name, guid=guid)
+    # Inside tmux `ITERM_PROFILE` is only as current as the server's start,
+    # so record what was matched; `dcode doctor` reports the same hazard.
+    logger.debug(
+        "cursor guide: ITERM_PROFILE=%r matched profile %r",
+        name,
+        profile.get("Name") if profile else None,
+    )
     if profile is None:
         return False
     return _profile_uses_cursor_guide(profile)
@@ -156,14 +164,14 @@ def restore_iterm_cursor_guide() -> None:
     if not _RESTORE_ITERM_CURSOR_GUIDE or _ITERM_CURSOR_GUIDE_RESTORED:
         return
     _ITERM_CURSOR_GUIDE_RESTORED = True
-    _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+    _write_cursor_guide(_CURSOR_GUIDE_ON)
 
 
 def _disable_iterm_cursor_guide() -> None:
     """Disable iTerm2 cursor guide only when the module has a restore path."""
     if not _RESTORE_ITERM_CURSOR_GUIDE:
         return
-    _write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
+    _write_cursor_guide(_CURSOR_GUIDE_OFF)
 
 
 # Disable cursor guide at module load (before Textual takes over), but only

@@ -48,6 +48,23 @@ By default, `dcode` trusts the directory you run it in. Human-in-the-loop approv
 
 Do not run `dcode` in a directory you do not trust without a sandbox backend. For untrusted repositories, use a [remote sandbox](https://docs.langchain.com/oss/python/deepagents/code/remote-sandboxes) so execution is isolated from your machine. Running `dcode` in a directory lets that directory's files shape execution. See [`THREAT_MODEL.md`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/THREAT_MODEL.md) for details.
 
+## 🪟 Running under tmux
+
+A tmux pane is not the terminal you are looking at: tmux owns the pty and decides which escape sequences reach the outer terminal. Several options are off by default and each disables something in `dcode`. Run `dcode doctor` to see which ones apply to your setup.
+
+```tmux
+# ~/.tmux.conf
+set -g focus-events on                  # otherwise unfocused panes keep a blinking cursor
+set -g allow-passthrough on             # otherwise progress, OSC 52, and the cursor guide are dropped
+set -g set-clipboard on                 # otherwise /copy cannot reach the outer clipboard
+set -ga update-environment COLORTERM    # otherwise themes are quantized to 256 colors
+set -ga update-environment ITERM_PROFILE # iTerm2 only: otherwise the cursor guide reads a stale profile
+```
+
+Reload with `tmux source-file ~/.tmux.conf` (a new server is needed for `update-environment` to reach existing panes).
+
+Note that tmux does not forward the kitty keyboard protocol, so `Shift+Enter` is unavailable inside a pane — use `Ctrl+J` (or `Option+Enter` on macOS) for a newline.
+
 ## 📖 Resources
 
 - **[Documentation](https://docs.langchain.com/deepagents-code)**

@@ -5,84 +5,98 @@ from __future__ import annotations
 import io
 import os
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
+import pytest
 from textual.app import App
 
-from deepagents_code import iterm_cursor_guide
+from deepagents_code import iterm_cursor_guide, terminal_escape
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.iterm_cursor_guide import (
-    _ITERM_CURSOR_GUIDE_OFF,
-    _ITERM_CURSOR_GUIDE_ON,
+    _CURSOR_GUIDE_OFF,
+    _CURSOR_GUIDE_ON,
     _disable_iterm_cursor_guide,
     _iterm_profile_cursor_guide_enabled,
-    _write_iterm_escape,
+    _write_cursor_guide,
     restore_iterm_cursor_guide,
 )
 
 if TYPE_CHECKING:
-    import pytest
+    from types import TracebackType
+
+
+class _FakeTTY(io.StringIO):
+    """`StringIO` with a context-manager that doesn't truncate on close."""
+
+    def __enter__(self) -> _FakeTTY:  # noqa: PYI034  # _FakeTTY is a test helper
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        pass
+
+
+@pytest.fixture
+def tty(monkeypatch: pytest.MonkeyPatch) -> _FakeTTY:
+    """Capture what the shared escape writer sends to the terminal."""
+    fake = _FakeTTY()
+    monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+    monkeypatch.delenv(terminal_escape.NO_TERMINAL_ESCAPE, raising=False)
+    # A developer running the suite from inside a pane would otherwise see
+    # every expected sequence gain a passthrough DCS.
+    monkeypatch.delenv("TMUX", raising=False)
+    return fake
 
 
 class TestITerm2CursorGuide:
     """Test iTerm2 cursor guide handling."""
 
-    def test_escape_sequences_are_valid(self) -> None:
-        """Escape sequences should be properly formatted OSC 1337 commands.
+    def test_write_cursor_guide_does_nothing_when_not_iterm(
+        self, tty: _FakeTTY
+    ) -> None:
+        """`_write_cursor_guide` should no-op when `_IS_ITERM` is `False`."""
+        with patch.object(iterm_cursor_guide, "_IS_ITERM", False):
+            _write_cursor_guide(_CURSOR_GUIDE_ON)
 
-        Format: OSC (ESC ]) + "1337;" + command + ST (ESC backslash)
-        """
-        assert _ITERM_CURSOR_GUIDE_OFF.startswith("\x1b]1337;")
-        assert _ITERM_CURSOR_GUIDE_OFF.endswith("\x1b\\")
-        assert "HighlightCursorLine=no" in _ITERM_CURSOR_GUIDE_OFF
+        assert tty.getvalue() == ""
 
-        assert _ITERM_CURSOR_GUIDE_ON.startswith("\x1b]1337;")
-        assert _ITERM_CURSOR_GUIDE_ON.endswith("\x1b\\")
-        assert "HighlightCursorLine=yes" in _ITERM_CURSOR_GUIDE_ON
+    def test_write_cursor_guide_emits_osc_1337(self, tty: _FakeTTY) -> None:
+        """The command goes out as `OSC 1337 ; <payload> ST`."""
+        with patch.object(iterm_cursor_guide, "_IS_ITERM", True):
+            _write_cursor_guide(_CURSOR_GUIDE_ON)
 
-    def test_write_iterm_escape_does_nothing_when_not_iterm(self) -> None:
-        """_write_iterm_escape should no-op when `_IS_ITERM` is `False`."""
-        mock_stderr = MagicMock()
-        with (
-            patch.object(iterm_cursor_guide, "_IS_ITERM", False),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-            mock_stderr.write.assert_not_called()
+        assert tty.getvalue() == "\x1b]1337;HighlightCursorLine=yes\x1b\\"
 
-    def test_write_iterm_escape_writes_sequence_when_iterm(self) -> None:
-        """_write_iterm_escape should write sequence when in iTerm2."""
-        mock_stderr = io.StringIO()
-        with (
-            patch.object(iterm_cursor_guide, "_IS_ITERM", True),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-            assert mock_stderr.getvalue() == _ITERM_CURSOR_GUIDE_ON
+    def test_write_cursor_guide_wraps_for_tmux(
+        self, tty: _FakeTTY, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tmux drops a bare `OSC 1337`, so a pane must send it wrapped."""
+        monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+        with patch.object(iterm_cursor_guide, "_IS_ITERM", True):
+            _write_cursor_guide(_CURSOR_GUIDE_OFF)
 
-    def test_write_iterm_escape_handles_oserror_gracefully(self) -> None:
-        """_write_iterm_escape should not raise on `OSError`."""
-        mock_stderr = MagicMock()
-        mock_stderr.write.side_effect = OSError("Broken pipe")
-        with (
-            patch.object(iterm_cursor_guide, "_IS_ITERM", True),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+        assert tty.getvalue() == (
+            "\x1bPtmux;\x1b\x1b]1337;HighlightCursorLine=no\x1b\x1b\\\x1b\\"
+        )
 
-    def test_write_iterm_escape_handles_none_stderr(self) -> None:
-        """_write_iterm_escape should handle `None` `__stderr__` gracefully."""
-        with (
-            patch.object(iterm_cursor_guide, "_IS_ITERM", True),
-            patch("sys.__stderr__", None),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+    def test_write_cursor_guide_survives_an_unwritable_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cosmetic write must never propagate a terminal failure."""
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: None)
+        monkeypatch.setattr(terminal_escape.sys, "__stderr__", None)
+        with patch.object(iterm_cursor_guide, "_IS_ITERM", True):
+            _write_cursor_guide(_CURSOR_GUIDE_ON)
 
     def test_disable_cursor_guide_noops_without_restore_path(self) -> None:
         """Cursor guide should not be disabled when startup state is unknown."""
         with (
             patch.object(iterm_cursor_guide, "_RESTORE_ITERM_CURSOR_GUIDE", False),
-            patch.object(iterm_cursor_guide, "_write_iterm_escape") as write_escape,
+            patch.object(iterm_cursor_guide, "_write_cursor_guide") as write_escape,
         ):
             _disable_iterm_cursor_guide()
 
@@ -92,11 +106,11 @@ class TestITerm2CursorGuide:
         """Cursor guide may be disabled only when cleanup will restore it."""
         with (
             patch.object(iterm_cursor_guide, "_RESTORE_ITERM_CURSOR_GUIDE", True),
-            patch.object(iterm_cursor_guide, "_write_iterm_escape") as write_escape,
+            patch.object(iterm_cursor_guide, "_write_cursor_guide") as write_escape,
         ):
             _disable_iterm_cursor_guide()
 
-        write_escape.assert_called_once_with(_ITERM_CURSOR_GUIDE_OFF)
+        write_escape.assert_called_once_with(_CURSOR_GUIDE_OFF)
 
     def test_app_exit_does_not_reenable_cursor_guide(self) -> None:
         """App exit should not restore when cursor guide was off before launch."""
@@ -116,23 +130,23 @@ class TestITerm2CursorGuide:
         with (
             patch.object(iterm_cursor_guide, "_RESTORE_ITERM_CURSOR_GUIDE", True),
             patch.object(iterm_cursor_guide, "_ITERM_CURSOR_GUIDE_RESTORED", False),
-            patch.object(iterm_cursor_guide, "_write_iterm_escape") as write_escape,
+            patch.object(iterm_cursor_guide, "_write_cursor_guide") as write_escape,
         ):
             restore_iterm_cursor_guide()
 
-        write_escape.assert_called_once_with(_ITERM_CURSOR_GUIDE_ON)
+        write_escape.assert_called_once_with(_CURSOR_GUIDE_ON)
 
     def test_restore_cursor_guide_is_idempotent(self) -> None:
         """The direct exit path and atexit fallback should not double-restore."""
         with (
             patch.object(iterm_cursor_guide, "_RESTORE_ITERM_CURSOR_GUIDE", True),
             patch.object(iterm_cursor_guide, "_ITERM_CURSOR_GUIDE_RESTORED", False),
-            patch.object(iterm_cursor_guide, "_write_iterm_escape") as write_escape,
+            patch.object(iterm_cursor_guide, "_write_cursor_guide") as write_escape,
         ):
             restore_iterm_cursor_guide()
             restore_iterm_cursor_guide()
 
-        write_escape.assert_called_once_with(_ITERM_CURSOR_GUIDE_ON)
+        write_escape.assert_called_once_with(_CURSOR_GUIDE_ON)
 
     def test_profile_cursor_guide_enabled_from_iterm_profile(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch

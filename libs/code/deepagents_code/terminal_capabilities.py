@@ -26,6 +26,32 @@ logger = logging.getLogger(__name__)
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 _KNOWN_KITTY_KEYBOARD_TERMS = frozenset({"xterm-ghostty", "xterm-kitty"})
+_MULTIPLEXER_TERM_PREFIXES = ("screen", "tmux")
+_STDERR_FD = 2
+
+
+def is_iterm2(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether the terminal the user is looking at is iTerm2.
+
+    Unlike the kitty-keyboard check this stays true inside a multiplexer. The
+    callers care about sequences tmux forwards to the outer terminal, and that
+    terminal really is iTerm2, so the inherited markers are the right signal.
+
+    Requiring a TTY keeps the markers from producing a false positive when they
+    are inherited into a non-interactive context such as CI.
+
+    Args:
+        env: Environment mapping to read. Defaults to the process environment.
+
+    Returns:
+        `True` when iTerm2 is hosting this process and stderr is a terminal.
+    """
+    source = env if env is not None else os.environ
+    identified = (
+        source.get("LC_TERMINAL", "") == "iTerm2"
+        or source.get("TERM_PROGRAM", "") == "iTerm.app"
+    )
+    return identified and hasattr(os, "isatty") and os.isatty(_STDERR_FD)
 
 
 def _override_supports_kitty_keyboard_protocol(
@@ -59,6 +85,17 @@ def _override_supports_kitty_keyboard_protocol(
     return None
 
 
+def _inside_terminal_multiplexer(env: Mapping[str, str]) -> bool:
+    """Return whether `env` describes a pane inside tmux or GNU Screen.
+
+    A multiplexer owns the pty, so the outer terminal's identity says nothing
+    about which key encodings actually reach the app.
+    """
+    if env.get("TMUX") or env.get("STY"):
+        return True
+    return env.get("TERM", "").startswith(_MULTIPLEXER_TERM_PREFIXES)
+
+
 def _terminal_identity_supports_kitty_keyboard_protocol(
     env: Mapping[str, str],
 ) -> bool:
@@ -68,7 +105,16 @@ def _terminal_identity_supports_kitty_keyboard_protocol(
     imply kitty-keyboard support is part of the terminal's default identity.
     Configurable terminals such as iTerm2 and WezTerm are intentionally not
     auto-detected because protocol support can be disabled in user settings.
+
+    A multiplexer disqualifies the terminal outright. tmux rewrites `TERM` for
+    its panes but leaves markers like `KITTY_WINDOW_ID` in the inherited
+    environment, and it swallows the protocol enable rather than forwarding it
+    to the outer terminal, so a pane under kitty looks kitty-capable while
+    behaving like a legacy terminal.
     """
+    if _inside_terminal_multiplexer(env):
+        return False
+
     if env.get("KITTY_WINDOW_ID"):
         return True
 
@@ -83,6 +129,9 @@ def supports_kitty_keyboard_protocol() -> bool:
     Detection is side-effect free: it never writes escape sequences or reads
     queued input bytes. That means it may under-detect some configurable
     terminals, but it will not interfere with Textual's input stream.
+
+    Detection also refuses to trust the terminal identity inside tmux or GNU
+    Screen, which do not forward the protocol.
 
     Set `DEEPAGENTS_CODE_KITTY_KEYBOARD` to an accepted truthy value (`1`,
     `true`, `yes`, `on`) to force-enable the label, a falsy value (`0`,
@@ -107,9 +156,11 @@ def supports_kitty_keyboard_protocol() -> bool:
 
     detected = _terminal_identity_supports_kitty_keyboard_protocol(os.environ)
     logger.debug(
-        "kitty kbd detection: %s (terminal identity TERM=%r KITTY_WINDOW_ID=%r)",
+        "kitty kbd detection: %s "
+        "(terminal identity TERM=%r KITTY_WINDOW_ID=%r multiplexer=%s)",
         detected,
         os.environ.get("TERM", ""),
         os.environ.get("KITTY_WINDOW_ID"),
+        _inside_terminal_multiplexer(os.environ),
     )
     return detected

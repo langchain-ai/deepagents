@@ -96,6 +96,15 @@ if os.name == "nt":
     _TOKEN_USER_INFORMATION_CLASS = 1
     _FILE_GENERIC_READ = 0x120089
     _FILE_GENERIC_WRITE = 0x120116
+    # `TRUSTEE_FORM` / `TRUSTEE_TYPE` / `ACCESS_MODE` from `accctrl.h`. Named
+    # rather than inlined because all three enums start at 0 with unrelated
+    # meanings, so a transposed literal still compiles and is rejected only at
+    # runtime by `SetEntriesInAclW`.
+    _NO_MULTIPLE_TRUSTEE = 0
+    _TRUSTEE_IS_SID = 0
+    _TRUSTEE_IS_USER = 1
+    _SET_ACCESS = 2
+    _NO_INHERITANCE = 0
 
     class _TRUSTEE_W(ctypes.Structure):  # noqa: N801  # mirrors Win32 TRUSTEE_W
         """`TRUSTEE_W` identifying the current-user SID to `SetEntriesInAclW`."""
@@ -176,15 +185,15 @@ if os.name == "nt":
 
         trustee = _TRUSTEE_W(
             pMultipleTrustee=None,
-            MultipleTrusteeOperation=0,  # NO_MULTIPLE_TRUSTEE
-            TrusteeForm=2,  # TRUSTEE_IS_SID
-            TrusteeType=0,  # TRUSTEE_IS_USER
+            MultipleTrusteeOperation=_NO_MULTIPLE_TRUSTEE,
+            TrusteeForm=_TRUSTEE_IS_SID,
+            TrusteeType=_TRUSTEE_IS_USER,
             ptstrName=ctypes.cast(sid, ctypes.c_void_p).value,
         )
         explicit = _EXPLICIT_ACCESS_W(
             grfAccessPermissions=_FILE_GENERIC_READ | _FILE_GENERIC_WRITE,
-            grfAccessMode=2,  # SET_ACCESS
-            grfInheritance=0,  # NO_INHERITANCE
+            grfAccessMode=_SET_ACCESS,
+            grfInheritance=_NO_INHERITANCE,
             Trustee=trustee,
         )
         new_acl = ctypes.c_void_p()

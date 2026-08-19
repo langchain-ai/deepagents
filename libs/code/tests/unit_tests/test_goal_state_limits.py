@@ -134,3 +134,21 @@ def test_every_goal_status_is_recognized_by_both_normalizers() -> None:
         )["goal_status"]
         == "active"
     )
+
+
+def test_size_error_rejects_a_value_that_fits() -> None:
+    """A negative excess would render as "Remove at least -998 characters"."""
+    with pytest.raises(ValueError, match="needs actual > limit"):
+        GoalStateSizeError(label="Goal objective", actual=1, limit=999)
+
+
+def test_size_error_exposes_the_excess_it_reports() -> None:
+    """Consumers should not have to recompute what the message already states."""
+    error = GoalStateSizeError(
+        label="Goal objective and criteria combined",
+        actual=12_500,
+        limit=12_000,
+    )
+
+    assert error.excess == 500
+    assert "Remove at least 500 characters" in str(error)

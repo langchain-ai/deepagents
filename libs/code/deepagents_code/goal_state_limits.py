@@ -45,24 +45,56 @@ Raise this deliberately if a new section is ever embedded in a notice.
 """
 
 
+GoalStateSizeLabel = Literal[
+    "Goal objective",
+    "Rubric",
+    "Goal status note",
+    "Prior blocker",
+    "Goal objective and criteria combined",
+    "Goal-state notice text",
+]
+"""Every value a `GoalStateSizeError` can name.
+
+A closed set rather than free text: the label reaches both the user and the
+model verbatim, so a consumer that wants to branch on which budget was
+exceeded can do so exhaustively instead of matching strings.
+"""
+
+
 class GoalStateSizeError(ValueError):
     """Goal/rubric text exceeds a model-visible context budget."""
 
-    def __init__(self, label: str, actual: int, limit: int) -> None:
+    def __init__(
+        self,
+        label: GoalStateSizeLabel,
+        actual: int,
+        limit: int,
+    ) -> None:
         """Initialize a consistent user- and model-facing size error.
 
         Args:
-            label: Human-readable name of the oversized value.
+            label: Name of the oversized value, as the user and model see it.
             actual: Actual character count.
             limit: Maximum accepted character count.
+
+        Raises:
+            ValueError: If `actual` does not exceed `limit`. Constructing the
+                error for text that fits would render a negative excess
+                ("Remove at least -998 characters"), so the caller has a bug.
         """
+        if actual <= limit:
+            msg = (
+                f"GoalStateSizeError needs actual > limit; got "
+                f"actual={actual}, limit={limit} for {label!r}."
+            )
+            raise ValueError(msg)
         self.label = label
         self.actual = actual
         self.limit = limit
-        excess = actual - limit
+        self.excess = actual - limit
         msg = (
             f"{label} is {actual:,} characters; maximum is {limit:,}. "
-            f"Remove at least {excess:,} characters."
+            f"Remove at least {self.excess:,} characters."
         )
         super().__init__(msg)
 
@@ -125,7 +157,11 @@ def validate_goal_application(objective: str, criteria: str) -> None:
         )
 
 
-def validate_goal_status_note(note: str, *, label: str = "Goal status note") -> None:
+def validate_goal_status_note(
+    note: str,
+    *,
+    label: GoalStateSizeLabel = "Goal status note",
+) -> None:
     """Reject a goal status note that cannot fit its persistent context budget.
 
     Args:

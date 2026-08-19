@@ -99,6 +99,7 @@ from deepagents_code.goal_state_limits import (
     validate_goal_application,
     validate_goal_notice_text,
     validate_goal_objective,
+    validate_goal_objective_rendered,
     validate_rubric,
 )
 from deepagents_code.goal_state_notice import (
@@ -14106,6 +14107,12 @@ class DeepAgentsApp(App):
             return
         try:
             validate_goal_objective(objective)
+            # The criteria model counts raw characters, not escaped ones, and
+            # escaping can expand text fivefold. An objective whose escaped form
+            # already fills the notice leaves no criteria the model could return
+            # that acceptance would not reject, so refuse before spending the
+            # generation request.
+            validate_goal_objective_rendered(objective)
         except GoalStateSizeError as exc:
             await self._mount_message(ErrorMessage(str(exc)))
             return

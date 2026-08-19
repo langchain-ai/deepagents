@@ -30,7 +30,13 @@ RUBRIC_CHAR_LIMIT: Final = 12_000
 """Maximum characters in one rubric or goal acceptance-criteria value."""
 
 GOAL_APPLICATION_CHAR_LIMIT: Final = 12_000
-"""Maximum combined characters in an accepted objective and its criteria."""
+"""Maximum combined raw characters in an accepted objective and its criteria.
+
+Published to the criteria model and enforced per field on raw text, so it stays
+comparable to the per-field `max_length` values the schema publishes. The
+rendered budget — what an accepted pair is allowed to occupy after HTML
+escaping — is `GOAL_NOTICE_TEXT_CHAR_LIMIT`, which is wider.
+"""
 
 GOAL_STATUS_NOTE_CHAR_LIMIT: Final = 4_000
 """Maximum characters in a completion-evidence or blocker note."""
@@ -40,12 +46,19 @@ GOAL_NOTICE_TEXT_CHAR_LIMIT: Final = (
 )
 """Maximum combined rendered text embedded in one goal-state notice.
 
-Derived rather than written out, because `validate_goal_notice_text`'s layering
-depends on the equality and a hand-written value lets one side drift: bump either
-component and the per-field checks would pass text the aggregate rejects, or the
-reverse. The per-field limits therefore always sum to it. The aggregate check is
-only reachable via `prior_blocker`, the one section not covered by the application
-budget for ordinary text, but HTML escaping can make it live for any section.
+Derived rather than written out, because the acceptance checks share it: an
+accepted objective-and-criteria pair is validated against this exact value, so
+a hand-written literal could drift apart from what `_accept_goal_rubric`
+enforces and let an accepted goal fail its own notice. The acceptance checks
+reuse it so a newly accepted goal always keeps the whole status-note budget in
+reserve: accepting an application can never produce a goal whose next status
+update is already unwritable, no matter how the note is escaped.
+
+The application budget covers objective and criteria, so for ordinary text the
+aggregate check here is only reachable via `prior_blocker` or an oversized
+note. HTML escaping is what makes it live for any section: it expands embedded
+text up to fivefold, and nothing limits a status note's escaped length, so the
+aggregate is the only check that bounds what `update_goal` can leave embedded.
 Raise this deliberately if a new section is ever embedded in a notice.
 """
 
@@ -115,6 +128,11 @@ class GoalStateSizeError(ValueError):
 def validate_goal_objective(objective: str) -> None:
     """Reject a goal objective that cannot fit its persistent context budget.
 
+    This checks raw length only. HTML escaping can still expand the text
+    fivefold, so a caller about to run criteria generation should also call
+    `validate_goal_objective_rendered`: an objective that passes here can still
+    leave no room for any criteria in the rendered notice.
+
     Args:
         objective: Goal objective proposed by the user or criteria model.
 
@@ -161,6 +179,13 @@ def validate_goal_application(objective: str, criteria: str) -> None:
     validate_goal_objective(objective)
     validate_rubric(criteria)
     validate_goal_application_total(objective, criteria)
+    # Raw lengths passing says nothing about the rendered notice: HTML escaping
+    # expands text up to fivefold, so a pair that fits its raw budget can still
+    # overflow the notice and come back as "unavailable — do not work toward
+    # it" the moment it is accepted. Validate the escaped text the notice will
+    # actually embed, against the wider aggregate budget so the goal keeps room
+    # for a status note.
+    validate_goal_application_rendered_total(objective, criteria)
 
 
 def validate_goal_application_total(objective: str, criteria: str) -> None:
@@ -187,6 +212,65 @@ def validate_goal_application_total(objective: str, criteria: str) -> None:
             label=label,
             actual=total,
             limit=GOAL_APPLICATION_CHAR_LIMIT,
+        )
+
+
+def validate_goal_application_rendered_total(objective: str, criteria: str) -> None:
+    """Validate the escaped size an accepted pair will occupy in the notice.
+
+    Split from `validate_goal_application_total` because the two budgets answer
+    different questions. The raw combined check shares its budget with the
+    criteria model: the schema's per-field `max_length` values and the system
+    prompt's combined limit are all raw counts the model can count against
+    while drafting. This rendered check is acceptance-side only — the model has
+    no way to predict HTML expansion, so a rendered overshoot is reported to
+    the user, not retried.
+
+    The budget is the aggregate notice limit rather than the raw application
+    limit. Escaping has no meaningful worst case below fivefold expansion, and
+    any budget tighter than `GOAL_NOTICE_TEXT_CHAR_LIMIT` would reject pairs
+    whose notices fit. The wider budget is safe because acceptance clears the
+    status note on `create`, and the note budget stays in reserve otherwise.
+
+    Args:
+        objective: Goal objective that will be activated.
+        criteria: Acceptance criteria that will be activated with the goal.
+
+    Raises:
+        GoalStateSizeError: If the escaped combined text exceeds
+            `GOAL_NOTICE_TEXT_CHAR_LIMIT`.
+    """
+    total = len(html.escape(objective, quote=False)) + len(
+        html.escape(criteria, quote=False)
+    )
+    if total > GOAL_NOTICE_TEXT_CHAR_LIMIT:
+        label = "Goal objective and criteria combined"
+        raise GoalStateSizeError(
+            label=label,
+            actual=total,
+            limit=GOAL_NOTICE_TEXT_CHAR_LIMIT,
+        )
+
+
+def validate_goal_objective_rendered(objective: str) -> None:
+    """Reject an objective whose escaped text alone cannot fit a notice.
+
+    Args:
+        objective: Goal objective proposed by the user, before criteria exist.
+
+    Raises:
+        GoalStateSizeError: If the escaped objective leaves no room for any
+            criteria within `GOAL_NOTICE_TEXT_CHAR_LIMIT`. The limit is reported
+            one lower so the invariant that `actual` exceeds `limit` holds at
+            the exact boundary, where escaping has consumed the entire budget.
+    """
+    rendered = len(html.escape(objective, quote=False))
+    if rendered >= GOAL_NOTICE_TEXT_CHAR_LIMIT:
+        label = "Goal objective"
+        raise GoalStateSizeError(
+            label=label,
+            actual=rendered,
+            limit=GOAL_NOTICE_TEXT_CHAR_LIMIT - 1,
         )
 
 

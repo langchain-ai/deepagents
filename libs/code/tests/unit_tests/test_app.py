@@ -8403,6 +8403,9 @@ class TestGoalCommand:
             message = send.await_args.args[0]
             kwargs = send.await_args.kwargs["message_kwargs"]
             assert "ship login" in message
+            # As in the accept path: with the save failed and no notice coming,
+            # this message is the model's only source for the criteria.
+            assert "- tests pass" in message
             assert "get_goal" not in message
             assert kwargs["additional_kwargs"]["lc_source"] == (
                 GOAL_CONTROL_MESSAGE_SOURCE
@@ -12127,6 +12130,12 @@ class TestGoalCommand:
             message = send.await_args.args[0]
             kwargs = send.await_args.kwargs["message_kwargs"]
             assert "add refresh tokens" in message
+            # The criteria must ride along, not just the objective. The save
+            # failed, so no goal-state notice will be written for this thread and
+            # the read tools are gone — criteria omitted here are unobtainable
+            # through any other channel, and the model would work toward a goal it
+            # cannot grade itself against.
+            assert "- tests pass" in message
             assert "get_goal" not in message
             assert kwargs["additional_kwargs"]["lc_source"] == (
                 GOAL_CONTROL_MESSAGE_SOURCE

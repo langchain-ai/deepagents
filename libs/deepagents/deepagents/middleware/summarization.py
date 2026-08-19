@@ -94,6 +94,7 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from deepagents.backends import CompositeBackend
+from deepagents.middleware._filesystem_state import FilesystemState, _state_schema_for_backend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
 
@@ -202,6 +203,10 @@ class SummarizationState(AgentState):
 
     Scoped per graph invocation so parallel sub-agents do not share one history file.
     """
+
+
+class _StateBackendSummarizationState(SummarizationState, FilesystemState):
+    """Summarization state with ephemeral backend files."""
 
 
 class SummarizationDefaults(TypedDict):
@@ -493,7 +498,7 @@ def _upload_response_error(responses: list[FileUploadResponse]) -> str | None:
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
-    state_schema = SummarizationState
+    state_schema: type[AgentState] = SummarizationState
     serialized_name: ClassVar[str] = "SummarizationMiddleware"
     """Preferred config-file reference for class-form exclusion export."""
 
@@ -594,6 +599,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         # Deep Agents specific attributes
         self._backend = backend
+        self.state_schema = _state_schema_for_backend(backend, SummarizationState, _StateBackendSummarizationState)
 
         artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
@@ -1825,7 +1831,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         ```
     """
 
-    state_schema = SummarizationState
+    state_schema: type[AgentState] = SummarizationState
 
     def __init__(
         self,
@@ -1851,6 +1857,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             msg = f"system_prompt must be str or None, got {type(system_prompt).__name__}"
             raise TypeError(msg)
         self._summarization = summarization
+        self.state_schema = summarization.state_schema
         self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 

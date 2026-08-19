@@ -70,6 +70,13 @@ class TestFilesystemMiddlewareInit:
 
         assert middleware.state_schema is FilesystemState
 
+    def test_composite_without_state_backend_uses_base_state(self) -> None:
+        store_backend = StoreBackend(namespace=lambda _rt: ("filesystem",))
+        backend = CompositeBackend(default=store_backend, routes={"/persistent/": store_backend})
+        middleware = FilesystemMiddleware(backend=backend)
+
+        assert middleware.state_schema is AgentState
+
     def test_backend_class_is_rejected(self) -> None:
         """Backend factories were removed in 0.7; callers must pass instances."""
         with pytest.raises(TypeError, match=r"Backend factories were removed in deepagents 0\.7"):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from inspect import Parameter, signature
-from typing import Any
+from typing import Any, get_type_hints
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -719,6 +719,14 @@ def test_create_summarization_tool_middleware_returns_instance() -> None:
 
     assert isinstance(mw, SummarizationToolMiddleware)
     assert mw.tools[0].name == "compact_conversation"
+
+
+def test_create_summarization_tool_middleware_adds_state_backend_files() -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 120_000}
+    middleware = create_summarization_tool_middleware(model, StateBackend())
+
+    assert "files" in get_type_hints(middleware.state_schema, include_extras=True)
 
 
 def test_create_summarization_tool_middleware_accepts_system_prompt() -> None:

@@ -1166,6 +1166,65 @@ def test_writer_reports_an_unparseable_existing_config_as_an_error(
     assert "could not update" in result.error
 
 
+def test_reload_keeps_a_user_shell_allow_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/reload` must not discard `[shell].allow_list` from the user's config.
+
+    Regression: `_reload_values` resolved the option with `toml_data={}`, so it
+    saw only env and managed layers. `Settings.from_environment` reads the user
+    layer, so a reload reset the allow list to `None` and reported a change that
+    never happened. `skills.extra_allowed_dirs` in the same function already
+    read its user layer, which is what made the omission clearly unintentional.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.config import Settings
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text('[shell]\nallow_list = ["git status"]\n', encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        runtime = Settings.from_environment(start_path=tmp_path)
+        before = runtime.shell_allow_list
+        assert before is not None
+        runtime.reload_from_environment(start_path=tmp_path)
+        assert runtime.shell_allow_list == before
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_shell_allow_list_still_wins_a_reload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading the user layer on reload must not cost managed precedence."""
+    from deepagents_code import model_config
+    from deepagents_code.config import Settings
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text('[shell]\nallow_list = ["git status"]\n', encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        runtime = Settings.from_environment(start_path=tmp_path)
+        runtime.reload_from_environment(start_path=tmp_path)
+        assert runtime.shell_allow_list == ["ls"]
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_every_enforced_managed_key_resolves_to_a_manifest_option() -> None:
     """Pin `ENFORCED_MANAGED_KEYS` to the manifest.
 

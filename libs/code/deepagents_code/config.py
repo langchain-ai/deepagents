@@ -2792,6 +2792,12 @@ class Settings:
             return dict(previous), f"Kept previous settings: {exc}"
         managed_data = get_managed_snapshot().data
 
+        from deepagents_code.config_manifest import (
+            get_option,
+            load_config_toml,
+            resolve_scalar,
+        )
+
         try:
             shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
         except ValueError:
@@ -2801,17 +2807,21 @@ class Settings:
             )
             shell_allow_list = previous["shell_allow_list"]
 
-        from deepagents_code.config_manifest import get_option, resolve_scalar
-
         shell_option = get_option("shell.allow_list")
         if shell_option is not None:
-            managed_shell, managed_source = resolve_scalar(
+            # Read the user layer too, not just managed. `shell.allow_list`
+            # gained `toml_keys`, and `Settings.from_environment` resolves it
+            # through `load_config_toml()`; passing `toml_data={}` here reset a
+            # user's `[shell].allow_list` to `None` on every `/reload` and
+            # accepted cwd switch, and reported a change that never happened.
+            # `skills.extra_allowed_dirs` below already reads its user layer.
+            resolved_shell, shell_source = resolve_scalar(
                 shell_option,
-                toml_data={},
+                toml_data=load_config_toml(),
                 managed_toml_data=managed_data,
             )
-            if managed_source == "managed config":
-                shell_allow_list = managed_shell
+            if shell_source != "default":
+                shell_allow_list = resolved_shell
 
         skills_option = get_option("skills.extra_allowed_dirs")
         managed_skills: list[Path] | None = None

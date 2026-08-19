@@ -21961,6 +21961,25 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
+    async def action_open_model_selector(self) -> None:
+        """Open the model selector via `/model`.
+
+        Routed through `_submit_input` rather than calling `_show_model_selector`
+        directly, so the gesture gets the same pre-queue guards as the typed
+        command: no selector while exiting or mid thread-switch, and the startup
+        tip is dismissed. The bare form is `IMMEDIATE_UI`, so it still bypasses
+        the queue and opens while the agent is busy.
+        """
+        await self._submit_input("/model", "command")
+
+    async def action_open_effort_selector(self) -> None:
+        """Open the reasoning effort picker via `/effort`.
+
+        `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
+        place behind any pending input instead of jumping an in-flight turn.
+        """
+        await self._submit_input("/effort", "command")
+
     def _build_model_selector_screen(
         self,
         *,

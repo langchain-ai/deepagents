@@ -92,6 +92,8 @@ from deepagents_code._session_stats import (
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
 from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.goal_state_limits import (
+    GOAL_APPLICATION_CHAR_LIMIT,
+    GOAL_OBJECTIVE_CHAR_LIMIT,
     RUBRIC_CHAR_LIMIT,
     GoalStateSizeError,
     validate_goal_application,
@@ -577,17 +579,18 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     works on both LangChain message objects and serialized dicts since it only
     slices and prepends.
 
-    An unusable event — a `None` summary, or a cutoff that is not a
-    non-negative int within bounds — is logged and returns the full list. The
-    bounds case
-    diverges deliberately from the SDK, which reads a cutoff past the end as
-    "everything was summarized" and returns `[summary]` alone. A shorter list
-    than the cutoff means history was removed after the summary was written
-    (the `/offload` failure paths issue `RemoveMessage`), so the survivors are
-    the recent messages, and returning `[summary]` would hide live turns.
-    Callers here size context and detect dangling tool calls, where
-    over-reporting the window is the safe direction. `validated_summarization_cutoff`
-    holds the matching decision for the notice predicate.
+    An unusable event — a `None` summary, or a cutoff that is not a non-negative
+    int within bounds — is logged and returns the full list.
+
+    The bounds case diverges deliberately from the SDK. The SDK reads a cutoff
+    past the end as "everything was summarized" and returns `[summary]` alone.
+    Here, a list shorter than the cutoff means history was removed after the
+    summary was written; the `/offload` failure paths issue `RemoveMessage`. The
+    survivors are therefore recent messages, and `[summary]` would hide live
+    turns. Callers size context and detect dangling tool calls, where
+    over-reporting the window is the safe direction.
+    `validated_summarization_cutoff` holds the matching decision for the notice
+    predicate.
 
     Args:
         messages: Full message list from state.
@@ -13946,7 +13949,10 @@ class DeepAgentsApp(App):
             "Use /goal when you have a plain-language objective; dcode will "
             "draft a checklist for it. Once applied, the goal stays active for "
             "this thread until paused, completed, blocked, or cleared. "
-            "Follow-up prompts continue working toward that goal."
+            "Follow-up prompts continue working toward that goal.\n"
+            f"Objectives are limited to {GOAL_OBJECTIVE_CHAR_LIMIT:,} characters, "
+            f"and an objective plus its criteria to "
+            f"{GOAL_APPLICATION_CHAR_LIMIT:,}."
         )
 
     async def _show_goal_state(
@@ -25454,7 +25460,7 @@ class DeepAgentsApp(App):
                 worker.error,
                 exc_info=worker.error,
             )
-            # Defence in depth: the size rejection normally surfaces from the
+            # Defense in depth: the size rejection normally surfaces from the
             # turn handler, which keeps its limit text. Should one escape to
             # here, surface the same actionable message rather than a bare
             # "failed unexpectedly".

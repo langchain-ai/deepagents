@@ -2,7 +2,7 @@
 
 > **Note:** `deepagents-code` was forked from `deepagents-cli` at v0.1.0. References to "the CLI" throughout this document describe the `deepagents-code` runtime.
 
-> Generated: 2026-08-11 | Commit: 4a458cd3a | Scope: libs/code only
+> Generated: 2026-08-19 | Scope: libs/code only
 
 > **Disclaimer:** This threat model is automatically generated to help developers and security researchers understand where trust is placed in this system and where boundaries exist. It is experimental, subject to change, and not an authoritative security reference — findings should be validated before acting on them. The analysis may be incomplete or contain inaccuracies. We welcome suggestions and corrections to improve this document.
 
@@ -379,7 +379,7 @@
 | T13 | DF7       | —              | Configured shell allow-list checks only the first token, so an allow-listed interpreter/wrapper (`python3`, `bash`, `env`, `xargs`, …) runs arbitrary code via its arguments without approval in non-interactive mode | TB2 | Medium | Verified | `config.is_shell_command_allowed`, `config.contains_dangerous_patterns` |
 | T14 | DF7, DF9  | —              | A weaker model configured for the Auto approval classifier reviews gated actions less reliably, including untrusted text carried in tool arguments and file content | TB2 | Low | Verified | `auto_mode.AutoModeHITLMiddleware._classifier_model`, `config.resolve_auto_classifier_model`, `config_manifest.resolve_auto_classifier_timeout` |
 | T15 | DF26, DF27 | DC2 | Stored prompt injection through a goal, rubric, or status note influences later primary-model tool requests | TB12 | Medium | Likely | `goal_state_notice.build_goal_state_notice`, `goal_tools.GoalToolsMiddleware._request_with_goal_notice` |
-| T16 | DF26, DF27 | DC2 | Full sensitive local-file content is automatically persisted and transmitted to the configured model provider as rubric criteria | TB12 | Medium | Verified | `app.DeepAgentsApp._set_rubric_from_file`, `goal_state_notice.build_goal_state_notice` |
+| T16 | DF26, DF27 | DC2 | Sensitive local-file content, up to the 12,000-character rubric limit, is automatically persisted and transmitted to the configured model provider as rubric criteria | TB12 | Medium | Verified | `app.DeepAgentsApp._set_rubric_from_file`, `goal_state_notice.build_goal_state_notice` |
 | T17 | DF26, DF27 | DC2 | Character-bounded goal/rubric/status-note text can still exceed provider context budgets after escaping or tokenization | TB12 | Medium | Verified | `goal_state_limits`, `goal_state_notice.build_goal_state_notice`, `goal_tools.GoalToolsMiddleware._request_with_goal_notice` |
 
 ### Threat Details
@@ -399,7 +399,7 @@
 #### T16: Automatic Disclosure of File-Loaded Rubrics
 
 - **Flow**: DF26/DF27 (`/rubric file` → checkpoint → primary-model request)
-- **Description**: `/rubric file` reads the entire selected UTF-8 text file and persists its nonempty contents. The notice then embeds the criteria into primary-model context. There is no warning or confirmation specific to provider transmission, so a user can inadvertently select a secret-bearing or proprietary file. This flow handles user content, not provider credentials. Credential storage and provider retention are outside the scoped implementation.
+- **Description**: `/rubric file` reads the entire selected UTF-8 text file and persists its nonempty contents, up to the 12,000-character rubric limit (see TB12); a larger file is rejected outright rather than truncated. The notice then embeds the criteria into primary-model context. There is no warning or confirmation specific to provider transmission, so a user can inadvertently select a secret-bearing or proprietary file. This flow handles user content, not provider credentials. Credential storage and provider retention are outside the scoped implementation.
 - **Preconditions**: (1) A user selects a file with sensitive content; (2) it becomes an active rubric; (3) a model request is made while the rubric is active.
 
 #### T17: Provider Context Pressure Despite Character Limits
@@ -584,3 +584,4 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | 2026-08-11 | langster-threat-model (automated)  | Corrected TB12, DF26/DF27, and T17 to document the enforced raw-character limits and the narrower residual risk from post-escape expansion and provider-specific byte/token budgets. |
 | 2026-08-17 | manual update                      | Noted that the goal-state character budget is re-validated when a one-shot `/rubric next` is consumed, not only when it is set: the goal state it is measured against is mutable between those points (`/goal amend`, an `update_goal` blocker note), so a set-time-only check could still degrade the notice and silently disable the promised grade. The degraded notice now also reports `Goal status: unavailable` rather than leaving a live status beside `Goal actionable: no`. |
 | 2026-08-17 | manual update                      | Extended T14 for `ask_user` question text as a classifier injection source: the receipt attests display and answer, not content, so a question claiming prior or blanket authorization is untrusted content; recorded the `_CLASSIFIER_POLICY` clauses that keep a paired question to an action/target description matched against canonical arguments. Narrowed the T14 "deterministic allow/deny" guard wording, which overstated the deny side: deterministic denies do not cover the Deny categories, and an affirmative classifier allow is not re-checked downstream |
+| 2026-08-19 | manual update                      | Recorded that a superseded goal-state notice is replaced in place rather than removed from a model request, because the summarizer derives its next cutoff from that list and persists it against the unfiltered checkpoint; and that a combined objective-plus-criteria overflow now ends the criteria turn with its character limit instead of retrying blind to the recursion limit. Noted that an unrecognized persisted goal status degrades to `paused` in the notice, so a corrupt or forward-version checkpoint cannot present itself to the model as a goal to work toward. Dropped the stale generated-commit pin and bounded T16's disclosure to the enforced rubric limit |

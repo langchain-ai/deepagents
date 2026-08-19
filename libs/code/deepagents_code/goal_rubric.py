@@ -1396,9 +1396,9 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         )
         # `GoalProposal._fit_notice_budget` validated the objective the model
         # echoed back, but a `create` applies the user's original. The model is
-        # told to preserve it verbatim and nothing enforces that, so a paraphrase
-        # can shrink its own total under the limit while the applied pair blows
-        # it. Validate what is actually applied.
+        # told to preserve it verbatim and nothing enforces that. A paraphrase can
+        # therefore fit the limit while the applied pair exceeds it. Validate what
+        # is actually applied.
         try:
             validate_goal_application(objective, criteria)
         except GoalStateSizeError:

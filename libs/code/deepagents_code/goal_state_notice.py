@@ -322,6 +322,15 @@ def validated_summarization_cutoff(
 ) -> int | None:
     """Return a valid absolute cutoff index from a summarization event.
 
+    This is the canonical explanation of the cutoff rule; the notice predicates
+    and the `/offload` accounting point here rather than restating it.
+
+    Summarization is non-destructive: it leaves `state["messages"]` intact and
+    applies the cutoff only when building a request. Any predicate that scans the
+    full persisted list must therefore discount messages below this index, or it
+    treats a notice the model cannot see as authoritative. Every caller that has a
+    message count in hand should pass it.
+
     A cutoff past `message_count` is rejected rather than clamped. The SDK
     reads that state as "everything was summarized"; here it means the message
     list shrank after the summary was written, so the survivors are live turns
@@ -353,10 +362,10 @@ def summarization_cutoff(
 ) -> int:
     """Return the absolute cutoff index of a `_summarization_event`.
 
-    Summarization is non-destructive: it leaves `state["messages"]` intact and
-    applies the cutoff only when building a request. Any predicate that scans the
-    full persisted list therefore has to discount messages below this index, or
-    it will treat a notice the model cannot see as authoritative.
+    The degrading variant of `validated_summarization_cutoff`, which documents the
+    rule and why an out-of-bounds cutoff is rejected rather than clamped. Use this
+    where `0` — "discount nothing" — is the safe reading of an unusable event, and
+    log the discard where the collapse changes an outcome.
 
     Args:
         event: A `_summarization_event` mapping as persisted in state, or `None`.

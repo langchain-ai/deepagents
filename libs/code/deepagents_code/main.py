@@ -43,7 +43,7 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
 from deepagents_code._version import __version__
-from deepagents_code.goal_state_limits import validate_rubric
+from deepagents_code.goal_state_limits import RUBRIC_CHAR_LIMIT, validate_rubric
 
 logger = logging.getLogger(__name__)
 
@@ -2268,6 +2268,7 @@ def parse_args() -> argparse.Namespace:
         help="Acceptance criteria the agent self-evaluates against, looping "
         "until satisfied. Accepts literal text or '@path' to read a file "
         "(relative to the current working directory; '~' supported). "
+        f"Limited to {RUBRIC_CHAR_LIMIT:,} characters. "
         "Requires -n or piped stdin.",
     )
     parser.add_argument(

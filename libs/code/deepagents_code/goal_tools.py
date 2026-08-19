@@ -350,13 +350,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         values = cast("dict[str, Any]", state)
         raw_messages = values.get("messages", [])
         messages = list(raw_messages) if isinstance(raw_messages, list) else []
-        # `state["messages"]` is the full persisted list, so a notice summarization
-        # has already scrolled past is still found here. Discount it against the
-        # cutoff, matching the client-side predicate in `app.py` for a valid
-        # event, so the durable write happens instead of leaving the transient
-        # re-pin in `wrap_model_call` to carry the objective on every subsequent
-        # turn. A malformed event diverges deliberately: `app.py` collapses it to
-        # `0`, while here it forces a fresh notice and clears the event.
+        # `state["messages"]` is the full persisted list, so the cutoff rule
+        # applies — see `validated_summarization_cutoff`. Discounting matters here
+        # because it is what makes the durable write happen, instead of leaving
+        # the transient re-pin in `wrap_model_call` to carry the objective on every
+        # subsequent turn. For a valid event this matches the client-side
+        # predicate in `app.py`. A malformed event diverges deliberately: `app.py`
+        # collapses it to `0`, while here it forces a fresh notice and clears the
+        # event.
         event = values.get("_summarization_event")
         cutoff = validated_summarization_cutoff(
             event,

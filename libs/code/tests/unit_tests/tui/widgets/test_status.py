@@ -793,6 +793,18 @@ class TestModeIndicator:
             assert str(indicator.render()) == "SHELL"
             assert indicator.has_class("shell-incognito")
 
+    async def test_skill_mode_shows_indicator(self) -> None:
+        """Skill mode renders a dedicated indicator and class."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            indicator = pilot.app.query_one("#mode-indicator")
+
+            bar.set_mode("skill")
+            await pilot.pause()
+
+            assert str(indicator.render()) == "SKILL"
+            assert indicator.has_class("skill")
+
     async def test_mode_transition_clears_incognito_class(self) -> None:
         """Leaving `shell_incognito` must remove the badge class.
 

@@ -174,6 +174,7 @@ EXPECTED_CSS_KEYS = frozenset(
         "mode-bash",
         "mode-command",
         "mode-incognito",
+        "mode-skill",
         "skill",
         "skill-hover",
         "tool",
@@ -193,16 +194,19 @@ class TestGetCssVariableDefaults:
         result = get_css_variable_defaults(dark=True)
         assert result["mode-bash"] == DARK_COLORS.mode_bash
         assert result["mode-incognito"] == DARK_COLORS.mode_incognito
+        assert result["mode-skill"] == DARK_COLORS.skill
 
     def test_light_mode_uses_light_colors(self) -> None:
         result = get_css_variable_defaults(dark=False)
         assert result["mode-bash"] == LIGHT_COLORS.mode_bash
         assert result["mode-incognito"] == LIGHT_COLORS.mode_incognito
+        assert result["mode-skill"] == LIGHT_COLORS.skill
 
     def test_explicit_colors_take_precedence(self) -> None:
         result = get_css_variable_defaults(dark=True, colors=LIGHT_COLORS)
         assert result["mode-bash"] == LIGHT_COLORS.mode_bash
         assert result["mode-incognito"] == LIGHT_COLORS.mode_incognito
+        assert result["mode-skill"] == LIGHT_COLORS.skill
 
     def test_all_values_are_hex_colors(self) -> None:
         import re

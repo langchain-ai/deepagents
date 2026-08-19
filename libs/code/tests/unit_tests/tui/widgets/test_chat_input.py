@@ -850,7 +850,7 @@ class TestChatInputResize:
             await pilot.pause()
 
             colors: dict[str, object] = {}
-            for mode in ("normal", "shell", "command", "shell_incognito"):
+            for mode in ("normal", "shell", "command", "skill", "shell_incognito"):
                 chat_input.mode = mode
                 await pilot.pause()
                 await pilot.pause()
@@ -1510,6 +1510,19 @@ class TestPromptIndicator:
             assert _prompt_text(prompt) == "/"
             assert chat_input.has_class("mode-command")
 
+    async def test_prompt_shows_dollar_in_skill_mode(self) -> None:
+        """Skill mode should use its own `$` prompt styling."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "skill"
+            await pilot.pause()
+
+            assert _prompt_text(prompt) == "$"
+            assert chat_input.has_class("mode-skill")
+
     async def test_prompt_reverts_to_default_on_normal_mode(self) -> None:
         """Resetting mode to 'normal' should revert indicator and classes."""
         app = _ChatInputTestApp()
@@ -1528,6 +1541,7 @@ class TestPromptIndicator:
             assert chat_input.border_title is None
             assert not chat_input.has_class("mode-shell")
             assert not chat_input.has_class("mode-command")
+            assert not chat_input.has_class("mode-skill")
 
     async def test_mode_change_posts_message(self) -> None:
         """Setting mode should post a ModeChanged message."""
@@ -2479,6 +2493,19 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
+    async def test_typing_dollar_strips_prefix_and_sets_skill_mode(self) -> None:
+        """Setting text to `'$review'` should enter skill mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "$review"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "skill"
+            assert chat._text_area.text == "review"
+
     async def test_handle_mode_prefix_keystroke_switches_without_text_change(
         self,
     ) -> None:
@@ -2932,6 +2959,25 @@ class TestModePrefixStripping:
 
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "/help"
+            assert app.submitted[0].mode == "command"
+
+    async def test_skill_submission_routes_as_canonical_command(self) -> None:
+        """Skill mode should submit through the existing command dispatch path."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "skill"
+            chat._text_area.insert("review explain this")
+            await pilot.pause()
+            chat.dismiss_completion()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/skill:review explain this"
             assert app.submitted[0].mode == "command"
 
     async def test_mode_resets_after_submission(self) -> None:

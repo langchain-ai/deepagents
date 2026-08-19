@@ -130,10 +130,8 @@ class SlashCommandController:
         self._commands = commands
         self._view = view
         self._suggestions: list[tuple[str, str]] = []
-        # Machine names aligned by index with `_suggestions`. The popup shows
-        # each suggestion's label, but completion inserts the machine name so a
-        # plugin skill shown as `/skill:review` still inserts its full
-        # `/skill:my-plugin:review`.
+        # Completion values aligned by index with `_suggestions`. Controllers may
+        # show a friendly label while inserting a different dispatch value.
         self._suggestion_names: list[str] = []
         self._selected_index = 0
 
@@ -148,6 +146,16 @@ class SlashCommandController:
         """
         self._commands = commands
         self.reset()
+
+    @staticmethod
+    def _display_label(entry: CommandEntry) -> str:
+        """Return the suggestion label shown in the popup."""
+        return entry.label()
+
+    @staticmethod
+    def _completion_value(entry: CommandEntry) -> str:
+        """Return the value inserted when a suggestion is selected."""
+        return entry.name
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:  # noqa: ARG004  # Required by AutocompleteProvider interface
@@ -264,9 +272,11 @@ class SlashCommandController:
 
         if selected:
             self._suggestions = [
-                (entry.label(), entry.description) for entry in selected
+                (self._display_label(entry), entry.description) for entry in selected
             ]
-            self._suggestion_names = [entry.name for entry in selected]
+            self._suggestion_names = [
+                self._completion_value(entry) for entry in selected
+            ]
             self._selected_index = 0
             self._view.render_completion_suggestions(
                 self._suggestions, self._selected_index
@@ -352,6 +362,16 @@ class SkillCommandController(SlashCommandController):
     def can_handle(text: str, cursor_index: int) -> bool:
         """Return whether the input starts with the skill trigger."""
         return 0 <= cursor_index <= len(text) and text.startswith("$")
+
+    @staticmethod
+    def _display_label(entry: CommandEntry) -> str:
+        """Return a bare skill name for the popup."""
+        return entry.label().removeprefix("/skill:")
+
+    @staticmethod
+    def _completion_value(entry: CommandEntry) -> str:
+        """Return a bare canonical skill name for skill mode."""
+        return entry.name.removeprefix("/skill:")
 
     @staticmethod
     def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:

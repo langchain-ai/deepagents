@@ -1975,6 +1975,10 @@ class ChatInput(Vertical):
         border: solid $mode-command;
     }
 
+    ChatInput.mode-skill #input-box {
+        border: solid $mode-skill;
+    }
+
     ChatInput.mode-shell-incognito #input-box {
         border: solid $mode-incognito;
         border-title-color: $mode-incognito;
@@ -2029,6 +2033,10 @@ class ChatInput(Vertical):
 
     ChatInput.mode-command .input-prompt {
         color: $mode-command;
+    }
+
+    ChatInput.mode-skill .input-prompt {
+        color: $mode-skill;
     }
 
     ChatInput.mode-shell-incognito .input-prompt {
@@ -2155,7 +2163,7 @@ class ChatInput(Vertical):
         self._skip_media_sync_events = 0
 
         # Number of virtual prefix characters currently injected for
-        # completion controller calls (0 for normal, 1 for shell/command).
+        # completion controller calls.
         self._completion_prefix_len = 0
 
         # Guard flag: set while replacing a dropped path payload with an
@@ -2294,6 +2302,7 @@ class ChatInput(Vertical):
         mode_colors = {
             "shell": colors.mode_bash,
             "command": colors.mode_command,
+            "skill": colors.skill,
             "shell_incognito": colors.mode_incognito,
         }
         if self.mode != "normal" and self.mode not in mode_colors:
@@ -2738,7 +2747,7 @@ class ChatInput(Vertical):
         """Switch input mode for a mode trigger typed at the start of the input.
 
         Handles the switch before `TextArea` inserts the character so the
-        trigger (`!`, `!!`, `/`) never flashes on screen for a frame before the
+        trigger (`!`, `!!`, `/`, `$`) never flashes on screen for a frame before the
         change handler would strip it.
 
         Returns:
@@ -2912,6 +2921,10 @@ class ChatInput(Vertical):
             detected = detect_mode_prefix(value)
             if detected is not None:
                 _, mode = detected
+
+        if mode == "skill":
+            value = f"/skill:{value.removeprefix('/skill:')}"
+            mode = "command"
 
         # Prepend mode prefix so the app layer receives the original trigger
         # form (e.g. "!ls", "/help"). The value may already contain the prefix
@@ -3414,7 +3427,9 @@ class ChatInput(Vertical):
             )
 
         def _apply() -> None:
-            self.remove_class("mode-shell", "mode-command", "mode-shell-incognito")
+            self.remove_class(
+                "mode-shell", "mode-command", "mode-skill", "mode-shell-incognito"
+            )
             if glyph:
                 class_name = (
                     "mode-shell-incognito"
@@ -3599,7 +3614,7 @@ class ChatInput(Vertical):
             self._text_area._notify_app_focus()
 
     def exit_mode(self) -> bool:
-        """Exit the current input mode (command/shell) back to normal.
+        """Exit the current input mode back to normal.
 
         Returns:
             True if mode was non-normal and has been reset.

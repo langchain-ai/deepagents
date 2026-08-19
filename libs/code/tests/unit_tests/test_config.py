@@ -6902,6 +6902,8 @@ class TestDetectModePrefix:
             ("!", ("!", "shell")),
             ("/help", ("/", "command")),
             ("/", ("/", "command")),
+            ("$review", ("$", "skill")),
+            ("$", ("$", "skill")),
         ],
     )
     def test_matches_known_prefixes(self, text: str, expected: tuple[str, str]) -> None:

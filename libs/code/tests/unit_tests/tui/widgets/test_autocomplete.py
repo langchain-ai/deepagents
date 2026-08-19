@@ -406,7 +406,15 @@ class TestSkillCommandController:
         commands = [
             CommandEntry("/skill:web-research", "Research the web", "web-research", ""),
             CommandEntry("/skill:review", "Review a change", "review", ""),
+            CommandEntry(
+                "/skill:my-plugin:deploy",
+                "Deploy through a plugin",
+                "deploy",
+                "",
+                "/skill:deploy",
+            ),
         ]
+
         return SkillCommandController(commands, mock_view)
 
     def test_handles_only_dollar_prefix(self, controller) -> None:
@@ -420,12 +428,10 @@ class TestSkillCommandController:
         controller.on_text_changed("$web", 4)
 
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert suggestions == [("/skill:web-research", "Research the web")]
+        assert suggestions == [("web-research", "Research the web")]
 
-    def test_completion_inserts_canonical_skill_command(
-        self, controller, mock_view
-    ) -> None:
-        """Selecting a `$` suggestion preserves command dispatch syntax."""
+    def test_completion_inserts_bare_skill_name(self, controller, mock_view) -> None:
+        """Selecting a `$` suggestion keeps the skill mode draft concise."""
         controller.on_text_changed("$rev", 4)
         event = MagicMock()
         event.key = "tab"
@@ -433,8 +439,21 @@ class TestSkillCommandController:
         result = controller.on_key(event, "$rev", 4)
 
         assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once_with(0, 4, "review")
+
+    def test_namespaced_completion_keeps_canonical_name(
+        self, controller, mock_view
+    ) -> None:
+        """Bare plugin labels still insert their full namespaced skill name."""
+        controller.on_text_changed("$dep", 4)
+        event = MagicMock()
+        event.key = "tab"
+
+        result = controller.on_key(event, "$dep", 4)
+
+        assert result == CompletionResult.HANDLED
         mock_view.replace_completion_range.assert_called_once_with(
-            0, 4, "/skill:review"
+            0, 4, "my-plugin:deploy"
         )
 
 

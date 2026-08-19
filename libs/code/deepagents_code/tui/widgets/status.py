@@ -440,6 +440,12 @@ class StatusBar(Vertical):
         color: white;
     }
 
+    StatusBar .status-mode.skill {
+        background: $mode-skill;
+        color: $background;
+        text-style: bold;
+    }
+
     StatusBar .status-mode.shell-incognito {
         background: $mode-incognito;
         color: $background;
@@ -650,7 +656,7 @@ class StatusBar(Vertical):
             indicator = self.query_one("#mode-indicator", Static)
         except NoMatches:
             return
-        indicator.remove_class("normal", "shell", "command", "shell-incognito")
+        indicator.remove_class("normal", "shell", "command", "skill", "shell-incognito")
 
         if mode == "shell":
             indicator.update("SHELL")
@@ -661,6 +667,9 @@ class StatusBar(Vertical):
         elif mode == "command":
             indicator.update("CMD")
             indicator.add_class("command")
+        elif mode == "skill":
+            indicator.update("SKILL")
+            indicator.add_class("skill")
         else:
             indicator.update("")
             indicator.add_class("normal")

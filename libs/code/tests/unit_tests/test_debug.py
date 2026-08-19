@@ -121,6 +121,56 @@ class TestConfigureDebugLogging:
         assert len(aces) == 1, f"expected a single ACE, got {aces}"
         assert os.environ["USERNAME"].lower() in aces[0].lower()
 
+    def test_no_file_handler_when_hardening_fails(self, tmp_path, capsys) -> None:
+        """A file that cannot be secured gets no handler at all.
+
+        Captured MCP server stderr can carry credentials, so failing to
+        restrict the file must disable file logging rather than fall through
+        and write to it anyway.
+        """
+        logger = logging.getLogger("test.debug.harden_fail")
+        logger.handlers = []
+        log_file = tmp_path / "debug.log"
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "DEEPAGENTS_CODE_DEBUG": "1",
+                    "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file),
+                },
+            ),
+            patch.object(_debug, "_prepare_debug_file", side_effect=OSError("nope")),
+        ):
+            configure_debug_logging(logger)
+        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        assert "Warning" in capsys.readouterr().err
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW refusal")
+    def test_symlinked_debug_file_is_refused(self, tmp_path, capsys) -> None:
+        """A symlink at the debug path is refused, not followed.
+
+        `/tmp` is the default location, so a planted symlink would otherwise
+        redirect captured MCP stderr into a file the attacker chose.
+        """
+        logger = logging.getLogger("test.debug.symlink")
+        logger.handlers = []
+        victim = tmp_path / "victim.log"
+        victim.touch()
+        link = tmp_path / "debug.log"
+        link.symlink_to(victim)
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_FILE": str(link),
+            },
+        ):
+            configure_debug_logging(logger)
+        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        assert "Warning" in capsys.readouterr().err
+        logger.warning("must not be written through the symlink")
+        assert victim.read_text() == ""
+
     def test_log_level_debug_enables_debug_without_file_handler(self) -> None:
         logger = logging.getLogger("test.debug.level_only")
         logger.handlers = []

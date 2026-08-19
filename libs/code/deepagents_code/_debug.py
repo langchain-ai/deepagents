@@ -267,6 +267,10 @@ def configure_debug_logging(target: logging.Logger) -> None:
     is reused and its level re-applied. If the resolved path changes, the stale
     handler is closed and replaced.
 
+    The file is created or tightened to user-only access first. If that fails,
+    no file handler is attached: captured MCP server stderr can carry
+    credentials, so no file log is safer than one that could not be secured.
+
     Args:
         target: Logger to configure.
     """
@@ -295,12 +299,21 @@ def configure_debug_logging(target: logging.Logger) -> None:
     try:
         _prepare_debug_file(debug_path)
     except OSError as exc:
-        logger.warning(
-            "could not restrict debug log file %s to the current user: %s. "
-            "Captured MCP stderr may be readable by other local users.",
-            debug_path,
-            exc,
+        # Fail closed. `_prepare_debug_file` opens with `O_NOFOLLOW`, so this
+        # also fires for a symlink planted at `debug_path` — and the
+        # `FileHandler` below would happily follow it, turning a blocked
+        # redirect into a successful one. Captured MCP server stderr can carry
+        # credentials, so skip file logging entirely; the in-memory buffer
+        # still backs the Debug Console.
+        message = (
+            f"could not restrict debug log file {debug_path} to the current "
+            f"user: {exc}. File logging is disabled because captured MCP "
+            f"server stderr may contain credentials. Set "
+            f"{DEBUG_FILE} to a path you own to enable it."
         )
+        print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+        logger.warning("%s", message)
+        return
     try:
         handler = logging.FileHandler(str(debug_path), mode="a")
     except OSError as exc:

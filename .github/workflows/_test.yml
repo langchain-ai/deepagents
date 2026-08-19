@@ -139,8 +139,19 @@ jobs:
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
         run: |
           set +e
-          timeout --signal=TERM --kill-after=10s 120s bash -c \
-            'sudo apt-get update && sudo apt-get install -y ripgrep'
+          timeout --signal=TERM --kill-after=10s 120s bash -c '
+            setsid bash -c "sudo apt-get update && sudo apt-get install -y ripgrep" &
+            install_pid=$!
+
+            terminate_install() {
+              kill -- -"$install_pid" 2>/dev/null || true
+              wait "$install_pid" 2>/dev/null || true
+              exit 124
+            }
+
+            trap terminate_install TERM
+            wait "$install_pid"
+          '
           status=$?
           set -e
 

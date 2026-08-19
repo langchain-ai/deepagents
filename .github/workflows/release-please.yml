@@ -130,6 +130,7 @@ jobs:
       code-release: ${{ steps.check-releases.outputs.code-release }}
       talon-release: ${{ steps.check-releases.outputs.talon-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
+      docker-release: ${{ steps.check-releases.outputs.docker-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
@@ -235,6 +236,14 @@ jobs:
             echo "Daytona release detected: $COMMIT_MSG"
           else
             echo "daytona-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/docker/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-docker\):"; then
+            echo "docker-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
+            echo "Docker release detected: $COMMIT_MSG"
+          else
+            echo "docker-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/modal/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-modal\):"; then
@@ -992,6 +1001,7 @@ jobs:
       needs.detect-release-commit.outputs.code-release == 'true' ||
       needs.detect-release-commit.outputs.talon-release == 'true' ||
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
+      needs.detect-release-commit.outputs.docker-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
       needs.detect-release-commit.outputs.vercel-release == 'true' ||
@@ -1014,6 +1024,7 @@ jobs:
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
       TALON_RELEASE: ${{ needs.detect-release-commit.outputs.talon-release }}
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
+      DOCKER_RELEASE: ${{ needs.detect-release-commit.outputs.docker-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
       VERCEL_RELEASE: ${{ needs.detect-release-commit.outputs.vercel-release }}
@@ -1246,6 +1257,7 @@ jobs:
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
           TALON_RELEASE="${TALON_RELEASE:-false}";     assert_bool TALON_RELEASE   "$TALON_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
+          DOCKER_RELEASE="${DOCKER_RELEASE:-false}";   assert_bool DOCKER_RELEASE  "$DOCKER_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
           VERCEL_RELEASE="${VERCEL_RELEASE:-false}";   assert_bool VERCEL_RELEASE  "$VERCEL_RELEASE"
@@ -1291,6 +1303,7 @@ jobs:
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
           if [ "$TALON_RELEASE" = "true" ];   then dispatch deepagents-talon;    fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
+          if [ "$DOCKER_RELEASE" = "true" ];  then dispatch langchain-docker;    fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
           if [ "$VERCEL_RELEASE" = "true" ];   then dispatch langchain-vercel-sandbox; fi

@@ -12,6 +12,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
 | `deepagents-talon` | `libs/talon` | `deepagents-talon` | [`deepagents-talon`](https://pypi.org/project/deepagents-talon/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
+| `langchain-docker` | `libs/partners/docker` | `langchain-docker` | [`langchain-docker`](https://pypi.org/project/langchain-docker/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
 | `langchain-vercel-sandbox` | `libs/partners/vercel` | `langchain-vercel-sandbox` | [`langchain-vercel-sandbox`](https://pypi.org/project/langchain-vercel-sandbox/) |
@@ -221,6 +222,7 @@ Tracks the current version of each package. Automatically updated by release-ple
   "libs/acp": "0.0.5",
   "libs/talon": "0.0.1",
   "libs/partners/daytona": "0.0.5",
+  "libs/partners/docker": "0.0.0",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
   "libs/partners/vercel": "0.0.1",

@@ -52,6 +52,7 @@
     "cli-gha": "github_actions",
     "code": "dcode",
     "daytona": "daytona",
+    "docker": "docker",
     "deepagents": "deepagents",
     "deepagents-acp": "acp",
     "deepagents-cli": "cli",
@@ -64,6 +65,7 @@
     "harbor": "harbor",
     "infra": "infra",
     "langchain-daytona": "daytona",
+    "langchain-docker": "docker",
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
     "langchain-runloop": "runloop",
@@ -116,6 +118,11 @@
     {
       "label": "daytona",
       "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "docker",
+      "prefix": "libs/partners/docker/",
       "skipExcludedFiles": true
     },
     {

@@ -2493,18 +2493,50 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
-    async def test_typing_dollar_strips_prefix_and_sets_skill_mode(self) -> None:
-        """Setting text to `'$review'` should enter skill mode."""
+    async def test_typing_dollar_enters_skill_mode_without_inserting_it(self) -> None:
+        """Pressing `$` on an empty input should enter skill mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.focus()
+            await pilot.pause()
+
+            await pilot.press("$")
+            await _pause_for_strip(pilot)
+            for char in "review":
+                await pilot.press(char)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "skill"
+            assert chat._text_area.text == "review"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "$5k budget - what's the plan?",
+            "$ npm install",
+            "$HOME/bin is not on PATH, fix it",
+        ],
+    )
+    async def test_dollar_leading_text_change_stays_normal(self, text: str) -> None:
+        """Regression guard: `$` text arriving as content is never a trigger.
+
+        Only a deliberate keystroke opens skill mode. Pastes, history recall,
+        and programmatic assignment all reach `on_text_area_changed`, where a
+        leading `$` must survive verbatim instead of being stripped and
+        rewritten into a skill command.
+        """
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._text_area.text = "$review"
+            chat._text_area.text = text
             await _pause_for_strip(pilot)
 
-            assert chat.mode == "skill"
-            assert chat._text_area.text == "review"
+            assert chat.mode == "normal"
+            assert chat._text_area.text == text
 
     async def test_handle_mode_prefix_keystroke_switches_without_text_change(
         self,
@@ -4963,7 +4995,12 @@ class TestSkillCompletion:
                 ],
             )
 
-            chat._text_area.insert("$dep")
+            chat._text_area.focus()
+            await pilot.pause()
+            await pilot.press("$")
+            await _pause_for_strip(pilot)
+            for char in "dep":
+                await pilot.press(char)
             await _pause_for_strip(pilot)
 
             chat.on_completion_popup_option_clicked(
@@ -6461,6 +6498,20 @@ class TestPasteBurstPromotion:
 
 class TestPasteCollapseHelpers:
     """Unit tests for the paste_collapse module helpers."""
+
+    def test_dollar_leading_paste_still_collapses(self) -> None:
+        """Regression guard: a `$`-leading paste must not skip collapsing.
+
+        `_should_collapse_chat_paste` short-circuits on any detected mode
+        prefix. A pasted shell transcript starts with `$`, which would
+        otherwise dump verbatim into the composer instead of becoming a
+        `[Pasted text #N]` placeholder.
+        """
+        from deepagents_code.tui.widgets.chat_input import _should_collapse_chat_paste
+
+        assert _should_collapse_chat_paste("$ " + "x" * 900) is True
+        # Genuine mode prefixes keep their existing exemption.
+        assert _should_collapse_chat_paste("/" + "x" * 900) is False
 
     def test_should_collapse_short_text(self) -> None:
         """Short single-line text should not be collapsed."""

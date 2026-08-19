@@ -2747,8 +2747,13 @@ class ChatInput(Vertical):
         """Switch input mode for a mode trigger typed at the start of the input.
 
         Handles the switch before `TextArea` inserts the character so the
-        trigger (`!`, `!!`, `/`, `$`) never flashes on screen for a frame before the
-        change handler would strip it.
+        trigger (`!`, `!!`, `/`, `$`) never flashes on screen for a frame
+        before the change handler would strip it.
+
+        This is also the only entry point for triggers in
+        `KEYSTROKE_ONLY_MODES` (`$`): a deliberate key press at the start of
+        the input is unambiguous, whereas the text-change path also sees
+        pastes and history recall, where a leading `$` is ordinary text.
 
         Returns:
             True if the keystroke was consumed as a mode selector without
@@ -2762,7 +2767,7 @@ class ChatInput(Vertical):
             self.suppress_next_prefix_detection()
             return False
 
-        detected_prefix = detect_mode_prefix(char)
+        detected_prefix = detect_mode_prefix(char, allow_keystroke_only=True)
         if detected_prefix is None:
             return False
         prefix, raw_detected = detected_prefix

@@ -4488,6 +4488,26 @@ class TestUserMessageModeRendering:
         first_span = content._spans[0]
         assert theme.DARK_COLORS.mode_command in str(first_span.style)
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "$5k budget - what's the plan?",
+            "$ npm install",
+            "$HOME/bin is not on PATH, fix it",
+        ],
+    )
+    def test_dollar_leading_message_renders_as_plain_text(self, content: str) -> None:
+        """Regression guard: a `$`-leading message is prose, not a skill call.
+
+        Stored transcripts are rehydrated with mode detection on, so claiming
+        `$` here would eat the first character of every price, shell
+        transcript, and env var in a user's history.
+        """
+        rendered = _render_content(UserMessage(content))
+        assert rendered.plain == f"> {content}"
+        first_span = rendered._spans[0]
+        assert theme.DARK_COLORS.primary in str(first_span.style)
+
     def test_normal_message_renders_angle_bracket(self) -> None:
         """`UserMessage('hello')` should render with `'> '` prefix."""
         content = _render_content(UserMessage("hello"))

@@ -1274,6 +1274,18 @@ if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
     )
     raise ValueError(msg)
 
+KEYSTROKE_ONLY_MODES: frozenset[str] = frozenset({"skill"})
+"""Modes whose trigger is recognised only as a deliberate keystroke.
+
+`detect_mode_prefix` scans whole drafts, pastes, and stored transcript
+content, so a trigger listed here must be common enough in ordinary text that
+matching it anywhere would corrupt real messages. `$` opens a shell prompt, a
+price, or an environment variable far too often to be claimed by a content
+scan: `$5k budget` and a pasted `$ npm install` are user prose, not skill
+invocations. `ChatInput.handle_mode_prefix_keystroke` opts back in via
+`allow_keystroke_only` because a key press at offset 0 is unambiguous.
+"""
+
 _MODE_PREFIXES_BY_LENGTH: tuple[tuple[str, str], ...] = tuple(
     sorted(MODE_PREFIXES.items(), key=lambda item: len(item[1]), reverse=True)
 )
@@ -1284,20 +1296,33 @@ keystroke without re-sorting.
 """
 
 
-def detect_mode_prefix(text: str) -> tuple[str, str] | None:
+def detect_mode_prefix(
+    text: str,
+    *,
+    allow_keystroke_only: bool = False,
+) -> tuple[str, str] | None:
     """Return the longest mode prefix and mode for `text`, if any.
 
     Longer prefixes win so multi-character triggers like `!!` are matched
     before their single-character prefixes (`!`).
 
+    Triggers in `KEYSTROKE_ONLY_MODES` are skipped unless
+    `allow_keystroke_only` is set, so scanning arbitrary content never
+    reinterprets ordinary text as a mode switch.
+
     Args:
         text: Input text that may start with a mode trigger.
+        allow_keystroke_only: Also match triggers reserved for deliberate
+            keystrokes. Pass `True` only when `text` is a single typed
+            character at the start of the input.
 
     Returns:
         Tuple of `(prefix, mode)` for the longest matching trigger, otherwise
         `None`.
     """
     for mode, prefix in _MODE_PREFIXES_BY_LENGTH:
+        if not allow_keystroke_only and mode in KEYSTROKE_ONLY_MODES:
+            continue
         if text.startswith(prefix):
             return prefix, mode
     return None

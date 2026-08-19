@@ -13,6 +13,7 @@ from deepagents_code.configuration.paths import managed_config_path
 from deepagents_code.configuration.providers import TomlFileProvider
 from deepagents_code.configuration.resolver import merge_toml_tables
 from deepagents_code.configuration.service import (
+    ConfigSources,
     ManagedConfigError,
     invalidate_config_sources,
     require_healthy_managed_config,
@@ -875,6 +876,116 @@ def test_union_paths_rebase_onto_an_option_subtree() -> None:
     assert ("disabled_servers",) in union_paths_under(("mcp",))
     assert union_paths_under(()) == UNION_PATHS
     assert union_paths_under(("models",)) == frozenset()
+
+
+def _sources(managed: dict[str, object], user: dict[str, object]) -> ConfigSources:
+    """Build `ConfigSources` from two literal tables, both reported healthy."""
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    def snapshot(name: str, data: dict[str, object]) -> TomlSnapshot:
+        return TomlSnapshot(
+            data,
+            ProviderStatus(name, None, ProviderHealth.OK),
+        )
+
+    return ConfigSources(
+        managed=snapshot("managed config", managed),
+        user=snapshot("config.toml", user),
+    )
+
+
+def test_merged_unions_deny_lists_across_layers() -> None:
+    """Both layers' deny entries survive, and provenance names both sources.
+
+    Regression: nothing drove the merger's union branch, so a change to the
+    `UNION_PATHS` match or the dedupe would have replaced a managed deny list
+    with the user's — a fail-open — while every test stayed green.
+    """
+    sources = _sources(
+        {"mcp": {"disabled_servers": ["managed-denied", "shared"]}},
+        {"mcp": {"disabled_servers": ["user-denied", "shared"]}},
+    )
+    data, provenance = sources.merged()
+    assert sorted(data["mcp"]["disabled_servers"]) == [
+        "managed-denied",
+        "shared",
+        "user-denied",
+    ]
+    assert provenance["mcp.disabled_servers"] == "managed config + config.toml"
+
+
+def test_merged_keeps_a_managed_deny_list_when_the_user_has_none() -> None:
+    """A user layer with no deny list cannot dilute the managed one."""
+    sources = _sources({"mcp": {"disabled_servers": ["denied"]}}, {"mcp": {}})
+    data, provenance = sources.merged()
+    assert data["mcp"]["disabled_servers"] == ["denied"]
+    assert provenance["mcp.disabled_servers"] == "managed config"
+
+
+def test_merged_purges_provenance_for_leaves_the_merge_removed() -> None:
+    """A replaced user table leaves no provenance behind.
+
+    Regression: the nested merge kept the parent-scope entry, so
+    `dcode config --json --verbose` reported `threads.relative_time.x` as
+    user-controlled after a managed scalar had removed that path.
+    """
+    sources = _sources(
+        {"threads": {"relative_time": False}},
+        {"threads": {"relative_time": {"x": 1}}},
+    )
+    data, provenance = sources.merged()
+    assert data["threads"]["relative_time"] is False
+    assert provenance == {"threads.relative_time": "managed config"}
+
+
+def test_writer_reports_a_mis_encoded_config_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    """A config that is not UTF-8 is reported, not raised.
+
+    `tomllib` decodes the bytes itself, so the failure is a
+    `UnicodeDecodeError`, which the read guard did not catch. It escaped past
+    every caller's error handling and lost the real reason.
+    """
+    from deepagents_code.configuration.writer import update_user_config
+
+    target = tmp_path / "config.toml"
+    target.write_bytes('[ui]\ntheme = "dark"\n'.encode("utf-16"))
+    result = update_user_config(
+        lambda data: bool(data.setdefault("ui", {})), config_path=target
+    )
+    assert result.ok is False
+    assert result.error is not None
+    assert str(target) in result.error
+
+
+def test_write_result_rejects_a_failure_with_no_detail() -> None:
+    """Callers branch on `ok` alone, so a failure must carry something to act on."""
+    from deepagents_code.configuration.writer import WriteResult
+
+    with pytest.raises(ValueError, match="error detail"):
+        WriteResult(False, False, None)
+
+
+def test_write_result_rejects_a_change_on_a_failed_write() -> None:
+    """A failed write cannot report that it changed the file."""
+    from deepagents_code.configuration.writer import WriteResult
+
+    with pytest.raises(ValueError, match="cannot have changed"):
+        WriteResult(False, True, "boom")
+
+
+def test_write_result_accepts_the_three_real_outcomes() -> None:
+    """The guard must not reject an outcome the writer actually returns."""
+    from deepagents_code.configuration.writer import WriteResult
+
+    assert WriteResult(True, True).changed is True
+    assert WriteResult(True, False).changed is False
+    assert WriteResult(False, False, "boom").ok is False
 
 
 def test_writer_reports_caller_bugs_separately_from_disk_errors(

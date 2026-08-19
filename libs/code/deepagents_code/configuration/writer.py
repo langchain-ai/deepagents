@@ -25,6 +25,24 @@ class WriteResult:
     changed: bool
     error: str | None = None
 
+    def __post_init__(self) -> None:
+        """Reject outcomes that cannot describe a real transaction.
+
+        Callers branch on `ok` alone, so a failure with no detail would surface
+        as a bare "could not be saved" with nothing to act on, and a change
+        recorded against a failed write would report an edit that never
+        reached the file.
+
+        Raises:
+            ValueError: If the three fields do not describe one outcome.
+        """
+        if not self.ok and self.error is None:
+            msg = "a failed write must carry an error detail"
+            raise ValueError(msg)
+        if self.changed and not self.ok:
+            msg = "a failed write cannot have changed the file"
+            raise ValueError(msg)
+
 
 def update_user_config(
     mutate: Callable[[dict[str, Any]], bool],
@@ -49,21 +67,16 @@ def update_user_config(
         config_path = DEFAULT_CONFIG_PATH
     with USER_CONFIG_WRITE_LOCK:
         try:
-            if (
-                config_path.parent.exists()
-                and config_path.parent.stat().st_mode & 0o222 == 0
-            ):
-                return WriteResult(
-                    False,
-                    False,
-                    f"could not update {config_path}: parent directory is not writable",
-                )
             if config_path.exists():
                 with config_path.open("rb") as handle:
                     data = tomllib.load(handle)
             else:
                 data = {}
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            # `tomllib` decodes the bytes itself, so a file that is not UTF-8
+            # raises `UnicodeDecodeError` rather than `TOMLDecodeError`.
+            # Letting it escape turns a mis-encoded config into a traceback the
+            # caller reports as a generic failure, with the real reason lost.
             return WriteResult(False, False, f"could not update {config_path}: {exc}")
         # Outside the exception handling on purpose: a `TypeError` or
         # `ValueError` raised inside a caller's closure is a bug in that
@@ -89,6 +102,15 @@ def update_user_config(
                 with contextlib.suppress(OSError):
                     temporary_path.unlink()
                 raise
-        except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError) as exc:
+        except (
+            OSError,
+            ImportError,
+            tomllib.TOMLDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            # `ImportError` covers the `tomli_w` import inside this block: an
+            # install without the writer dependency must report "could not
+            # update <path>" like any other write failure.
             return WriteResult(False, False, f"could not update {config_path}: {exc}")
     return WriteResult(True, True)

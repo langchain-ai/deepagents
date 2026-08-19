@@ -98,6 +98,14 @@ def merge_toml_tables(
                 _path=path,
             )
             merged[key] = nested
+            # Drop this subtree's old leaves first. A nested merge can delete a
+            # leaf (a higher scalar replacing a lower table), and keeping the
+            # parent-scope entry would report a path that no longer exists as
+            # user-controlled — in the output an administrator reads to audit
+            # what policy enforces.
+            for leaf in tuple(provenance):
+                if leaf == dotted or leaf.startswith(f"{dotted}."):
+                    provenance.pop(leaf)
             provenance.update(nested_provenance)
             continue
         if (

@@ -1736,6 +1736,78 @@ def test_doctor_reports_managed_parse_health(
         service.invalidate_config_sources()
 
 
+def test_a_failed_ui_write_reports_its_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write failure must tell the user why, not just that it failed.
+
+    Regression: the toast dropped `WriteResult.error` and sent the detail to a
+    logger that has no handler in the TUI outside debug mode, so a read-only home
+    directory and a full disk produced the same message.
+    """
+    from deepagents_code import app, model_config
+    from deepagents_code.configuration import service, writer
+
+    target = tmp_path / "config.toml"
+    target.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", target)
+    monkeypatch.setattr(writer, "DEFAULT_CONFIG_PATH", target, raising=False)
+
+    def fail(*_args: object, **_kwargs: object) -> writer.WriteResult:
+        return writer.WriteResult(
+            False, False, f"could not update {target}: [Errno 13] Permission denied"
+        )
+
+    monkeypatch.setattr(app, "update_user_config", fail, raising=False)
+    monkeypatch.setattr(writer, "update_user_config", fail)
+    service.invalidate_config_sources()
+    try:
+        result = app._save_ui_bool_result(
+            toml_key="show_message_timestamps",
+            option_key="display.show_message_timestamps",
+            value=True,
+            failure_message="Timestamps toggled for this session.",
+        )
+    finally:
+        service.invalidate_config_sources()
+
+    assert result.ok is False
+    assert result.message is not None
+    assert "Permission denied" in result.message
+
+
+def test_a_failed_mcp_toggle_reports_its_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`set_server_disabled` must surface the writer's reason.
+
+    Regression: `_save_disabled_entry` returned a bare `bool`, so the caller
+    reported "could not write <path>" and dropped "Permission denied", "No space
+    left on device", and the missing-`tomli_w` case the writer catches.
+    """
+    from deepagents_code import mcp_disabled
+    from deepagents_code.configuration import writer
+
+    target = tmp_path / "config.toml"
+    target.write_text("", encoding="utf-8")
+
+    def fail(*_args: object, **_kwargs: object) -> writer.WriteResult:
+        return writer.WriteResult(
+            False, False, f"could not update {target}: [Errno 28] No space left"
+        )
+
+    monkeypatch.setattr(writer, "update_user_config", fail)
+    ok, detail = mcp_disabled.set_server_disabled(
+        "srv", disabled=True, config_path=target
+    )
+
+    assert ok is False
+    assert detail is not None
+    assert "No space left" in detail
+
+
 def test_both_layer_read_errors_are_reported(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

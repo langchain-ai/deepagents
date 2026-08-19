@@ -1496,6 +1496,23 @@ def _replace_malformed_ui(
     )
 
 
+def _with_write_error(message: str, error: str | None) -> str:
+    """Append a failed write's cause to a user-facing message.
+
+    `WriteResult.error` already carries the path and the reason ("could not
+    update <path>: [Errno 13] Permission denied"). The toast used to drop it and
+    the detail went only to a logger that has no handler in the TUI outside
+    debug mode, so the user could not tell a read-only home directory from a
+    full disk.
+
+    Returns:
+        The message, with the cause appended when there is one.
+    """
+    if not error:
+        return message
+    return f"{message} ({error})"
+
+
 def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
     """Persist theme preference and return TUI-facing status details.
 
@@ -1522,7 +1539,10 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
         logger.error("Could not save theme preference: %s", result.error)
         return _ConfigWriteResult(
             False,
-            "Theme applied for this session but could not be saved.",
+            _with_write_error(
+                "Theme applied for this session but could not be saved.",
+                result.error,
+            ),
             "error",
         )
 
@@ -1666,7 +1686,7 @@ def _save_terminal_theme_mapping_result(
         logger.error("Could not save terminal theme mapping: %s", result.error)
         return _ConfigWriteResult(
             False,
-            "Could not save terminal mapping.",
+            _with_write_error("Could not save terminal mapping.", result.error),
             "error",
         )
 
@@ -1737,7 +1757,15 @@ def _save_ui_bool_result(
     result = update_user_config(mutate)
     if not result.ok:
         logger.error("Could not save %s: %s", option_key, result.error)
-        return _ConfigWriteResult(False, failure_message, "error")
+        # Carry the cause into the toast. `WriteResult.error` is already
+        # path-plus-errno ("could not update <path>: [Errno 13] Permission
+        # denied"), and in the TUI this logger has no handler unless debug mode
+        # is on, so dropping it left the user with no way to learn why.
+        return _ConfigWriteResult(
+            False,
+            _with_write_error(failure_message, result.error),
+            "error",
+        )
 
     from deepagents_code.config_manifest import (
         get_option,

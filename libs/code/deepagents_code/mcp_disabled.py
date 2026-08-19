@@ -78,7 +78,9 @@ def _load_config(config_path: Path) -> dict[str, Any]:
         raise _ConfigLoadError(msg) from exc
 
 
-def _save_disabled_entry(server_name: str, disabled: bool, config_path: Path) -> bool:
+def _save_disabled_entry(
+    server_name: str, disabled: bool, config_path: Path
+) -> str | None:
     """Add or remove one server name through the shared writer.
 
     The entry set is recomputed from the parse the writer performs inside its
@@ -87,7 +89,11 @@ def _save_disabled_entry(server_name: str, disabled: bool, config_path: Path) ->
     editing in place keeps a concurrent `[ui]` or `[models]` write intact.
 
     Returns:
-        Whether the transaction succeeded.
+        `None` on success, or the writer's reason for the failure. The reason is
+            returned rather than a bare `False` so the caller can show why the
+            write failed: `WriteResult.error` carries the path and the errno,
+            and "could not write <path>" alone dropped "Permission denied", "No
+            space left on device", and the missing-`tomli_w` case.
     """
     from deepagents_code.configuration.writer import update_user_config
 
@@ -109,7 +115,8 @@ def _save_disabled_entry(server_name: str, disabled: bool, config_path: Path) ->
     result = update_user_config(apply, config_path=config_path)
     if not result.ok:
         logger.error("Failed to save config to %s: %s", config_path, result.error)
-    return result.ok
+        return result.error or f"could not write {config_path}"
+    return None
 
 
 def _coerce_entries(entries: object) -> set[str] | None:
@@ -368,6 +375,7 @@ def set_server_disabled(
     )
     # The writer recomputes the set under the lock and reports "no change"
     # itself, so there is no pre-lock equality check to make here.
-    if _save_disabled_entry(server_name, disabled, config_path):
+    write_error = _save_disabled_entry(server_name, disabled, config_path)
+    if write_error is None:
         return True, shadowed_detail
-    return False, f"could not write {config_path}"
+    return False, write_error

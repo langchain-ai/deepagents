@@ -16931,9 +16931,11 @@ class DeepAgentsApp(App):
 
         # Remote dev servers separate checkpoint persistence from HTTP thread
         # registration; register before mutating state so the write lands.
-        # `_handle_offload` only routes local `Pregel` agents here, so this is
-        # inert on that path; it is kept for direct and test callers, which do
-        # drive this method against a remote agent.
+        # Reached with a live remote agent whenever the server lacks the
+        # built-in offload route -- a custom `graph_ref`, an older server, a
+        # protocol-version skew, or a failed capability probe -- so this call is
+        # load-bearing on a production path. `None` only for local in-process
+        # `Pregel` agents.
         if remote := self._remote_agent():
             await remote.aensure_thread(
                 {"configurable": {"thread_id": self._lc_thread_id}}

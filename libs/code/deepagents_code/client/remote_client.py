@@ -301,12 +301,23 @@ class RemoteAgent:
             TypeError: If the server response is not a JSON object.
             RuntimeError: If the server returns an invalid protocol response or
                 exceeds the hook round limit.
-        """
+            APIStatusError: From the server operation. A 409 (conflict) or 422
+                (malformed request) means no state was committed; a 500 raised
+                as indeterminate means a commit may have landed and carries
+                user-actionable text the caller must surface rather than
+                swallow.
+        """  # noqa: DOC502 -- APIStatusError is raised by the SDK transport
         from uuid import uuid4
 
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
         thread_id = _require_thread_id(config)
+        # The operation reads and writes thread state over HTTP, so the thread's
+        # live row must exist first. Checkpoint persistence and registration are
+        # separate on the dev server (see `aensure_thread`), so a resumed thread
+        # -- or one whose server restarted mid-session -- has state on disk and
+        # no row, and every request below would 404.
+        await self.aensure_thread({"configurable": {"thread_id": thread_id}})
         operation_id = str(uuid4())
         hook_responses: dict[str, object] = {}
         graph = self._get_graph()

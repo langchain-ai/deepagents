@@ -229,9 +229,24 @@ async def _require_idle_thread(client: Any, thread_id: str) -> None:  # noqa: AN
         thread_id: Thread being compacted.
 
     Raises:
-        _OffloadConflictError: If the thread is not idle.
+        _OffloadConflictError: If the thread is not idle, or is not registered
+            on the server at all.
     """
-    thread = await client.threads.get(thread_id)
+    from langgraph_sdk.errors import NotFoundError
+
+    try:
+        thread = await client.threads.get(thread_id)
+    except NotFoundError as exc:
+        # Checkpoint persistence and HTTP thread registration are separate on
+        # the dev server, so a thread can hold on-disk state while its live row
+        # is absent (see `RemoteAgent.aensure_thread`). The client registers
+        # before requesting the operation; reaching here means it could not, so
+        # name the condition instead of letting a 404 become an opaque 500.
+        msg = (
+            "This thread is not registered on the server; send a message "
+            "before offloading."
+        )
+        raise _OffloadConflictError(msg) from exc
     if thread.get("status") != "idle":
         msg = "Cannot offload while the thread has an active or interrupted run."
         raise _OffloadConflictError(msg)

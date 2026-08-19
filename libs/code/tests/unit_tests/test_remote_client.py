@@ -1110,7 +1110,7 @@ class TestSupportsOffload:
         http = SimpleNamespace(
             get=AsyncMock(return_value={"offload": True, "version": 1})
         )
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
 
         with patch.object(agent, "_get_graph", return_value=graph):
             assert await agent.asupports_offload() is True
@@ -1131,7 +1131,7 @@ class TestSupportsOffload:
                 side_effect=NotFoundError("missing", response=response, body=None)
             )
         )
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
 
         with patch.object(agent, "_get_graph", return_value=graph):
             assert await agent.asupports_offload() is False
@@ -1149,7 +1149,7 @@ class TestSupportsOffload:
                 side_effect=InternalServerError("boom", response=response, body=None)
             )
         )
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
 
         with (
             patch.object(agent, "_get_graph", return_value=graph),
@@ -1180,7 +1180,7 @@ class TestSupportsOffload:
         """Every negative outcome degrades to the fallback *and* leaves a log."""
         agent = RemoteAgent("http://localhost:1234", graph_name="agent")
         http = SimpleNamespace(get=AsyncMock(return_value=body))
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
 
         with (
             patch.object(agent, "_get_graph", return_value=graph),
@@ -1191,8 +1191,62 @@ class TestSupportsOffload:
         assert "fallback" in caplog.text
 
 
+def _offload_graph(http: SimpleNamespace) -> SimpleNamespace:
+    """Build a graph stub that also satisfies `aensure_thread`.
+
+    `aoffload` registers the thread before its first POST, so a stub that only
+    carries `client.http` no longer suffices. `threads.create` is recorded so
+    tests can assert the registration happened, and happened first.
+    """
+    threads = SimpleNamespace(create=AsyncMock(return_value=None))
+    client = SimpleNamespace(http=http, threads=threads)
+    return SimpleNamespace(
+        client=client,
+        _validate_client=lambda: client,
+    )
+
+
 class TestServerOffload:
     """The remote client transports operation data without graph state."""
+
+    async def test_registers_the_thread_before_the_first_request(self) -> None:
+        """The operation must not be requested against an unregistered thread.
+
+        Checkpoint persistence and HTTP thread registration are separate on the
+        dev server, so a resumed thread has state on disk and no live row, and
+        every request below would 404. Ordering is the whole point -- registering
+        after the POST would not help -- so assert the call sequence rather than
+        just that both calls happened.
+        """
+        calls: list[str] = []
+
+        async def record_post(  # noqa: RUF029 -- must satisfy the async post signature
+            *_args: object, **_kwargs: object
+        ) -> dict[str, object]:
+            calls.append("post")
+            return {"status": "complete", "result": dict(_COMPACTED_RESULT)}
+
+        async def record_create(  # noqa: RUF029 -- must satisfy the async create signature
+            *_args: object, **_kwargs: object
+        ) -> None:
+            calls.append("create")
+
+        http = SimpleNamespace(post=AsyncMock(side_effect=record_post))
+        graph = _offload_graph(http)
+        graph.client.threads.create.side_effect = record_create
+
+        agent = RemoteAgent("http://localhost:1234")
+        with patch.object(agent, "_get_graph", return_value=graph):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={"model": "test:model"},
+                fulfill_hook=AsyncMock(),
+            )
+
+        assert calls == ["create", "post"]
+        create_kwargs = graph.client.threads.create.await_args.kwargs
+        assert create_kwargs["thread_id"] == "thread"
+        assert create_kwargs["if_exists"] == "do_nothing"
 
     async def test_fulfills_hook_and_returns_typed_result(self) -> None:
         agent = RemoteAgent("http://localhost:1234")
@@ -1220,7 +1274,7 @@ class TestServerOffload:
                 ]
             )
         )
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
         fulfill = AsyncMock(return_value={"decision": "allow"})
 
         with patch.object(agent, "_get_graph", return_value=graph):
@@ -1299,7 +1353,7 @@ class TestServerOffload:
                 ]
             )
         )
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
         fulfill = AsyncMock(return_value={"decision": "allow"})
 
         with patch.object(agent, "_get_graph", return_value=graph):
@@ -1338,7 +1392,7 @@ class TestServerOffload:
         http = SimpleNamespace(
             post=AsyncMock(return_value={"status": "complete", "result": result})
         )
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
 
         with (
             patch.object(agent, "_get_graph", return_value=graph),
@@ -1357,7 +1411,7 @@ class TestServerOffload:
         http = SimpleNamespace(
             post=AsyncMock(return_value={"status": "complete", "result": result})
         )
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
 
         with patch.object(agent, "_get_graph", return_value=graph):
             actual = await agent.aoffload(
@@ -1389,7 +1443,7 @@ class TestServerOffload:
             }
 
         http = SimpleNamespace(post=_always_interrupt)
-        graph = SimpleNamespace(client=SimpleNamespace(http=http))
+        graph = _offload_graph(http)
 
         with (
             patch.object(agent, "_get_graph", return_value=graph),

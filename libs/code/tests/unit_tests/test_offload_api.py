@@ -527,6 +527,54 @@ class TestExecuteOffload:
 
         runtime.assert_not_awaited()
 
+    async def test_unregistered_thread_is_rejected_with_an_actionable_conflict(
+        self,
+    ) -> None:
+        """A 404 from the live thread store must not become an opaque 500.
+
+        The dev server keeps checkpoint persistence and thread registration
+        separate, so a resumed thread can 404 here while holding state on disk.
+        `NotFoundError` is an ordinary `Exception`, so without this mapping it
+        reaches the route's generic handler and the user is told to read the
+        server log.
+        """
+        import httpx
+        from langgraph_sdk.errors import NotFoundError
+
+        from deepagents_code import offload_api
+
+        request = httpx.Request("GET", "http://localhost/threads/thread-1")
+        not_found = NotFoundError(
+            "missing", response=httpx.Response(404, request=request), body=None
+        )
+        threads = SimpleNamespace(
+            get=AsyncMock(side_effect=not_found),
+            get_state=AsyncMock(),
+            update_state=AsyncMock(),
+        )
+        runtime = AsyncMock()
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(offload_api, "get_server_runtime", new=runtime),
+            pytest.raises(
+                offload_api._OffloadConflictError, match="not registered on the server"
+            ),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        threads.get_state.assert_not_awaited()
+        threads.update_state.assert_not_awaited()
+        runtime.assert_not_awaited()
+
     async def test_missing_checkpoint_is_rejected(self) -> None:
         from deepagents_code import offload_api
 

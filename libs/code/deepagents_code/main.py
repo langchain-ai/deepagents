@@ -4300,12 +4300,16 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         sys.stderr.flush()
         sys.exit(78)
 
-    # `models.auto_classifier` is deliberately absent: `build_server_config`
-    # falls through to `resolve_auto_classifier_model_with_source` when the flag
-    # is unset, and that already gives managed policy top precedence. Assigning
-    # the flag broke every ACP launch, because `--auto-classifier-model` without
-    # `--auto-approve` exits 2 in ACP mode — naming a flag the user never
-    # passed, the same failure the `startup.mode` block below avoids.
+    # `models.auto_classifier` is cleared rather than assigned: with the flag
+    # unset, `build_server_config` falls through to
+    # `resolve_auto_classifier_model_with_problem`, which resolves the managed
+    # tier first. Assigning the managed spec onto the flag made the server name
+    # a flag the user never passed, and `--auto-classifier-model` without
+    # `--auto-approve` exits 2 in ACP mode — the same failure the
+    # `startup.mode` block below avoids.
+    if declared("models.auto_classifier") and hasattr(args, "auto_classifier_model"):
+        args.auto_classifier_model = None
+
     for key, destination in {
         "models.default": "model",
         "interpreter.enable_interpreter": "interpreter",

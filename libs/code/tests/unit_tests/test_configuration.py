@@ -2548,6 +2548,51 @@ def test_managed_startup_mode_revokes_a_user_yolo_flag(
     assert args.auto_approve is False
 
 
+def test_managed_auto_classifier_clears_the_cli_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed classifier model outranks `--auto-classifier-model`.
+
+    Regression: the hook left the flag in place, so `build_server_config` took
+    it as an explicit user override and never reached the managed tier — the
+    user-selected (weaker) classifier graded gated actions even though the key
+    is listed as enforced. Clearing to `None` (not assigning the managed value)
+    keeps ACP from synthesizing a `--auto-classifier-model` flag that exits 2
+    without `--auto-approve`, and the fall-through resolver applies the managed
+    value instead.
+    """
+    from deepagents_code import config as config_module, main, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nauto_classifier = "anthropic:claude-opus-4-7"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL", raising=False)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    args.auto_classifier_model = "openai:user-weaker-model"
+    try:
+        main._apply_managed_runtime_policy(args)
+        assert args.auto_classifier_model is None
+        # The managed value still reaches the runtime through the resolver the
+        # flag normally defers to.
+        assert config_module.resolve_auto_classifier_model_with_problem() == (
+            "anthropic:claude-opus-4-7",
+            None,
+        )
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
 def test_managed_shell_allow_list_clears_the_cli_grant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

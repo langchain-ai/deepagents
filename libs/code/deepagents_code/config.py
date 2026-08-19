@@ -3630,9 +3630,9 @@ def is_openai_prompt_cache_key_enabled() -> bool:
 def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None]:
     """Resolve the Auto classifier spec and any reason it was ignored.
 
-    Reads the `models.auto_classifier` option from env/`config.toml`. `None`
-    means the classifier inherits the main agent model, which is the historical
-    behavior and the default.
+    Reads the `models.auto_classifier` option from managed policy, then env,
+    then `config.toml`. `None` means the classifier inherits the main agent
+    model, which is the historical behavior and the default.
 
     A configured-but-unusable value (blank, or a non-string such as
     `auto_classifier = 3`, which `resolve_scalar` drops to the default) silently
@@ -3643,9 +3643,10 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     A present-but-blank env var is an explicit "inherit" and outranks
     `config.toml`, so it is detected before resolution rather than being skipped
     as unset the way `resolve_scalar` treats every other option's blank env
-    value. `dcode config` shares that veto via
-    `resolve_auto_classifier_model_with_source`, so the two surfaces cannot
-    disagree about which model grades gated actions.
+    value. A managed value outranks that veto, so it is resolved first; a blank
+    managed value also forces inherit, credited to managed policy. `dcode
+    config` shares this order via `resolve_auto_classifier_model_with_source`,
+    so the two surfaces cannot disagree about which model grades gated actions.
 
     Returns:
         `(spec, problem)`. `spec` is a `provider:model` spec, or `None` when the
@@ -3663,11 +3664,26 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     if option is None:
         return None, None
     toml_data = load_config_toml()
+    managed_value, managed_source = resolve_scalar(option, toml_data=toml_data)
+    if managed_source == "managed config":
+        if isinstance(managed_value, str) and managed_value.strip():
+            return managed_value.strip(), None
+        # A blank managed entry is an explicit inherit; anything else blank or
+        # malformed reverts to the main agent model, credited to the file that
+        # declared it.
+        problem = (
+            f"Ignoring blank {managed_source} auto_classifier model; the Auto "
+            "approval classifier will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
     blank_env = blank_auto_classifier_env_name()
     if blank_env is not None:
         # Name the config.toml value being overridden: without it the warning
         # sends the user to a config file that still shows their setting.
-        shadowed, shadowed_source = resolve_scalar(option, toml_data=toml_data)
+        shadowed, shadowed_source = resolve_scalar(
+            option, toml_data=toml_data, managed_toml_data={}
+        )
         overridden = (
             f" (overriding {shadowed_source} {shadowed!r})"
             if isinstance(shadowed, str) and shadowed.strip()
@@ -3679,7 +3695,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
         )
         logger.warning("%s", problem)
         return None, problem
-    value, source = resolve_scalar(option, toml_data=toml_data)
+    value, source = resolve_scalar(option, toml_data=toml_data, managed_toml_data={})
     if isinstance(value, str) and value.strip():
         return value.strip(), None
     if isinstance(value, str) and source != "default":

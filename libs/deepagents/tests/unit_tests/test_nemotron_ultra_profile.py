@@ -67,7 +67,7 @@ def _request(name: str, args: dict[str, object]) -> ToolCallRequest:
 
 
 def _numbered_lines(count: int) -> str:
-    return "\n".join(f"{index}\tline {index}" for index in range(count))
+    return "\n".join(f"{index}|line {index}" for index in range(count))
 
 
 def test_tool_call_shim_repairs_file_path_args_and_empty_results() -> None:
@@ -124,7 +124,7 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     middleware = ReadFileContinuationNoticeMiddleware()
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
-        return ToolMessage(content="1  alpha\n2  beta\n3  gamma", tool_call_id="call_1")
+        return ToolMessage(content="1|alpha\n2|beta\n3|gamma", tool_call_id="call_1")
 
     result = middleware.wrap_tool_call(
         _request("read_file", {"file_path": "/x.txt", "limit": 3, "offset": 9}),
@@ -139,7 +139,7 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
 def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
     """Wrapped chunks should not count toward the source-line limit."""
     middleware = ReadFileContinuationNoticeMiddleware()
-    content = "  1  first chunk\n1.1  second chunk\n1.2  third chunk"
+    content = "1|first chunk\n1.1|second chunk\n1.2|third chunk"
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
         return ToolMessage(content=content, tool_call_id="call_1")
@@ -156,14 +156,14 @@ def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
 def test_is_numbered_read_file_row_contract() -> None:
     """Pin which rows count as source lines for the continuation heuristic.
 
-    Primary markers with the current two-space separator or the legacy `cat -n`
-    tab count; padded markers count; continuation (`N.M`) rows and plain text do
+    Primary markers with the current pipe separator or a legacy two-space or
+    `cat -n` tab separator count; continuation (`N.M`) rows and plain text do
     not. Kept in sync with `format_content_with_line_numbers`' separator.
     """
     is_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
 
-    # Source rows: current two-space, right-justify padding, and legacy tab.
-    assert is_row("1  source")
+    # Source rows: current pipe, legacy two-space, and legacy tab.
+    assert is_row("1|source")
     assert is_row(" 10  source")
     assert is_row("1\tsource")
     # A single space is not the separator: guards against the regex loosening

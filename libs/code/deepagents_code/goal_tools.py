@@ -43,6 +43,7 @@ from deepagents_code.goal_state_notice import (
     latest_human_is_unsaved_goal_continuation,
     notice_text_sections,
     project_goal_state,
+    superseded_goal_state_placeholder,
     validated_summarization_cutoff,
 )
 
@@ -463,16 +464,16 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     def _request_with_goal_notice(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Expose only the current goal-state notice in a model request.
+        """Ensure a current goal-state notice is visible in a model request.
 
         When checkpointed history no longer surfaces a current notice, a
         transient goal-state notice is appended to the request messages only
-        (not persisted; `before_model` owns the durable write). Superseded notices
-        at or above the summarization cutoff are removed from the transient window
-        so a legacy oversized value cannot remain model-visible beside its bounded
-        replacement; ones below the cutoff are left in place because removing them
-        would shift the absolute indices the inner summarizer slices by. The system
-        prompt is left unchanged.
+        (not persisted; `before_model` owns the durable write). Every superseded
+        notice is replaced in place by a fixed-size stand-in, so a legacy
+        oversized value cannot remain model-visible beside its bounded
+        replacement. Replacement keeps the list length and every index stable,
+        which the inner summarizer's persisted absolute cutoff depends on — see
+        `superseded_goal_state_placeholder`. The system prompt is left unchanged.
 
         This middleware wraps the summarizer, so `request.messages` is the full
         persisted list rather than a trimmed window. The summarization cutoff is
@@ -482,11 +483,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         the only copy the model had.
 
         Returns:
-            The original request when no notice is needed and nothing was
-            filtered. Otherwise a request carrying any of: a current goal-state
-            notice appended to its messages, superseded notices removed from
-            them, and — for a malformed `_summarization_event` — a state
-            override nulling that event.
+            The request unchanged apart from any malformed-event state override,
+            when no notice is needed and no superseded notice was replaced.
+            Otherwise a request carrying any of: a current goal-state notice
+            appended to its messages, superseded notices replaced in place within
+            them, and — for a malformed `_summarization_event` — a state override
+            nulling that event.
         """
         values = cast("dict[str, Any]", request.state)
         event = values.get("_summarization_event")
@@ -514,34 +516,39 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         if notice is not None:
             messages.append(notice)
         latest_index = latest_goal_state_message_index(messages)
-        # Only drop superseded notices the model can still see. The inner
-        # summarizer slices this list by the persisted *absolute* `cutoff_index`,
-        # so removing anything below the cutoff shifts every later index down and
-        # its slice starts that many messages too late — silently dropping live
-        # turns, and orphaning a `ToolMessage` whose `AIMessage` shifted out
-        # (which the provider rejects). Below-cutoff notices are already invisible
-        # to the model, so keeping them costs nothing and preserves alignment.
-        # A malformed event is nulled above, so nothing is sliced and the whole
-        # list is fair game.
+        # Replace superseded notices in place rather than removing them, so a
+        # legacy oversized value stops being model-visible beside its bounded
+        # replacement without moving any index. The inner summarizer picks its
+        # cutoff from this list and persists it as an *absolute* index into
+        # `state["messages"]`, which is never filtered, so a removal would make
+        # the persisted cutoff slice the checkpointed list too early — silently
+        # dropping live turns, and orphaning a `ToolMessage` whose `AIMessage`
+        # was summarized away (which the provider rejects). See
+        # `superseded_goal_state_placeholder`.
+        #
+        # Every superseded notice is replaced, including ones below the cutoff:
+        # the stand-in is the same length-preserving shape either way, so there is
+        # no alignment reason to treat them differently, and doing so keeps the
+        # request free of stale goal text no matter where the cutoff lands.
         #
         # `is_goal_state_message` also matches on the `SYSTEM_MESSAGE_PREFIX`
-        # text, not just the metadata source, so this can in principle drop a
+        # text, not just the metadata source, so this can in principle replace a
         # human turn that opens with that exact sentence. The prefix arm is kept
         # because legacy notices predate the metadata and are the reason the
         # filter exists; the residual risk is a user pasting that sentence
         # verbatim as the start of a message, which only affects the transient
         # request window and never the checkpoint.
-        filter_floor = 0 if malformed_event else (cutoff or 0)
-        filtered = [
-            message
-            for index, message in enumerate(messages)
-            if index < filter_floor
-            or not is_goal_state_message(message)
-            or index == latest_index
-        ]
-        if notice is None and len(filtered) == len(request.messages):
+        replaced = False
+        projected: list[Any] = []
+        for index, message in enumerate(messages):
+            if index != latest_index and is_goal_state_message(message):
+                projected.append(superseded_goal_state_placeholder(message))
+                replaced = True
+            else:
+                projected.append(message)
+        if notice is None and not replaced:
             return request
-        return request.override(messages=filtered)
+        return request.override(messages=projected)
 
     @override
     def wrap_model_call[ResponseT](

@@ -3672,6 +3672,81 @@ class TestLogin:
         assert tokens is not None
         assert tokens.access_token == "new"
 
+    async def test_login_forces_fresh_auth_when_stored_token_is_valid(self) -> None:
+        """Re-auth must re-authorize, not ride the still-valid stored token.
+
+        A healthy server has a valid token on disk. If the provider can see
+        it, the handshake succeeds without ever prompting and the user is
+        told they logged in again when nothing happened.
+        """
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        url = "https://mcp.notion.com/mcp"
+        storage = FileTokenStorage("notion", server_url=url)
+        await storage.set_tokens(OAuthToken(access_token="old", token_type="Bearer"))
+        await storage.set_client_info(_make_client_info())
+
+        seen: dict[str, Any] = {}
+
+        async def _fake_handshake(connections: dict) -> None:
+            server_name, connection = next(iter(connections.items()))
+            provider_storage = connection["auth"].context.storage
+            seen["tokens"] = await provider_storage.get_tokens()
+            seen["expiry"] = await provider_storage.get_tokens_with_expiry()
+            seen["client_info"] = await provider_storage.get_client_info()
+            fresh = FileTokenStorage(server_name, server_url=connection["url"])
+            await fresh.set_tokens(OAuthToken(access_token="new", token_type="Bearer"))
+
+        with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
+            await login(
+                server_name="notion",
+                server_config={"transport": "http", "url": url, "auth": "oauth"},
+                ui=CliOAuthInteraction(),
+            )
+
+        # The provider saw no token, so it had to run the full flow.
+        assert seen["tokens"] is None
+        assert seen["expiry"] == (None, None)
+        # Client registration still resolves, so the handshake reuses it
+        # rather than re-running DCR against a new redirect URI.
+        assert seen["client_info"] is not None
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "new"
+
+    async def test_login_keeps_stored_token_when_handshake_fails(self) -> None:
+        """An aborted re-auth leaves the working credential on disk."""
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        url = "https://mcp.notion.com/mcp"
+        storage = FileTokenStorage("notion", server_url=url)
+        await storage.set_tokens(OAuthToken(access_token="old", token_type="Bearer"))
+        await storage.set_client_info(_make_client_info())
+
+        async def _failing_handshake(connections: dict) -> None:
+            msg = "user aborted"
+            raise RuntimeError(msg)
+
+        with (
+            patch("deepagents_code.mcp_auth._drive_handshake", _failing_handshake),
+            pytest.raises(RuntimeError, match="user aborted"),
+        ):
+            await login(
+                server_name="notion",
+                server_config={"transport": "http", "url": url, "auth": "oauth"},
+                ui=CliOAuthInteraction(),
+            )
+
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "old"
+
     async def test_login_allows_http_server_without_explicit_oauth(self) -> None:
         """Auto-detected servers (no `auth: oauth`) can still run OAuth login."""
         from deepagents_code.mcp_auth import login

@@ -331,14 +331,19 @@ class Dcode(BaseAgent):
         return deps
 
     def _local_dep_rel_dirs(self) -> list[PurePosixPath]:
-        """Return the project-relative source dirs of the local ``.local_deps``."""
-        config_path = self.project_path / self.config
-        config = json.loads(config_path.read_text())
-        deps = config.get("dependencies", [])
+        """Return the project-relative source dirs of all staged local deps.
+
+        Enumerates every package under ``.local_deps/`` (including nested
+        ``partners/`` dirs), not just ``langgraph.json``'s direct deps —
+        ``deepagents-code`` depends on ``deepagents-acp``/``langchain-quickjs``
+        by name, so those must be built into the wheelhouse too.
+        """
+        local_deps_root = self.project_path / ".local_deps"
+        if not local_deps_root.is_dir():
+            return []
         return [
-            PurePosixPath(dep)
-            for dep in deps
-            if isinstance(dep, str) and dep.startswith(".")
+            PurePosixPath(pyproject.parent.relative_to(self.project_path).as_posix())
+            for pyproject in sorted(local_deps_root.rglob("pyproject.toml"))
         ]
 
     def _local_dep_dirs(self) -> list[str]:
@@ -349,16 +354,10 @@ class Dcode(BaseAgent):
         ]
 
     def _local_dep_names(self) -> list[str]:
-        """Return the distribution names of all staged local ``.local_deps``.
-
-        Covers every package staged under ``.local_deps/`` (including nested
-        ``partners/`` dirs), not just the ones listed directly in
-        ``langgraph.json`` — ``deepagents-code`` depends on ``deepagents-acp``
-        and ``langchain-quickjs`` by name, and those are local sources too.
-        """
-        local_deps_root = self.project_path / ".local_deps"
+        """Return the distribution names of all staged local ``.local_deps``."""
         names = []
-        for pyproject in sorted(local_deps_root.rglob("pyproject.toml")):
+        for rel in self._local_dep_rel_dirs():
+            pyproject = self.project_path / rel / "pyproject.toml"
             try:
                 data = tomllib.loads(pyproject.read_text())
                 name = data["project"]["name"]

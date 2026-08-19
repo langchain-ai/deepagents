@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
@@ -31,7 +31,7 @@ class HookInvocationInterrupt(BaseModel):
 
 HOOK_INVOCATION_INTERRUPT_ADAPTER = TypeAdapter(HookInvocationInterrupt)
 
-HookResumeValue: TypeAlias = dict[str, Any]
+type HookResumeValue = dict[str, Any]
 
 
 def build_hook_interrupt_payload(request: HookInvocationRequest) -> dict[str, Any]:

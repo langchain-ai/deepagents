@@ -8,7 +8,9 @@ version = "0.1.57"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11,<4.0"
+authors = [{ name = "LangChain" }]
+maintainers = [{ name = "LangChain" }]
+requires-python = ">=3.12,<4.0"
 keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -16,7 +18,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -152,8 +153,8 @@ deepagents-code = "deepagents_code:cli_main"
 dcode = "deepagents_code:cli_main"
 
 [project.urls]
-Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
-Documentation = "https://reference.langchain.com/python/deepagents/"
+Homepage = "https://www.langchain.com/dcode"
+Documentation = "https://docs.langchain.com/oss/deepagents/code/overview"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md"
@@ -216,7 +217,7 @@ langchain-runloop = { path = "../partners/runloop", editable = true }
 langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
-python-version = "3.11"
+python-version = "3.12"
 extra-paths = [
     "../deepagents",
     "../partners/daytona",

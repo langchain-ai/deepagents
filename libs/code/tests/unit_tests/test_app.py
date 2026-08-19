@@ -135,6 +135,7 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
+from deepagents_code.tui.widgets.status import _PICKER_ACTIONS
 
 
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
@@ -2538,6 +2539,63 @@ class TestStartupSequence:
             "later with /model. Sandboxes and other integrations install "
             "anytime with /install."
         )
+
+
+class TestStatusBarPickerActions:
+    """Tests for status-bar actions that open existing picker flows."""
+
+    @pytest.mark.parametrize("action", sorted(_PICKER_ACTIONS.values()))
+    def test_action_names_resolve_on_the_app(self, action: str) -> None:
+        """Every status-bar picker action should name a real app method.
+
+        Textual only logs when an action name is missing, so a rename would turn
+        Ctrl+click into a silent no-op without this guard.
+        """
+        assert action.startswith("app.")
+        method = getattr(DeepAgentsApp, f"action_{action.removeprefix('app.')}", None)
+        assert callable(method)
+
+    async def test_model_action_uses_the_guarded_command_flow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The model click action should reuse the `/model` command path.
+
+        Going through `_submit_input` is what applies the exiting and
+        thread-switch guards, so a direct `_show_model_selector` call regresses.
+        """
+        app = DeepAgentsApp()
+        submit_input = AsyncMock()
+        show_selector = AsyncMock()
+        monkeypatch.setattr(app, "_submit_input", submit_input)
+        monkeypatch.setattr(app, "_show_model_selector", show_selector)
+
+        await app.action_open_model_selector()
+
+        submit_input.assert_awaited_once_with("/model", "command")
+        show_selector.assert_not_awaited()
+
+    async def test_effort_action_uses_queued_command_flow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The effort click action should preserve `/effort` queue ordering."""
+        app = DeepAgentsApp()
+        submit_input = AsyncMock()
+        monkeypatch.setattr(app, "_submit_input", submit_input)
+
+        await app.action_open_effort_selector()
+
+        submit_input.assert_awaited_once_with("/effort", "command")
+
+    async def test_picker_commands_keep_their_bypass_tiers(self) -> None:
+        """The two picker commands should keep the tiers their actions rely on.
+
+        `/model` must stay `IMMEDIATE_UI` so a click opens it while the agent is
+        busy; `/effort` must stay `QUEUED` to preserve queue ordering.
+        """
+        from deepagents_code.command_registry import IMMEDIATE_UI, QUEUE_BOUND
+
+        assert "/model" in IMMEDIATE_UI
+        assert "/effort" in QUEUE_BOUND
 
 
 class TestStartupFocus:

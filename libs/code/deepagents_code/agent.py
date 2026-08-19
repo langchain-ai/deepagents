@@ -49,8 +49,9 @@ if TYPE_CHECKING:
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
+    ToolErrorMiddleware,
 )
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain.tools import (
     BaseTool,
     ToolRuntime,  # LangChain inspects this annotation for runtime injection.
@@ -175,6 +176,31 @@ def _get_harness_tool_descriptions(
         profile = _get_harness_profile(model)
         return dict(profile.tool_description_overrides) if profile is not None else {}
     return dict(_harness_profile_for_model(model, None).tool_description_overrides)
+
+
+# Tools that validate model-authored arguments by raising `ValueError`. A
+# `ValueError` from one of these becomes a recoverable error `ToolMessage` via
+# `ToolErrorMiddleware` rather than a fatal run error.
+_TOOL_ARG_VALIDATION_TOOLS: tuple[str, ...] = ("ask_user", "read_file")
+
+
+def _tool_arg_validation_on_error(
+    exc: Exception, request: ToolCallRequest
+) -> str | None:
+    """Convert a tool-argument `ValueError` into a model-correctable message.
+
+    Args:
+        exc: Exception raised during tool execution.
+        request: The tool call request that failed.
+
+    Returns:
+        A message naming the tool and the validation detail for `ValueError`, so
+            the model can fix its input and retry; `None` for any other
+            exception so unexpected errors propagate and halt the run.
+    """
+    if isinstance(exc, ValueError):
+        return f"`{request.tool_call['name']}` failed: {exc}. Fix the input and retry."
+    return None
 
 
 def _inject_fs_tools_into_subagents(
@@ -2613,6 +2639,17 @@ def create_cli_agent(
         ask_user_middleware = AskUserMiddleware()
         agent_middleware.append(ask_user_middleware)
         trusted_ask_user_tool = ask_user_middleware.tools[0]
+
+    # Convert tool-argument validation `ValueError`s into recoverable error
+    # `ToolMessage`s the model can act on, instead of fatal run errors. Scoped to
+    # the tools that validate model-authored args by raising; everything else
+    # propagates and halts the run. `ToolErrorMiddleware` re-raises LangGraph
+    # control-flow signals (interrupts), so `ask_user`'s `interrupt()` still works.
+    agent_middleware.append(
+        ToolErrorMiddleware(
+            _tool_arg_validation_on_error, tools=list(_TOOL_ARG_VALIDATION_TOOLS)
+        )
+    )
 
     # Add memory middleware
     if enable_memory:

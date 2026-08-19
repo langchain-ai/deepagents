@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Interrupt
 from pydantic import TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
@@ -19,6 +23,7 @@ from deepagents_code._ask_user_types import (
     Question,
     _requires_choices,
 )
+from deepagents_code.agent import _tool_arg_validation_on_error
 from deepagents_code.ask_user import (
     AskUserMiddleware,
     _parse_answers,
@@ -720,3 +725,114 @@ class TestWrapModelCall:
         assert system_message.content_blocks[-1]["text"] == "\n\nASK_USER_PROMPT"
         handler.assert_awaited_once_with(overridden_request)
         assert result == "ok"
+
+
+def _make_request(tool_name: str, args: dict[str, Any]) -> ToolCallRequest:
+    """Build a `ToolCallRequest` carrying `tool_name` and `args`."""
+    return ToolCallRequest(
+        tool_call={"name": tool_name, "args": args, "id": f"{tool_name}-1"},
+        tool=None,
+        state={},
+        runtime=cast("Any", None),
+    )
+
+
+class TestToolArgValidationRecovery:
+    """`ToolErrorMiddleware` converts tool-arg `ValueError`s to error messages."""
+
+    def _middleware(self) -> ToolErrorMiddleware:
+        return ToolErrorMiddleware(
+            _tool_arg_validation_on_error,
+            tools=["ask_user", "read_file"],
+        )
+
+    def test_value_error_becomes_error_tool_message(self) -> None:
+        """A model-authored `ValueError` is recoverable, not fatal."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "ask_user-1"
+        assert "`ask_user` failed" in str(result.content)
+        assert "at least one question" in str(result.content)
+
+    def test_blank_choice_value_becomes_error_tool_message(self) -> None:
+        """The LangSmith issue's blank-choice case names the offending field."""
+        middleware = self._middleware()
+        questions = [
+            {
+                "question": "Pick some",
+                "type": "multi_select",
+                "choices": [{"value": "logs"}, {"value": "  "}],
+            }
+        ]
+        request = _make_request("ask_user", {"questions": questions})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions(cast("list[Question]", questions))
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "missing or blank 'value'" in str(result.content)
+
+    def test_read_file_value_error_becomes_error_tool_message(self) -> None:
+        """`read_file` is in scope; its `ValueError` is recoverable too."""
+        middleware = self._middleware()
+        request = _make_request("read_file", {"file_path": "/x", "offset": -1})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "offset must be non-negative, got -1"
+            raise ValueError(msg)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "`read_file` failed" in str(result.content)
+
+    def test_non_value_error_propagates(self) -> None:
+        """Unexpected errors still halt the run rather than reaching the model."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "unexpected internal failure"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match="unexpected internal failure"):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_interrupt_propagates_unchanged(self) -> None:
+        """`ask_user`'s `interrupt()` control-flow signal must not be converted."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            raise GraphInterrupt((Interrupt(value={"kind": "ask_user"}, id="i-1"),))
+
+        with pytest.raises(GraphInterrupt):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_out_of_scope_tool_is_not_converted(self) -> None:
+        """A `ValueError` from a tool outside the scope list still propagates."""
+        middleware = self._middleware()
+        request = _make_request("some_other_tool", {})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "validation detail"
+            raise ValueError(msg)
+
+        with pytest.raises(ValueError, match="validation detail"):
+            middleware.wrap_tool_call(request, handler)

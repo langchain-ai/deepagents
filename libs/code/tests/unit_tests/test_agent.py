@@ -2978,6 +2978,17 @@ class TestEnableAskUser:
         middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
         assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
+    def test_tool_error_middleware_is_wired_and_scoped(self, tmp_path: Path) -> None:
+        """The agent stack converts tool-arg `ValueError`s for the affected tools."""
+        from langchain.agents.middleware import ToolErrorMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        error_middleware = next(
+            (mw for mw in middleware if isinstance(mw, ToolErrorMiddleware)), None
+        )
+        assert error_middleware is not None
+        assert error_middleware._tool_filter == ["ask_user", "read_file"]
+
 
 class TestLoadAsyncSubagents:
     def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:

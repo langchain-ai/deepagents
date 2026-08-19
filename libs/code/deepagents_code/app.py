@@ -16426,17 +16426,80 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            tokens_before = result["tokens_before"]
-            tokens_after = result["tokens_after"]
+            # The server reports `count_tokens_approximately` over the effective
+            # conversation, so these are conversation-scale estimates. Report
+            # them on the same terms as the seeded path: `usage_label` is what
+            # tells the user which metric they are reading, because
+            # "Conversation" excludes the system/tool overhead that "Context"
+            # includes and the two percentages are not comparable across
+            # offloads.
+            conversation_tokens_before = result["tokens_before"]
+            conversation_tokens_after = result["tokens_after"]
+            # A cached count from a real model turn is the provider's own total;
+            # an approximate one is our own estimate, and rescaling an estimate
+            # by an estimate would compound the error. Only the former promotes
+            # the report to context scale, which is the seeded path's
+            # "usable provider total" precondition using data already in hand.
+            reported_tokens_before = (
+                0 if self._tokens_approximate else self._context_tokens
+            )
+            if reported_tokens_before:
+                # Subtract the *delta* from the provider total rather than
+                # rebuilding it as `overhead + conversation_after`; see the
+                # seeded path for why only this form keeps both figures on the
+                # provider's scale. The estimator's error appears with opposite
+                # signs in the two conversation counts and largely cancels in
+                # the difference, so only `after` carries a `~`.
+                tokens_before = reported_tokens_before
+                tokens_after = max(
+                    0,
+                    reported_tokens_before
+                    - (conversation_tokens_before - conversation_tokens_after),
+                )
+                usage_label = "Context"
+                before = format_token_count(tokens_before)
+                after = f"~{format_token_count(tokens_after)}"
+            else:
+                tokens_before = conversation_tokens_before
+                tokens_after = conversation_tokens_after
+                usage_label = "Conversation"
+                before = f"~{format_token_count(tokens_before)}"
+                after = f"~{format_token_count(tokens_after)}"
+            # Floored at zero: a summary can come out larger than the messages
+            # it replaced, and in the reported branch `tokens_after` mixes an
+            # exact provider total with an estimated delta. Neither should ever
+            # render as a negative "decrease".
             pct = (
-                round((tokens_before - tokens_after) / tokens_before * 100)
+                max(0, round((tokens_before - tokens_after) / tokens_before * 100))
                 if tokens_before > 0
                 else 0
             )
-            stats_line = (
-                f"Context: {format_token_count(tokens_before)} → "
-                f"{format_token_count(tokens_after)} tokens ({pct}% decrease), "
-                f"{result['messages_kept']} messages kept."
+            kept_message_label = (
+                "message" if result["messages_kept"] == 1 else "messages"
+            )
+            if tokens_after <= tokens_before:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                    f"{result['messages_kept']} {kept_message_label} kept."
+                )
+            else:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens (increase), "
+                    f"{result['messages_kept']} {kept_message_label} kept."
+                )
+            offloaded_message_label = (
+                "message" if result["messages_offloaded"] == 1 else "messages"
+            )
+            offloaded_counts = (
+                f"{result['messages_offloaded']} older {offloaded_message_label}"
+            )
+            outcome = (
+                f"Offloaded {offloaded_counts}, freeing up context window space."
+                if tokens_after <= tokens_before
+                else (
+                    f"Offloaded {offloaded_counts}, but the summary was larger "
+                    "than the messages it replaced, so context increased."
+                )
             )
             if result.get("archive_path"):
                 caveat = (
@@ -16446,23 +16509,20 @@ class DeepAgentsApp(App):
                     else ""
                 )
                 await self._mount_message(
-                    AppMessage(
-                        f"Offloaded {result['messages_offloaded']} older messages, "
-                        f"freeing up context window space.\n{stats_line}{caveat}"
-                    )
+                    AppMessage(f"{outcome}\n{stats_line}{caveat}")
                 )
             else:
                 await self._mount_message(
                     ErrorMessage(
-                        f"Offloaded {result['messages_offloaded']} older messages "
+                        f"Offloaded {offloaded_counts} "
                         "and freed context, but the conversation history could not "
                         "be saved to storage, so those messages are not recoverable. "
                         f"Check logs for details.\n{stats_line}"
                     )
                 )
-            # `tokens_after` is `count_tokens_approximately` on the server side,
-            # the same estimate the seeded path reports, so it is flagged the
-            # same way rather than presented as an exact provider figure.
+            # Flagged approximate in both branches: the conversation-scale
+            # figure is an estimate outright, and the provider-scale one mixes an
+            # exact total with an estimated delta.
             self._on_tokens_update(tokens_after, approximate=True)
 
             # Fired only after the outcome is on screen. Compaction has already

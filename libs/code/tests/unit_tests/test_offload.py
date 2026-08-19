@@ -431,6 +431,98 @@ class TestOffloadCommand:
             remote.aoffload.assert_not_awaited()
 
 
+class TestServerOffloadReporting:
+    """The server path must describe its estimates on the seeded path's terms."""
+
+    @staticmethod
+    def _result(**overrides: object) -> dict[str, object]:
+        """Build a `compacted` server result."""
+        return {
+            "status": "compacted",
+            "messages_offloaded": 6,
+            "messages_kept": 4,
+            "tokens_before": 1000,
+            "tokens_after": 250,
+            "archive_path": "/conversation_history/test-thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        } | overrides
+
+    async def _render(self, app: DeepAgentsApp, result: dict[str, object]) -> str:
+        """Drive `/offload` against a server result and return the rendered text."""
+        remote = _setup_server_offload_app(app)
+        remote.aoffload = AsyncMock(return_value=result)
+        with (
+            patch.object(app, "_sync_session_cost_from_checkpoint", new=AsyncMock()),
+            patch.object(app, "_run_session_start_hook", new=AsyncMock()),
+        ):
+            await app._handle_offload()
+        return "\n".join(str(w._content) for w in app.query(AppMessage)) + "\n".join(
+            str(w._content) for w in app.query(ErrorMessage)
+        )
+
+    async def test_estimates_are_labelled_conversation_and_marked(self) -> None:
+        """Server figures are conversation-scale estimates, not context totals.
+
+        "Conversation" excludes the system/tool overhead that "Context"
+        includes, so labelling an estimate "Context" invites the user to compare
+        two percentages that are not comparable across offloads.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._context_tokens = 0
+            app._tokens_approximate = True
+            text = await self._render(app, self._result())
+
+        assert "Conversation: ~1.0K → ~250 tokens (75% decrease)" in text
+        assert "Context:" not in text
+
+    async def test_a_larger_summary_never_reports_a_negative_decrease(self) -> None:
+        """A summary can exceed what it replaced; that is an increase, not -14%."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._context_tokens = 0
+            app._tokens_approximate = True
+            text = await self._render(
+                app, self._result(tokens_before=100, tokens_after=114)
+            )
+
+        assert "(increase)" in text
+        assert "-" not in text.split("tokens")[1].split(",")[0]
+        assert "summary was larger than the messages it replaced" in text
+
+    async def test_a_real_provider_total_promotes_the_report_to_context(self) -> None:
+        """A cached count from a real turn is the provider's own total.
+
+        The delta is subtracted from that total rather than rebuilt as
+        `overhead + after`, so both figures stay on the provider's scale.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._context_tokens = 5000
+            app._tokens_approximate = False
+            text = await self._render(app, self._result())
+
+        # 5000 - (1000 - 250) = 4250; `before` is exact, only `after` estimated.
+        assert "Context: 5.0K → ~4.2K tokens (15% decrease)" in text
+
+    async def test_singular_message_labels(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._context_tokens = 0
+            app._tokens_approximate = True
+            text = await self._render(
+                app, self._result(messages_offloaded=1, messages_kept=1)
+            )
+
+        assert "1 older message," in text
+        assert "1 message kept" in text
+
+
 class TestLocalOffloadReporting:
     """Preserve current reporting behavior on the seeded fallback path."""
 

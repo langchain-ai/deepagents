@@ -639,26 +639,39 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
 
 
 def _managed_health_warning() -> str | None:
-    """Return a notice when managed policy exists but could not be parsed.
+    """Return a notice when managed policy exists but cannot be applied.
 
     `load_managed_config_toml` yields an empty mapping for a broken file, so
     every option would otherwise render as `config.toml`/`env`/`default` and
     an administrator debugging "why is my policy not applying" would be shown
     a clean table.
 
+    A file that parses can still be unenforceable, which is the other half of
+    exit 78. Checking only parse health left that case with no warning at all.
+
     Returns:
-        A user-facing notice, or `None` when managed policy is usable.
+        A user-facing notice, or `None` when managed policy is enforceable.
     """
-    from deepagents_code.configuration.service import managed_config_status
+    from deepagents_code.configuration.service import (
+        managed_config_status,
+        managed_policy_violations,
+    )
 
     status = managed_config_status()
-    if status.usable:
-        return None
-    detail = f": {status.detail}" if status.detail else ""
-    return (
-        f"managed config at {status.path} is {status.health.value.lower()}"
-        f"{detail}; the values below do not reflect managed policy."
-    )
+    if not status.usable:
+        detail = f": {status.detail}" if status.detail else ""
+        return (
+            f"managed config at {status.path} is {status.health.value.lower()}"
+            f"{detail}; the values below do not reflect managed policy."
+        )
+    violations = managed_policy_violations()
+    if violations:
+        return (
+            f"managed config at {status.path} rejects "
+            f"{', '.join(violations)}; an agent launch will refuse to start "
+            "until an administrator corrects the value."
+        )
+    return None
 
 
 def _print_store_warning(store_error: str | None) -> None:
@@ -1022,15 +1035,23 @@ def _config_path_status(label: str, *, exists: bool) -> str:
     """Return a diagnostic status for one config-path row.
 
     The managed row reports parse health rather than mere existence, so a
-    corrupt file is not shown as present and fine.
+    corrupt file is not shown as present and fine. A file that parses but
+    declares an unenforceable key is reported as rejected, because it is the
+    other half of exit 78 and read as `ok` before.
 
     Returns:
         A short status word for the row.
     """
     if label == _MANAGED_PATH_LABEL:
-        from deepagents_code.configuration.service import managed_config_status
+        from deepagents_code.configuration.service import (
+            managed_config_status,
+            managed_policy_violations,
+        )
 
-        return managed_config_status(refresh=True).health.value.lower()
+        status = managed_config_status(refresh=True)
+        if status.usable and managed_policy_violations():
+            return "rejected"
+        return status.health.value.lower()
     return "ok" if exists else "missing"
 
 

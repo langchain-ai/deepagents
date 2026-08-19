@@ -509,12 +509,15 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
 
 
 def _managed_config_diagnostic() -> DiagnosticItem:
-    """Report managed TOML location and parse health without blocking doctor.
+    """Report managed TOML location, parse health, and policy enforceability.
 
     Returns:
         Managed config diagnostic row.
     """
-    from deepagents_code.configuration.service import managed_config_status
+    from deepagents_code.configuration.service import (
+        managed_config_status,
+        managed_policy_violations,
+    )
 
     status = managed_config_status(refresh=True)
     path = status.path or "(unknown)"
@@ -524,10 +527,18 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     # say who can fix it. Without this a user who just saw exit 78 learns
     # nothing new here.
     hint = "" if status.usable else "; ask your administrator to repair or remove it"
+    # A file that parses is not necessarily enforceable, and both halves of
+    # exit 78 have to show up here. Reporting only `usable` gave a green row to
+    # the `ManagedPolicyError` half, so a user whose launch was just refused was
+    # told managed config was fine.
+    violations = managed_policy_violations() if status.usable else ()
+    if violations:
+        detail += f" - rejects {', '.join(violations)}"
+        hint = "; ask your administrator to correct the value"
     return DiagnosticItem(
         "Managed config",
         f"{path} ({suffix}){detail}{hint}",
-        ok=status.usable,
+        ok=status.usable and not violations,
     )
 
 

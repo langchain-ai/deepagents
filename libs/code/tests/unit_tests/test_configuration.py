@@ -1736,6 +1736,45 @@ def test_doctor_reports_managed_parse_health(
         service.invalidate_config_sources()
 
 
+def test_diagnostics_report_an_unenforceable_managed_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file that parses but cannot be enforced must not read as `ok`.
+
+    Regression: all three surfaces branched on `ProviderStatus.usable`, which is
+    true for a file whose health is `OK`. So the `ManagedPolicyError` half of
+    exit 78 produced a green `doctor` row, a clean `dcode config` table with no
+    warning, and `ok` from `dcode config path` — telling a user whose launch was
+    just refused that managed config was fine. `config` and `doctor` are exempt
+    from the startup gate precisely so they can explain this.
+    """
+    from deepagents_code.client.commands.config import (
+        _MANAGED_PATH_LABEL,
+        _config_path_status,
+        _managed_health_warning,
+    )
+    from deepagents_code.configuration import service
+    from deepagents_code.doctor import _managed_config_diagnostic
+
+    managed = _managed_only(tmp_path, monkeypatch, '[startup]\nmode = "YOLO"\n')
+    try:
+        assert service.managed_config_status(refresh=True).usable is True
+
+        item = _managed_config_diagnostic()
+        assert item.ok is False
+        assert "startup.mode" in item.value
+        assert str(managed) in item.value
+
+        warning = _managed_health_warning()
+        assert warning is not None
+        assert "startup.mode" in warning
+
+        assert _config_path_status(_MANAGED_PATH_LABEL, exists=True) == "rejected"
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_managed_path_fallback_is_reported_as_a_guess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

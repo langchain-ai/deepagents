@@ -1,7 +1,9 @@
 """Tests for extension loading, trust gating, and teardown."""
 
+import json
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -11,24 +13,60 @@ from deepagents_code.extensions.runtime import (
     shutdown_server_extensions,
 )
 from deepagents_code.extensions.settings import ExtensionSettings, TrustPolicy
+from deepagents_code.plugins.manifest import load_manifest
+from deepagents_code.plugins.models import (
+    ComponentInventory,
+    PluginDiscoveryResult,
+    PluginInstance,
+)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_user_extensions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent tests from loading real user extensions."""
+def _isolate_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent tests from loading installed plugins from the real user state."""
     monkeypatch.setenv("DEEPAGENTS_CODE_EXPERIMENTAL", "1")
     monkeypatch.setattr(
-        "deepagents_code.extensions.discovery.user_extensions_dir",
-        lambda: tmp_path / "no-user-extensions",
+        "deepagents_code.plugins.discover_plugins",
+        lambda: PluginDiscoveryResult(plugins=()),
+    )
+
+
+def _plugin(root: Path, entries: list[str]) -> PluginInstance:
+    """Create one installed plugin declaring Python entry files."""
+    (root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "test-extension",
+                "version": "1.0.0",
+                "extensions": {
+                    "com.langchain.deepagents.code": {
+                        "pythonExtensions": [f"./{entry}" for entry in entries]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest, _, warnings = load_manifest(root)
+    assert manifest is not None
+    assert not warnings
+    return PluginInstance(
+        plugin_id="test-extension@test",
+        name="test-extension",
+        marketplace="test",
+        version=manifest.version,
+        root=root,
+        data_dir=root / "data",
+        manifest=manifest,
+        inventory=ComponentInventory(),
     )
 
 
 async def test_failures_roll_back_and_teardown_stays_on_factory_loop(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One bad factory cannot leak units or block same-loop teardown."""
-    directory = tmp_path / "extensions"
+    directory = tmp_path / "plugin"
     directory.mkdir()
     (directory / "a_broken.py").write_text(
         """
@@ -58,12 +96,13 @@ async def extension(d):
 """,
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "deepagents_code.extensions.runtime.load_extension_settings",
-        lambda: ExtensionSettings(paths=(directory,)),
-    )
+    plugin = _plugin(directory, ["a_broken.py", "b_valid.py"])
 
-    result = await load_extensions(cwd=tmp_path)
+    with patch(
+        "deepagents_code.plugins.discover_plugins",
+        return_value=PluginDiscoveryResult(plugins=(plugin,)),
+    ):
+        result = await load_extensions(cwd=tmp_path)
 
     assert [item.name for item in result.registry.tools] == ["ready"]
     assert len(result.errors) == 1
@@ -74,10 +113,10 @@ async def extension(d):
 
 async def test_package_extensions_support_relative_imports(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A discovered package can import sibling modules."""
-    package = tmp_path / "extensions" / "sample"
+    root = tmp_path / "plugin"
+    package = root / "sample"
     package.mkdir(parents=True)
     (package / "helper.py").write_text("VALUE = 'ready'\n", encoding="utf-8")
     (package / "__init__.py").write_text(
@@ -91,14 +130,35 @@ def extension(d):
 """,
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "deepagents_code.extensions.runtime.load_extension_settings",
-        lambda: ExtensionSettings(paths=(package.parent,)),
-    )
+    plugin = _plugin(root, ["sample/__init__.py"])
 
-    result = await load_extensions()
+    with patch(
+        "deepagents_code.plugins.discover_plugins",
+        return_value=PluginDiscoveryResult(plugins=(plugin,)),
+    ):
+        result = await load_extensions()
 
     assert result.registry.tools[0].unit.invoke({}) == "ready"
+
+
+async def test_plugin_setup_runs_eagerly(tmp_path: Path) -> None:
+    """Every enabled plugin setup function finishes before loading returns."""
+    root = tmp_path / "plugin"
+    root.mkdir()
+    marker = tmp_path / "initialized"
+    (root / "extension.py").write_text(
+        f"def extension(d):\n    open({str(marker)!r}, 'w').close()\n",
+        encoding="utf-8",
+    )
+    plugin = _plugin(root, ["extension.py"])
+
+    with patch(
+        "deepagents_code.plugins.discover_plugins",
+        return_value=PluginDiscoveryResult(plugins=(plugin,)),
+    ):
+        await load_extensions()
+
+    assert marker.exists()
 
 
 @pytest.mark.parametrize(

@@ -16574,7 +16574,16 @@ class DeepAgentsApp(App):
 
             prior_event = state_values.get("_summarization_event")
             before_messages = state_values.get("messages", [])
-            prior_cutoff = _summarization_cutoff(prior_event)
+            # Bounds-checked against the list it indexes, matching
+            # `_effective_conversation` below. Without `message_count`, an
+            # out-of-bounds cutoff is trusted here while that call rejects it, and
+            # the two disagree: `messages_offloaded` inflates, `messages_kept`
+            # collapses to 0, and the report claims a large offload beside roughly
+            # zero token savings.
+            prior_cutoff = _summarization_cutoff(
+                prior_event,
+                message_count=len(before_messages),
+            )
             conversation_tokens_before = count_tokens_approximately(
                 _effective_conversation(before_messages, prior_event)
             )
@@ -16611,7 +16620,11 @@ class DeepAgentsApp(App):
                         await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
-                if _summarization_cutoff(reconciled_event) <= prior_cutoff:
+                reconciled_cutoff = _summarization_cutoff(
+                    reconciled_event,
+                    message_count=len(new_state.get("messages", [])),
+                )
+                if reconciled_cutoff <= prior_cutoff:
                     # Compaction did not commit, so the seeded tool call was
                     # never answered. Remove it before re-raising so a failed
                     # `/offload` cannot wedge the thread with a dangling
@@ -16639,7 +16652,10 @@ class DeepAgentsApp(App):
             self._sync_session_cost_from_state(new_state)
             self._sync_cache_state_from_state(new_state)
             new_event = new_state.get("_summarization_event")
-            new_cutoff = _summarization_cutoff(new_event)
+            new_cutoff = _summarization_cutoff(
+                new_event,
+                message_count=len(new_state.get("messages", [])),
+            )
 
             if new_event is None or new_cutoff <= prior_cutoff:
                 # A failure and a genuine no-op both leave `_summarization_event`

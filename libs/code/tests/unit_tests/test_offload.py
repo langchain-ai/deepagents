@@ -3279,6 +3279,32 @@ class TestOffloadHelpers:
             == messages
         )
 
+    def test_offload_accounting_bounds_the_cutoff_like_the_window_does(self) -> None:
+        """The report and the window must read one cutoff the same way.
+
+        `/offload` computes `messages_offloaded` from the cutoff and its token
+        counts from `_effective_conversation`, which bounds-checks internally.
+        Called without `message_count`, an out-of-bounds cutoff is trusted by the
+        first and rejected by the second, so the user is told a large offload
+        happened next to roughly zero token savings, with nothing logged.
+        """
+        from deepagents_code.app import (
+            _effective_conversation,
+            _summarization_cutoff,
+        )
+
+        messages = ["m0", "m1"]
+        event = {"summary_message": "S", "cutoff_index": 99}
+
+        cutoff = _summarization_cutoff(event, message_count=len(messages))
+        window = _effective_conversation(messages, event)
+
+        # Both degrade: the cutoff to 0, the window to the full list. An
+        # unbounded read would give cutoff 99 against a 2-message window.
+        assert cutoff == 0
+        assert window == messages
+        assert max(0, len(messages) - cutoff) == len(messages)
+
     def test_effective_conversation_logs_a_discarded_event(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

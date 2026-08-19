@@ -2523,12 +2523,22 @@ def create_cli_agent(
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        middleware.append(
-            ServerHooksMiddleware(
-                cwd=hooks_cwd,
-                emit_stop=False,
-                mcp_tools=mcp_tools,
-            )
+        # Subagents get their own base `FilesystemMiddleware` (and thus their own
+        # `read_file`) from `create_deep_agent`, with a `wrap_tool_call` chain
+        # separate from the parent graph's. Recover tool-arg `ValueError`s there
+        # too, or a delegated subagent's malformed `read_file` aborts the task.
+        middleware.extend(
+            [
+                ServerHooksMiddleware(
+                    cwd=hooks_cwd,
+                    emit_stop=False,
+                    mcp_tools=mcp_tools,
+                ),
+                ToolErrorMiddleware(
+                    _tool_arg_validation_on_error,
+                    tools=list(_TOOL_ARG_VALIDATION_TOOLS),
+                ),
+            ]
         )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as

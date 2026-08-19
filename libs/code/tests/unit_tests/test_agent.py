@@ -3589,6 +3589,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
         must not gain `ConfigurableModelMiddleware`, which would let a runtime
         `/model` switch clobber the pinned model.
         """
+        from langchain.agents.middleware import ToolErrorMiddleware
+
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.cost_tracking import CostTrackingMiddleware
@@ -3654,8 +3656,24 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 CostTrackingMiddleware,
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
+                ToolErrorMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            # Subagents get their own base `FilesystemMiddleware`/`read_file`
+            # from `create_deep_agent`, on a `wrap_tool_call` chain separate
+            # from the parent's; the scoped error middleware must be present
+            # here or a delegated malformed `read_file` aborts the task.
+            tool_error = next(
+                mw
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, ToolErrorMiddleware)
+            )
+            assert tool_error._tool_filter == ["ask_user", "read_file"]
+            hooks = next(
+                mw
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, ServerHooksMiddleware)
+            )
+            assert hooks._emit_stop is False
             # Nested spend is priced once by the main agent, so a subagent's
             # instance must not also write the shared cost channel.
             assert all(

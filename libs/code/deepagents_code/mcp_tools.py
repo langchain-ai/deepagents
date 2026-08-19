@@ -264,14 +264,32 @@ def _resolve_stdio_env(
 
 
 class _MCPStderrSink(io.TextIOBase):
-    """Forward a subprocess pipe to the MCP logger one bounded line at a time."""
+    """A pipe that the MCP stdio transport can use as a server's stderr.
 
-    def __init__(self, server_name: str, *, encoding: str, errors: str) -> None:
-        """Create the pipe and start its reader."""
+    The transport only ever calls `fileno()` on the object it is handed, then
+    passes that descriptor to the subprocess. So this is a pipe with a reader
+    attached, not a writable stream: `fileno()` and `close()` are the whole
+    consumed surface, and `io.TextIOBase` is here for the `closed` bookkeeping
+    plus the `TextIO` cast the transport signature requires.
+
+    The reader thread has two jobs. It always drains, so a chatty server cannot
+    block writing to a full stderr pipe. It additionally logs whole, bounded,
+    sanitized lines to `deepagents_code.mcp_tools` at `DEBUG`, but only when
+    that level is enabled at construction time — raising the level afterwards
+    does not start capture on an existing sink.
+    """
+
+    def __init__(self, server_name: str, *, encoding: str) -> None:
+        """Create the pipe and start its reader.
+
+        Args:
+            server_name: MCP server name used in log records.
+            encoding: Encoding used to decode captured stderr bytes. The
+                error handler is always `_MCP_STDERR_CAPTURE_ERRORS`.
+        """
         super().__init__()
         self._server_name = server_name
         self._encoding = encoding
-        self._errors = errors
         self._capture = logger.isEnabledFor(logging.DEBUG)
         self._decoder = (
             codecs.getincrementaldecoder(encoding)(errors=_MCP_STDERR_CAPTURE_ERRORS)
@@ -306,51 +324,9 @@ class _MCPStderrSink(io.TextIOBase):
             os.close(self._read_fd)
             raise
 
-    @property
-    def encoding(self) -> str:
-        """Encoding used for writes and captured bytes."""
-        return self._encoding
-
-    @property
-    def errors(self) -> str:
-        """Configured encoding error handler."""
-        return self._errors
-
     def fileno(self) -> int:
-        """Return the subprocess-inheritable write descriptor."""
+        """Return the write descriptor to hand to the server subprocess."""
         return self._writer.fileno()
-
-    def writable(self) -> bool:
-        """Return whether the parent write descriptor remains open."""
-        return not self.closed
-
-    def write(self, text: str) -> int:
-        """Write text through the pipe for TextIO compatibility.
-
-        Args:
-            text: Text to encode and write.
-
-        Returns:
-            Number of input characters written.
-
-        Raises:
-            ValueError: If the sink is closed.
-        """
-        if self.closed:
-            msg = "I/O operation on closed MCP stderr sink"
-            raise ValueError(msg)
-        data = memoryview(text.encode(self._encoding, errors=self._errors))
-        while data:
-            written = self._writer.write(data)
-            if written is None:
-                continue
-            data = data[written:]
-        return len(text)
-
-    def flush(self) -> None:
-        """Flush parent writes before closing the descriptor."""
-        if not self._writer.closed:
-            self._writer.flush()
 
     def close(self) -> None:
         """Close the parent's copy of the subprocess write descriptor."""
@@ -540,7 +516,7 @@ async def _create_mcp_session(
         encoding=encoding,
         encoding_error_handler=errors,
     )
-    sink = _MCPStderrSink(server_name, encoding=encoding, errors=errors)
+    sink = _MCPStderrSink(server_name, encoding=encoding)
     try:
         async with stdio_client(params, errlog=cast("TextIO", sink)) as (read, write):
             sink.close()

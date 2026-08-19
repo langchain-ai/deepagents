@@ -873,7 +873,7 @@ class TestMCPStderrCapture:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A blocked drain thread cannot make forced teardown wait forever."""
-        sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+        sink = _MCPStderrSink("fake", encoding="utf-8")
         reader_thread = sink._thread
         blocked_thread = MagicMock()
         blocked_thread.is_alive.return_value = True
@@ -910,7 +910,7 @@ class TestMCPStderrCapture:
         the capture exists to provide.
         """
         with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
-            sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+            sink = _MCPStderrSink("fake", encoding="utf-8")
             os.write(sink.fileno(), b"before \xff after\n")
             await sink.wait_closed()
 
@@ -922,7 +922,7 @@ class TestMCPStderrCapture:
     ) -> None:
         """A line of exactly the limit keeps every character and no marker."""
         with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
-            sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+            sink = _MCPStderrSink("fake", encoding="utf-8")
             os.write(sink.fileno(), b"a" * _MCP_STDERR_LINE_LIMIT + b"\n")
             await sink.wait_closed()
 
@@ -938,7 +938,7 @@ class TestMCPStderrCapture:
         drain thread skipped reading when capture is disabled.
         """
         with caplog.at_level(logging.INFO, logger="deepagents_code.mcp_tools"):
-            sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+            sink = _MCPStderrSink("fake", encoding="utf-8")
             payload = b"x" * (1 << 20)
             written = 0
             while written < len(payload):

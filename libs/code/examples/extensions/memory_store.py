@@ -1,4 +1,4 @@
-"""Reference extension: persistent memory through a virtual backend route."""
+"""Reference extension: shared data through a virtual storage route."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 def extension(d: ExtensionAPI) -> None:
-    """Mount LangGraph store data under `/memories/`.
+    """Make LangGraph store data available under `/memories/`.
 
     Args:
         d: The dcode extension API.

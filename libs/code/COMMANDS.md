@@ -37,7 +37,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
 | `/plugins` |  | Manage plugins |
 | `/quit` | `/q` | Exit app |
-| `/reload` |  | Reload environment and config |
+| `/reload` |  | Reload config, plugins, and the agent server |
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |

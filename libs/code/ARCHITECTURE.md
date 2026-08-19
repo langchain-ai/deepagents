@@ -47,7 +47,8 @@ The main extension points are:
 - **Tools and MCP servers** for external capabilities
 - **Sandboxes** for changing where tool execution happens
 - **Hooks and commands** for integrating with local workflows
-- **Python extensions** for middleware, tools, and virtual backend routes
+- **Python extensions** for middleware, tools, and virtual storage routes,
+  loaded from installed plugins or a trusted project
 
 These pieces are designed to compose. A project can provide shared defaults and integrations, while each user can layer personal configuration on top.
 

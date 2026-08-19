@@ -1736,6 +1736,52 @@ def test_doctor_reports_managed_parse_health(
         service.invalidate_config_sources()
 
 
+def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed policy must not set `--auto-classifier-model`.
+
+    Regression: assigning the flag made every ACP launch exit 2 with
+    "--auto-classifier-model requires --auto-approve in ACP mode", naming a flag
+    the user never passed. `build_server_config` falls through to
+    `resolve_auto_classifier_model_with_source` when the flag is unset, and that
+    already reads managed policy at top precedence, so the positive value needs
+    no flag — the same reasoning the `startup.mode` block uses.
+    """
+    from deepagents_code import main, model_config
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_model_with_source,
+    )
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models]\nauto_classifier = "openai:gpt-4o-mini"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    args = _managed_policy_args()
+    try:
+        main._apply_managed_runtime_policy(args)
+        assert args.auto_classifier_model is None
+        # The value still reaches the runtime through the manifest resolver.
+        sources = service.get_config_sources()
+        resolved, source = resolve_auto_classifier_model_with_source(
+            toml_data=dict(sources.user.data),
+            managed_toml_data=sources.managed.data,
+        )
+        assert resolved == "openai:gpt-4o-mini"
+        assert source == "managed config"
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_merge_provenance_reports_only_real_leaves() -> None:
     """Provenance must carry no empty-root key and no stale parent entry.
 

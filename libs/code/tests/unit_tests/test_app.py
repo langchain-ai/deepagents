@@ -38425,6 +38425,46 @@ class TestToolGroupCollapse:
             assert "Ran 1 shell command, read 1 file" in rendered.plain
 
 
+class TestUnsavedGoalContinuation:
+    """A failed goal save must still hand the model both halves of the goal."""
+
+    async def test_unsaved_creation_forwards_objective_and_criteria(self) -> None:
+        """Criteria omitted here are unobtainable through any other channel.
+
+        Both arguments are `str`-ish and positional at all three call sites, so
+        a swap or a dropped argument type-checks.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        inner = AsyncMock()
+
+        with patch.object(app, "_continue_goal_work", inner):
+            await app._continue_created_goal_work(
+                "ship login with passkeys",
+                "- passkeys work",
+                persisted=False,
+            )
+
+        inner.assert_awaited_once_with(
+            "created",
+            unsaved_objective="ship login with passkeys",
+            unsaved_criteria="- passkeys work",
+        )
+
+    async def test_persisted_creation_relies_on_the_state_notice(self) -> None:
+        """A successful save needs no fallback: the notice carries the state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        inner = AsyncMock()
+
+        with patch.object(app, "_continue_goal_work", inner):
+            await app._continue_created_goal_work(
+                "ship login with passkeys",
+                "- passkeys work",
+                persisted=True,
+            )
+
+        inner.assert_awaited_once_with("created")
+
+
 class TestForcedGoalCriteriaSync:
     """A forced sync after a criteria turn reads back and recovers on failure."""
 

@@ -16,6 +16,7 @@ from deepagents_code.extensions.settings import ExtensionSettings, TrustPolicy
 @pytest.fixture(autouse=True)
 def _isolate_user_extensions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent tests from loading real user extensions."""
+    monkeypatch.setenv("DEEPAGENTS_CODE_EXPERIMENTAL", "1")
     monkeypatch.setattr(
         "deepagents_code.extensions.discovery.user_extensions_dir",
         lambda: tmp_path / "no-user-extensions",

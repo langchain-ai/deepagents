@@ -72,54 +72,67 @@ through the merged configuration, so a headless launch still works. Subcommand
 display flags such as `dcode threads --relative` are not overridden.
 
 Tables merge recursively. Deny lists are unioned. An explicitly managed allow or
-trust list replaces lower-precedence grants. An empty managed list is a
-lockdown: it removes every lower-precedence grant.
+trust list replaces lower-precedence grants. An empty managed allow list or
+trust list removes every lower-precedence grant. An empty managed deny list
+removes nothing, because deny lists union. A deny list can be an array of names
+or one comma-separated string. Both spellings union the same way.
 
 A managed value whose type contradicts the manifest is ignored, and the
-lower-precedence value stays in effect. Two exceptions:
+lower-precedence value stays in effect. Three exceptions:
 
-- The enforced keys (`startup.mode`, `startup.yolo_switcher`,
-  `shell.allow_list`, `skills.extra_allowed_dirs`,
-  `interpreter.enable_interpreter`, `interpreter.ptc`,
-  `interpreter.ptc_acknowledge_unsafe`, `models.auto_classifier`,
-  `runtime.recursion_limit`, `sandboxes.default`, `tracing.langsmith_redact`)
-  stop every command except `config`, `doctor`, `auth path`, and the help
-  screens. Ignoring one leaves the user's flag or environment variable in force,
-  which grants the escalation or removes the boundary the policy declared. Three
-  cases stop the launch and block `/reload`: a value the manifest rejects, a
-  `runtime.recursion_limit` outside its bounds, and a key shadowed by a scalar
-  ancestor (`startup = "manual"` in place of `[startup]` and `mode`). A managed
-  `[sandboxes].default` that names an unavailable backend stops a sandboxed
-  launch; a launch that asked for no sandbox is unaffected. A scalar at any
-  known configuration section (for example, `threads = "bad"` instead of
-  `[threads]`) also stops launch and reload rather than replacing the user's
-  whole section.
+- A managed declaration of an *enforced key* that cannot be applied stops every
+  command outside the diagnostic exemption set below. The enforced keys are
+  `startup.mode`, `startup.yolo_switcher`, `shell.allow_list`,
+  `skills.extra_allowed_dirs`, `interpreter.enable_interpreter`,
+  `interpreter.ptc`, `interpreter.ptc_acknowledge_unsafe`,
+  `models.auto_classifier`, `runtime.recursion_limit`, `sandboxes.default`, and
+  `tracing.langsmith_redact`. Ignoring one leaves the user's flag or environment
+  variable in force. That grants the escalation, or removes the boundary, the
+  policy declared. Three cases stop the launch and block `/reload`: a value the
+  manifest rejects, a `runtime.recursion_limit` outside its bounds, and a key
+  shadowed by a scalar ancestor (`startup = "manual"` in place of `[startup]`
+  and `mode`). A managed `[sandboxes].default` that names an unavailable backend
+  stops a sandboxed launch. A launch that asked for no sandbox is unaffected.
+- A scalar at a known section also stops launch and reload, rather than
+  replacing the user's whole section. The known sections are every section that
+  holds a manifest option, plus `[themes]`, `[ui.terminal_themes]`,
+  `[models.providers]`, `[async_subagents]`, `[sandboxes.providers]`,
+  `[threads.columns]`, and `[effort]`.
 - Inside structured tables (`[models.providers]`, `[themes]`,
-  `[async_subagents]`, `[sandboxes.providers]`) the dedicated typed reader
-  validates instead, so a wrong-typed managed leaf can displace a valid user
-  leaf. The reader then falls back to the built-in default. A managed scalar
-  still replaces a colliding user table there, the same as on the top-level
-  merge.
+  `[async_subagents]`, `[sandboxes.providers]`, `[ui.terminal_themes]`,
+  `[threads.columns]`) the dedicated typed reader validates instead, so a
+  wrong-typed managed leaf can displace a valid user leaf. The reader then
+  falls back to the built-in default. A managed scalar still replaces a
+  colliding user table there, the same as on the top-level merge.
 
-`[shell].allow_list` is now read from `~/.deepagents/config.toml` as well as
-from `DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A
-user can therefore also grant themselves shell auto-approval from their own
-config file, where an exported variable was needed before. An empty managed
-list removes every lower-precedence grant.
+Any other managed value the manifest rejects is ignored. `dcode doctor` and
+`dcode config` both name it, so an ignored key is never silent.
 
-`dcode` never writes the managed file. Users can still save a preference. The
+`[shell].allow_list` is read from `~/.deepagents/config.toml` and from
+`DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A user can
+also grant themselves shell auto-approval from their own config file. An empty
+managed list removes every lower-precedence grant.
+
+Users can still save a preference. The
 theme, terminal-mapping, UI-toggle, and MCP-server screens, and the
 `--auto-update` flag, report when a managed value keeps a saved preference from
 taking effect. Other save paths do not.
 
 A missing managed file applies no policy. If one exists but is unreadable, not
-UTF-8, or invalid TOML, every command fails closed except the ones needed to
-diagnose it: `--help`, `--version`, `help`, `config`, `doctor`, and
-`auth path`. A managed file that becomes unusable later also blocks `/reload`:
-the session keeps the policy that was in force, and the reload reports that it
-kept it. Use `dcode config path` and `dcode doctor` to inspect its
-fixed path and parse health; `dcode config` also warns when the file exists but
-could not be parsed, or parses and declares a value that cannot be enforced.
+UTF-8, or invalid TOML, every command fails closed except the diagnostic
+exemption set: `--help`, `--version`, `help`, `config`, `doctor`, and
+`auth path`. On Windows, a ProgramData directory that cannot be read from the
+registry also fails closed. The path would be a guess, and no file at a guessed
+path does not prove that no policy is deployed.
+
+A managed file that becomes unusable later also blocks `/reload`. The session
+keeps the policy that was in force, and the reload reports that it kept it. Use
+`dcode config path` and `dcode doctor` to inspect the fixed path and parse
+health. `dcode config` also warns when the file exists but could not be parsed,
+when it parses and declares a value that cannot be enforced, and when it
+declares a value that was ignored.
+
+`dcode` never writes the managed file, and the writer refuses that path.
 
 A deny list that cannot be read denies everything rather than nothing. This
 covers a managed `[mcp].disabled_servers` that is neither an array of names nor

@@ -865,16 +865,94 @@ test('a failed new-entries warning comment does not mask the actionable gate rea
   });
   const files = new Map([[changedHead, changelog(newGenerated)]]);
   const { github } = makeGithub({ pr, comments: [overrideComment()], files });
-  // The courtesy warning comment fails (rate limit / transient 5xx). The gate must
-  // still fail closed with its specific, actionable reason and only log a warning
-  // about the comment, rather than surfacing the raw API error.
+  // The courtesy warning comment keeps failing across the retries (rate limit /
+  // transient 5xx / transient permission 403). The gate must still fail closed
+  // with its specific, actionable reason and only log a warning about the
+  // comment, rather than surfacing the raw API error.
   github.rest.issues.createComment = async () => { throw new Error('rate limited'); };
 
   const core = makeCore();
-  const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    warningCommentRetries: 1,
+    warningCommentRetryIntervalMs: 0,
+    ...BOT_AUTH,
+  });
   assert.equal(result.status, 'missing');
   assert.match(core.failed, /draft and then/);
   assert.ok(core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+});
+
+test('the new-entries warning comment retries a transient post failure', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github, calls } = makeGithub({ pr, comments: [overrideComment()], files });
+  // First post 403s (the transient permission error seen on release PRs); the
+  // retry succeeds, so the gate reports no warning about the courtesy comment.
+  let createCommentAttempts = 0;
+  github.rest.issues.createComment = async args => {
+    createCommentAttempts += 1;
+    calls.createComment.push(args);
+    if (createCommentAttempts === 1) throw new Error('Resource not accessible by integration');
+    return { data: { id: 99 } };
+  };
+
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    warningCommentRetries: 1,
+    warningCommentRetryIntervalMs: 0,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.equal(createCommentAttempts, 2);
+  assert.ok(!core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+});
+
+test('the new-entries warning retry does not duplicate a comment the server already accepted', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const comments = [overrideComment()];
+  const { github, calls } = makeGithub({ pr, comments, files });
+  // The first create succeeds server-side (the marker comment lands) but the
+  // client sees a timeout instead of the response. Retrying against the stale
+  // snapshot would post the identical warning again; the retry must re-read
+  // comments, see the marker, and stop after one POST.
+  github.rest.issues.createComment = async params => {
+    comments.push({ id: 100 + comments.length, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body });
+    calls.createComment.push(params);
+    throw new Error('request timed out');
+  };
+
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    warningCommentRetries: 2,
+    warningCommentRetryIntervalMs: 0,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.equal(calls.createComment.length, 1);
+  assert.ok(!core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
 });
 
 test('draft, unmanaged branch, and bypass label pass without metadata', async () => {

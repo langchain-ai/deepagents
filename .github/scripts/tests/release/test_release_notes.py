@@ -61,7 +61,10 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
         "checks": "write",
         "contents": "read",
         "issues": "write",
-        "pull-requests": "read",
+        # The new-entries courtesy comment targets the release PR, whose branch
+        # is owned by the release-bot app installation; issues: write alone
+        # intermittently 403s there.
+        "pull-requests": "write",
     }
     job = workflow["jobs"]["curated-release-notes"]
     assert "github.event_name == 'pull_request'" in job["name"]

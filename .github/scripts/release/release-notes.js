@@ -1107,6 +1107,8 @@ async function checkCuratedState({
   expectedHead = null,
   initialDraftPollAttempts = 0,
   initialDraftPollIntervalMs = 10_000,
+  warningCommentRetries = 2,
+  warningCommentRetryIntervalMs = 2_000,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 }) {
   const { owner, repo } = context.repo;
@@ -1217,17 +1219,36 @@ async function checkCuratedState({
   // away from the curated override. Invoked at both the pre-applied miss and the
   // post-applied mismatch below.
   const maybeWarnNewEntries = async () => {
-    if (generatedEntriesChanged) {
-      // Best-effort courtesy comment: if posting it fails (rate limit, transient
-      // 5xx) it must not throw, or the raw API error would replace the specific,
-      // actionable gate reason (the setFailed message / failures list) reported
-      // right after this. The gate still fails closed via those.
+    if (!generatedEntriesChanged) return;
+    // Best-effort courtesy comment: if posting it still fails after the retries
+    // (rate limit, transient 5xx, transient permission 403) it must not throw,
+    // or the raw API error would replace the specific, actionable gate reason
+    // (the setFailed message / failures list) reported right after this. The
+    // gate still fails closed via those.
+    let lastError = null;
+    let warningComments = comments;
+    for (let attempt = 0; attempt <= warningCommentRetries; attempt += 1) {
       try {
-        await warnForNewEntries({ github, owner, repo, number, comments, head: pr.head.sha, fingerprint: currentFingerprint });
+        await warnForNewEntries({ github, owner, repo, number, comments: warningComments, head: pr.head.sha, fingerprint: currentFingerprint });
+        return;
       } catch (error) {
-        core.warning(`Could not post the new-entries warning comment: ${error instanceof Error ? error.message : String(error)}`);
+        lastError = error;
+        if (attempt >= warningCommentRetries) break;
+        await sleep(warningCommentRetryIntervalMs);
+        // The create may have succeeded server-side while the client saw a
+        // timeout; the local snapshot then still lacks the marker and the retry
+        // would post a duplicate. Re-read comments and only retry when a fresh
+        // read still shows no marker. If the re-read itself fails, the next
+        // read could still be stale, so stop here instead of risking a
+        // duplicate courtesy comment.
+        try {
+          warningComments = await listComments(github, owner, repo, number);
+        } catch {
+          break;
+        }
       }
     }
+    core.warning(`Could not post the new-entries warning comment: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
   };
   if (!applied) {
     await maybeWarnNewEntries();

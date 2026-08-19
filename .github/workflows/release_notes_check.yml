@@ -22,7 +22,10 @@ permissions:
   checks: write
   contents: read
   issues: write
-  pull-requests: read
+  # The new-entries courtesy comment targets the release PR, whose branch is owned
+  # by the release-bot GitHub App installation; issues: write alone intermittently
+  # 403s there, so request the pull-requests write scope too.
+  pull-requests: write
 
 concurrency:
   group: release-notes-check-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}

@@ -109,10 +109,13 @@ jobs:
             }
 
             // A labeled release PR produces the same artifacts via the strict
-            // step's bypass path, so the comment text must distinguish "hit the
-            // soft timeout" from "bypassed under bypass-ripgrep-check". Read the
-            // label fail-closed: an API error means the bypass note is simply
-            // omitted, never wrongly claimed.
+            // step's bypass path. Match `_test.yml`'s release-PR predicate so a
+            // non-release PR with the label still receives the ordinary soft-
+            // timeout guidance. Read the label fail-closed: an API error means
+            // the bypass note is simply omitted, never wrongly claimed.
+            const isReleasePullRequest =
+              pullRequest.head.ref.startsWith('release-please--') ||
+              pullRequest.title.startsWith('release(');
             let hasBypassLabel = false;
             try {
               const labels = await github.paginate(
@@ -163,7 +166,7 @@ jobs:
               .map(artifact => artifact.name.replace(/^ripgrep-timeout-/, ''))
               .sort();
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${run.id}`;
-            const body = hasBypassLabel
+            const body = isReleasePullRequest && hasBypassLabel
               ? [
                   marker,
                   '**Notice: the strict ripgrep install failed and was bypassed.**',

@@ -578,6 +578,27 @@ def _turn_state(turn_id: str) -> dict[str, object]:
 
 
 class TestAskUserTool:
+    def test_validation_failure_returns_error_tool_message(self) -> None:
+        ask_tool = cast("Any", AskUserMiddleware().tools[0])
+        questions = [
+            {
+                "question": "Where?",
+                "type": "multi_select",
+                "choices": [{"value": "Boston, MA"}],
+            }
+        ]
+
+        command = ask_tool.func(
+            questions=questions,
+            tool_call_id="ask-1",
+            runtime=SimpleNamespace(),
+        )
+
+        message = _extract_tool_message(command)
+        assert message.status == "error"
+        assert "Boston, MA" in str(message.content)
+        assert "re-issue ask_user" in str(message.content)
+
     def test_runtime_identity_is_bound_to_resumed_answer(self) -> None:
         ask_tool = cast("Any", AskUserMiddleware().tools[0])
         questions = [{"question": "How should I integrate?", "type": "text"}]

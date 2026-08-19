@@ -76,6 +76,7 @@ When using `ask_user`:
 - Use multi-select when the user may legitimately pick several of the options
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
+- Do not include commas in `multi_select` choice values or custom Other text
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
 
 
@@ -462,7 +463,24 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
             """
-            _validate_questions(questions)
+            try:
+                _validate_questions(questions)
+            except ValueError as exc:
+                logger.exception("ask_user question validation failed")
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                format_ask_user_error_answer(
+                                    f"{exc}; re-issue ask_user with corrected arguments"
+                                ),
+                                name="ask_user",
+                                tool_call_id=tool_call_id,
+                                status="error",
+                            )
+                        ]
+                    }
+                )
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,

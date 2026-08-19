@@ -509,6 +509,46 @@ class TestServerOffloadReporting:
         # 5000 - (1000 - 250) = 4250; `before` is exact, only `after` estimated.
         assert "Context: 5.0K → ~4.2K tokens (15% decrease)" in text
 
+    async def test_ephemeral_storage_is_disclosed(self) -> None:
+        """History in a temp fallback must not be presented as durable."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._context_tokens = 0
+            app._tokens_approximate = True
+            text = await self._render(app, self._result(archive_ephemeral=True))
+
+        assert "may not survive a restart" in text
+
+    async def test_durable_storage_adds_no_caveat(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._context_tokens = 0
+            app._tokens_approximate = True
+            text = await self._render(app, self._result(archive_ephemeral=False))
+
+        assert "may not survive" not in text
+
+    async def test_a_failed_archive_write_reports_unrecoverable_messages(self) -> None:
+        """Context was freed but the history is gone; both facts must be said.
+
+        This is data-loss messaging: reporting plain success here would tell the
+        user their conversation is archived when it is not.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._context_tokens = 0
+            app._tokens_approximate = True
+            text = await self._render(app, self._result(archive_path=None))
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
+
+        assert "not recoverable" in text
+        # An error, not a success message: the offload did not fully succeed.
+        assert errors
+        assert "not recoverable" in "\n".join(errors)
+
     async def test_singular_message_labels(self) -> None:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -550,6 +590,89 @@ class TestLocalOffloadReporting:
                 await pilot.pause()
             contents = [str(widget._content) for widget in app.query(AppMessage)]
             return contents, app._context_tokens, app._tokens_approximate
+
+    @staticmethod
+    async def _run_errors(
+        before: dict[str, Any], after: dict[str, Any]
+    ) -> tuple[list[str], list[str]]:
+        """Drive the seeded path and return its app and error message text."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_local_offload_app(app)
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new=AsyncMock(side_effect=[before, after]),
+                ),
+                patch.object(
+                    app,
+                    "_drive_local_seeded_compaction",
+                    new=AsyncMock(return_value=None),
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+            return (
+                [str(w._content) for w in app.query(AppMessage)],
+                [str(w._content) for w in app.query(ErrorMessage)],
+            )
+
+    async def test_ephemeral_storage_is_disclosed(self) -> None:
+        """A temp-fallback archive must not be presented as durable.
+
+        The write succeeded and context was freed, so this is a success message
+        -- but the history may not outlive a restart, which the user has to know
+        before relying on it.
+        """
+        before_messages = _make_dict_messages(4)
+        with patch(
+            "deepagents_code.offload.offload_storage_is_ephemeral",
+            return_value=True,
+        ):
+            contents, _ = await self._run_errors(
+                _state_values(before_messages),
+                _state_values(
+                    [*before_messages, *_make_dict_messages(2)], _summary_event(2)
+                ),
+            )
+
+        assert "may not survive a restart" in "\n".join(contents)
+
+    async def test_durable_storage_adds_no_caveat(self) -> None:
+        before_messages = _make_dict_messages(4)
+        with patch(
+            "deepagents_code.offload.offload_storage_is_ephemeral",
+            return_value=False,
+        ):
+            contents, _ = await self._run_errors(
+                _state_values(before_messages),
+                _state_values(
+                    [*before_messages, *_make_dict_messages(2)], _summary_event(2)
+                ),
+            )
+
+        assert "may not survive" not in "\n".join(contents)
+
+    async def test_a_failed_archive_write_reports_unrecoverable_messages(self) -> None:
+        """Context was freed but the archive write failed; say both.
+
+        Data-loss messaging: an event with no `file_path` means the offloaded
+        messages are gone, so reporting plain success would tell the user their
+        conversation is archived when it is not.
+        """
+        before_messages = _make_dict_messages(4)
+        _contents, errors = await self._run_errors(
+            _state_values(before_messages),
+            _state_values(
+                [*before_messages, *_make_dict_messages(2)],
+                _summary_event(2, file_path=None),
+            ),
+        )
+
+        assert errors
+        assert "not recoverable" in "\n".join(errors)
 
     async def test_turn_counts_ignore_tools_and_internal_messages(self) -> None:
         before_messages = [

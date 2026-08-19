@@ -353,6 +353,44 @@ def _clean_text(state: Mapping[str, object], key: str) -> str | None:
     return value or None
 
 
+def _projected_goal_status(
+    objective: str | None,
+    raw_status: object,
+) -> GoalStatus | None:
+    """Normalize a persisted goal status for the notice, failing closed.
+
+    A missing status beside a real objective defaults to `active`: goals predate
+    the status channel, so absence means "no status was ever recorded", not
+    "something is wrong".
+
+    A status that is present but unrecognized is different. It means a corrupt or
+    forward-version checkpoint, and this projection feeds the only goal channel
+    the model has, so guessing `active` would tell the model to start working
+    toward a goal the TUI's own `coerce_goal_status` reports as absent. It
+    degrades to `paused`, which keeps the objective on record without driving
+    work, and logs, matching what `_warn_discarded_goal_channels` does with the
+    same value on the client.
+
+    Returns:
+        The recognized status, `active` for a missing one, `paused` for an
+        unrecognized one, or `None` when there is no objective.
+    """
+    if objective is None:
+        return None
+    if raw_status is None:
+        return "active"
+    if isinstance(raw_status, str) and raw_status in GOAL_STATUS_VALUES:
+        # The membership test is the narrowing a type checker cannot see through,
+        # so the cast records it rather than widening the field back to `str`.
+        return cast("GoalStatus", raw_status)
+    logger.warning(
+        "Unrecognized persisted goal status %r; treating the goal as paused in "
+        "the model-visible notice so it cannot silently drive work",
+        raw_status,
+    )
+    return "paused"
+
+
 def project_goal_state(state: Mapping[str, object]) -> GoalStateProjection:
     """Project authoritative channels into deterministic notice state.
 
@@ -361,18 +399,7 @@ def project_goal_state(state: Mapping[str, object]) -> GoalStateProjection:
     """
     objective = _clean_text(state, "_goal_objective")
     raw_status = state.get("_goal_status")
-    # The membership test against `GOAL_STATUS_VALUES` is the narrowing a type
-    # checker cannot see through, so the cast records it rather than widening the
-    # field back to `str`.
-    status: GoalStatus | None = (
-        cast("GoalStatus", raw_status)
-        if objective is not None
-        and isinstance(raw_status, str)
-        and raw_status in GOAL_STATUS_VALUES
-        else "active"
-        if objective is not None
-        else None
-    )
+    status = _projected_goal_status(objective, raw_status)
     actionable = status in {"active", "blocked"}
     goal_rubric = _clean_text(state, "_goal_rubric") if objective else None
     sticky_rubric = _clean_text(state, "_sticky_rubric")

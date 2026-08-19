@@ -136,11 +136,12 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     so it is surfaced rather than dropped.
 
     The goal-state notice path does not use this helper: `project_goal_state`
-    normalizes separately (to keep `goal_state_notice` off this module's heavy
-    import chain) and defaults an unrecognized status to `active` without
-    logging, so a corrupt status there renders as an actionable goal. Both read
-    the vocabulary from `GOAL_STATUS_VALUES` in `goal_state_limits`, so adding a
-    member cannot make it actionable in one place and unknown in the other.
+    normalizes separately, to keep `goal_state_notice` off this module's heavy
+    import chain. It fails closed the same way, degrading an unrecognized status
+    to `paused` so the notice cannot present a corrupt status as an actionable
+    goal, and logging the discard. Both read the vocabulary from
+    `GOAL_STATUS_VALUES` in `goal_state_limits`, so adding a member cannot make it
+    actionable in one place and unknown in the other.
 
     Args:
         value: Raw value read from checkpoint state.

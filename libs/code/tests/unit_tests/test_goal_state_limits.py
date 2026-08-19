@@ -122,10 +122,11 @@ def test_notice_total_limit_counts_html_escaped_text() -> None:
 def test_every_goal_status_is_recognized_by_both_normalizers() -> None:
     """One vocabulary, so a new member cannot be actionable in only one place.
 
-    `resume_state.coerce_goal_status` discards an unknown status, while
-    `goal_state_notice.project_goal_state` defaults one to `active`. When these
-    disagreed, adding a `GoalStatus` member made it silently actionable on the
-    notice path while the read path dropped it.
+    `resume_state.coerce_goal_status` discards an unknown status and
+    `goal_state_notice.project_goal_state` degrades one to `paused`. The two
+    spellings differ because only the notice path has an objective to keep on
+    record, but both fail closed, so neither can present an unrecognized status as
+    a goal to work toward.
     """
     from deepagents_code.goal_state_limits import GOAL_STATUS_VALUES, GoalStatus
     from deepagents_code.goal_state_notice import project_goal_state
@@ -140,14 +141,14 @@ def test_every_goal_status_is_recognized_by_both_normalizers() -> None:
         assert projected["goal_status"] == status
         assert projected["goal_actionable"] is (status in {"active", "blocked"})
 
-    # An unrecognized status is not silently carried through either path.
+    # An unrecognized status is not silently carried through either path, and
+    # neither path lets it drive work.
     assert coerce_goal_status("archived") is None
-    assert (
-        project_goal_state(
-            {"_goal_objective": "ship it", "_goal_status": "archived"},
-        )["goal_status"]
-        == "active"
+    projected = project_goal_state(
+        {"_goal_objective": "ship it", "_goal_status": "archived"},
     )
+    assert projected["goal_status"] == "paused"
+    assert projected["goal_actionable"] is False
 
 
 def test_size_error_rejects_a_value_that_fits() -> None:

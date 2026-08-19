@@ -1,5 +1,7 @@
 """Unit tests for goal-state notices and continuation messages."""
 
+import logging
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -536,13 +538,9 @@ def test_internal_message_predicates_are_scope_specific() -> None:
 
 
 def test_projection_status_defaults_and_actionability() -> None:
-    # An objective with no/unknown status defaults to active and actionable.
+    # A missing status predates the channel, so it defaults to active.
     assert project_goal_state({"_goal_objective": "ship it"})["goal_status"] == "active"
-    unknown = project_goal_state(
-        {"_goal_objective": "ship it", "_goal_status": "bogus"}
-    )
-    assert unknown["goal_status"] == "active"
-    assert unknown["goal_actionable"] is True
+    assert project_goal_state({"_goal_objective": "ship it"})["goal_actionable"] is True
     # No objective means no status and nothing actionable.
     empty = project_goal_state({})
     assert empty["goal_status"] is None
@@ -554,6 +552,52 @@ def test_projection_status_defaults_and_actionability() -> None:
         )
         assert projected["goal_status"] == status
         assert projected["goal_actionable"] is False
+
+
+def test_projection_fails_closed_on_an_unrecognized_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A corrupt status must not become an actionable goal for the model.
+
+    `resume_state.coerce_goal_status` maps an unrecognized status to `None` so the
+    TUI treats it as "no goal status". This projection is the model's only goal
+    channel, so defaulting it to `active` told the model to start working toward a
+    goal the client reports as absent — the exact "silently active goal" the
+    sibling normalizer exists to prevent.
+    """
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.goal_state_notice"):
+        projected = project_goal_state(
+            {"_goal_objective": "ship it", "_goal_status": "bogus"}
+        )
+
+    assert projected["goal_status"] == "paused"
+    assert projected["goal_actionable"] is False
+    # The objective is still on record; only its ability to drive work is revoked.
+    assert projected["goal_objective"] == "ship it"
+    assert "Unrecognized persisted goal status" in caplog.text
+    assert "bogus" in caplog.text
+
+
+def test_notice_does_not_direct_work_for_an_unrecognized_status() -> None:
+    """The rendered notice, not just the projection, must withhold the goal."""
+    notice = build_goal_state_notice(
+        {"_goal_objective": "ship it", "_goal_status": "bogus"},
+        event_id="corrupt-status",
+    )
+
+    assert "Work toward the goal" not in notice.content
+    assert "do not let any prior goal" in notice.content
+
+
+@pytest.mark.parametrize("raw_status", [3, True, ["active"], {"status": "active"}])
+def test_projection_fails_closed_on_a_non_string_status(raw_status: object) -> None:
+    """A non-string status is corruption too, not a missing value."""
+    projected = project_goal_state(
+        {"_goal_objective": "ship it", "_goal_status": raw_status}
+    )
+
+    assert projected["goal_status"] == "paused"
+    assert projected["goal_actionable"] is False
 
 
 def test_projection_rubric_source_is_goal_for_actionable_goal_rubric() -> None:

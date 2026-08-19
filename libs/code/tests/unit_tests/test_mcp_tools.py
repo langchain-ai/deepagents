@@ -978,7 +978,7 @@ class TestMCPStderrCapture:
                 "transport": "stdio",
                 "command": sys.executable,
                 "args": ["-c", script, str(first_written), str(release)],
-                "env": {"MCP_CHILD_VALUE": "${MCP_TEST_ENV}"},
+                "env": {"MCP_CHILD_VALUE": "partial"},
                 "encoding": "utf-16-le",
                 "encoding_error_handler": "strict",
             },
@@ -993,10 +993,7 @@ class TestMCPStderrCapture:
                 and " stderr: " in record.getMessage()
             ]
 
-        with (
-            patch.dict(os.environ, {"MCP_TEST_ENV": "partial"}),
-            caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"),
-        ):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
             async with _create_mcp_session(connection, server_name="fake"):
                 for _ in range(100):
                     if await asyncio.to_thread(first_written.exists):

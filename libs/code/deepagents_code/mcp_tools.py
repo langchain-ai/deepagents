@@ -203,7 +203,6 @@ class MCPConfigError(ValueError):
     """
 
 
-_MCP_ENV_REFERENCE_RE = re.compile(r"\$\{([^}]+)\}")
 _MCP_STDERR_LINE_LIMIT = 4096
 _MCP_STDERR_READ_SIZE = 8192
 _MCP_STDERR_TRUNCATION_MARKER = "... [truncated]"
@@ -229,38 +228,6 @@ thread's `os.read` to fail and exit. The forced-close join is bounded too:
 on Linux, closing a file descriptor from another thread does not reliably
 interrupt an in-progress `os.read`.
 """
-
-
-def _resolve_stdio_env(
-    env: dict[str, str] | None,
-    *,
-    server_name: str,
-) -> dict[str, str] | None:
-    """Resolve adapter-compatible braced environment references.
-
-    Args:
-        env: Configured subprocess environment.
-        server_name: MCP server name used in warning records.
-
-    Returns:
-        Resolved environment values, or `None` when no environment is configured.
-    """
-    if env is None:
-        return None
-    resolved = {
-        key: _MCP_ENV_REFERENCE_RE.sub(
-            lambda match: os.environ.get(match.group(1), match.group(0)), value
-        )
-        for key, value in env.items()
-    }
-    for key, value in resolved.items():
-        if _MCP_ENV_REFERENCE_RE.search(value):
-            logger.warning(
-                "MCP server %r env[%r] contains an unexpanded variable reference",
-                server_name,
-                key,
-            )
-    return resolved
 
 
 class _MCPStderrSink(io.TextIOBase):
@@ -511,7 +478,12 @@ async def _create_mcp_session(
     params = StdioServerParameters(
         command=stdio["command"],
         args=stdio["args"],
-        env=_resolve_stdio_env(stdio.get("env"), server_name=server_name),
+        # Already expanded: `_build_connection` runs `resolve_mcp_server_env`
+        # over `env` before the connection is built, with a richer grammar
+        # (`${VAR:-default}`) that raises on an unset reference. A second pass
+        # here could only re-scan resolved secrets and warn about a value that
+        # legitimately contains `${`.
+        env=stdio.get("env"),
         cwd=stdio.get("cwd"),
         encoding=encoding,
         encoding_error_handler=errors,

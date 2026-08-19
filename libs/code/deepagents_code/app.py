@@ -18000,9 +18000,22 @@ class DeepAgentsApp(App):
             # the raw exception text to a generic message, so surface a
             # self-contained, actionable message here rather than relying on it.
             if graph_input is not None and graph_input.get("goal_criteria_request"):
+                # A size rejection is the one failure here the user can act on,
+                # so keep its text: it names the budget and the excess. The
+                # overflow usually comes from the model-authored criteria (the
+                # objective is validated before this worker starts), and
+                # criteria drafting is non-deterministic, so a plain retry can
+                # succeed and shortening the objective buys headroom for both.
+                # A remote deployment redacts the raw text, so the generic
+                # message is still the fallback there.
                 body = (
-                    "Could not generate acceptance criteria for this goal. "
-                    "Run `/goal` again to retry."
+                    f"{e} Retry with `/goal`, or shorten the objective to leave "
+                    "room for the generated criteria."
+                    if isinstance(e, GoalStateSizeError)
+                    else (
+                        "Could not generate acceptance criteria for this goal. "
+                        "Run `/goal` again to retry."
+                    )
                 )
             try:
                 await self._mount_message(ErrorMessage(body))
@@ -25395,12 +25408,13 @@ class DeepAgentsApp(App):
                 worker.error,
                 exc_info=worker.error,
             )
-            # A size rejection is the one escape here the user can act on, and
-            # retrying an unchanged objective fails identically. Surface the
-            # limit message, which names what to shorten and by how much.
+            # Defence in depth: the size rejection normally surfaces from the
+            # turn handler, which keeps its limit text. Should one escape to
+            # here, surface the same actionable message rather than a bare
+            # "failed unexpectedly".
             message = (
-                f"{worker.error} Shorten the objective and run "
-                "`/goal <objective>` again."
+                f"{worker.error} Retry with `/goal`, or shorten the objective "
+                "to leave room for the generated criteria."
                 if isinstance(worker.error, GoalStateSizeError)
                 else (
                     "Drafting acceptance criteria failed unexpectedly. "

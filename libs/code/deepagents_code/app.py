@@ -24979,9 +24979,9 @@ class DeepAgentsApp(App):
     async def _show_mcp_viewer(self) -> None:
         """Show the MCP server/tool viewer as a modal screen.
 
-        The viewer may dismiss with a server name (when the user activates
-        an `unauthenticated` header row to start in-TUI OAuth login) or
-        with `None` (close without action). A plain close after `F2`
+        The viewer may dismiss with a server name when the user activates a
+        header row to start in-TUI OAuth login or re-authentication, or with
+        `None` when closed without action. A plain close after `F2`
         disable/enable toggles offers a reconnect so the changes are not
         left silently unapplied.
         """
@@ -25021,7 +25021,7 @@ class DeepAgentsApp(App):
                 task.add_done_callback(_log_task_exception)
                 return
             if result and self._start_mcp_login(result):
-                # User picked an unauthenticated server and login started.
+                # User picked a server and login or re-authentication started.
                 # Any pending disable toggle rides along on the post-login
                 # reconnect prompt, so this path never prompts twice.
                 return

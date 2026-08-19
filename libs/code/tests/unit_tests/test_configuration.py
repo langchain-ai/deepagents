@@ -1736,6 +1736,44 @@ def test_doctor_reports_managed_parse_health(
         service.invalidate_config_sources()
 
 
+def test_thread_config_is_not_cached_while_the_user_config_is_broken(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A degraded thread config must not outlive the repair.
+
+    Regression: `_load_effective_config_data` stopped raising for a bad user file
+    on the default path — it logs and returns managed-only data — so the
+    `except (OSError, TOMLDecodeError)` guard that used to prevent caching went
+    dead. The defaults-only result was then cached for the process lifetime and
+    survived the user fixing `config.toml`, because nothing on the read path
+    calls `invalidate_thread_config_cache`.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[broken", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        degraded = model_config.load_thread_config()
+        assert degraded.sort_order == "updated_at"
+
+        user.write_text('[threads]\nsort_order = "created_at"\n', encoding="utf-8")
+        service.invalidate_config_sources()
+
+        repaired = model_config.load_thread_config()
+        assert repaired.sort_order == "created_at"
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
 def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -950,6 +950,25 @@ def _load_effective_config_data(
     return dict(data), resolved_path
 
 
+def _user_config_layer_usable(config_path: Path | None = None) -> bool:
+    """Return whether the user TOML layer parsed cleanly.
+
+    `_load_effective_config_data` degrades a default-path read to managed-only
+    data instead of raising, so a caller that caches its result cannot tell a
+    complete read from a degraded one. Callers that cache for the process
+    lifetime have to ask.
+
+    Returns:
+        Whether the user layer is usable.
+    """
+    from deepagents_code.configuration.service import get_config_sources
+
+    is_default = config_path is None
+    resolved_path = DEFAULT_CONFIG_PATH if is_default else config_path
+    sources = get_config_sources(user_path=None if is_default else resolved_path)
+    return sources.user.status.usable
+
+
 _ollama_installed_models_cache: dict[str, list[str]] = {}
 _ollama_unreachable_endpoints: set[str] = set()
 """Local endpoints (trailing slash stripped) whose daemon refused the TCP
@@ -5012,7 +5031,13 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
         return ThreadConfig(columns, relative_time, sort_order, scope)
 
     result = ThreadConfig(columns, relative_time, sort_order, scope)
-    if use_default:
+    # The `except` above no longer fires for a bad user file on the default
+    # path: `_load_effective_config_data` logs it and returns managed-only data
+    # instead of raising, so that guard stopped protecting the cache. Without
+    # this check the degraded result was cached for the process lifetime and
+    # survived the user repairing `config.toml`, because nothing on the read
+    # path calls `invalidate_thread_config_cache`.
+    if use_default and _user_config_layer_usable():
         _thread_config_cache = result
     return result
 

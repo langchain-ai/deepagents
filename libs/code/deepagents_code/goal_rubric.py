@@ -208,6 +208,10 @@ class GoalProposal(BaseModel):
 
         Raises:
             GoalStateSizeError: If the combined text exceeds the notice budget.
+                pydantic wraps a `ValueError` raised inside a `model_validator`,
+                so callers constructing a `GoalProposal` observe a
+                `ValidationError` carrying this message, never this type. Only
+                the direct `validate_goal_application` calls raise it plainly.
         """  # noqa: DOC502 - propagates from `validate_goal_application`
         validate_goal_application(self.objective, self.criteria)
         return self

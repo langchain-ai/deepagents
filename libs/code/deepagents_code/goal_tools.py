@@ -90,7 +90,7 @@ def _goal_state_notice_for(
     state: dict[str, Any],
     messages: Sequence[object],
     *,
-    cutoff: int = 0,
+    cutoff: int,
 ) -> HumanMessage | None:
     """Build a notice when effective history lacks current goal/rubric state.
 
@@ -98,10 +98,11 @@ def _goal_state_notice_for(
         state: Authoritative middleware state.
         messages: Messages visible at the next model boundary.
         cutoff: Summarization cutoff index that `messages` is measured against.
-            Pass this only when `messages` is the full persisted list, where a
-            notice below the cutoff is present but invisible to the model. The
-            default of `0` suits an already-trimmed request window, whose indices
-            are relative to that window rather than to persisted history.
+            Required rather than defaulted: both callers pass the full persisted
+            list, where a notice below the cutoff is present but invisible to the
+            model, and this middleware wraps the summarizer so a trimmed window
+            never reaches here. A default of `0` would silently treat such a
+            notice as visible.
 
     Returns:
         Current notice to append, or `None` when history is already authoritative.
@@ -308,12 +309,13 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
             Read the current objective and any acceptance criteria from the latest
             goal/rubric state notice in context, or — right after a goal whose save
-            failed — from the objective quoted in the accompanying goal continuation
-            message. There is no read tool for them. Use `blocked` when you cannot
-            proceed without user input. Goals complete automatically after a
-            satisfied goal-backed grading turn, so `complete` is optional and only
-            stages its evidence for that result. Do not create, pause, resume,
-            clear, or replace goals — those are user-controlled.
+            failed — from the objective and criteria quoted in the accompanying
+            goal continuation message. There is no read tool for them. Use
+            `blocked` when you cannot proceed without user input. Goals complete
+            automatically after a satisfied goal-backed grading turn, so
+            `complete` is optional and only stages its evidence for that result.
+            Do not create, pause, resume, clear, or replace goals — those are
+            user-controlled.
 
             Returns:
                 Command that updates goal status and returns a tool message.
@@ -345,9 +347,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         messages = list(raw_messages) if isinstance(raw_messages, list) else []
         # `state["messages"]` is the full persisted list, so a notice summarization
         # has already scrolled past is still found here. Discount it against the
-        # cutoff, matching the client-side predicate in `app.py`, so the durable
-        # write happens instead of leaving the transient re-pin in `wrap_model_call`
-        # to carry the objective on every subsequent turn.
+        # cutoff, matching the client-side predicate in `app.py` for a valid
+        # event, so the durable write happens instead of leaving the transient
+        # re-pin in `wrap_model_call` to carry the objective on every subsequent
+        # turn. A malformed event diverges deliberately: `app.py` collapses it to
+        # `0`, while here it forces a fresh notice and clears the event.
         event = values.get("_summarization_event")
         cutoff = validated_summarization_cutoff(
             event,
@@ -445,8 +449,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         the only copy the model had.
 
         Returns:
-            The original request when no notice is needed, otherwise a request
-            with a current goal-state notice appended to its messages.
+            The original request when no notice is needed and nothing was
+            filtered. Otherwise a request carrying any of: a current goal-state
+            notice appended to its messages, superseded notices removed from
+            them, and — for a malformed `_summarization_event` — a state
+            override nulling that event.
         """
         values = cast("dict[str, Any]", request.state)
         event = values.get("_summarization_event")

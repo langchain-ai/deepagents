@@ -212,8 +212,8 @@ def build_goal_continuation(
         unsaved_objective: Accepted objective supplied directly when creation state
             could not be persisted.
         unsaved_criteria: Accepted acceptance criteria supplied alongside
-            `unsaved_objective`. Carried here because the state notice — now the
-            model's only channel to the criteria — was never written for this
+            `unsaved_objective`. Carried here because the state notice, the
+            model's only channel to the criteria, was never written for this
             transition, so omitting them leaves the model working toward a goal
             whose criteria it cannot obtain by any other means.
         event_id: Optional stable identifier for deterministic tests.
@@ -550,7 +550,7 @@ def build_goal_state_notice(
     else:
         guidance = (
             "No goal or rubric is currently actionable; do not let any prior goal "
-            "drive work, and do not call goal or rubric tools."
+            "drive work, and do not call `update_goal`."
         )
     if prior_blocker_error is not None:
         guidance += (

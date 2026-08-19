@@ -86,7 +86,11 @@ def test_inactive_notice_prohibits_goal_tool_calls() -> None:
     ):
         content = build_goal_state_notice(state).content
         assert "do not let any prior goal drive work" in content
-        assert "do not call goal or rubric tools" in content
+        # `update_goal` is the only goal tool that exists, so name it rather
+        # than gesturing at a category that had three members before the read
+        # tools were removed.
+        assert "do not call `update_goal`" in content
+        assert "goal or rubric tools" not in content
         assert "Use get_goal" not in content
         assert "Use get_rubric" not in content
         # An inactive goal's objective, criteria, and note must not leak.

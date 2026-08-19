@@ -68,6 +68,19 @@ class _OffloadConflictError(RuntimeError):
     """The thread changed or became active during an offload attempt."""
 
 
+class _OffloadUnavailableError(RuntimeError):
+    """The server runtime could not be built, so no operation can run.
+
+    `get_server_runtime` converts a construction failure into a startup-error
+    marker and `sys.exit(1)`. That barrier was written for the `langgraph.json`
+    graph factory, where exiting is right; reached from a request handler it
+    would kill the server process mid-request, and `SystemExit` is a
+    `BaseException`, so the route's own handler could not turn it into a
+    response. The seeded fallback needs the same runtime, so there is nothing
+    to degrade to -- report the condition instead.
+    """
+
+
 class _OffloadIndeterminateError(RuntimeError):
     """The state write may or may not have landed; the outcome is unknown.
 
@@ -314,6 +327,8 @@ async def _execute_offload(
     Raises:
         TypeError: If `thread_id` is empty.
         _OffloadConflictError: If the thread is active or changes before commit.
+        _OffloadUnavailableError: If the server runtime cannot be built, so no
+            operation can run.
         _OffloadIndeterminateError: If the state write failed but the thread
             advanced anyway, so the outcome cannot be determined.
         RuntimeError: If the operation attempts to write conversation messages.
@@ -351,7 +366,14 @@ async def _execute_offload(
             thread_id=thread_id,
             run_id=operation_id,
         )
-        server = await get_server_runtime()
+        try:
+            server = await get_server_runtime()
+        except SystemExit as exc:
+            msg = (
+                "The server could not build its agent runtime, so /offload is "
+                "unavailable. Check the server log for the startup failure."
+            )
+            raise _OffloadUnavailableError(msg) from exc
         runtime = Runtime[CLIContextSchema](
             context=cast("CLIContextSchema", context),
             store=getattr(server.agent, "store", None),
@@ -496,6 +518,11 @@ async def offload(request: Request) -> JSONResponse:
         )
     except _OffloadConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
+    except _OffloadUnavailableError as exc:
+        # 503: the server cannot serve this operation at all, as distinct from a
+        # thread-state conflict (409) or an ambiguous write (500).
+        logger.exception("Offload unavailable: the server runtime failed to build")
+        return JSONResponse({"detail": str(exc)}, status_code=503)
     except _OffloadIndeterminateError as exc:
         # 500: the operation did not complete cleanly. The detail is honest
         # about the uncertainty rather than asserting nothing was written.

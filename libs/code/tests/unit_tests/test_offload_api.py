@@ -802,6 +802,66 @@ class TestOffloadRoute:
         assert response.status_code == 500
         assert json.loads(bytes(response.body))["detail"] == "cannot confirm"
 
+    async def test_unbuildable_runtime_is_503_and_does_not_exit(self) -> None:
+        """The startup barrier must not kill the process from a request handler.
+
+        `get_server_runtime` answers a construction failure with `sys.exit(1)`,
+        which is correct for the `langgraph.json` graph factory and fatal here:
+        `SystemExit` is a `BaseException`, so without containment it escapes the
+        route entirely and takes the server down mid-request.
+        """
+        import json
+
+        from deepagents_code import offload_api
+
+        with patch.object(
+            offload_api,
+            "_execute_offload",
+            new=AsyncMock(
+                side_effect=offload_api._OffloadUnavailableError("runtime failed")
+            ),
+        ):
+            response = await offload_api.offload(
+                self._request({"operation_id": "op-1", "context": {}})  # ty: ignore[invalid-argument-type]
+            )
+
+        assert response.status_code == 503
+        assert json.loads(bytes(response.body))["detail"] == "runtime failed"
+
+    async def test_a_startup_exit_becomes_unavailable_not_a_process_exit(
+        self,
+    ) -> None:
+        """`SystemExit` from the runtime resolves to a typed error, not an exit."""
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=before),
+            update_state=AsyncMock(),
+        )
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "get_server_runtime",
+                new=AsyncMock(side_effect=SystemExit(1)),
+            ),
+            pytest.raises(offload_api._OffloadUnavailableError, match="unavailable"),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        threads.update_state.assert_not_awaited()
+
     async def test_internal_type_error_is_500_not_422(self) -> None:
         """A server-side shape fault must not be reported as a client error."""
         import json

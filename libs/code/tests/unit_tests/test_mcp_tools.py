@@ -1080,18 +1080,20 @@ class TestMCPStderrCapture:
                 "args": ["-c", script],
             },
         )
-        async with _create_mcp_session(connection, server_name="fake"):
-            for _ in range(100):
-                if await asyncio.to_thread(started.exists):
-                    break
-                await asyncio.sleep(0.01)
-            assert started.exists()
-        # Reaching here means __aexit__ (and wait_closed) returned instead of
-        # hanging on the leaked pipe.
-        assert not any(
-            thread.name == "mcp-stderr-fake" and thread.is_alive()
-            for thread in threading.enumerate()
-        )
+        # Session teardown joins the drain thread twice with
+        # `_MCP_STDERR_DRAIN_JOIN_TIMEOUT` before abandoning it, so a
+        # regression to an unbounded join makes this timeout fire.
+        async with asyncio.timeout(4 * _MCP_STDERR_DRAIN_JOIN_TIMEOUT):
+            async with _create_mcp_session(connection, server_name="fake"):
+                for _ in range(100):
+                    if await asyncio.to_thread(started.exists):
+                        break
+                    await asyncio.sleep(0.01)
+                assert started.exists()
+        # The drain thread may outlive teardown here: on Linux, closing the
+        # read end does not wake a thread blocked in `os.read`, so it stays
+        # parked (as a daemon) until the leaked descendant exits. Teardown
+        # being bounded — not thread death — is the guarantee under test.
 
     async def test_remote_session_delegates_to_adapter(self) -> None:
         """Non-stdio transports retain the adapter's session handling."""

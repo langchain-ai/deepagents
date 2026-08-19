@@ -3401,7 +3401,10 @@ async def _handle_interrupt_cleanup(
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
     if recover_interrupted_turn:
-        await adapter._mount_message(AppMessage("Interrupted by user"))
+        glyphs = get_glyphs()
+        await adapter._mount_message(
+            AppMessage(f"{glyphs.square_filled} Interrupted by user")
+        )
 
     # Proactively cancel server-side runs before persisting recovery state, so
     # the aupdate_state writes below don't 409 against a still-busy thread. This

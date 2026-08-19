@@ -508,7 +508,7 @@ class UserMessage(Static):
         height: auto;
         padding: 0 1;
         margin: 0 0 1 0;
-        background: transparent;
+        background: $primary 15%;
         border-left: wide $primary;
         /* The expand affordance carries `@click` meta, which Textual styles as
            a link (underline, and bold on an accent block when hovered).

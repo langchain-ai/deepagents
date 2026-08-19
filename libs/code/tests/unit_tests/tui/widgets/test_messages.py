@@ -5317,6 +5317,21 @@ class TestStripSuccessExitLine:
         assert msg._output == "hi"
 
 
+class TestUserMessageAppearance:
+    """User prompts remain visually distinct from transcript output."""
+
+    async def test_has_tinted_background(self) -> None:
+        """A user prompt has a dedicated translucent background surface."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield UserMessage("hello")
+
+        async with _Harness().run_test() as pilot:
+            message = pilot.app.query_one(UserMessage)
+            assert message.styles.background.a == pytest.approx(0.15)
+
+
 class TestUserMessageCancelled:
     """`set_cancelled` dims a prompt whose turn was interrupted."""
 

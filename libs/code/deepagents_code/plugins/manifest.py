@@ -279,18 +279,27 @@ def load_manifest(
             component_paths[field_name] = paths
 
     version_value = raw.get("version")
-    version = version_value if isinstance(version_value, str) else None
+    version = (
+        version_value if isinstance(version_value, str) and version_value else None
+    )
     display_name_value = raw.get("displayName")
     extension_settings = raw.get("extensions")
     if isinstance(extension_settings, dict):
         extension_settings = extension_settings.get(_DCODE_EXTENSION_KEY)
+    python_extensions = _python_extensions(extension_settings, root, warnings)
+    if python_extensions and version is None:
+        warnings.append(
+            f"ignoring {_PYTHON_EXTENSIONS_FIELD}: "
+            "Python extensions require a non-empty plugin version"
+        )
+        python_extensions = ()
     manifest = PluginManifest(
         name=name,
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
         inline_hooks=_inline_hooks(raw.get("hooks")),
-        python_extensions=_python_extensions(extension_settings, root, warnings),
+        python_extensions=python_extensions,
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),

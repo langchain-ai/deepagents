@@ -5,14 +5,38 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import stat
+import subprocess
+import sys
 from unittest.mock import patch
 
+import pytest
+
 import deepagents_code
+from deepagents_code import _debug
 from deepagents_code._debug import (
     configure_debug_logging,
     installed_debug_log_path,
     resolve_log_level,
 )
+
+
+def _icacls_entries(path) -> list[str]:
+    """Return one string per access-control entry on `path`, via `icacls`.
+
+    `icacls` prints `<path> <first ACE>`, then one indented ACE per line, then
+    a blank line and a summary. Only the ACE text is returned.
+    """
+    completed = subprocess.run(
+        ["icacls", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    head = completed.stdout.split("\n\n")[0]
+    first, *rest = head.splitlines()
+    entries = [first.removeprefix(str(path)), *rest]
+    return [entry.strip() for entry in entries if entry.strip()]
 
 
 class TestResolveLogLevel:
@@ -63,6 +87,7 @@ class TestConfigureDebugLogging:
     def test_adds_handler_when_env_set(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.add")
         log_file = tmp_path / "debug.log"
+        log_file.touch(mode=0o644)
         with patch.dict(
             os.environ,
             {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
@@ -70,11 +95,81 @@ class TestConfigureDebugLogging:
             configure_debug_logging(logger)
         assert any(isinstance(h, logging.FileHandler) for h in logger.handlers)
         assert logger.level == logging.DEBUG
+        if os.name != "nt":
+            assert stat.S_IMODE(log_file.stat().st_mode) == 0o600
         # Cleanup
         for h in logger.handlers[:]:
             if isinstance(h, logging.FileHandler):
                 h.close()
                 logger.removeHandler(h)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows ACL hardening")
+    def test_debug_file_dacl_grants_current_user_only(self, tmp_path) -> None:
+        """On Windows the debug file DACL is restricted to the current user.
+
+        A file that inherits its parent's DACL carries several entries
+        (`SYSTEM`, `Administrators`, the user). Exactly one entry, naming the
+        current user, is what proves the replacement DACL was applied and
+        marked protected so inherited entries were dropped.
+        """
+        log_file = tmp_path / "debug.log"
+        log_file.touch()
+
+        _debug._prepare_debug_file(log_file)
+
+        aces = _icacls_entries(log_file)
+        assert len(aces) == 1, f"expected a single ACE, got {aces}"
+        assert os.environ["USERNAME"].lower() in aces[0].lower()
+
+    def test_no_file_handler_when_hardening_fails(self, tmp_path, capsys) -> None:
+        """A file that cannot be secured gets no handler at all.
+
+        Captured MCP server stderr can carry credentials, so failing to
+        restrict the file must disable file logging rather than fall through
+        and write to it anyway.
+        """
+        logger = logging.getLogger("test.debug.harden_fail")
+        logger.handlers = []
+        log_file = tmp_path / "debug.log"
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "DEEPAGENTS_CODE_DEBUG": "1",
+                    "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file),
+                },
+            ),
+            patch.object(_debug, "_prepare_debug_file", side_effect=OSError("nope")),
+        ):
+            configure_debug_logging(logger)
+        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        assert "Warning" in capsys.readouterr().err
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW refusal")
+    def test_symlinked_debug_file_is_refused(self, tmp_path, capsys) -> None:
+        """A symlink at the debug path is refused, not followed.
+
+        `/tmp` is the default location, so a planted symlink would otherwise
+        redirect captured MCP stderr into a file the attacker chose.
+        """
+        logger = logging.getLogger("test.debug.symlink")
+        logger.handlers = []
+        victim = tmp_path / "victim.log"
+        victim.touch()
+        link = tmp_path / "debug.log"
+        link.symlink_to(victim)
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_FILE": str(link),
+            },
+        ):
+            configure_debug_logging(logger)
+        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        assert "Warning" in capsys.readouterr().err
+        logger.warning("must not be written through the symlink")
+        assert victim.read_text() == ""
 
     def test_log_level_debug_enables_debug_without_file_handler(self) -> None:
         logger = logging.getLogger("test.debug.level_only")

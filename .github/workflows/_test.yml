@@ -116,10 +116,100 @@ jobs:
         shell: bash
         run: uv sync --group test
 
-      - name: "🔍 Install ripgrep"
-        if: runner.os == 'Linux'
+      # Release-sensitive runs must exercise the real ripgrep code path rather
+      # than the Python fallback, so the install has no timeout here and a
+      # failure reds the job. `merge_group` is deliberately strict: an apt
+      # flake ejects the PR from the queue, which is recoverable, whereas a
+      # silent skip at the last gate before `main` is not.
+      #
+      # `DEEPAGENTS_RIPGREP_EXPECTED=1` is consumed by `require_ripgrep` in
+      # `libs/deepagents/tests/.../test_filesystem_backend.py`: on a runner
+      # that promised ripgrep, a missing `rg` fails the affected tests instead
+      # of skipping them. One of those tests guards symlink containment, and a
+      # silent skip would let a containment regression merge green.
+      - name: "🔍 Install ripgrep (strict)"
+        if: >-
+          runner.os == 'Linux' &&
+          (github.event_name != 'pull_request' ||
+          startsWith(github.head_ref, 'release-please--') ||
+          startsWith(github.event.pull_request.title, 'release('))
         shell: bash
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: |
+          sudo apt-get update && sudo apt-get install -y ripgrep
+          echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+
+      - name: "🔍 Install ripgrep (non-release PR)"
+        id: ripgrep-install
+        if: >-
+          runner.os == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          !startsWith(github.head_ref, 'release-please--') &&
+          !startsWith(github.event.pull_request.title, 'release(')
+        shell: bash
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_PYTHON: ${{ matrix.python-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          set +e
+          # `sudo timeout`, not `timeout sudo`: `timeout` must run as root to
+          # signal the root-owned `apt-get`. An unprivileged `timeout` gets
+          # EPERM, leaves the install orphaned holding the dpkg lock, and the
+          # bound silently does nothing.
+          sudo timeout --signal=TERM --kill-after=10s 120s \
+            bash -c 'apt-get update && apt-get install -y ripgrep'
+          status=$?
+          set -e
+
+          # coreutils `timeout` reports 124 when the command dies from the
+          # initial TERM and 137 (128+9) when `--kill-after` escalates to
+          # KILL. apt defers TERM mid-transaction, so 137 is the likely status
+          # for a genuinely wedged install. Both mean "hit the bound"; every
+          # other non-zero status is a real apt failure that must fail the job.
+          if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then
+            echo "timed-out=false" >> "$GITHUB_OUTPUT"
+            if [ "$status" -eq 0 ]; then
+              echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            fi
+            exit "$status"
+          fi
+
+          # A killed apt can leave dpkg mid-transaction. Unwind it so later
+          # steps don't trip over the lock, then check what actually landed:
+          # "the bound was hit" and "ripgrep is missing" are different facts,
+          # and only the second one should warn. The recovery itself is
+          # bounded: `dpkg --configure -a` can wait on the same lock or
+          # maintainer script that stalled the install, and without its own
+          # timeout the supposedly bounded step can burn the rest of the job's
+          # 20 minutes. A failed recovery is tolerated here — the
+          # `rg --version` probe below is what decides the warning.
+          sudo timeout --signal=TERM --kill-after=10s 60s \
+            dpkg --configure -a || true
+          if rg --version >/dev/null 2>&1; then
+            echo "timed-out=false" >> "$GITHUB_OUTPUT"
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            echo "::notice::ripgrep install hit the two-minute bound but a usable rg is present; continuing with ripgrep"
+            exit 0
+          fi
+
+          echo "timed-out=true" >> "$GITHUB_OUTPUT"
+          echo "::warning::ripgrep installation exceeded two minutes; continuing without ripgrep"
+          package="${WORKING_DIRECTORY//\//-}"
+          artifact="ripgrep-timeout-${package}-${MATRIX_OS}-${MATRIX_PYTHON}"
+          marker="$RUNNER_TEMP/$artifact/warning.txt"
+          mkdir -p "$(dirname "$marker")"
+          printf '%s\n' "$artifact" > "$marker"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: "📤 Record ripgrep install timeout"
+        if: steps.ripgrep-install.outputs.timed-out == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.ripgrep-install.outputs.artifact }}
+          path: ${{ steps.ripgrep-install.outputs.marker }}
+          retention-days: 1
 
       # Maintainer escape hatch: a PR labeled `bypass-warnings-check` runs
       # pytest with `-W default`, demoting the ini `filterwarnings` policy

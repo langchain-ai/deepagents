@@ -9,14 +9,20 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import copy
+import errno
 import fnmatch
 import functools
+import io
 import json
 import logging
+import os
 import re
 import shutil
-from contextlib import AsyncExitStack
+import threading
+import unicodedata
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
@@ -25,7 +31,15 @@ from deepagents_code import _env_vars
 from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Collection,
+        Mapping,
+        Sequence,
+    )
+    from typing import TextIO
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -201,6 +215,324 @@ class MCPConfigError(ValueError):
     keep working; new code can catch this specifically to render a
     user-actionable message (typically with a file path and hint).
     """
+
+
+_MCP_STDERR_LINE_LIMIT = 4096
+_MCP_STDERR_READ_SIZE = 8192
+_MCP_STDERR_TRUNCATION_MARKER = "... [truncated]"
+_MCP_STDERR_CAPTURE_ERRORS = "replace"
+"""Encoding error handler for the stderr *capture* decoder.
+
+Deliberately independent of the server's `encoding_error_handler`, which
+governs the protocol stream and defaults to `strict`. Nothing parses captured
+stderr — it goes to a log — so one stray non-UTF-8 byte should mangle a
+character, not discard the whole 8 KiB chunk it arrived in. Dropping the chunk
+would lose exactly the diagnostic this capture exists to provide.
+"""
+_MCP_STDERR_DRAIN_JOIN_TIMEOUT = 2.0
+"""Bound on joining the stderr drain thread during session teardown.
+
+The drain thread blocks in `os.read` until the pipe hits EOF. EOF comes only
+when *every* process holding the write end has closed it. MCP's stdio shutdown
+terminates the server's process tree, but a server can spawn a descendant that
+escapes that process group and keeps the inherited pipe open. An unbounded join
+would then block session close. Session close runs on discovery failure, on
+reload, and on shutdown.
+
+After this timeout the read end is closed to make the blocked `os.read` return.
+That is not a portable guarantee: on darwin the read returns EOF, and on Linux
+it can stay blocked, because `close` need not wake a reader already inside the
+syscall. The forced-close join is therefore bounded by this timeout as well,
+and the thread is abandoned if it outlives it. It is a daemon thread.
+"""
+
+
+class _MCPStderrSink(io.TextIOBase):
+    """A pipe that the MCP stdio transport can use as a server's stderr.
+
+    The transport only ever calls `fileno()` on the object it is handed, then
+    passes that descriptor to the subprocess. So this is a pipe with a reader
+    attached, not a writable stream: `fileno()` and `close()` are the whole
+    consumed surface, and `io.TextIOBase` is here for the `closed` bookkeeping
+    plus the `TextIO` cast the transport signature requires.
+
+    The reader thread has two jobs. It always drains, so a chatty server cannot
+    block writing to a full stderr pipe. It additionally logs whole, bounded,
+    sanitized lines to `deepagents_code.mcp_tools` at `DEBUG`, but only when
+    that level is enabled at construction time — raising the level afterwards
+    does not start capture on an existing sink.
+    """
+
+    def __init__(self, server_name: str, *, encoding: str) -> None:
+        """Create the pipe and start its reader.
+
+        Args:
+            server_name: MCP server name used in log records.
+            encoding: Encoding used to decode captured stderr bytes. The
+                error handler is always `_MCP_STDERR_CAPTURE_ERRORS`.
+        """
+        super().__init__()
+        self._server_name = server_name
+        self._encoding = encoding
+        self._capture = logger.isEnabledFor(logging.DEBUG)
+        self._decoder = (
+            codecs.getincrementaldecoder(encoding)(errors=_MCP_STDERR_CAPTURE_ERRORS)
+            if self._capture
+            else None
+        )
+        self._line = ""
+        self._truncated = False
+        self._read_fd_closed = False
+        # `_read_fd` is closed from the drain thread and from `wait_closed`;
+        # `_fd_lock` makes the close-once check atomic across the two.
+        self._fd_lock = threading.Lock()
+        # Set before `wait_closed` force-closes the read end, so the drain
+        # thread never issues another read against a freed fd number.
+        self._stopping = threading.Event()
+        self._read_fd, write_fd = os.pipe()
+        try:
+            self._writer = os.fdopen(write_fd, "wb", buffering=0)
+        except BaseException:
+            os.close(write_fd)
+            os.close(self._read_fd)
+            raise
+        try:
+            self._thread = threading.Thread(
+                target=self._drain,
+                name=f"mcp-stderr-{server_name}",
+                daemon=True,
+            )
+            self._thread.start()
+        except BaseException:
+            try:
+                self._writer.close()
+            finally:
+                self._close_read_fd()
+            raise
+
+    def fileno(self) -> int:
+        """Return the write descriptor to hand to the server subprocess."""
+        return self._writer.fileno()
+
+    def close(self) -> None:
+        """Close the parent's copy of the subprocess write descriptor."""
+        if self.closed:
+            return
+        # `getattr`: the finalizer reaches here for an instance whose
+        # `os.fdopen` failed, before `_writer` was ever assigned.
+        writer = getattr(self, "_writer", None)
+        try:
+            super().close()
+        finally:
+            if writer is not None:
+                writer.close()
+
+    async def wait_closed(self) -> None:
+        """Wait off the event loop until the pipe reader reaches EOF.
+
+        The join is bounded. If the drain thread is still blocked after
+        `_MCP_STDERR_DRAIN_JOIN_TIMEOUT`, the pipe's write end is held open by a
+        surviving server descendant. The read end is then closed to make the
+        blocked `os.read` return, and the thread is rejoined with the same
+        bound. Both bounds are necessary: a cross-thread close does not reliably
+        interrupt a reader inside `os.read`, so neither join can be unbounded.
+        """
+        self.close()
+        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
+        if not self._thread.is_alive():
+            return
+        self._stopping.set()
+        self._close_read_fd()
+        logger.debug(
+            "MCP server %r stderr pipe still held open after process exit; "
+            "forcing the drain thread closed",
+            self._server_name,
+        )
+        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
+        if self._thread.is_alive():
+            logger.warning(
+                "MCP server %r stderr drain thread did not exit after forced "
+                "pipe close",
+                self._server_name,
+            )
+
+    def _close_read_fd(self) -> None:
+        """Close the pipe read end exactly once.
+
+        Called from the drain thread's `finally` and from `wait_closed`, so the
+        flag check and the close are held under `_fd_lock`. Without it both
+        callers can pass an unlocked check and close twice, and between the two
+        closes the fd number is free for another thread to reuse — so the second
+        close would reap an unrelated descriptor.
+        """
+        with self._fd_lock:
+            if self._read_fd_closed:
+                return
+            self._read_fd_closed = True
+            try:
+                os.close(self._read_fd)
+            except OSError as exc:
+                logger.warning(
+                    "MCP server %r stderr pipe close failed: %s",
+                    self._server_name,
+                    exc,
+                )
+
+    def _drain(self) -> None:
+        """Read subprocess bytes so the server does not block on its stderr pipe.
+
+        Draining is unconditional; `_capture` only decides whether the bytes are
+        also logged. A drain that stops early while the server is still running
+        lets the pipe buffer fill and blocks the server's next write, so a
+        failure here is reported at `WARNING` even when capture is off.
+        """
+        try:
+            # Re-check before every read: once `wait_closed` has force-closed
+            # the read end, the fd number may already belong to another file.
+            while not self._stopping.is_set():
+                chunk = os.read(self._read_fd, _MCP_STDERR_READ_SIZE)
+                if not chunk:
+                    break
+                if self._capture:
+                    self._decode(chunk)
+            if self._capture:
+                self._decode(b"", final=True)
+                if self._line or self._truncated:
+                    self._emit_line()
+        except OSError as exc:
+            # EBADF covers the narrow race where `wait_closed` closes the read
+            # end between the `_stopping` check and the `os.read`.
+            if exc.errno != errno.EBADF:
+                logger.warning(
+                    "MCP server %r stderr drain stopped: %s. The server may "
+                    "block if it fills its stderr pipe.",
+                    self._server_name,
+                    exc,
+                )
+        except Exception:  # a dead drain thread blocks the server
+            # Without this the exception goes to `threading.excepthook`, which
+            # is invisible in the TUI, and nothing drains the child's stderr.
+            logger.exception(
+                "MCP server %r stderr drain failed unexpectedly",
+                self._server_name,
+            )
+        finally:
+            self._close_read_fd()
+
+    def _decode(self, data: bytes, *, final: bool = False) -> None:
+        """Decode one byte chunk without allowing malformed stderr to stop draining."""
+        if self._decoder is None:
+            return
+        try:
+            text = self._decoder.decode(data, final=final)
+        except UnicodeError as exc:
+            # Defensive: `_MCP_STDERR_CAPTURE_ERRORS` should keep this
+            # unreachable. Flush what was buffered before resetting, so a
+            # reader sees a truncated line rather than text silently spliced
+            # from either side of the discarded bytes.
+            self._decoder.reset()
+            if self._line or self._truncated:
+                self._emit_line()
+            logger.debug(
+                "MCP server %r stderr decode failed with %s: %s",
+                self._server_name,
+                self._encoding,
+                exc,
+            )
+            return
+        parts = text.split("\n")
+        for part in parts[:-1]:
+            self._append(part)
+            self._emit_line()
+        self._append(parts[-1])
+
+    def _append(self, text: str) -> None:
+        """Retain sanitized line content up to the configured bound."""
+        if self._truncated:
+            return
+        safe = "".join(
+            char for char in text if not unicodedata.category(char).startswith("C")
+        )
+        remaining = _MCP_STDERR_LINE_LIMIT - len(self._line)
+        self._line += safe[:remaining]
+        if len(safe) > remaining:
+            self._truncated = True
+
+    def _emit_line(self) -> None:
+        """Emit and reset the current complete line."""
+        line = self._line
+        if self._truncated:
+            content_limit = _MCP_STDERR_LINE_LIMIT - len(_MCP_STDERR_TRUNCATION_MARKER)
+            line = line[:content_limit] + _MCP_STDERR_TRUNCATION_MARKER
+        if line:
+            logger.debug("MCP server %r stderr: %s", self._server_name, line)
+        self._line = ""
+        self._truncated = False
+
+
+@asynccontextmanager
+async def _create_mcp_session(
+    connection: Connection,
+    *,
+    server_name: str,
+) -> AsyncIterator[ClientSession]:
+    """Create a session while routing stdio server diagnostics into DEBUG logs.
+
+    The stdio branch mirrors `langchain_mcp_adapters.sessions._create_stdio_session`
+    and exists only to pass `errlog`. Keep the two in sync when the adapter
+    changes its stdio setup.
+
+    Args:
+        connection: Adapter connection configuration.
+        server_name: MCP server name used in log records.
+
+    Yields:
+        An open MCP client session.
+    """
+    from langchain_mcp_adapters.sessions import create_session
+
+    if connection["transport"] != "stdio":
+        async with create_session(connection) as session:
+            yield session
+        return
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    stdio = connection
+    encoding = stdio.get("encoding", "utf-8")
+    errors = stdio.get("encoding_error_handler", "strict")
+    params = StdioServerParameters(
+        command=stdio["command"],
+        args=stdio["args"],
+        # Already expanded: `_build_connection` runs `resolve_mcp_server_env`
+        # over `env` before the connection is built, with a richer grammar
+        # (`${VAR:-default}`) that raises on an unset reference. A second pass
+        # here could only re-scan resolved secrets and warn about a value that
+        # legitimately contains `${`.
+        env=stdio.get("env"),
+        cwd=stdio.get("cwd"),
+        encoding=encoding,
+        encoding_error_handler=errors,
+    )
+    sink = _MCPStderrSink(server_name, encoding=encoding)
+    try:
+        async with stdio_client(params, errlog=cast("TextIO", sink)) as (read, write):
+            # The child now holds its own dup of the write end, so drop the
+            # parent's copy. Without this the pipe never reaches EOF after the
+            # server exits and the drain thread blocks until forced closed.
+            # Safe here because `stdio_client` spawns the process during
+            # `__aenter__` and never touches `errlog` again.
+            sink.close()
+            async with ClientSession(
+                read,
+                write,
+                **(stdio.get("session_kwargs") or {}),
+            ) as session:
+                yield session
+    finally:
+        sink.close()
+        await sink.wait_closed()
 
 
 def _is_transient_session_error(exc: BaseException) -> bool:
@@ -446,11 +778,11 @@ class MCPSessionManager:
             )
             raise ValueError(msg) from exc
 
-        from langchain_mcp_adapters.sessions import create_session
-
         exit_stack = AsyncExitStack()
         try:
-            session = await exit_stack.enter_async_context(create_session(connection))
+            session = await exit_stack.enter_async_context(
+                _create_mcp_session(connection, server_name=server_name)
+            )
             await session.initialize()
         except BaseException:
             # Close the partially entered stack in *this* task before
@@ -1908,7 +2240,6 @@ async def _load_tools_from_config(
         SSEConnection,
         StdioConnection,
         StreamableHttpConnection,
-        create_session,
     )
     from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 
@@ -2122,7 +2453,9 @@ async def _load_tools_from_config(
                 logger.log(level, message, server_name, exc_info=caught)
 
         try:
-            async with create_session(connections[server_name]) as discover_session:
+            async with _create_mcp_session(
+                connections[server_name], server_name=server_name
+            ) as discover_session:
                 await discover_session.initialize()
                 mcp_tools = await _discover_tools(discover_session)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):

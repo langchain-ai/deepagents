@@ -177,10 +177,7 @@ def test_compare_allows_broader_third_party_python_support() -> None:
 def test_compare_warns_when_third_party_caps_only_unreleased_minors(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "check_wheel_dep_freshness.sys.version_info",
-        (3, 14, 0),
-    )
+    monkeypatch.setattr("check_wheel_dep_freshness.CURRENT_CPYTHON_MINOR", 14)
     checks = compare_wheel_with_pypi(
         _metadata(
             name="deepagents-code",
@@ -655,10 +652,7 @@ def test_validate_wheel_passes_with_warning_for_unreleased_minor_cap(
     monkeypatch,
     capsys,
 ) -> None:
-    monkeypatch.setattr(
-        "check_wheel_dep_freshness.sys.version_info",
-        (3, 14, 0),
-    )
+    monkeypatch.setattr("check_wheel_dep_freshness.CURRENT_CPYTHON_MINOR", 14)
     wheel = tmp_path / "code.whl"
     _write_wheel(
         wheel,

@@ -38,6 +38,11 @@ if TYPE_CHECKING:
 MAX_FETCH_WORKERS = 8
 MAX_MARKER_VALUES_PER_VARIABLE = 16
 PYTHON_MINOR_PROBE_LIMIT = 100
+# Newest CPython minor with a stable release, used to tell a "not tested on
+# the next minor yet" upper bound (warning) from a cap that excludes an
+# interpreter users actually run (hard failure). Pinned to the interpreter
+# `check_dep_freshness.yml` runs this script under; bump both together.
+CURRENT_CPYTHON_MINOR = 14
 RELEASE_TITLE = re.compile(r"^release\(([^)]+)\):\s+\S+")
 MARKER_VARIABLES = (
     "implementation_name",
@@ -182,7 +187,7 @@ def _intersection_omits_only_unreleased_minors(
     wheel_requires_python: str,
     published_constraints: Sequence[str],
     *,
-    current_minor: int,
+    current_minor: int = CURRENT_CPYTHON_MINOR,
 ) -> bool:
     """Whether the dependency's Python coverage gap touches no existing minor.
 
@@ -198,7 +203,8 @@ def _intersection_omits_only_unreleased_minors(
         wheel_requires_python: `Requires-Python` declared by the release wheel.
         published_constraints: `requires_python` values from the published files.
         current_minor: Minor version of the newest released CPython line (e.g.
-            14 when 3.14 is current).
+            14 when 3.14 is current). Defaults to `CURRENT_CPYTHON_MINOR`;
+            tests override it to stay independent of the runner interpreter.
 
     Returns:
         `True` when only the next unreleased CPython minor and later are
@@ -877,7 +883,6 @@ def compare_wheel_with_pypi(
             if _intersection_omits_only_unreleased_minors(
                 metadata.requires_python,
                 published_python,
-                current_minor=sys.version_info[1],
             ):
                 passed = True
                 warning = True

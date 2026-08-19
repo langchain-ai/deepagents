@@ -336,11 +336,20 @@ def test_managed_mcp_lockdown_replaces_grants_and_unions_denies(
     assert trust.disabled == frozenset({"user-denied", "managed-denied", "env-denied"})
 
 
-def test_wrong_typed_managed_mcp_allow_list_does_not_mask_env_grant(
+def test_wrong_typed_managed_mcp_allow_list_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A malformed managed grant key is skipped instead of becoming lockdown."""
+    """A malformed managed grant key denies rather than leaving grants in force.
+
+    This inverts an earlier decision to skip the key. Skipping it read the
+    presence of an allow list as absence, so a quoted string instead of an array
+    silently kept both the user's remembered approvals and the
+    `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` bypass the list exists to remove —
+    a malformed narrowing policy widened access. `read_error` reports the cause,
+    so this is a visible failure, not a silent lockdown, and it matches
+    `disabled_project_servers`, which already fails closed here.
+    """
     from deepagents_code import _env_vars, model_config
     from deepagents_code.configuration import service
 
@@ -362,7 +371,38 @@ def test_wrong_typed_managed_mcp_allow_list_does_not_mask_env_grant(
     finally:
         service.invalidate_config_sources()
 
-    assert trust.enabled == frozenset({"env-granted"})
+    assert trust.enabled == frozenset()
+    assert trust.approvals == frozenset()
+    assert trust.read_error is not None
+    assert "enabled_project_server_approvals" in trust.read_error
+
+
+def test_unusable_managed_policy_denies_env_granted_project_servers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable managed file must not restore the env bypass.
+
+    Regression: `managed_approvals_explicit` was only assignable on the usable
+    branch, so a corrupt managed file left `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS`
+    grants in force — corrupting the file converted a managed suppression into a
+    permit. A deny list that cannot be read denies everything.
+    """
+    from deepagents_code import _env_vars, model_config
+    from deepagents_code.configuration import service
+
+    monkeypatch.setenv(
+        _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+        "env-granted",
+    )
+    _managed_only(tmp_path, monkeypatch, "[broken")
+    try:
+        trust = model_config.load_mcp_server_trust_lists()
+    finally:
+        service.invalidate_config_sources()
+
+    assert trust.enabled == frozenset()
+    assert trust.read_error is not None
 
 
 def test_custom_mcp_config_path_is_isolated_from_managed_policy(

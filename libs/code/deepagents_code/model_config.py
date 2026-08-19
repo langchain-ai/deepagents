@@ -4674,6 +4674,12 @@ def load_mcp_server_trust_lists(
             f"Could not enforce MCP trust lists from {managed_status.path}: "
             f"{managed_status.detail or managed_status.health.value}"
         )
+        # A managed file that cannot be read may have carried an explicit
+        # approvals list, whose whole purpose is to drop the env bypass. Leaving
+        # this false let `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` grants return,
+        # so corrupting the file converted a managed suppression into a permit.
+        # A deny list that cannot be read denies everything.
+        managed_approvals_explicit = True
     else:
         managed_mcp = sources.managed.data.get("mcp", {})
         if isinstance(managed_mcp, dict):
@@ -4688,6 +4694,26 @@ def load_mcp_server_trust_lists(
                 if isinstance(raw_managed_approvals, list):
                     managed_approvals_explicit = True
                     toml_approvals = parsed_approvals
+                else:
+                    # The key is present, so policy means to replace the user's
+                    # remembered approvals and drop the env bypass. Leaving
+                    # `managed_approvals_explicit` false kept both in force, so
+                    # a wrong-typed allow list silently widened access instead
+                    # of narrowing it. Fail closed as the deny list below does.
+                    managed_approvals_explicit = True
+                    toml_approvals = []
+                    read_error = (
+                        f"[mcp].{approvals_key} in "
+                        f"{managed_status.path or config_path} must be a list "
+                        "of approval entries; refusing to proceed with an "
+                        "unenforced managed allow list"
+                    )
+                    logger.warning(
+                        "Malformed [mcp].%s in managed config %s; treating "
+                        "project configs as untrusted",
+                        approvals_key,
+                        managed_status.path or config_path,
+                    )
             managed_disabled, managed_malformed = _toml_str_list(
                 managed_mcp.get("disabled_project_servers"),
                 key="disabled_project_servers",

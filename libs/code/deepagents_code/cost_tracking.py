@@ -2051,7 +2051,17 @@ def prepare_operation_cost(
                 continue
             delta_usd += cost_usd
     except BaseException:
-        _restore_recorded_costs(thread_id, records)
+        if not _restore_recorded_costs(thread_id, records):
+            # `_restore_recorded_costs` returns `bool` so callers can report a
+            # failed restore; the other two call sites both log. Without this a
+            # pricing crash could drop the drained spend with no record.
+            logger.warning(
+                "Could not restore %d drained cost record(s) for thread %s "
+                "after a pricing failure; that spend is lost from the "
+                "lifetime total",
+                len(records),
+                thread_id,
+            )
         raise
     return PreparedOperationCost(
         thread_id=thread_id,

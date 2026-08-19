@@ -2515,7 +2515,18 @@ class TestOffloadOperation:
             lambda messages, _event: messages
         )
         hooks = MagicMock()
-        hooks.aafter_model = AsyncMock(return_value=hook_update or {})
+        # Default to the shape `ServerHooksMiddleware._after_model` really
+        # returns: every one of its return paths carries the pre-tool channel,
+        # including the "no hook events enabled" path. The operation fails closed
+        # when the channel is absent, so a mock returning a bare `{}` would
+        # assert a contract the middleware never produces.
+        from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY
+
+        hooks.aafter_model = AsyncMock(
+            return_value=hook_update
+            if hook_update is not None
+            else {_PRE_TOOL_STATE_KEY: {}}
+        )
         return OffloadOperation(compaction, hooks), compaction, hooks
 
     async def test_compacts_checkpoint_state_without_message_input(self) -> None:
@@ -2613,6 +2624,26 @@ class TestOffloadOperation:
 
         assert execution.result["status"] == "denied"
         compaction.arun_forced_compaction_update.assert_not_awaited()
+
+    async def test_a_missing_hook_channel_refuses_instead_of_allowing(self) -> None:
+        """A hook decision that cannot be read must not be treated as an allow.
+
+        Every `_after_model` return path carries the pre-tool channel, so its
+        absence means the channel, the id derivation, or the outcome shape
+        drifted. Reading that through a `.get(..., {})` chain would turn a user's
+        denial into "no outcome" and compact straight through it, with no log.
+        """
+        middleware, compaction, hooks = self._middleware(hook_update={})
+
+        execution = await middleware.execute(
+            {"messages": _make_dict_messages(4)}, self._runtime()
+        )
+
+        assert execution.result["status"] == "failed"
+        assert "hook decision" in (execution.result["error"] or "")
+        compaction.arun_forced_compaction_update.assert_not_awaited()
+        assert "messages" not in execution.update
+        hooks.aafter_model.assert_awaited_once()
 
     async def test_failure_returns_result_without_rewriting_messages(self) -> None:
         middleware, compaction, _hooks = self._middleware()

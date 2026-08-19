@@ -1305,7 +1305,22 @@ class OffloadOperation:
             logger.exception("/offload hook dispatch failed")
             return "failed", f"Offload hooks failed: {type(exc).__name__}: {exc}"
 
-        outcome = hook_update.get(_PRE_TOOL_STATE_KEY, {}).get(forced_call_id, {})
+        # Fail closed on a missing channel rather than defaulting to allow.
+        # `_after_model` always returns this key, so its absence means the
+        # channel, the id derivation, or the outcome shape drifted -- and a
+        # `.get(..., {})` chain would read a user's *denial* as "no outcome" and
+        # compact straight through it, with no log.
+        outcomes = hook_update.get(_PRE_TOOL_STATE_KEY)
+        if not isinstance(outcomes, dict):
+            logger.error(
+                "Compaction hooks returned no %s channel for /offload; refusing "
+                "rather than treating a possible denial as an allow",
+                _PRE_TOOL_STATE_KEY,
+            )
+            return "failed", (
+                "Could not read the compaction hook decision; offload refused."
+            )
+        outcome = outcomes.get(forced_call_id) or {}
         if outcome.get("behavior") == "deny":
             reason = outcome.get("reason") or "Blocked by a compaction hook"
             return "denied", str(reason)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -111,6 +112,8 @@ class HookTransportInterruptError(BaseException):
         super().__init__(str(request.invocation_id))
         self.request = request
 
+
+logger = logging.getLogger(__name__)
 
 _HOOK_RESPONSES: ContextVar[Mapping[str, object] | None] = ContextVar(
     "deepagents_code_hook_responses",
@@ -919,6 +922,16 @@ def _invoke_hook(
     except ValidationError:
         # Only shape errors degrade to a neutral decision. A plain `ValueError`
         # means the client answered a different request, so it stays fatal.
+        #
+        # Log it too: the diagnostic is only rendered by the client-side hook
+        # presenter, and the offload operation reads just the pre-tool channel
+        # from this update, so on that path the diagnostic is dropped and the
+        # hook is silently ignored.
+        logger.warning(
+            "Malformed hook resume value for invocation %s; treating it as no decision",
+            request.invocation_id,
+            exc_info=True,
+        )
         diagnostic = HookDiagnostic(
             code="invalid_resume",
             severity="warning",

@@ -2979,15 +2979,17 @@ class TestEnableAskUser:
         assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
     def test_tool_error_middleware_is_wired_and_scoped(self, tmp_path: Path) -> None:
-        """The agent stack converts tool-arg `ValueError`s for the affected tools."""
+        """The agent stack installs `ToolErrorMiddleware` scoped to `ask_user`."""
         from langchain.agents.middleware import ToolErrorMiddleware
+
+        from deepagents_code.agent import _TOOL_ARG_VALIDATION_TOOLS
 
         middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
         error_middleware = next(
             (mw for mw in middleware if isinstance(mw, ToolErrorMiddleware)), None
         )
         assert error_middleware is not None
-        assert error_middleware._tool_filter == ["ask_user", "read_file"]
+        assert error_middleware._tool_filter == list(_TOOL_ARG_VALIDATION_TOOLS)
 
 
 class TestLoadAsyncSubagents:
@@ -3656,18 +3658,14 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 CostTrackingMiddleware,
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
-                ToolErrorMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            # Subagents get their own base `FilesystemMiddleware`/`read_file`
-            # from `create_deep_agent`, on a `wrap_tool_call` chain separate
-            # from the parent's; the scoped error middleware must be present
-            # here or a delegated malformed `read_file` aborts the task.
-            tool_error = next(
-                mw
+            # Subagents never get `AskUserMiddleware`, and `ask_user` is the
+            # only tool in `_TOOL_ARG_VALIDATION_TOOLS`, so a
+            # `ToolErrorMiddleware` here could never fire.
+            assert not any(
+                isinstance(mw, ToolErrorMiddleware)
                 for mw in subagents_by_name[name]["middleware"]
-                if isinstance(mw, ToolErrorMiddleware)
             )
-            assert tool_error._tool_filter == ["ask_user", "read_file"]
             hooks = next(
                 mw
                 for mw in subagents_by_name[name]["middleware"]

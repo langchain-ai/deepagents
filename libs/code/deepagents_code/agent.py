@@ -71,6 +71,7 @@ from deepagents_code._repository_bounds import (
     REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
 )
+from deepagents_code._tool_errors import ToolArgumentError
 from deepagents_code.approval_mode import (
     ApprovalMode,
     aread_approval_mode_from_store,
@@ -178,27 +179,43 @@ def _get_harness_tool_descriptions(
     return dict(_harness_profile_for_model(model, None).tool_description_overrides)
 
 
-# Tools that validate model-authored arguments by raising `ValueError`. A
-# `ValueError` from one of these becomes a recoverable error `ToolMessage` via
-# `ToolErrorMiddleware` rather than a fatal run error.
-_TOOL_ARG_VALIDATION_TOOLS: tuple[str, ...] = ("ask_user", "read_file")
+# Tools that raise `ToolArgumentError` on model-authored arguments. The name
+# filter is a second gate only: recovery keys off the exception type, so a
+# different error from one of these tools still halts the run.
+#
+# `read_file` is deliberately absent. It catches its own argument errors and
+# returns an error `ToolMessage` already. The only `ValueError`s that escape it
+# come from backend invariants the model cannot fix, and the SDK raises those
+# on purpose to stop a backend from silently skipping unshown source lines.
+_TOOL_ARG_VALIDATION_TOOLS: tuple[str, ...] = ("ask_user",)
 
 
 def _tool_arg_validation_on_error(
     exc: Exception, request: ToolCallRequest
 ) -> str | None:
-    """Convert a tool-argument `ValueError` into a model-correctable message.
+    """Convert a `ToolArgumentError` into a model-correctable message.
+
+    `ToolErrorMiddleware` re-raises `GraphBubbleUp` before it calls this, so
+    interrupts and parent commands never arrive here.
 
     Args:
         exc: Exception raised during tool execution.
         request: The tool call request that failed.
 
     Returns:
-        A message naming the tool and the validation detail for `ValueError`, so
-            the model can fix its input and retry; `None` for any other
-            exception so unexpected errors propagate and halt the run.
+        A message naming the tool and the validation detail, so the model can
+            fix its input and retry. `None` for any other exception, so
+            unexpected errors propagate and halt the run.
     """
-    if isinstance(exc, ValueError):
+    if isinstance(exc, ToolArgumentError):
+        # The run no longer fails, so this is the only record that the model
+        # sent bad arguments. `exc_info` keeps the raise site for debugging.
+        logger.warning(
+            "Recovered tool argument error from %s: %s",
+            request.tool_call["name"],
+            exc,
+            exc_info=exc,
+        )
         return f"`{request.tool_call['name']}` failed: {exc}. Fix the input and retry."
     return None
 
@@ -2523,22 +2540,15 @@ def create_cli_agent(
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        # Subagents get their own base `FilesystemMiddleware` (and thus their own
-        # `read_file`) from `create_deep_agent`, with a `wrap_tool_call` chain
-        # separate from the parent graph's. Recover tool-arg `ValueError`s there
-        # too, or a delegated subagent's malformed `read_file` aborts the task.
-        middleware.extend(
-            [
-                ServerHooksMiddleware(
-                    cwd=hooks_cwd,
-                    emit_stop=False,
-                    mcp_tools=mcp_tools,
-                ),
-                ToolErrorMiddleware(
-                    _tool_arg_validation_on_error,
-                    tools=list(_TOOL_ARG_VALIDATION_TOOLS),
-                ),
-            ]
+        # No `ToolErrorMiddleware` here. `_TOOL_ARG_VALIDATION_TOOLS` covers
+        # `ask_user` only, and subagents never get `AskUserMiddleware`, so an
+        # instance on this stack could never fire.
+        middleware.append(
+            ServerHooksMiddleware(
+                cwd=hooks_cwd,
+                emit_stop=False,
+                mcp_tools=mcp_tools,
+            )
         )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
@@ -2650,11 +2660,8 @@ def create_cli_agent(
         agent_middleware.append(ask_user_middleware)
         trusted_ask_user_tool = ask_user_middleware.tools[0]
 
-    # Convert tool-argument validation `ValueError`s into recoverable error
-    # `ToolMessage`s the model can act on, instead of fatal run errors. Scoped to
-    # the tools that validate model-authored args by raising; everything else
-    # propagates and halts the run. `ToolErrorMiddleware` re-raises LangGraph
-    # control-flow signals (interrupts), so `ask_user`'s `interrupt()` still works.
+    # Turn a `ToolArgumentError` into a recoverable error `ToolMessage` instead
+    # of a fatal run error. Any other exception propagates and halts the run.
     agent_middleware.append(
         ToolErrorMiddleware(
             _tool_arg_validation_on_error, tools=list(_TOOL_ARG_VALIDATION_TOOLS)

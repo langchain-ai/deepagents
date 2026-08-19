@@ -23,7 +23,11 @@ from deepagents_code._ask_user_types import (
     Question,
     _requires_choices,
 )
-from deepagents_code.agent import _tool_arg_validation_on_error
+from deepagents_code._tool_errors import ToolArgumentError
+from deepagents_code.agent import (
+    _TOOL_ARG_VALIDATION_TOOLS,
+    _tool_arg_validation_on_error,
+)
 from deepagents_code.ask_user import (
     AskUserMiddleware,
     _parse_answers,
@@ -738,16 +742,16 @@ def _make_request(tool_name: str, args: dict[str, Any]) -> ToolCallRequest:
 
 
 class TestToolArgValidationRecovery:
-    """`ToolErrorMiddleware` converts tool-arg `ValueError`s to error messages."""
+    """`ToolErrorMiddleware` converts `ToolArgumentError` to error messages."""
 
     def _middleware(self) -> ToolErrorMiddleware:
         return ToolErrorMiddleware(
             _tool_arg_validation_on_error,
-            tools=["ask_user", "read_file"],
+            tools=list(_TOOL_ARG_VALIDATION_TOOLS),
         )
 
     def test_value_error_becomes_error_tool_message(self) -> None:
-        """A model-authored `ValueError` is recoverable, not fatal."""
+        """A model-authored `ToolArgumentError` is recoverable, not fatal."""
         middleware = self._middleware()
         request = _make_request("ask_user", {"questions": []})
 
@@ -765,7 +769,7 @@ class TestToolArgValidationRecovery:
         assert "at least one question" in str(result.content)
 
     def test_blank_choice_value_becomes_error_tool_message(self) -> None:
-        """The LangSmith issue's blank-choice case names the offending field."""
+        """A blank choice value names the offending field."""
         middleware = self._middleware()
         questions = [
             {
@@ -787,20 +791,22 @@ class TestToolArgValidationRecovery:
         assert result.status == "error"
         assert "missing or blank 'value'" in str(result.content)
 
-    def test_read_file_value_error_becomes_error_tool_message(self) -> None:
-        """`read_file` is in scope; its `ValueError` is recoverable too."""
+    def test_plain_value_error_propagates(self) -> None:
+        """Recovery keys off the exception type, not the tool name.
+
+        A bare `ValueError` raised while a scoped tool runs is an internal
+        fault, not model-authored input. It must stay fatal. Middleware inside
+        this one raises that way on purpose.
+        """
         middleware = self._middleware()
-        request = _make_request("read_file", {"file_path": "/x", "offset": -1})
+        request = _make_request("ask_user", {"questions": []})
 
         def handler(_: ToolCallRequest) -> ToolMessage:
-            msg = "offset must be non-negative, got -1"
+            msg = "client answered a different request"
             raise ValueError(msg)
 
-        result = middleware.wrap_tool_call(request, handler)
-
-        assert isinstance(result, ToolMessage)
-        assert result.status == "error"
-        assert "`read_file` failed" in str(result.content)
+        with pytest.raises(ValueError, match="client answered a different request"):
+            middleware.wrap_tool_call(request, handler)
 
     def test_non_value_error_propagates(self) -> None:
         """Unexpected errors still halt the run rather than reaching the model."""
@@ -826,13 +832,35 @@ class TestToolArgValidationRecovery:
             middleware.wrap_tool_call(request, handler)
 
     def test_out_of_scope_tool_is_not_converted(self) -> None:
-        """A `ValueError` from a tool outside the scope list still propagates."""
+        """A `ToolArgumentError` outside the scope list still propagates."""
         middleware = self._middleware()
         request = _make_request("some_other_tool", {})
 
         def handler(_: ToolCallRequest) -> ToolMessage:
             msg = "validation detail"
-            raise ValueError(msg)
+            raise ToolArgumentError(msg)
 
-        with pytest.raises(ValueError, match="validation detail"):
+        with pytest.raises(ToolArgumentError, match="validation detail"):
             middleware.wrap_tool_call(request, handler)
+
+    async def test_async_value_error_becomes_error_tool_message(self) -> None:
+        """Production runs the async path, so it needs the same recovery.
+
+        `read_file` and friends register coroutines, so `awrap_tool_call` is
+        the wrapper that actually runs. It has no `aon_error`, so it falls back
+        to the sync handler; this pins that fallback.
+        """
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        # Must be async: `awrap_tool_call` awaits the handler it is given.
+        async def handler(_: ToolCallRequest) -> ToolMessage:  # noqa: RUF029
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = await middleware.awrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "at least one question" in str(result.content)

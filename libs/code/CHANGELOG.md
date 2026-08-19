@@ -2,6 +2,30 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.58](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.57...deepagents-code==0.1.58) (2026-08-19)
+
+### Breaking Changes
+
+- `deepagents-code` now requires Python 3.12 or newer. ([#5603](https://github.com/langchain-ai/deepagents/issues/5603))
+
+### Features
+
+- Added OpenRouter `z-ai/glm-5.3` to the model switcher. ([#5641](https://github.com/langchain-ai/deepagents/issues/5641))
+- Added support for re-authenticating MCP servers from the viewer. ([#5637](https://github.com/langchain-ai/deepagents/issues/5637))
+- Footer pickers can now be opened with `ctrl+click`. ([#5611](https://github.com/langchain-ai/deepagents/issues/5611))
+- Resume hints now account for `TERM_PROGRAM` support before showing terminal-specific guidance. ([#5580](https://github.com/langchain-ai/deepagents/issues/5580))
+
+### Fixes
+
+- Completed the `dcode config` command surface. ([#5581](https://github.com/langchain-ai/deepagents/issues/5581))
+- Made `/offload` interruptible. ([#5590](https://github.com/langchain-ai/deepagents/issues/5590))
+- Improved chat and footer UI behavior: rapid typing stays visible, double-click collapses a resized chat input, and the MCP footer wraps on narrow windows. ([#5424](https://github.com/langchain-ai/deepagents/issues/5424), [#5578](https://github.com/langchain-ai/deepagents/issues/5578), [#5651](https://github.com/langchain-ai/deepagents/issues/5651))
+- Captured stdio MCP server stderr in the logger. ([#5610](https://github.com/langchain-ai/deepagents/issues/5610))
+- Drained hook pipes after timeout. ([#5606](https://github.com/langchain-ai/deepagents/issues/5606))
+- Grouped resume trace rounds. ([#5593](https://github.com/langchain-ai/deepagents/issues/5593))
+- Omitted web-search prompt guidance when web search is unavailable. ([#5602](https://github.com/langchain-ai/deepagents/issues/5602))
+- Resolved message pointer shapes per cell. ([#5592](https://github.com/langchain-ai/deepagents/issues/5592))
+
 ## [0.1.57](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.56...deepagents-code==0.1.57) (2026-08-18)
 
 ### Features

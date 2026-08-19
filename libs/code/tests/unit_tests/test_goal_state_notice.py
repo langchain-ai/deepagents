@@ -188,6 +188,11 @@ def test_oversized_legacy_prior_blocker_does_not_hide_safe_current_state() -> No
     assert "<acceptance_criteria>tests pass</acceptance_criteria>" in content
     assert "Prior blocker context was omitted" in content
     assert blocker not in content
+    # The validation detail reaches the model verbatim, so it must name the
+    # field that was actually dropped, not the live status note (which this
+    # notice still carries, and which is within its limit).
+    assert "Prior blocker is 4,001 characters" in content
+    assert "Goal status note is" not in content
 
 
 def test_fingerprint_tracks_objective_and_criteria_text() -> None:

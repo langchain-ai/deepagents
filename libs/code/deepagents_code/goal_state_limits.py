@@ -107,17 +107,20 @@ def validate_goal_application(objective: str, criteria: str) -> None:
         )
 
 
-def validate_goal_status_note(note: str) -> None:
+def validate_goal_status_note(note: str, *, label: str = "Goal status note") -> None:
     """Reject a goal status note that cannot fit its persistent context budget.
 
     Args:
         note: Completion evidence or blocker explanation.
+        label: Name of the value in the raised message. Override it when the
+            note is not the live status note, because the message reaches the
+            model verbatim and would otherwise name a field the notice does not
+            carry.
 
     Raises:
         GoalStateSizeError: If `note` exceeds `GOAL_STATUS_NOTE_CHAR_LIMIT`.
     """
     if len(note) > GOAL_STATUS_NOTE_CHAR_LIMIT:
-        label = "Goal status note"
         raise GoalStateSizeError(
             label=label,
             actual=len(note),
@@ -152,7 +155,7 @@ def validate_goal_notice_text(
     if status_note is not None:
         validate_goal_status_note(status_note)
     if prior_blocker is not None:
-        validate_goal_status_note(prior_blocker)
+        validate_goal_status_note(prior_blocker, label="Prior blocker")
     total = sum(
         len(value)
         for value in (objective, criteria, status_note, prior_blocker)

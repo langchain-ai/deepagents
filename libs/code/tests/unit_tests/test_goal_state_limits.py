@@ -70,15 +70,14 @@ def test_goal_application_rejects_pair_that_only_exceeds_combined_limit() -> Non
     assert raised.value.limit == GOAL_APPLICATION_CHAR_LIMIT
 
 
-def test_notice_total_limit_is_reachable_only_with_a_prior_blocker() -> None:
-    """The aggregate notice budget guards the resume-only `prior_blocker` field.
+def test_notice_total_limit_accepts_maximum_ordinary_text() -> None:
+    """The aggregate notice budget accepts maximum ordinary embedded text.
 
     Objective-plus-criteria caps at `GOAL_APPLICATION_CHAR_LIMIT` and the note at
     `GOAL_STATUS_NOTE_CHAR_LIMIT`, which sum to exactly
-    `GOAL_NOTICE_TEXT_CHAR_LIMIT`. Without `prior_blocker` the aggregate branch is
-    therefore unreachable, so this pins both halves: the maximal non-blocker
-    notice is accepted, and adding any blocker to it trips the aggregate rather
-    than an individual limit.
+    `GOAL_NOTICE_TEXT_CHAR_LIMIT`. This pins both halves: the maximal ordinary
+    non-blocker notice is accepted, and adding any blocker trips the aggregate
+    rather than an individual limit.
     """
     objective = "o" * GOAL_OBJECTIVE_CHAR_LIMIT
     criteria = "c" * (GOAL_APPLICATION_CHAR_LIMIT - len(objective))
@@ -102,6 +101,21 @@ def test_notice_total_limit_is_reachable_only_with_a_prior_blocker() -> None:
         )
 
     assert raised.value.actual == GOAL_NOTICE_TEXT_CHAR_LIMIT + 1
+    assert raised.value.limit == GOAL_NOTICE_TEXT_CHAR_LIMIT
+
+
+def test_notice_total_limit_counts_html_escaped_text() -> None:
+    """Escaping user text cannot grow a valid notice past its context budget."""
+    objective = "&" * GOAL_OBJECTIVE_CHAR_LIMIT
+
+    with pytest.raises(GoalStateSizeError, match="notice text") as raised:
+        validate_goal_notice_text(
+            objective=objective,
+            criteria=None,
+            status_note=None,
+        )
+
+    assert raised.value.actual == len("&amp;") * GOAL_OBJECTIVE_CHAR_LIMIT
     assert raised.value.limit == GOAL_NOTICE_TEXT_CHAR_LIMIT
 
 

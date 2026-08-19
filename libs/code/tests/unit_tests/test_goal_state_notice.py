@@ -4,6 +4,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.goal_state_limits import (
+    GOAL_OBJECTIVE_CHAR_LIMIT,
     GOAL_STATUS_NOTE_CHAR_LIMIT,
     RUBRIC_CHAR_LIMIT,
 )
@@ -174,6 +175,20 @@ def test_oversized_legacy_notice_is_bounded_and_non_actionable() -> None:
     assert "Goal status: active" not in content
 
 
+def test_escape_heavy_notice_is_bounded_and_non_actionable() -> None:
+    """HTML escaping cannot turn individually valid state into a huge notice."""
+    objective = "&" * GOAL_OBJECTIVE_CHAR_LIMIT
+
+    content = build_goal_state_notice(
+        {"_goal_objective": objective, "_goal_status": "active"}
+    ).content
+
+    assert len(content) < 2_000
+    assert "Goal actionable: no" in content
+    assert "Goal-state notice text is 40,000 characters" in content
+    assert "&amp;" not in content
+
+
 def test_oversized_legacy_prior_blocker_does_not_hide_safe_current_state() -> None:
     """Transient resume context cannot pin a fallback over safe goal state."""
     blocker = "x" * (GOAL_STATUS_NOTE_CHAR_LIMIT + 1)
@@ -224,26 +239,26 @@ def test_fingerprint_tracks_objective_and_criteria_text() -> None:
 
 
 def test_schema_version_is_past_the_unbounded_notice_era() -> None:
-    """Older notices can omit required text or embed unbounded text.
+    """Older notices can omit required text or exceed the escaped-text budget.
 
     Pinning the floor (rather than the exact value) keeps a future bump free while
-    making a revert fail here instead of in a resumed session. The floor is 4
-    because version 3 notices still embedded unbounded objective and rubric text:
-    reverting to 3 would re-trust exactly the oversized checkpointed notices that
-    version 4 replaces with bounded recovery guidance.
+    making a revert fail here instead of in a resumed session. The floor is 5
+    because version 4 counted raw rather than HTML-escaped embedded text:
+    reverting to 4 would re-trust escape-heavy checkpointed notices that exceed
+    the context budget.
     """
-    assert GOAL_MESSAGE_SCHEMA_VERSION >= 4
+    assert GOAL_MESSAGE_SCHEMA_VERSION >= 5
 
 
 def test_prior_schema_notice_is_not_authoritative() -> None:
     """A notice from a prior schema version stops counting as authoritative.
 
     The mutation below is `GOAL_MESSAGE_SCHEMA_VERSION - 1`, so the defect this
-    covers is whichever the current version fixed — today version 3's unbounded
-    objective and rubric text. Every earlier version has its own defect
-    (version 2 truncated that text; version 1 named read tools that no longer
-    exist), so any prior version must be superseded rather than trusted on
-    resume.
+    covers is whichever the current version fixed — today version 4's
+    escape-heavy objective and rubric text. Every earlier version has its own
+    defect (version 3 embedded unbounded text; version 2 truncated that text;
+    version 1 named read tools that no longer exist), so any prior version must
+    be superseded rather than trusted on resume.
     """
     state = {"_goal_objective": "ship it", "_goal_status": "active"}
     stale = build_goal_state_notice(state, event_id="old-schema")

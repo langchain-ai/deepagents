@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 GOAL_CONTROL_MESSAGE_SOURCE: Final = "goal_control"
 GOAL_STATE_MESSAGE_SOURCE: Final = "goal_state"
-GOAL_MESSAGE_SCHEMA_VERSION: Final = 4
+GOAL_MESSAGE_SCHEMA_VERSION: Final = 5
 """Canonical goal-message schema version.
 
 Bump this whenever notice *content* changes in a way that makes an already
@@ -35,7 +35,8 @@ as authoritative and the next model boundary appends a current one. Version 2
 dropped the `get_goal`/`get_rubric` references version 1 notices carried, and
 version 3 stopped truncating the only model-visible objective and rubric text.
 Version 4 rejects oversized new state and replaces any legacy oversized notice
-with bounded recovery guidance.
+with bounded recovery guidance. Version 5 counts HTML-escaped embedded text in
+that budget, so version 4 notices with escape-heavy text are superseded.
 """
 _GOAL_MESSAGE_SCHEMA_KEY: Final = "goal_message_schema_version"
 _GOAL_MESSAGE_KIND_KEY: Final = "goal_message_kind"

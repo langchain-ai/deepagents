@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import Final, Literal, get_args
 
 GoalStatus = Literal["active", "paused", "blocked", "complete"]
@@ -35,12 +36,12 @@ GOAL_STATUS_NOTE_CHAR_LIMIT: Final = 4_000
 """Maximum characters in a completion-evidence or blocker note."""
 
 GOAL_NOTICE_TEXT_CHAR_LIMIT: Final = 16_000
-"""Maximum combined raw text embedded in one goal-state notice.
+"""Maximum combined rendered text embedded in one goal-state notice.
 
 Equal to `GOAL_APPLICATION_CHAR_LIMIT + GOAL_STATUS_NOTE_CHAR_LIMIT`, so the
 per-field limits already sum to it. The aggregate check is therefore only
 reachable via `prior_blocker`, the one section not covered by the application
-budget; on the primary path it is defense in depth rather than a live bound.
+budget for ordinary text, but HTML escaping can make it live for any section.
 Raise this deliberately if a new section is ever embedded in a notice.
 """
 
@@ -211,7 +212,7 @@ def validate_goal_notice_text(
     if prior_blocker is not None:
         validate_goal_status_note(prior_blocker, label="Prior blocker")
     total = sum(
-        len(value)
+        len(html.escape(value, quote=False))
         for value in (objective, criteria, status_note, prior_blocker)
         if value is not None
     )

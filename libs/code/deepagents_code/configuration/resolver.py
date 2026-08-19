@@ -69,6 +69,13 @@ def merge_toml_tables(
             and not _overriding_table_is_scalar_only(existing)
         ):
             continue
+        # Validate every managed value at a manifest-backed scalar path,
+        # including TOML tables. A table cannot be passed to the validator as
+        # a leaf through the recursive branch below, so validating only
+        # non-dicts would let `[models.default]` replace a valid string with a
+        # dictionary that later runtime readers cannot use.
+        if higher_leaf_is_valid is not None and not higher_leaf_is_valid(path, value):
+            continue
         if (
             path in union_paths
             and isinstance(existing, list)
@@ -104,13 +111,6 @@ def merge_toml_tables(
                     union.append(deepcopy(item))
             merged[key] = union
             provenance[dotted] = _combined_source(lower_source, higher_source)
-            continue
-        if (
-            key in merged
-            and higher_leaf_is_valid is not None
-            and not isinstance(value, dict)
-            and not higher_leaf_is_valid(path, value)
-        ):
             continue
         merged[key] = deepcopy(value)
         for leaf in tuple(provenance):

@@ -5320,8 +5320,8 @@ class TestStripSuccessExitLine:
 class TestUserMessageAppearance:
     """User prompts remain visually distinct from transcript output."""
 
-    async def test_has_tinted_background(self) -> None:
-        """A user prompt has a dedicated translucent background surface."""
+    async def test_has_distinct_flush_left_surface(self) -> None:
+        """A user prompt has a tinted surface with its glyph at the left edge."""
 
         class _Harness(App[None]):
             def compose(self) -> ComposeResult:
@@ -5330,6 +5330,8 @@ class TestUserMessageAppearance:
         async with _Harness().run_test() as pilot:
             message = pilot.app.query_one(UserMessage)
             assert message.styles.background.a == pytest.approx(0.15)
+            assert message.styles.padding.left == 0
+            assert message.styles.padding.right == 1
 
 
 class TestUserMessageCancelled:

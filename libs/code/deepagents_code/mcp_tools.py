@@ -404,7 +404,13 @@ class _MCPStderrSink(io.TextIOBase):
                 )
 
     def _drain(self) -> None:
-        """Drain subprocess bytes so stderr can never block the child."""
+        """Read subprocess bytes so the server does not block on its stderr pipe.
+
+        Draining is unconditional; `_capture` only decides whether the bytes are
+        also logged. A drain that stops early while the server is still running
+        lets the pipe buffer fill and blocks the server's next write, so a
+        failure here is reported at `WARNING` even when capture is off.
+        """
         try:
             # Re-check before every read: once `wait_closed` has force-closed
             # the read end, the fd number may already belong to another file.
@@ -419,14 +425,22 @@ class _MCPStderrSink(io.TextIOBase):
                 if self._line or self._truncated:
                     self._emit_line()
         except OSError as exc:
-            # EBADF is the expected teardown path when wait_closed force-closes
-            # the read end while the thread is blocked on a leaked pipe.
-            if self._capture and exc.errno != errno.EBADF:
-                logger.debug(
-                    "MCP server %r stderr capture failed: %s",
+            # EBADF covers the narrow race where `wait_closed` closes the read
+            # end between the `_stopping` check and the `os.read`.
+            if exc.errno != errno.EBADF:
+                logger.warning(
+                    "MCP server %r stderr drain stopped: %s. The server may "
+                    "block if it fills its stderr pipe.",
                     self._server_name,
                     exc,
                 )
+        except Exception:  # a dead drain thread blocks the server
+            # Without this the exception goes to `threading.excepthook`, which
+            # is invisible in the TUI, and nothing drains the child's stderr.
+            logger.exception(
+                "MCP server %r stderr drain failed unexpectedly",
+                self._server_name,
+            )
         finally:
             self._close_read_fd()
 

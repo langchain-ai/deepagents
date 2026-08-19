@@ -47,6 +47,8 @@ The main extension points are:
 - **Tools and MCP servers** for external capabilities
 - **Sandboxes** for changing where tool execution happens
 - **Hooks and commands** for integrating with local workflows
+- **Python extensions** for middleware, tools, and virtual storage routes,
+  loaded from installed plugins or a trusted project
 
 These pieces are designed to compose. A project can provide shared defaults and integrations, while each user can layer personal configuration on top.
 
@@ -67,6 +69,7 @@ The main cost is the client/server boundary. When debugging, first decide which 
 - For local setup and debugging, see [`DEVELOPMENT.md`](./DEVELOPMENT.md).
 - For command behavior, see [`COMMANDS.md`](./COMMANDS.md).
 - For lifecycle hooks (`hooks.json`), see [`HOOKS.md`](./HOOKS.md).
+- For server-side Python extensions, see [`EXTENSIONS.md`](./EXTENSIONS.md).
 - For cost estimates and local pricing overrides (`prices.json`), see
   [`PRICING.md`](./PRICING.md).
 - For security boundaries, see [`THREAT_MODEL.md`](./THREAT_MODEL.md).

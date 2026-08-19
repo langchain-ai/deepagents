@@ -1,7 +1,7 @@
 """Tests for agent-server extension hosting."""
 
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from deepagents.backends import FilesystemBackend
 from langchain.agents.middleware.types import AgentMiddleware
@@ -89,3 +89,18 @@ def test_extension_units_merge_without_overriding_internal_names(
     assert "/memories/" in backend.routes
     assert "/artifacts/" not in backend.routes
     assert registry.backend_routes[0].source.plugin_id == "memory@test"
+
+
+async def test_server_lifespan_releases_extensions() -> None:
+    """LangGraph shutdown awaits server-owned extension teardown."""
+    from starlette.applications import Starlette
+
+    from deepagents_code.server_lifespan import _lifespan
+
+    shutdown = AsyncMock()
+    with patch(
+        "deepagents_code.extensions.runtime.shutdown_server_extensions", shutdown
+    ):
+        async with _lifespan(Starlette()):
+            pass
+    shutdown.assert_awaited_once_with()

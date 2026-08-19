@@ -1,6 +1,7 @@
 """Tests for the plugin manager modal structure."""
 
 import asyncio
+import contextlib
 import inspect
 import re
 import time
@@ -1087,24 +1088,38 @@ async def test_connection_refresh_waits_for_initial_refresh(
             raise AssertionError(msg) from None
 
     initial_refresh = asyncio.create_task(screen._refresh_state())
-    # The initial load has entered `load_state` and is holding the refresh lock.
-    await wait_for(initial_started, "the initial load to start")
-    # Queue the settled connection refresh behind the initial load's lock.
-    screen.update_connection_state([], mcp_connecting=False)
-    # Release the initial load; once it finishes, the queued settled refresh runs.
-    release_initial.append(True)
-    await initial_refresh
-    # Wait for the settled refresh to finish and apply its snapshot. `settled_applied`
-    # is set from the load thread, so also yield once to let the connection task run
-    # its `_state` assignment (the continuation after `await asyncio.to_thread(...)`).
-    await wait_for(settled_applied, "the settled refresh")
-    for _ in range(100):
-        if screen._state == settled_state:
-            break
-        await asyncio.sleep(0)
-    else:
-        msg = f"settled load ran but `_state` was not applied; snapshots: {snapshots}"
-        raise AssertionError(msg)
+    try:
+        # The initial load has entered `load_state` and is holding the refresh lock.
+        await wait_for(initial_started, "the initial load to start")
+        # Queue the settled connection refresh behind the initial load's lock.
+        screen.update_connection_state([], mcp_connecting=False)
+        # Release the initial load; once it finishes, the queued settled refresh runs.
+        release_initial.append(True)
+        await initial_refresh
+        # Wait for the settled refresh to finish and apply its snapshot.
+        # `settled_applied` is set from the load thread, so also yield once to let
+        # the connection task run its `_state` assignment (the continuation after
+        # `await asyncio.to_thread(...)`).
+        await wait_for(settled_applied, "the settled refresh")
+        for _ in range(100):
+            if screen._state == settled_state:
+                break
+            await asyncio.sleep(0)
+        else:
+            msg = (
+                f"settled load ran but `_state` was not applied; snapshots: {snapshots}"
+            )
+            raise AssertionError(msg)
+    finally:
+        # Release the load thread even when a wait above timed out: a running
+        # `to_thread` callable cannot be cancelled, and an un-released worker
+        # would spin in `load_state` forever, hanging interpreter teardown on
+        # the executor instead of surfacing the assertion.
+        release_initial.append(True)
+        if not initial_refresh.done():
+            initial_refresh.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await initial_refresh
 
     assert snapshots == [True, False]
     assert screen._state == settled_state

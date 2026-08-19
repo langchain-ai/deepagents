@@ -77,6 +77,38 @@ def test_managed_config_path_windows_ignores_process_env(
     )
 
 
+def test_registry_program_data_outranks_a_poisoned_process_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful registry read wins over a redefined `%ProgramData%`.
+
+    The sibling test proves the *fallback* ignores the environment. This is the
+    real attack: a machine with a relocated ProgramData, where the user exports
+    a path of their own and the registry holds the true one.
+    """
+    from deepagents_code.configuration import paths
+
+    monkeypatch.setattr(paths, "_program_data_from_registry", lambda: "D:/RealShared")
+    monkeypatch.setenv("ProgramData", "C:/attacker/fake")
+    monkeypatch.setenv("PROGRAMDATA", "C:/attacker/fake")
+    assert managed_config_path(platform="win32") == Path(
+        "D:/RealShared/dcode/managed_config.toml"
+    )
+
+
+def test_user_config_writers_share_one_lock_object() -> None:
+    """A second lock for the same file would not mutually exclude.
+
+    The hazard is the whole-file replace, so a `[effort]` write in
+    `model_config` and a `[ui]` write through the shared writer must contend on
+    the same object. This is the invariant those docstrings rest on.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
+
+    assert model_config._config_write_lock is USER_CONFIG_WRITE_LOCK
+
+
 def test_toml_provider_distinguishes_missing_corrupt_and_empty(
     tmp_path: Path,
 ) -> None:
@@ -1458,6 +1490,356 @@ def test_managed_path_fallback_is_reported_as_a_guess(
         assert status.detail == "registry unreadable"
     finally:
         service.invalidate_config_sources()
+
+
+def test_default_read_includes_policy_and_an_explicit_path_does_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a default read carries policy, and that is not a caller's choice.
+
+    An excluded managed layer reports `MISSING` with an empty table, which is
+    indistinguishable from a machine with no policy installed. Deriving it from
+    `user_path` keeps that state out of reach of a keyword argument.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[models]\ndefault = "managed:model"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        default_read = service.get_config_sources()
+        assert default_read.managed.data != {}
+        assert default_read.merged()[0]["models"]["default"] == "managed:model"
+
+        isolated = service.get_config_sources(user_path=user)
+        assert isolated.managed.data == {}
+        assert "models" not in isolated.merged()[0]
+    finally:
+        service.invalidate_config_sources()
+
+
+async def test_unreadable_managed_policy_disables_every_mcp_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deny decision must reach "which servers start", not just a predicate.
+
+    `is_server_disabled` failing closed is not enough: this is the call that
+    turns policy into running processes.
+    """
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from deepagents_code import mcp_tools
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[broken")
+    explicit = tmp_path / "mcp.json"
+    explicit.write_text(
+        json.dumps({"mcpServers": {"github": {"command": "npx", "args": []}}}),
+        encoding="utf-8",
+    )
+    load = AsyncMock(return_value=([], None, []))
+    monkeypatch.setattr(mcp_tools, "_load_tools_from_config", load)
+    monkeypatch.setattr(mcp_tools, "discover_mcp_configs", MagicMock(return_value=[]))
+    try:
+        tools, manager, infos = await mcp_tools.resolve_and_load_mcp_tools(
+            explicit_config_path=str(explicit),
+            trust_project_mcp=True,
+        )
+        assert tools == []
+        assert manager is None
+        assert [info.status for info in infos] == ["disabled"]
+        # No server may reach the loader at all.
+        load.assert_not_called()
+    finally:
+        service.invalidate_config_sources()
+
+
+async def test_server_mode_refuses_to_build_a_graph_without_enforceable_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server gate is a second entry point with the same duty as the CLI."""
+    from deepagents_code import server_graph
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[broken")
+    failures: list[BaseException] = []
+    monkeypatch.setattr(server_graph, "emit_startup_failure", failures.append)
+    try:
+        factory = server_graph._build_graph_factory(builder=None)
+        with pytest.raises(SystemExit) as excinfo:
+            await factory()
+        assert excinfo.value.code == 1
+        assert isinstance(failures[0], ManagedConfigError)
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_corrupt_managed_policy_fails_the_mcp_trust_lists_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable managed file must set `read_error`, keyed on its health."""
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[broken")
+    try:
+        trust = model_config.load_mcp_server_trust_lists()
+        assert trust.read_error is not None
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_structured_table_displaces_a_valid_user_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented structured-table exception, pinned so it cannot drift.
+
+    `is_valid_managed_scalar` accepts any value at a `STRUCTURED` path, so a
+    wrong-typed managed table displaces the user's and the typed reader falls
+    back to its default. `README.md` documents this; nothing tested it.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text(
+        '[models.providers.custom]\napi_key_env = "CUSTOM_KEY"\n',
+        encoding="utf-8",
+    )
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[models]\nproviders = "junk"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        assert model_config.ModelConfig.load().providers == {}
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_loaded_config_cannot_mutate_the_shared_managed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumer must not be able to rewrite policy for the rest of the session.
+
+    The managed snapshot is cached process-wide, so handing out a live sub-dict
+    would let one caller's edit outlive its own read.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[broken", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[models.providers.corp]\napi_key_env = "CORP_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        config = model_config.ModelConfig.load()
+        assert "corp" in config.providers
+        config.providers["corp"]["api_key_env"] = "ATTACKER_KEY"
+        snapshot = service.get_managed_snapshot()
+        assert snapshot.data["models"]["providers"]["corp"]["api_key_env"] == "CORP_KEY"
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+
+def test_out_of_range_managed_recursion_limit_falls_through(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bounded resolver keeps the lower layer; the launch gate stops instead."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[runtime]\nrecursion_limit = 3\n")
+    try:
+        assert (
+            resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 400}})
+            == 400
+        )
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_theme_outranks_the_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed `[ui].theme` cannot be overridden by an exported variable."""
+    from deepagents_code._env_vars import THEME
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, '[ui]\ntheme = "textual-dark"\n')
+    monkeypatch.setenv(THEME, "nord")
+    option = get_option("display.theme")
+    assert option is not None
+    try:
+        value, source = resolve_scalar(option, toml_data={})
+        assert value == "textual-dark"
+        assert source.startswith("managed config")
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_failed_write_leaves_no_temporary_file_behind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that fails mid-flight must not litter the config directory."""
+    import tomli_w
+
+    from deepagents_code.configuration import writer
+
+    target = tmp_path / "config.toml"
+    target.write_text('[ui]\ntheme = "dark"\n', encoding="utf-8")
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        msg = "disk full"
+        raise OSError(msg)
+
+    monkeypatch.setattr(tomli_w, "dump", explode)
+    result = writer.update_user_config(
+        lambda data: bool(data.__setitem__("ui", {"theme": "light"})) or True,
+        config_path=target,
+    )
+    assert result.ok is False
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+@pytest.mark.parametrize(
+    ("env_value", "user_toml", "expected_source"),
+    [
+        (None, '[shell]\nallow_list = ["ls"]\n', "config.toml"),
+        ("git", '[shell]\nallow_list = ["ls"]\n', "env"),
+    ],
+    ids=["user-toml-honored", "env-outranks-user-toml"],
+)
+def test_shell_allow_list_reads_the_user_toml_below_the_environment(
+    env_value: str | None,
+    user_toml: str,
+    expected_source: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key gained `toml_keys`, so the TOML tier needs its own coverage.
+
+    It was env-only before this feature, and it grants shell auto-approval, so
+    the new tier is a user-writable permission surface.
+    """
+    from deepagents_code._env_vars import SHELL_ALLOW_LIST
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+
+    user = tmp_path / "config.toml"
+    user.write_text(user_toml, encoding="utf-8")
+    if env_value is None:
+        monkeypatch.delenv(SHELL_ALLOW_LIST, raising=False)
+    else:
+        monkeypatch.setenv(SHELL_ALLOW_LIST, env_value)
+    option = get_option("shell.allow_list")
+    assert option is not None
+    import tomllib
+
+    with user.open("rb") as handle:
+        toml_data = tomllib.load(handle)
+    _, source = resolve_scalar(option, toml_data=toml_data, managed_toml_data={})
+    assert source.startswith(expected_source)
+
+
+def test_managed_shell_allow_list_outranks_a_shell_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exported allow list cannot defeat the managed one."""
+    from deepagents_code._env_vars import SHELL_ALLOW_LIST
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, '[shell]\nallow_list = ["ls"]\n')
+    monkeypatch.setenv(SHELL_ALLOW_LIST, "all")
+    option = get_option("shell.allow_list")
+    assert option is not None
+    try:
+        value, source = resolve_scalar(option, toml_data={})
+        assert value == ["ls"]
+        assert source == "managed config"
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_empty_managed_shell_allow_list_is_a_lockdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`allow_list = []` must remove every grant, not fall through to one."""
+    from deepagents_code._env_vars import SHELL_ALLOW_LIST
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[shell]\nallow_list = []\n")
+    monkeypatch.setenv(SHELL_ALLOW_LIST, "all")
+    option = get_option("shell.allow_list")
+    assert option is not None
+    try:
+        value, source = resolve_scalar(option, toml_data={})
+        assert value is None
+        assert source == "managed config"
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_saving_a_shadowed_ui_preference_says_policy_still_wins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The save succeeds, and the user learns why nothing changed on screen.
+
+    `README.md` advertises this notice for the theme, terminal-mapping,
+    UI-toggle, and MCP-server screens; nothing tested any of them.
+    """
+    from deepagents_code import app, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[ui]\nshow_scrollbar = true\n", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        result = app._save_show_scrollbar_result(visible=False)
+        assert result.ok is True
+        assert result.message == (
+            "Preference saved, but managed config remains effective."
+        )
+        # The preference is still written, so removing policy reveals it.
+        assert "show_scrollbar = false" in user.read_text(encoding="utf-8")
+    finally:
+        service.invalidate_config_sources()
+        model_config.clear_caches()
 
 
 def _reload_previous() -> dict[str, object]:

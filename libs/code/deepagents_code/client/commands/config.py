@@ -33,7 +33,7 @@ from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.output import OutputFormat
@@ -206,10 +206,10 @@ def _load_stored_credentials() -> _StoredCredentialView:
 
 def _resolve(
     option: ConfigOption,
-    toml_data: dict[str, Any],
+    toml_data: Mapping[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
-    managed_toml_data: dict[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[bool, str, object]:
     """Resolve an option for display, reporting what the runtime actually reads.
 
@@ -433,7 +433,7 @@ def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
 
 
 def _nested_value(
-    data: dict[str, Any], keys: tuple[str, ...] | None
+    data: Mapping[str, Any], keys: tuple[str, ...] | None
 ) -> tuple[bool, object]:
     """Return one nested value without conflating explicit empty and missing.
 
@@ -454,8 +454,8 @@ def _option_provenance(
     option: ConfigOption,
     *,
     source: str,
-    toml_data: dict[str, Any] | None,
-    managed_toml_data: dict[str, Any] | None,
+    toml_data: Mapping[str, Any] | None,
+    managed_toml_data: Mapping[str, Any] | None,
 ) -> dict[str, str]:
     """Build redaction-safe effective or per-leaf provenance for JSON output.
 
@@ -531,8 +531,8 @@ def _config_json_row(
     value: object,
     store_error: str | None,
     include_catalog: bool,
-    toml_data: dict[str, Any] | None = None,
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one `config --json` row, redacting secrets and flagging errors.
 

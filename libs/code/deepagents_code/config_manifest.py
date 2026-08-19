@@ -43,7 +43,7 @@ from deepagents_code import _env_vars
 from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -481,7 +481,7 @@ def load_config_toml() -> dict[str, Any]:
         return {}
 
 
-def load_managed_config_toml(*, refresh: bool = False) -> dict[str, Any]:
+def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
     """Load the fixed operating-system managed TOML source.
 
     Returns:
@@ -496,7 +496,7 @@ _warned_non_table_paths: set[tuple[str, ...]] = set()
 
 
 def _toml_lookup(
-    data: dict[str, Any], keys: tuple[str, ...], *, source: str = "config.toml"
+    data: Mapping[str, Any], keys: tuple[str, ...], *, source: str = "config.toml"
 ) -> tuple[bool, Any]:
     """Navigate nested `keys` in one TOML source.
 
@@ -752,7 +752,9 @@ def _coerce_toml(
     return _INVALID
 
 
-def _resolve_theme(toml_data: dict[str, Any], *, source: str) -> tuple[str, str] | None:
+def _resolve_theme(
+    toml_data: Mapping[str, Any], *, source: str
+) -> tuple[str, str] | None:
     """Resolve a theme from one TOML layer.
 
     Returns:
@@ -784,7 +786,7 @@ def _resolve_theme(toml_data: dict[str, Any], *, source: str) -> tuple[str, str]
 
 
 def _resolve_effective_theme(
-    toml_data: dict[str, Any], managed_toml_data: dict[str, Any]
+    toml_data: Mapping[str, Any], managed_toml_data: Mapping[str, Any]
 ) -> tuple[str, str]:
     """Resolve managed, environment, and user theme preferences.
 
@@ -811,8 +813,8 @@ def _resolve_effective_theme(
 def resolve_scalar(
     option: ConfigOption,
     *,
-    toml_data: dict[str, Any],
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[Any, str]:
     """Resolve an option through managed, environment, user, and default tiers.
 
@@ -956,8 +958,8 @@ def resolve_scalar(
 
 def resolve_interpreter_kwargs(
     *,
-    toml_data: dict[str, Any] | None = None,
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve the `[interpreter]` options into `Settings` constructor kwargs.
 
@@ -1006,8 +1008,8 @@ def _is_valid_auto_classifier_timeout(value: object) -> bool:
 
 def resolve_auto_classifier_timeout_with_source(
     *,
-    toml_data: dict[str, Any] | None = None,
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[float, str]:
     """Resolve the Auto classifier decision-batch budget and its source.
 
@@ -1103,8 +1105,8 @@ def resolve_auto_classifier_timeout_with_source(
 
 def resolve_auto_classifier_timeout(
     *,
-    toml_data: dict[str, Any] | None = None,
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> float:
     """Resolve the wall-clock budget for one Auto classifier decision batch.
 
@@ -1165,8 +1167,8 @@ def blank_auto_classifier_env_name() -> str | None:
 
 def resolve_auto_classifier_model_with_source(
     *,
-    toml_data: dict[str, Any] | None = None,
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[str | None, str]:
     """Resolve the effective Auto classifier model spec and its source.
 
@@ -1250,8 +1252,8 @@ def is_valid_recursion_limit(value: object) -> bool:
 
 def resolve_recursion_limit(
     *,
-    toml_data: dict[str, Any] | None = None,
-    managed_toml_data: dict[str, Any] | None = None,
+    toml_data: Mapping[str, Any] | None = None,
+    managed_toml_data: Mapping[str, Any] | None = None,
 ) -> int:
     """Resolve the effective main-agent `recursion_limit`.
 
@@ -2420,7 +2422,8 @@ def get_config_options() -> tuple[ConfigOption, ...]:
     Cached: provider credentials are generated once from `PROVIDER_API_KEY_ENV`
     on first call (which lazily imports `model_config`). The cache assumes that
     registry is an immutable module constant; a test that monkeypatches it must
-    call `get_config_options.cache_clear()` (and `_options_by_key.cache_clear()`).
+    call `get_config_options.cache_clear()` (and `_options_by_key.cache_clear()`
+    and `_options_by_toml_path.cache_clear()`).
     """
     return _credential_options() + _STATIC_OPTIONS
 
@@ -2467,6 +2470,26 @@ def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
 @lru_cache(maxsize=1)
 def _options_by_key() -> dict[str, ConfigOption]:
     return {opt.key: opt for opt in get_config_options()}
+
+
+@lru_cache(maxsize=1)
+def _options_by_toml_path() -> dict[tuple[str, ...], ConfigOption]:
+    return {opt.toml_keys: opt for opt in get_config_options() if opt.toml_keys}
+
+
+def option_for_toml_path(path: tuple[str, ...]) -> ConfigOption | None:
+    """Return the manifest entry that owns a TOML path, or `None` when unknown.
+
+    Indexed rather than scanned: the merge validates every managed leaf, and a
+    linear pass over the whole manifest per leaf runs on the startup path.
+
+    Args:
+        path: The dotted TOML path as a key tuple.
+
+    Returns:
+        The option that declares `path`, or `None`.
+    """
+    return _options_by_toml_path().get(path)
 
 
 def iter_groups(options: Iterable[ConfigOption]) -> list[str]:

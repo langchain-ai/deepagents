@@ -2973,6 +2973,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     monkeypatch.setattr(model_config, "PROVIDER_API_KEY_ENV", patched)
     config_manifest.get_config_options.cache_clear()
     config_manifest._options_by_key.cache_clear()
+    config_manifest._options_by_toml_path.cache_clear()
     try:
         opt = config_manifest.get_option("credentials.synthetic_xyz")
         assert opt is not None
@@ -2983,6 +2984,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
         # Restore the cache so later tests rebuild against the real registry.
         config_manifest.get_config_options.cache_clear()
         config_manifest._options_by_key.cache_clear()
+        config_manifest._options_by_toml_path.cache_clear()
 
 
 def test_provider_dependency_metadata_is_exhaustive() -> None:

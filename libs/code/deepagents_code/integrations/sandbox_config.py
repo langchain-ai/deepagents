@@ -128,10 +128,8 @@ class SandboxConfig:
         from deepagents_code.configuration.service import get_config_sources
         from deepagents_code.configuration.types import ProviderHealth
 
-        sources = get_config_sources(
-            user_path=config_path,
-            include_managed=is_default,
-        )
+        # `None` on the default path: that is what includes managed policy.
+        sources = get_config_sources(user_path=None if is_default else config_path)
         # A bad user file is reported through `parse_error` but must not
         # discard administrator policy, which parsed cleanly on its own.
         parse_error: str | None = None

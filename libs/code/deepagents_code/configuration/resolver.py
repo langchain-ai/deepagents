@@ -11,19 +11,17 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 
 def merge_toml_tables(
-    lower: dict[str, Any],
-    higher: dict[str, Any],
+    lower: Mapping[str, Any],
+    higher: Mapping[str, Any],
     *,
     lower_source: str,
     higher_source: str,
     union_paths: frozenset[tuple[str, ...]] = frozenset(),
-    lower_provenance: dict[str, str] | None = None,
     higher_leaf_is_valid: Callable[[tuple[str, ...], object], bool] | None = None,
-    _path: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Deep-merge TOML tables with higher-precedence leaf provenance.
 
@@ -34,21 +32,53 @@ def merge_toml_tables(
         higher_source: Source label recorded for surviving `higher` leaves.
         union_paths: Paths whose lists accumulate instead of being replaced.
             Deny lists must union, because replacing one would be a fail-open.
-        lower_provenance: Provenance for `lower`, already scoped to `_path`.
-            Passing an unscoped mapping produces wrong provenance.
-        higher_leaf_is_valid: Optional check applied to a `higher` scalar
-            before it displaces a `lower` value. Return `False` to keep the
-            lower value, which stops a wrong-typed higher scalar from
-            discarding a valid lower subtree.
-        _path: Internal key path used by the recursion.
+            Paths match relative to the tables passed here, so a merge of one
+            subtree needs them rebased (see `service.union_paths_under`).
+        higher_leaf_is_valid: Optional check applied to a `higher` value before
+            it displaces a `lower` one. Return `False` to keep the lower value,
+            which stops a wrong-typed higher value from discarding a valid
+            lower subtree. Receives paths on the same relative basis as
+            `union_paths`.
 
     Returns:
         Merged table and dotted leaf-to-source mapping.
     """
-    merged = deepcopy(lower)
-    provenance = dict(lower_provenance or _leaf_provenance(lower, lower_source, _path))
+    return _merge(
+        lower,
+        higher,
+        lower_source=lower_source,
+        higher_source=higher_source,
+        union_paths=union_paths,
+        higher_leaf_is_valid=higher_leaf_is_valid,
+    )
+
+
+def _merge(
+    lower: Mapping[str, Any],
+    higher: Mapping[str, Any],
+    *,
+    lower_source: str,
+    higher_source: str,
+    union_paths: frozenset[tuple[str, ...]],
+    higher_leaf_is_valid: Callable[[tuple[str, ...], object], bool] | None,
+    lower_provenance: dict[str, str] | None = None,
+    path_prefix: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Recursive half of `merge_toml_tables`.
+
+    Separate so the public signature carries no parameter a caller must not
+    pass: `lower_provenance` has to arrive already scoped to `path_prefix`, and
+    an unscoped mapping produces wrong provenance with no error.
+
+    Returns:
+        Merged table and dotted leaf-to-source mapping.
+    """
+    merged: dict[str, Any] = deepcopy(dict(lower))
+    provenance = dict(
+        lower_provenance or _leaf_provenance(lower, lower_source, path_prefix)
+    )
     for key, value in higher.items():
-        path = (*_path, key)
+        path = (*path_prefix, key)
         dotted = ".".join(path)
         existing = merged.get(key)
         # A higher scalar must replace a lower table, whatever the table holds.
@@ -82,19 +112,19 @@ def merge_toml_tables(
         ):
             continue
         if isinstance(existing, dict) and isinstance(value, dict):
-            nested, nested_provenance = merge_toml_tables(
+            nested, nested_provenance = _merge(
                 existing,
                 value,
                 lower_source=lower_source,
                 higher_source=higher_source,
                 union_paths=union_paths,
+                higher_leaf_is_valid=higher_leaf_is_valid,
                 lower_provenance={
                     leaf: source
                     for leaf, source in provenance.items()
                     if leaf == dotted or leaf.startswith(f"{dotted}.")
                 },
-                higher_leaf_is_valid=higher_leaf_is_valid,
-                _path=path,
+                path_prefix=path,
             )
             merged[key] = nested
             # Drop this subtree's old leaves first. A nested merge can delete a

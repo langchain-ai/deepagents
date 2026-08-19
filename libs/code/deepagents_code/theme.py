@@ -578,10 +578,8 @@ def _load_user_themes(
 
     from deepagents_code.configuration.service import get_config_sources
 
-    sources = get_config_sources(
-        user_path=config_path,
-        include_managed=is_default,
-    )
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
     if not sources.user.status.usable:
         logger.warning(
             "Could not read %s for user themes: %s",

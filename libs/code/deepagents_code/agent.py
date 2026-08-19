@@ -1070,10 +1070,8 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
 
     from deepagents_code.configuration.service import get_config_sources
 
-    sources = get_config_sources(
-        user_path=config_path,
-        include_managed=is_default,
-    )
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
     if not sources.user.status.usable:
         detail = sources.user.status.detail or sources.user.status.health.value
         logger.warning(

@@ -93,6 +93,12 @@ lower-precedence value stays in effect. Two exceptions:
   validates instead, so a wrong-typed managed leaf can displace a valid user
   leaf. The reader then falls back to the built-in default.
 
+`[shell].allow_list` is now read from `~/.deepagents/config.toml` as well as
+from `DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A
+user can therefore also grant themselves shell auto-approval from their own
+config file, where an exported variable was needed before. An empty managed
+list removes every lower-precedence grant.
+
 `dcode` never writes the managed file. Users can still save a preference. The
 theme, terminal-mapping, UI-toggle, and MCP-server screens, and the
 `--auto-update` flag, report when a managed value keeps a saved preference from

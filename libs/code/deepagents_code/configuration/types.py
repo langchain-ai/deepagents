@@ -1,5 +1,6 @@
 """Typed configuration-provider results and health metadata."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -32,7 +33,12 @@ class ProviderStatus:
 
 @dataclass(frozen=True, slots=True)
 class TomlSnapshot:
-    """One parsed TOML source and its health."""
+    """One parsed TOML source and its health.
 
-    data: dict[str, Any]
+    `data` is empty whenever `status.health` is not `OK`, so it must always be
+    read together with `status`: an empty table alone cannot distinguish "this
+    source declares nothing" from "this source could not be read".
+    """
+
+    data: Mapping[str, Any]
     status: ProviderStatus

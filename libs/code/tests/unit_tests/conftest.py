@@ -584,8 +584,16 @@ def _isolate_managed_config(
     # host path.
     monkeypatch.setattr(paths, "managed_config_path", lambda **_kwargs: absent)
     monkeypatch.setattr(service, "managed_config_path", lambda **_kwargs: absent)
+    # The registry-fallback note and the "expected a table" dedup set are both
+    # process-global. Left alone, the first test to trip either one decides what
+    # every later test sees, and the suite runs in random order.
+    monkeypatch.setattr(paths._path_state, "registry_fallback", None)
+    from deepagents_code import config_manifest
+
+    config_manifest._warned_non_table_paths.clear()
     service.invalidate_config_sources()
     yield
+    config_manifest._warned_non_table_paths.clear()
     service.invalidate_config_sources()
 
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 from deepagents_code.configuration.paths import (
@@ -89,18 +90,11 @@ def is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
     """
     from deepagents_code.config_manifest import (
         OptionKind,
-        get_config_options,
         option_accepts_toml,
+        option_for_toml_path,
     )
 
-    option = next(
-        (
-            candidate
-            for candidate in get_config_options()
-            if candidate.toml_keys == path
-        ),
-        None,
-    )
+    option = option_for_toml_path(path)
     if option is None or option.kind is OptionKind.STRUCTURED:
         return True
     return option_accepts_toml(option, value, source="managed config")
@@ -131,7 +125,7 @@ rule.
 
 
 def managed_declaration(
-    managed_data: dict[str, Any], toml_keys: tuple[str, ...]
+    managed_data: Mapping[str, Any], toml_keys: tuple[str, ...]
 ) -> Literal["declared", "shadowed"] | None:
     """Classify what managed policy says at one manifest path.
 
@@ -155,7 +149,7 @@ def managed_declaration(
 
 
 def managed_policy_violations(
-    managed_data: dict[str, Any] | None = None,
+    managed_data: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
     """Return enforced keys whose managed value cannot be applied.
 
@@ -314,33 +308,50 @@ def get_config_sources(
     user_path: Path | None = None,
     managed_path: Path | None = None,
     refresh_managed: bool = False,
-    include_managed: bool = True,
 ) -> ConfigSources:
     """Load one user snapshot and the current managed snapshot.
+
+    Managed policy is included exactly when `user_path` is `None`, which is
+    what every production caller passes. Reading an explicit path is a
+    test-and-tooling operation on one file, and its result must not be mistaken
+    for the effective configuration.
+
+    Deliberately not a caller-supplied flag: an `include_managed=False` source
+    is indistinguishable from a machine with no policy installed, because the
+    fabricated status reports `MISSING` and the table is empty. Deriving it
+    here keeps that state one keyword out of reach and removes the six
+    restatements of `include_managed=config_path is None` this replaced.
+
+    Args:
+        user_path: Read this file as the user layer instead of the default, and
+            exclude managed policy. Intended for tests and for tooling that
+            inspects one file.
+        managed_path: Read managed policy from this file instead of the fixed
+            OS path, bypassing the process snapshot. Intended for tests.
+        refresh_managed: Re-read managed policy instead of using the cached
+            snapshot. A failed re-read keeps the last snapshot that parsed.
 
     Returns:
         Both snapshots from one resolution generation.
     """
-    if user_path is None:
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-        user_path = DEFAULT_CONFIG_PATH
-    user = TomlFileProvider("config.toml", user_path).load()
-    if include_managed:
-        managed = get_managed_snapshot(
-            refresh=refresh_managed,
-            path=managed_path,
-        )
-    else:
-        managed = TomlSnapshot(
-            {},
-            ProviderStatus(
-                "managed config",
-                managed_path,
-                ProviderHealth.MISSING,
+    if user_path is not None:
+        return ConfigSources(
+            managed=TomlSnapshot(
+                {},
+                ProviderStatus(
+                    "managed config",
+                    managed_path,
+                    ProviderHealth.MISSING,
+                ),
             ),
+            user=TomlFileProvider("config.toml", user_path).load(),
         )
-    return ConfigSources(managed=managed, user=user)
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    return ConfigSources(
+        managed=get_managed_snapshot(refresh=refresh_managed, path=managed_path),
+        user=TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load(),
+    )
 
 
 def invalidate_config_sources() -> None:

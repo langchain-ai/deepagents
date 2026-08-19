@@ -930,10 +930,8 @@ def _load_effective_config_data(
     resolved_path = DEFAULT_CONFIG_PATH if config_path is None else config_path
     from deepagents_code.configuration.service import get_config_sources
 
-    sources = get_config_sources(
-        user_path=resolved_path,
-        include_managed=is_default,
-    )
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else resolved_path)
     if not sources.user.status.usable:
         detail = sources.user.status.detail or sources.user.status.health.value
         if not is_default:
@@ -949,7 +947,7 @@ def _load_effective_config_data(
         )
         return dict(sources.managed.data), resolved_path
     data = sources.merged()[0] if is_default else sources.user.data
-    return data, resolved_path
+    return dict(data), resolved_path
 
 
 _ollama_installed_models_cache: dict[str, list[str]] = {}
@@ -2744,10 +2742,8 @@ class ModelConfig:
                 stat_error or "owner has removed read permission",
             )
 
-        sources = get_config_sources(
-            user_path=config_path,
-            include_managed=is_default,
-        )
+        # `None` on the default path: that is what includes managed policy.
+        sources = get_config_sources(user_path=None if is_default else config_path)
         if sources.user.status.health is ProviderHealth.CORRUPT:
             logger.warning(
                 "Config file %s has invalid TOML syntax: %s. "
@@ -2774,13 +2770,25 @@ class ModelConfig:
         try:
             models_section = data.get("models", {})
             stored_classifier = models_section.get("auto_classifier")
+            # Coerce each field to the shape the readers below assume. A
+            # wrong-typed leaf must degrade to the built-in default for that
+            # one field, not crash the load: `_validate` is documented as
+            # warn-only, and it runs outside this guard, so a non-mapping
+            # `providers` reached `providers.items()` and raised
+            # `AttributeError` out of a loader every caller treats as total.
             config = cls(
-                default_model=models_section.get("default"),
-                recent_model=models_section.get("recent"),
+                default_model=_toml_model_spec(
+                    models_section.get("default"), key="default", path=config_path
+                ),
+                recent_model=_toml_model_spec(
+                    models_section.get("recent"), key="recent", path=config_path
+                ),
                 auto_classifier_model=(
                     stored_classifier if isinstance(stored_classifier, str) else None
                 ),
-                providers=models_section.get("providers", {}),
+                providers=_toml_providers_table(
+                    models_section.get("providers", {}), path=config_path
+                ),
             )
         except (AttributeError, TypeError) as e:
             # Syntactically valid TOML can still have the wrong shape (e.g. a
@@ -4372,6 +4380,48 @@ def _parse_csv_env(name: str) -> list[str] | None:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _toml_model_spec(value: object, *, key: str, path: Path) -> str | None:
+    """Return a `[models]` model spec, or `None` when it is not a string.
+
+    Args:
+        value: The raw TOML value.
+        key: The key name inside `[models]`, for log context.
+        path: The config file the value came from, for log context.
+
+    Returns:
+        The spec string, or `None` when the value cannot be one.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    logger.warning(
+        "Ignoring [models].%s in %s: expected a string, got %s",
+        key,
+        path,
+        type(value).__name__,
+    )
+    return None
+
+
+def _toml_providers_table(value: object, *, path: Path) -> dict[str, Any]:
+    """Return the `[models.providers]` table, or an empty one when unusable.
+
+    Args:
+        value: The raw TOML value.
+        path: The config file the value came from, for log context.
+
+    Returns:
+        The providers table, empty when the value is not a table.
+    """
+    if isinstance(value, dict):
+        return cast("dict[str, Any]", value)
+    logger.warning(
+        "Ignoring [models].providers in %s: expected a table, got %s",
+        path,
+        type(value).__name__,
+    )
+    return {}
+
+
 def _toml_str_list(
     value: object, *, key: str, config_path: Path
 ) -> tuple[list[str], bool]:
@@ -4550,10 +4600,8 @@ def load_mcp_server_trust_lists(
 
     from deepagents_code.configuration.service import get_config_sources
 
-    sources = get_config_sources(
-        user_path=config_path,
-        include_managed=is_default,
-    )
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
     toml_approvals: list[McpProjectServerApproval] = []
     malformed_approvals = 0
     toml_disabled: list[str] = []

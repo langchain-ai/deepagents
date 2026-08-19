@@ -17,6 +17,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 from deepagents_code.model_config import DEFAULT_CONFIG_PATH as _DEFAULT_CONFIG_PATH
@@ -159,7 +160,7 @@ def _strict_entries(value: object, *, section: str, key: str) -> set[str]:
     return names
 
 
-def _managed_entries(data: dict[str, Any]) -> set[str]:
+def _managed_entries(data: Mapping[str, Any]) -> set[str]:
     """Return the deny entries a managed table declares.
 
     Unlike `_disabled_entries`, a present-but-unusable value is an error rather

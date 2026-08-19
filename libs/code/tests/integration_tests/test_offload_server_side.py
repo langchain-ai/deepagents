@@ -10,6 +10,7 @@ and prove the archive is readable *through the agent*.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import TYPE_CHECKING
 
@@ -175,8 +176,9 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
     - no `ErrorMessage` and an "Offloaded " success message,
     - the operation succeeds through the custom server route,
-    - a persisted `_summarization_event` with `cutoff > 0` and
-      `file_path == /conversation_history/<thread>.md`,
+    - a persisted `_summarization_event` with `cutoff > 0` and a
+      `file_path` of `/conversation_history/session_<uuid4hex>.md` -- the SDK
+      names the archive from the summarization session id, not the thread id,
     - the archive is readable THROUGH THE AGENT (via its own `read_file` tool),
       proving the bytes live in the agent's backend server-side, and
     - local archives land in the persistent per-user history directory.
@@ -300,9 +302,15 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             assert cutoff > 0
             # In local mode the history prefix lives under a per-session
             # `artifacts_root`, so assert the suffix rather than a fixed prefix.
+            # The leaf is the summarization *session* id (`_get_history_path`),
+            # which is not the thread id: asserting `{thread_id}.md` here made
+            # this test claim a naming scheme the SDK never produces.
             archive_path = _event_field(summarization_event, "file_path")
             assert isinstance(archive_path, str)
-            assert archive_path.endswith(f"/conversation_history/{thread_id}.md")
+            assert re.fullmatch(
+                r".*/conversation_history/session_[0-9a-f]{32}\.md", archive_path
+            ), archive_path
+            archive_name = archive_path.rsplit("/", 1)[1]
 
             # CRUCIAL: the archive must be readable THROUGH THE AGENT, proving
             # the bytes exist in the agent's own backend server-side.
@@ -314,7 +322,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             assert "Summarized at" in read_back
 
         persistent_archive = (
-            home_dir / ".deepagents" / "conversation_history" / f"{thread_id}.md"
+            home_dir / ".deepagents" / "conversation_history" / archive_name
         )
         assert persistent_archive.exists()
         assert "keeps enough unique detail" in persistent_archive.read_text()

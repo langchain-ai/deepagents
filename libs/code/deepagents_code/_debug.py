@@ -8,13 +8,16 @@ format are defined in one place.
 
 from __future__ import annotations
 
-import ctypes
 import logging
 import os
 import sys
 from pathlib import Path
 
-if os.name == "nt":  # Windows-only ACL structures; see _set_windows_owner_only_dacl.
+# Windows-only ACL plumbing; see `_apply_windows_owner_only_dacl`. Imported
+# under the guard because `_debug` is on the startup path for every command and
+# `ctypes` costs a few milliseconds it can never repay on POSIX.
+if os.name == "nt":
+    import ctypes
     from ctypes import wintypes
 
 from deepagents_code._env_vars import (

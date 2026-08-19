@@ -744,6 +744,97 @@ def test_corrupt_managed_config_does_not_empty_the_mcp_deny_set(
         service.invalidate_config_sources()
 
 
+@pytest.mark.parametrize(
+    "value",
+    ['"github"', "5", "true", "{ github = true }"],
+    ids=["string", "int", "bool", "table"],
+)
+def test_unusable_managed_deny_list_fails_closed(
+    value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed deny list that cannot hold names must deny, never allow.
+
+    Regression: `_coerce_entries` reported every non-list as "key absent", so
+    the lookup fell through to an empty set with no log at all and every
+    administrator-denied server started.
+    """
+    from deepagents_code import mcp_disabled, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(f"[mcp]\ndisabled_servers = {value}\n", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        # The file parses, so the startup gate cannot catch this.
+        require_healthy_managed_config(refresh=True)
+        if value == '"github"':
+            # A bare string parses as the comma-separated form, matching
+            # `[mcp].disabled_project_servers`, so it denies rather than fails.
+            assert mcp_disabled.get_disabled_servers() == {"github"}
+        else:
+            with pytest.raises(ManagedConfigError):
+                mcp_disabled.get_disabled_servers()
+        assert mcp_disabled.is_server_disabled("github") is True
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_deny_list_string_splits_on_commas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`disabled_servers = "a, b"` denies two servers, not one bogus name."""
+    from deepagents_code import mcp_disabled, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[mcp]\ndisabled_servers = "github, linear"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        assert mcp_disabled.get_disabled_servers() == {"github", "linear"}
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_non_table_managed_mcp_section_cannot_void_the_deny_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scalar managed `[mcp]` shadows the deny list, so it must fail closed."""
+    from deepagents_code import mcp_disabled, model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text('mcp = "github"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    try:
+        with pytest.raises(ManagedConfigError):
+            mcp_disabled.get_disabled_servers()
+        assert mcp_disabled.is_server_disabled("github") is True
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_failed_reload_keeps_the_last_healthy_managed_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

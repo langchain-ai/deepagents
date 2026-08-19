@@ -29,6 +29,15 @@ _LEGACY_SECTION = "mcp_disabled"
 _LEGACY_KEY = "servers"
 
 
+class _ManagedDenyListError(Exception):
+    """Raised when a managed deny list is present but cannot be read as names.
+
+    `_coerce_entries` reports a wrong-typed value as "key absent", which lets
+    the lookup fall through to an empty set. For the *managed* source that is a
+    fail-open: an administrator typo turns a deny list into no denials at all.
+    """
+
+
 class _ConfigLoadError(Exception):
     """Raised when the config exists but cannot be parsed or read.
 
@@ -109,6 +118,73 @@ def _coerce_entries(entries: object) -> set[str] | None:
     return {name for name in entries if isinstance(name, str) and name}
 
 
+def _strict_entries(value: object, *, section: str, key: str) -> set[str]:
+    """Read one deny-list value, refusing a shape that cannot hold names.
+
+    Mirrors `model_config._toml_str_list`: a bare string is split on commas, so
+    the spelling `disabled_servers = "a, b"` yields two names instead of one
+    bogus token, and non-string list elements are dropped with a log while the
+    valid names survive. Any other type cannot be read as names at all.
+
+    Args:
+        value: The raw value read from the deny-list section.
+        section: The section name, for log and error context.
+        key: The deny-list key name, for log and error context.
+
+    Returns:
+        The trimmed, non-empty server names.
+
+    Raises:
+        _ManagedDenyListError: If `value` is neither a string nor a list.
+    """
+    if isinstance(value, str):
+        return {item.strip() for item in value.split(",") if item.strip()}
+    if not isinstance(value, list):
+        msg = (
+            f"[{section}].{key} must be an array of server names, "
+            f"got {type(value).__name__}"
+        )
+        raise _ManagedDenyListError(msg)
+    names = {item.strip() for item in value if isinstance(item, str) and item.strip()}
+    discarded = sum(
+        1 for item in value if not isinstance(item, str) or not item.strip()
+    )
+    if discarded > 0:
+        logger.warning(
+            "Dropped %d unusable entry/entries from managed [%s].%s",
+            discarded,
+            section,
+            key,
+        )
+    return names
+
+
+def _managed_entries(data: dict[str, Any]) -> set[str]:
+    """Return the deny entries a managed table declares.
+
+    Unlike `_disabled_entries`, a present-but-unusable value is an error rather
+    than an empty set, so the caller can fail closed. A section that is not a
+    table shadows the deny list it should contain and is rejected for the same
+    reason.
+
+    Returns:
+        Server names the managed table denies, empty when it declares none.
+
+    Raises:
+        _ManagedDenyListError: If a deny list is present but unusable.
+    """
+    for section_name, key in ((_SECTION, _KEY), (_LEGACY_SECTION, _LEGACY_KEY)):
+        section = data.get(section_name)
+        if section is None:
+            continue
+        if not isinstance(section, dict):
+            msg = f"[{section_name}] must be a table, got {type(section).__name__}"
+            raise _ManagedDenyListError(msg)
+        if key in section:
+            return _strict_entries(section[key], section=section_name, key=key)
+    return set()
+
+
 def _disabled_entries(data: dict[str, Any]) -> set[str]:
     """Return disabled names from the current config shape with legacy fallback."""
     section = data.get(_SECTION)
@@ -133,8 +209,9 @@ def _managed_disabled_servers() -> set[str]:
         Server names the managed source denies.
 
     Raises:
-        ManagedConfigError: If managed policy exists but cannot be parsed. An
-            unusable snapshot carries an empty table, which is indistinguishable
+        ManagedConfigError: If managed policy exists but cannot be parsed, or
+            declares a deny list that cannot be read as server names. Both
+            cases would otherwise yield an empty set, which is indistinguishable
             from "nothing is denied", so returning it would re-enable every
             administrator-denied server. The caller must fail closed instead.
     """
@@ -142,11 +219,25 @@ def _managed_disabled_servers() -> set[str]:
         ManagedConfigError,
         get_managed_snapshot,
     )
+    from deepagents_code.configuration.types import ProviderHealth, ProviderStatus
 
     snapshot = get_managed_snapshot()
     if not snapshot.status.usable:
         raise ManagedConfigError(snapshot.status)
-    return _disabled_entries(snapshot.data)
+    try:
+        return _managed_entries(snapshot.data)
+    except _ManagedDenyListError as exc:
+        # The file parsed, so provider health is OK and the startup gate let
+        # this launch through. The deny list itself is unusable, which is the
+        # same fail-closed condition as an unparseable file.
+        raise ManagedConfigError(
+            ProviderStatus(
+                snapshot.status.name,
+                snapshot.status.path,
+                ProviderHealth.CORRUPT,
+                str(exc),
+            )
+        ) from exc
 
 
 def _remove_legacy_disabled_section(data: dict[str, Any]) -> None:

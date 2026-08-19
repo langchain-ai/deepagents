@@ -127,10 +127,16 @@ class TestValidateQuestions:
     def test_validation_errors_are_tool_exceptions(self) -> None:
         """A `ValueError` would escape `ToolNode` and kill the turn.
 
-        `ToolNode` only converts `ToolException` into an error `ToolMessage`
-        the model can read and correct. Every rejection above must therefore be
-        one; this pins the exception type on a representative failure rather
-        than relying on each test's `pytest.raises` to notice a drift back.
+        `BaseTool.run` converts a `ToolException` into an error `ToolMessage`
+        the model can read and correct, because the tool sets
+        `handle_tool_error = True`. Anything else is re-raised: langgraph's
+        default handler converts only `ToolInvocationError`. Every rejection
+        above must therefore be a `ToolException`; this pins the exception type
+        on a representative failure rather than relying on each test's
+        `pytest.raises` to notice a drift back.
+
+        `test_invalid_questions_reach_the_model_as_an_error_tool_message` pins
+        the other half — that the conversion actually happens.
         """
         with pytest.raises(ToolException):
             _validate_questions([])
@@ -750,6 +756,57 @@ class TestAskUserTool:
             ASK_USER_AUTHORIZATION_METADATA_KEY
             not in _extract_tool_message(command).additional_kwargs
         )
+
+    def test_tool_sets_handle_tool_error(self) -> None:
+        """Without this the `ToolException` conversion below cannot happen."""
+        assert AskUserMiddleware().tools[0].handle_tool_error is True
+
+    async def test_invalid_questions_reach_the_model_as_an_error_tool_message(
+        self,
+    ) -> None:
+        """A rejected `ask_user` call must not kill the turn.
+
+        The other tests here call `ask_tool.func` directly, which bypasses
+        `BaseTool.run` and therefore the error handling entirely. This drives a
+        real `ToolNode` so the `handle_tool_error = True` path is exercised: the
+        model gets an error `ToolMessage` it can read and retry against, rather
+        than the exception escaping `ToolNode`.
+        """
+        from langchain_core.messages import AIMessage
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.prebuilt import ToolNode
+        from typing_extensions import TypedDict
+
+        class ToolState(TypedDict):
+            messages: list[object]
+
+        # LangGraph accepts this state schema, but its generic bound is not
+        # recognized by ty on Python 3.14.
+        builder = StateGraph(ToolState)  # ty: ignore[invalid-argument-type]
+        builder.add_node("tools", ToolNode(AskUserMiddleware().tools))
+        builder.add_edge(START, "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile()
+
+        seed = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "ask_user",
+                    "args": {"questions": []},
+                    "id": "ask-1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        result = await graph.ainvoke(
+            ToolState(messages=[seed])  # ty: ignore[invalid-argument-type]
+        )
+
+        message = result["messages"][-1]
+        assert isinstance(message, ToolMessage)
+        assert message.status == "error"
+        assert "at least one question" in str(message.content)
 
 
 class TestWrapModelCall:

@@ -33,8 +33,11 @@ def require_ripgrep() -> None:
     of them guards symlink containment. A skip would let a containment
     regression merge with a green build.
 
-    Locally, and on runners where the install was allowed to time out, a
-    missing `rg` is expected and still skips.
+    Locally, and on runners where the install was allowed to fail, a missing
+    `rg` is expected and still skips. CI allows the failure in two cases: the
+    bounded install on an ordinary PR hit its two-minute timeout, or the
+    unbounded strict install on a release PR failed and was bypassed under the
+    `bypass-ripgrep-check` label.
     """
     if shutil.which("rg") is not None:
         return

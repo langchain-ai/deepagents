@@ -75,6 +75,14 @@ on:
         description:
           "(deepagents-code only) Skip SDK pin validation
           (danger!) - Only use when intentionally pinning an older SDK"
+      dangerous-skip-ripgrep-check:
+        required: false
+        type: boolean
+        default: false
+        description:
+          "Tolerate a ripgrep install failure in pre-release checks
+          (danger!) - the rg-gated artifact tests will skip. Passed automatically
+          when the merged release PR carries the bypass-ripgrep-check label"
 
 env:
   UV_NO_SYNC: "true"
@@ -181,6 +189,7 @@ jobs:
           INPUT_SHA: ${{ inputs.release-sha }}
           IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
           SKIP_SDK_PIN_CHECK: ${{ inputs.dangerous-skip-sdk-pin-check }}
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
         run: |
           set -euo pipefail
 
@@ -220,6 +229,9 @@ jobs:
             fi
             if [ "${SKIP_SDK_PIN_CHECK}" = "true" ]; then
               echo "| \`dangerous-skip-sdk-pin-check\` | ⚠️ enabled |"
+            fi
+            if [ "${SKIP_RIPGREP_CHECK}" = "true" ]; then
+              echo "| \`dangerous-skip-ripgrep-check\` | ⚠️ enabled |"
             fi
             echo ""
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write dispatch-inputs summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
@@ -705,7 +717,9 @@ jobs:
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the `.venv` above.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -735,15 +749,62 @@ jobs:
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
-          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the existing `.venv`.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
-      # No timeout here: release artifacts must be validated with the real
-      # ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1` makes the
-      # rg-gated tests fail rather than skip if `rg` goes missing anyway.
+      # The install itself has no timeout: release artifacts must be validated
+      # with the real ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1`
+      # makes the rg-gated tests fail rather than skip if `rg` goes missing
+      # anyway. A dispatch carrying `dangerous-skip-ripgrep-check=true` (set
+      # from the `bypass-ripgrep-check` label on the merged release PR)
+      # tolerates an apt failure instead: the install still runs, but a failure
+      # neither fails the job nor promises ripgrep, so the gated tests skip
+      # rather than error.
+      #
+      # The failure path mirrors `_test.yml`'s strict step: unwind dpkg, then
+      # probe for a usable `rg`. Without the probe a publish run would discard
+      # ripgrep coverage that is actually available whenever apt reports
+      # failure but the binary landed (or was already on the image) -- and this
+      # is the run where losing the symlink containment check matters most.
       - name: Install ripgrep
+        env:
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
         run: |
+          set +e
           sudo apt-get update && sudo apt-get install -y ripgrep
-          echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "$SKIP_RIPGREP_CHECK" != "true" ]; then
+            echo "::error::ripgrep install failed (apt exit $status) and dangerous-skip-ripgrep-check is not set."
+            exit "$status"
+          fi
+          # A killed or half-applied apt transaction can leave dpkg holding the
+          # lock, which would surface as an unrelated failure in a later step.
+          # A failed recovery is tolerated; the `rg` probe is what decides.
+          sudo timeout --signal=TERM --kill-after=10s 60s \
+            dpkg --configure -a || true
+          if rg --version >/dev/null 2>&1; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            echo "::notice::ripgrep install reported failure (apt exit $status) but a usable rg is present; continuing with ripgrep"
+            exit 0
+          fi
+          echo "::warning::ripgrep install failed (apt exit $status); dangerous-skip-ripgrep-check set — the rg-gated artifact tests will skip"
+          # A step annotation alone is not a record: the dispatch-inputs summary
+          # says only that the *input* was set, which cannot distinguish "apt
+          # succeeded, full coverage" from "apt failed, tests skipped". Write
+          # the degraded outcome where an operator reviewing the release sees it.
+          {
+            echo "### ⚠️ Published without ripgrep coverage"
+            echo ""
+            echo "\`apt-get\` failed (exit $status) and \`dangerous-skip-ripgrep-check\` was set, so the job continued."
+            echo "The real-binary grep tests did **not** run against this artifact, including the symlink containment check."
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write ripgrep-bypass summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
+          exit 0
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="-v"

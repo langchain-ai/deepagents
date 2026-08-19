@@ -163,14 +163,17 @@ def _update_goal_command(
             the TUI to resolve once the rubric verdict lands, rather than
             committing the status directly; `blocked` commits immediately.
 
-            Nothing is committed in four cases, and the `ToolMessage` explains
-            what the model must do instead: no goal is set, the goal is paused or
-            already complete, `note` is empty, or `note` exceeds
-            `GOAL_STATUS_NOTE_CHAR_LIMIT`.
+            Nothing is committed in five cases, and the `ToolMessage` explains
+            what the model must do instead: no goal is set, saved state is too
+            large to render as a notice, the goal is paused or already complete,
+            `note` is empty, or `note` exceeds `GOAL_STATUS_NOTE_CHAR_LIMIT`.
+            The `note` size is also gated by the tool schema's `max_length`, so
+            the runtime check catches only calls that bypass it — and measures
+            the stripped note.
     """
-    # Enforced preconditions here are: an objective exists, its status is neither
-    # paused nor complete, and `note` is non-empty and fits
-    # `GOAL_STATUS_NOTE_CHAR_LIMIT`. Note the objective check alone
+    # Enforced preconditions here are: an objective exists, its state fits the
+    # notice budget, its status is neither paused nor complete, and `note` is
+    # non-empty and fits `GOAL_STATUS_NOTE_CHAR_LIMIT`. Note the objective check alone
     # does not imply actionability — a paused goal has an objective too, so the
     # status check is separate. Completion is staged because `RubricMiddleware`
     # records its final verdict after the model stops making tool calls; the TUI
@@ -182,6 +185,36 @@ def _update_goal_command(
                 "messages": [
                     ToolMessage(
                         content="No active goal is set.",
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+    # Oversized state takes precedence over every other precondition: the notice
+    # has already told the model the goal is unavailable and not to work toward
+    # it or grade against it. Since the read tools were removed, `update_goal` is
+    # the only goal surface the model has, so refusing here is what keeps that
+    # instruction from resting on prose alone. Project exactly as the renderer
+    # does, or the check passes against text the notice does not carry.
+    notice_objective, notice_criteria, notice_status_note = notice_text_sections(
+        project_goal_state(state)
+    )
+    try:
+        validate_goal_notice_text(
+            objective=notice_objective,
+            criteria=notice_criteria,
+            status_note=notice_status_note,
+        )
+    except GoalStateSizeError as exc:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=(
+                            f"Saved goal/rubric state is too large to use, so its "
+                            f"status cannot be updated. Ask the user to clear and "
+                            f"recreate the goal. Validation detail: {exc}"
+                        ),
                         tool_call_id=tool_call_id,
                     )
                 ]

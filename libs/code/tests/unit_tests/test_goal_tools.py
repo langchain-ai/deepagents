@@ -173,6 +173,49 @@ def test_update_goal_rejects_oversized_note_without_changing_status() -> None:
     assert "maximum is 4,000" in message.content
 
 
+def test_update_goal_refuses_when_saved_state_is_too_large() -> None:
+    """The notice says the goal is unusable, so the write side must agree.
+
+    `update_goal` is the only goal surface left after the read tools were
+    removed, so "do not work toward it and do not grade against it" cannot rest
+    on notice prose alone.
+    """
+    command = _update_goal_command(
+        status="blocked",
+        note="waiting on docs",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "x" * (RUBRIC_CHAR_LIMIT + 1),
+        },
+    )
+
+    assert command.update is not None
+    assert set(command.update) == {"messages"}
+    content = command.update["messages"][0].content
+    assert "too large to use" in content
+    assert "clear and recreate the goal" in content
+    assert "Rubric is" in content
+
+
+def test_update_goal_commits_when_state_fits_the_notice_budget() -> None:
+    """The oversized guard must not block a normal blocker report."""
+    command = _update_goal_command(
+        status="blocked",
+        note="waiting on docs",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "ship it",
+            "_goal_status": "active",
+            "_goal_rubric": "tests pass",
+        },
+    )
+
+    assert command.update is not None
+    assert command.update["_goal_status"] == "blocked"
+
+
 def test_update_goal_tool_invokes_command_builder() -> None:
     """The registered `update_goal` tool should wire all args to the helper."""
     middleware = GoalToolsMiddleware()

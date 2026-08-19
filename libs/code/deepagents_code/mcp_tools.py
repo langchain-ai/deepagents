@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import codecs
-import contextlib
 import copy
 import errno
 import fnmatch
@@ -273,6 +272,12 @@ class _MCPStderrSink(io.TextIOBase):
         self._line = ""
         self._truncated = False
         self._read_fd_closed = False
+        # `_read_fd` is closed from the drain thread and from `wait_closed`;
+        # `_fd_lock` makes the close-once check atomic across the two.
+        self._fd_lock = threading.Lock()
+        # Set before `wait_closed` force-closes the read end, so the drain
+        # thread never issues another read against a freed fd number.
+        self._stopping = threading.Event()
         self._read_fd, write_fd = os.pipe()
         try:
             self._writer = os.fdopen(write_fd, "wb", buffering=0)
@@ -361,6 +366,7 @@ class _MCPStderrSink(io.TextIOBase):
         await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
         if not self._thread.is_alive():
             return
+        self._stopping.set()
         self._close_read_fd()
         logger.debug(
             "MCP server %r stderr pipe still held open after process exit; "
@@ -376,17 +382,36 @@ class _MCPStderrSink(io.TextIOBase):
             )
 
     def _close_read_fd(self) -> None:
-        """Close the pipe read end once, from the reader thread or a closer."""
-        if self._read_fd_closed:
-            return
-        self._read_fd_closed = True
-        with contextlib.suppress(OSError):
-            os.close(self._read_fd)
+        """Close the pipe read end exactly once.
+
+        Called from the drain thread's `finally` and from `wait_closed`, so the
+        flag check and the close are held under `_fd_lock`. Without it both
+        callers can pass an unlocked check and close twice, and between the two
+        closes the fd number is free for another thread to reuse — so the second
+        close would reap an unrelated descriptor.
+        """
+        with self._fd_lock:
+            if self._read_fd_closed:
+                return
+            self._read_fd_closed = True
+            try:
+                os.close(self._read_fd)
+            except OSError as exc:
+                logger.warning(
+                    "MCP server %r stderr pipe close failed: %s",
+                    self._server_name,
+                    exc,
+                )
 
     def _drain(self) -> None:
         """Drain subprocess bytes so stderr can never block the child."""
         try:
-            while chunk := os.read(self._read_fd, _MCP_STDERR_READ_SIZE):
+            # Re-check before every read: once `wait_closed` has force-closed
+            # the read end, the fd number may already belong to another file.
+            while not self._stopping.is_set():
+                chunk = os.read(self._read_fd, _MCP_STDERR_READ_SIZE)
+                if not chunk:
+                    break
                 if self._capture:
                     self._decode(chunk)
             if self._capture:

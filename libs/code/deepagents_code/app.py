@@ -19059,8 +19059,16 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
         finally:
             if size_warning is not None:
-                with suppress(Exception):
+                try:
                     await self._mount_message(size_warning)
+                except Exception:
+                    # This message is the only explanation the user gets for a
+                    # non-functional goal, so losing it silently is the outcome
+                    # the `finally` exists to prevent.
+                    logger.exception(
+                        "Failed to surface oversized goal-state warning for %s",
+                        history_thread_id,
+                    )
             if resolve_pending_goal:
                 try:
                     await self._remount_pending_goal_rubric_review()

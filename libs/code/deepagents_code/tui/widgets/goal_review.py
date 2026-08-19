@@ -19,7 +19,10 @@ if TYPE_CHECKING:
 
 from deepagents_code.config import get_glyphs
 from deepagents_code.editor import editor_display_name
-from deepagents_code.goal_state_limits import validate_goal_application
+from deepagents_code.goal_state_limits import (
+    GoalStateSizeError,
+    validate_goal_application,
+)
 from deepagents_code.tui.widgets._inline_prompt import (
     InlinePromptCompletion,
     InlinePromptOption,
@@ -353,7 +356,10 @@ class GoalReviewMenu(Container):
             return
         try:
             validate_goal_application(self._objective, criteria)
-        except ValueError as exc:
+        except GoalStateSizeError as exc:
+            # Narrower than `ValueError` on purpose: the hint frames its text as
+            # "shorten this", so an unrelated `ValueError` must not be rendered
+            # there as if it were a size problem.
             self._hint_invalid_submission(str(exc))
             return
         self._submit({"type": "edited", "criteria": criteria})

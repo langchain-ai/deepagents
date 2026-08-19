@@ -87,12 +87,14 @@ jobs:
             );
 
             if (!prNumber) {
-              // Failing to notify about a real timeout is a broken mechanism,
-              // not a no-op: say so loudly instead of logging into a run page
-              // nobody opens.
+              // A PR that was closed or had its head branch deleted between
+              // CI completing and this workflow firing resolves to nothing —
+              // that is a normal race, not a broken mechanism, and there is
+              // no conversation left to warn. The `::warning::` annotation in
+              // the CI run itself is the record of the timeout.
               const message = `CI run ${run.id} has no resolvable pull request.`;
               if (timeoutArtifacts.length > 0) {
-                core.setFailed(`${message} A ripgrep timeout went unreported.`);
+                core.warning(`${message} A ripgrep timeout goes unreported; the artifacts are ${timeoutArtifacts.map(a => a.name).join(', ')}.`);
               } else {
                 core.info(`${message} No timeout to report.`);
               }

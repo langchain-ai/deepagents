@@ -33,7 +33,9 @@ from langchain.agents.middleware.types import (
     ContextT,
     PrivateStateAttr,
     ResponseT,
+    TracePolicy,
     hook_config,
+    omit_payload,
 )
 from langchain.agents.structured_output import (
     MultipleStructuredOutputsError,
@@ -486,6 +488,9 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         ValueError: If `max_iterations` is less than 1, or if `model` is falsy.
         TypeError: If `max_iterations` is not an `int`.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = RubricState
 

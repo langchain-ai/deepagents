@@ -2991,6 +2991,20 @@ class TestEnableAskUser:
         assert error_middleware is not None
         assert error_middleware._tool_filter == list(_TOOL_ARG_VALIDATION_TOOLS)
 
+    def test_tool_error_middleware_is_last(self, tmp_path: Path) -> None:
+        """It must wrap only tool execution, not other middleware.
+
+        `_chain_tool_call_wrappers` composes the list first to outermost. Any
+        middleware appended after this one runs inside the handler, so a
+        `ToolArgumentError` it raised would be misreported to the model as the
+        model's own bad tool input.
+        """
+        from langchain.agents.middleware import ToolErrorMiddleware
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        assert len(middleware) > 1
+        assert isinstance(middleware[-1], ToolErrorMiddleware)
+
 
 class TestLoadAsyncSubagents:
     def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:

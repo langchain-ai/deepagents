@@ -2660,14 +2660,6 @@ def create_cli_agent(
         agent_middleware.append(ask_user_middleware)
         trusted_ask_user_tool = ask_user_middleware.tools[0]
 
-    # Turn a `ToolArgumentError` into a recoverable error `ToolMessage` instead
-    # of a fatal run error. Any other exception propagates and halts the run.
-    agent_middleware.append(
-        ToolErrorMiddleware(
-            _tool_arg_validation_on_error, tools=list(_TOOL_ARG_VALIDATION_TOOLS)
-        )
-    )
-
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
@@ -3123,6 +3115,20 @@ def create_cli_agent(
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
         agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
+
+    # Turn a `ToolArgumentError` into a recoverable error `ToolMessage` instead
+    # of a fatal run error. Any other exception propagates and halts the run.
+    #
+    # This must stay last. `_chain_tool_call_wrappers` composes the list first
+    # to outermost, so anything appended after this would run inside the
+    # handler. `ServerHooksMiddleware` keeps a plain `ValueError` fatal on
+    # purpose: it means the client answered a different request. Catching that
+    # here would report a hook fault to the model as its own bad tool input.
+    agent_middleware.append(
+        ToolErrorMiddleware(
+            _tool_arg_validation_on_error, tools=list(_TOOL_ARG_VALIDATION_TOOLS)
+        )
+    )
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

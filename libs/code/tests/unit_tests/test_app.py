@@ -17830,6 +17830,30 @@ class TestIsUserTyping:
 class TestRequestApprovalBranching:
     """_request_approval should show a placeholder when the user is typing."""
 
+    async def test_auto_fallback_skips_shell_allow_list(self) -> None:
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._last_typed_at = None
+        action_requests = [
+            {
+                "name": "execute",
+                "args": {"command": "echo hello"},
+                "description": "Auto human fallback: this action needs your review.",
+            }
+        ]
+
+        with (
+            patch.object(settings, "shell_allow_list", ["echo"]),
+            patch.object(app, "_mount_approval_widget", new=AsyncMock()) as mount,
+            patch.object(app, "_reveal_pending_tool_calls"),
+            patch.object(app, "_pause_loading_spinner_for_approval"),
+        ):
+            result = await app._request_approval(action_requests, None)
+
+        assert not result.done()
+        mount.assert_awaited_once()
+
     async def test_placeholder_mounted_when_typing(self) -> None:
         """If the user is typing, a Static placeholder is mounted instead of menu."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -30476,6 +30500,36 @@ class TestLiveApprovalModeWrites:
             # The guard is reset so a later enable can retry the notice.
             assert app._auto_mode_notice_pending is False
             save_notice.assert_not_called()
+
+    async def test_server_auto_fallback_hides_diagnostics(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        app = DeepAgentsApp()
+        event = {
+            "event": "fallback",
+            "reason": "consecutive_policy_denials",
+            "consecutive_denials": 4,
+            "consecutive_unavailable": 0,
+            "total_denials": 4,
+        }
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.app")
+
+        with patch.object(app, "_mount_message", new=AsyncMock()) as mount:
+            await app._on_auto_mode_event(event)
+
+        await_args = mount.await_args
+        assert await_args is not None
+        mounted = await_args.args[0]
+        assert isinstance(mounted, AppMessage)
+        assert mounted._content == (
+            "Auto couldn't confidently approve this action, so it needs your review. "
+            "Auto will continue afterward."
+        )
+        assert (
+            "Auto human fallback reason=consecutive_policy_denials "
+            "consecutive_denials=4 consecutive_unavailable=0 total_denials=4"
+            in caplog.messages
+        )
 
     async def test_server_manual_fallback_updates_tui_mode_and_warns(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode

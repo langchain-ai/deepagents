@@ -49,10 +49,18 @@ hardcoded integers.
 def _prepare_debug_file(path: Path) -> None:
     """Create or tighten a debug file before attaching the logging handler.
 
-    On POSIX the file is created/tightened to mode `0o600`. On Windows, where
-    `os.open` mode bits and `chmod` do not tighten the DACL, the file's DACL is
-    replaced with one granting full control to the current user only.
-    """
+    On POSIX the file is created or tightened to mode `0o600`. On Windows,
+    where `os.open` mode bits and `chmod` do not tighten the DACL, the DACL is
+    replaced with one granting read and write access to the current user only.
+
+    `O_NOFOLLOW` refuses a symlink at `path`. The default location is a
+    world-writable temp directory, so without it a planted symlink could
+    redirect captured MCP server stderr into a file of the attacker's choosing.
+
+    Raises:
+        OSError: If the file cannot be created, opened, or tightened. The
+            caller must treat this as fatal to file logging.
+    """  # noqa: DOC502 - raised by os.open/fchmod, not by an explicit raise
     flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
     try:
@@ -73,15 +81,17 @@ def _set_windows_owner_only_dacl(path: Path) -> None:
 
     This is a no-op on POSIX, where `_prepare_debug_file` uses mode `0o600`
     instead. The Windows implementation (defined only when `os.name == "nt"`)
-    replaces the file's DACL with one granting full control to the current user
-    and no one else.
-
-    On Windows this raises `WinError` if the DACL cannot be built or applied;
-    `_prepare_debug_file` surfaces that as an `OSError` warning.
+    replaces the file's DACL with one granting read and write access to the
+    current user and no one else.
 
     Args:
         path: Debug log file to lock down.
-    """
+
+    Raises:
+        OSError: If the DACL cannot be built or applied. `_prepare_debug_file`
+            propagates it; `configure_debug_logging` catches it and disables
+            file logging.
+    """  # noqa: DOC502 - raised by the callee, not by an explicit raise
     if os.name != "nt":
         return
     _apply_windows_owner_only_dacl(path)
@@ -90,7 +100,9 @@ def _set_windows_owner_only_dacl(path: Path) -> None:
 if os.name == "nt":
     # --- Windows user-only DACL ---------------------------------------------
     # Structures and helpers mirroring the advapi32 API used to build and apply
-    # a DACL granting the current user full control and no one else any access.
+    # a DACL granting the current user read and write access, and no one else
+    # any access. `DELETE` and `WRITE_DAC` are deliberately not granted; the
+    # file owner retains them implicitly.
 
     _SE_FILE_OBJECT = 1
     _DACL_SECURITY_INFORMATION = 0x00000004
@@ -133,15 +145,18 @@ if os.name == "nt":
     def _get_current_user_sid() -> ctypes.c_void_p:
         """Return a pointer to the current user's SID.
 
-        The SID buffer is kept alive on the returned pointer's referrer so it
-        stays valid for the duration of the DACL construction.
+        The `TOKEN_USER` buffer the SID points into is attached to the returned
+        pointer as `_buffer`, so it stays alive for the DACL construction.
+        `ctypes` already retains it through `.contents`; the attribute makes
+        that guarantee explicit rather than incidental.
 
         Returns:
             A pointer to the current user's SID.
 
         Raises:
-            WinError: If the process token or user SID cannot be read.
-        """
+            OSError: If the process token or user SID cannot be read. Raised
+                via `ctypes.WinError`, which is a factory returning `OSError`.
+        """  # noqa: DOC501, DOC502 - `ctypes.WinError` returns an `OSError`
         advapi32 = ctypes.windll.advapi32
         token = wintypes.HANDLE()
         if not advapi32.OpenProcessToken(
@@ -175,14 +190,18 @@ if os.name == "nt":
             ctypes.windll.kernel32.CloseHandle(token)
 
     def _apply_windows_owner_only_dacl(path: Path) -> None:
-        """Replace `path`'s DACL with one granting the current user full control.
+        """Replace `path`'s DACL with a single read/write entry for this user.
+
+        The DACL is marked protected, so entries inherited from the parent
+        directory are dropped rather than merged.
 
         Args:
             path: Debug log file to lock down.
 
         Raises:
-            WinError: If the DACL cannot be built or applied.
-        """
+            OSError: If the DACL cannot be built or applied. Raised via
+                `ctypes.WinError`, which is a factory returning `OSError`.
+        """  # noqa: DOC501, DOC502 - `ctypes.WinError` returns an `OSError`
         advapi32 = ctypes.windll.advapi32
         sid = _get_current_user_sid()
 

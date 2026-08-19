@@ -218,15 +218,18 @@ would lose exactly the diagnostic this capture exists to provide.
 _MCP_STDERR_DRAIN_JOIN_TIMEOUT = 2.0
 """Bound on joining the stderr drain thread during session teardown.
 
-The drain thread blocks in `os.read` until the pipe hits EOF, which only
-happens once *every* process holding the write end closes it. MCP's stdio
-shutdown terminates the server's process tree, but a server that spawns a
-longer-lived descendant escaping its process group keeps the inherited pipe
-open — so an unbounded join would wedge session close (discovery failure,
-reload, shutdown). After this timeout the read end is closed to force the
-thread's `os.read` to fail and exit. The forced-close join is bounded too:
-on Linux, closing a file descriptor from another thread does not reliably
-interrupt an in-progress `os.read`.
+The drain thread blocks in `os.read` until the pipe hits EOF. EOF comes only
+when *every* process holding the write end has closed it. MCP's stdio shutdown
+terminates the server's process tree, but a server can spawn a descendant that
+escapes that process group and keeps the inherited pipe open. An unbounded join
+would then block session close. Session close runs on discovery failure, on
+reload, and on shutdown.
+
+After this timeout the read end is closed to make the blocked `os.read` return.
+That is not a portable guarantee: on darwin the read returns EOF, and on Linux
+it can stay blocked, because `close` need not wake a reader already inside the
+syscall. The forced-close join is therefore bounded by this timeout as well,
+and the thread is abandoned if it outlives it. It is a daemon thread.
 """
 
 
@@ -307,12 +310,12 @@ class _MCPStderrSink(io.TextIOBase):
     async def wait_closed(self) -> None:
         """Wait off the event loop until the pipe reader reaches EOF.
 
-        The join is bounded: if the drain thread is still blocked after
-        `_MCP_STDERR_DRAIN_JOIN_TIMEOUT` (the pipe's write end is held open by a
-        surviving server descendant), the read end is closed to force the
-        thread's `os.read` to fail, then the thread is rejoined with the same
-        bound. This keeps a leaked stderr pipe from hanging session cleanup
-        even where a cross-thread close does not interrupt `os.read`.
+        The join is bounded. If the drain thread is still blocked after
+        `_MCP_STDERR_DRAIN_JOIN_TIMEOUT`, the pipe's write end is held open by a
+        surviving server descendant. The read end is then closed to make the
+        blocked `os.read` return, and the thread is rejoined with the same
+        bound. Both bounds are necessary: a cross-thread close does not reliably
+        interrupt a reader inside `os.read`, so neither join can be unbounded.
         """
         self.close()
         await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
@@ -455,6 +458,10 @@ async def _create_mcp_session(
 ) -> AsyncIterator[ClientSession]:
     """Create a session while routing stdio server diagnostics into DEBUG logs.
 
+    The stdio branch mirrors `langchain_mcp_adapters.sessions._create_stdio_session`
+    and exists only to pass `errlog`. Keep the two in sync when the adapter
+    changes its stdio setup.
+
     Args:
         connection: Adapter connection configuration.
         server_name: MCP server name used in log records.
@@ -491,6 +498,11 @@ async def _create_mcp_session(
     sink = _MCPStderrSink(server_name, encoding=encoding)
     try:
         async with stdio_client(params, errlog=cast("TextIO", sink)) as (read, write):
+            # The child now holds its own dup of the write end, so drop the
+            # parent's copy. Without this the pipe never reaches EOF after the
+            # server exits and the drain thread blocks until forced closed.
+            # Safe here because `stdio_client` spawns the process during
+            # `__aenter__` and never touches `errlog` again.
             sink.close()
             async with ClientSession(
                 read,

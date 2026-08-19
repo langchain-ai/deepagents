@@ -51,6 +51,7 @@ MANAGED_TABLE_PATHS = frozenset(
         ("sandboxes", "providers"),
         ("threads", "columns"),
         ("effort",),
+        ("effort", "by_model"),
     }
 )
 """Sections whose managed value must be a TOML table.
@@ -63,6 +64,10 @@ for every manifest option are added dynamically by
 `("effort",)` has no manifest option at all — it is written and read by
 `model_config.load_effort_for_model` — so nothing else here would cover it, and
 a managed scalar would replace the user's whole `[effort]` table.
+`("effort", "by_model")` needs its own entry for the same reason: a managed
+scalar there passes the top-level shape check and no manifest option gives the
+merge validator a type for that path, so it would replace the user's
+`[effort.by_model]` table.
 `test_every_managed_table_path_is_enforced` pins every entry, because a renamed
 section would otherwise stop being guarded silently.
 """

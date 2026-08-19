@@ -2586,6 +2586,30 @@ def test_a_managed_scalar_cannot_replace_the_user_effort_table(
         service.invalidate_config_sources()
 
 
+def test_a_managed_scalar_cannot_replace_the_user_effort_by_model_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The nested `[effort.by_model]` table needs its own shape guard.
+
+    Guarding `("effort",)` alone still passes when the managed file declares
+    `[effort]` as a table, and no manifest option supplies a type for the
+    `effort.by_model` path, so the merge validator accepted a managed
+    `by_model = "bad"` and replaced the user's whole table with the scalar.
+    `load_effort_for_model` then rejected the scalar and returned `None`,
+    dropping the user's stored preference instead of leaving it effective.
+    """
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, '[effort]\nby_model = "bad"\n')
+    try:
+        with pytest.raises(service.ManagedPolicyError) as excinfo:
+            service.require_healthy_managed_config(refresh=True)
+        assert "effort.by_model" in str(excinfo.value)
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_the_writer_refuses_the_managed_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

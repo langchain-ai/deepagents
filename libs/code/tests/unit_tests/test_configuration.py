@@ -22,6 +22,7 @@ from deepagents_code.configuration.service import (
 )
 from deepagents_code.configuration.types import ProviderHealth
 from deepagents_code.configuration.writer import update_user_config
+from unit_tests.conftest import redirect_managed_config
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -69,7 +70,9 @@ def test_managed_config_path_windows_ignores_process_env(
     """
     from deepagents_code.configuration import paths
 
-    monkeypatch.setattr(paths, "_program_data_from_registry", lambda: None)
+    monkeypatch.setattr(
+        paths, "_program_data_from_registry", lambda: (None, "registry unreadable")
+    )
     monkeypatch.setenv("ProgramData", "C:/attacker/fake")
     monkeypatch.setenv("PROGRAMDATA", "C:/attacker/fake")
     assert managed_config_path(platform="win32") == Path(
@@ -88,7 +91,9 @@ def test_registry_program_data_outranks_a_poisoned_process_env(
     """
     from deepagents_code.configuration import paths
 
-    monkeypatch.setattr(paths, "_program_data_from_registry", lambda: "D:/RealShared")
+    monkeypatch.setattr(
+        paths, "_program_data_from_registry", lambda: ("D:/RealShared", None)
+    )
     monkeypatch.setenv("ProgramData", "C:/attacker/fake")
     monkeypatch.setenv("PROGRAMDATA", "C:/attacker/fake")
     assert managed_config_path(platform="win32") == Path(
@@ -150,7 +155,7 @@ def test_managed_provider_failure_is_fail_closed(
 
     managed = tmp_path / "managed.toml"
     managed.write_text("[broken", encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     invalidate_config_sources()
     try:
         with pytest.raises(ManagedConfigError):
@@ -285,18 +290,45 @@ def test_managed_wrong_typed_table_keeps_valid_user_siblings() -> None:
     assert provenance["runtime.recursion_limit"] == "managed config"
 
 
-def test_managed_wrong_typed_deny_list_keeps_valid_user_denies() -> None:
-    """An invalid managed deny value cannot discard valid lower denials."""
-    sources_lower = {"mcp": {"disabled_servers": ["user-denied"]}}
-    sources_higher = {"mcp": {"disabled_servers": "not-a-list"}}
-    merged, _ = merge_toml_tables(
-        sources_lower,
-        sources_higher,
+@pytest.mark.parametrize(
+    ("managed_value", "expected"),
+    [
+        pytest.param(5, ["user-denied"], id="unreadable-type-keeps-user-denies"),
+        pytest.param({"a": 1}, ["user-denied"], id="table-cannot-replace-a-deny-list"),
+        pytest.param(
+            "managed-denied, other",
+            ["user-denied", "managed-denied", "other"],
+            id="comma-string-spelling-unions",
+        ),
+        pytest.param(
+            ["managed-denied"],
+            ["user-denied", "managed-denied"],
+            id="array-spelling-unions",
+        ),
+    ],
+)
+def test_managed_deny_list_layers_union_or_keep_the_user_denies(
+    managed_value: object, expected: list[str]
+) -> None:
+    """A deny list accumulates in both spellings and never loses a lower denial.
+
+    A bare comma-separated string is a documented deny-list spelling that both
+    runtime readers split (`mcp_disabled._strict_entries` and
+    `model_config._toml_str_list`). The merge dropped it in favor of the user's
+    array, so `dcode config` reported denials the runtime did not use and the
+    provenance credited the user's file for a leaf managed policy controls. A
+    value that cannot hold names at all still leaves the user's list intact.
+    """
+    merged, provenance = merge_toml_tables(
+        {"mcp": {"disabled_servers": ["user-denied"]}},
+        {"mcp": {"disabled_servers": managed_value}},
         lower_source="config.toml",
         higher_source="managed config",
         union_paths=frozenset({("mcp", "disabled_servers")}),
     )
-    assert merged["mcp"]["disabled_servers"] == ["user-denied"]
+    assert merged["mcp"]["disabled_servers"] == expected
+    if len(expected) > 1:
+        assert provenance["mcp.disabled_servers"] == "managed config + config.toml"
 
 
 def test_managed_mcp_lockdown_replaces_grants_and_unions_denies(
@@ -319,7 +351,7 @@ def test_managed_mcp_lockdown_replaces_grants_and_unions_denies(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     monkeypatch.setenv(
         _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         "env-granted",
@@ -360,7 +392,7 @@ def test_wrong_typed_managed_mcp_allow_list_fails_closed(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     monkeypatch.setenv(
         _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         "env-granted",
@@ -423,7 +455,7 @@ def test_custom_mcp_config_path_is_isolated_from_managed_policy(
         '[mcp]\ndisabled_project_servers = ["managed-denied"]\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         trust = model_config.load_mcp_server_trust_lists(user)
@@ -452,7 +484,7 @@ def test_managed_structured_preferences_reach_runtime_readers(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.invalidate_thread_config_cache()
     try:
@@ -486,7 +518,7 @@ def test_managed_models_survive_an_unreadable_default_user_config(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -517,7 +549,7 @@ def test_managed_skill_dirs_outrank_environment_override(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     monkeypatch.setenv(EXTRA_SKILLS_DIRS, str(env_dir))
     service.invalidate_config_sources()
     try:
@@ -540,7 +572,7 @@ def test_invalid_managed_scalar_keeps_valid_user_value(
     managed = tmp_path / "managed.toml"
     managed.write_text('[threads]\nrelative_time = "invalid"\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.invalidate_thread_config_cache()
     try:
@@ -563,7 +595,7 @@ def test_managed_table_at_scalar_path_keeps_valid_user_value(
     managed = tmp_path / "managed.toml"
     managed.write_text("[models.default]\ninvalid = true\n", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -586,7 +618,7 @@ def test_managed_scalar_enforced_over_user_table_shape_collision(
     managed = tmp_path / "managed.toml"
     managed.write_text("[threads]\nrelative_time = false\n", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.invalidate_thread_config_cache()
     try:
@@ -615,7 +647,7 @@ def test_non_table_known_managed_section_stops_startup(
 
     managed = tmp_path / "managed.toml"
     managed.write_text(managed_toml, encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         with pytest.raises(ManagedPolicyError):
@@ -709,7 +741,7 @@ def test_managed_policy_survives_a_corrupt_default_user_config(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     model_config.invalidate_thread_config_cache()
@@ -743,7 +775,7 @@ def test_malformed_managed_deny_list_fails_closed(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         trust = model_config.load_mcp_server_trust_lists()
@@ -766,7 +798,7 @@ def test_non_table_managed_mcp_section_fails_closed(
     managed = tmp_path / "managed.toml"
     managed.write_text('mcp = "locked"\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         trust = model_config.load_mcp_server_trust_lists()
@@ -856,7 +888,7 @@ def test_corrupt_managed_config_does_not_empty_the_mcp_deny_set(
     managed.write_text("[broken", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         with pytest.raises(ManagedConfigError):
@@ -892,7 +924,7 @@ def test_unusable_managed_deny_list_fails_closed(
     managed.write_text(f"[mcp]\ndisabled_servers = {value}\n", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         # The file parses, so the startup gate cannot catch this.
@@ -926,7 +958,7 @@ def test_managed_deny_list_string_splits_on_commas(
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         assert mcp_disabled.get_disabled_servers() == {"github", "linear"}
@@ -948,7 +980,7 @@ def test_non_table_managed_mcp_section_cannot_void_the_deny_list(
     managed.write_text('mcp = "github"\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         with pytest.raises(ManagedConfigError):
@@ -976,7 +1008,7 @@ def test_failed_reload_keeps_the_last_healthy_managed_snapshot(
     managed.write_text('[mcp]\ndisabled_servers = ["denied"]\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         assert mcp_disabled.get_disabled_servers() == {"denied"}
@@ -1016,7 +1048,7 @@ def test_rejected_reload_keeps_the_last_enforceable_managed_snapshot(
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         assert mcp_disabled.get_disabled_servers() == {"denied"}
@@ -1037,8 +1069,15 @@ def test_union_paths_rebase_onto_an_option_subtree() -> None:
     from deepagents_code.configuration.service import UNION_PATHS, union_paths_under
 
     assert ("disabled_servers",) in union_paths_under(("mcp",))
-    assert union_paths_under(()) == UNION_PATHS
+    # Rebasing strips exactly the prefix, so an absolute path never survives
+    # into a subtree merge — passing one there matches nothing and silently
+    # replaces a deny list.
+    assert ("mcp", "disabled_servers") not in union_paths_under(("mcp",))
+    assert union_paths_under(("mcp",)) == frozenset(
+        {("disabled_servers",), ("disabled_project_servers",)}
+    )
     assert union_paths_under(("models",)) == frozenset()
+    assert all(len(path) > 1 for path in UNION_PATHS)
 
 
 def test_merged_unions_deny_lists_across_layers() -> None:
@@ -1085,6 +1124,48 @@ def test_merged_purges_provenance_for_leaves_the_merge_removed() -> None:
     assert provenance == {"threads.relative_time": "managed config"}
 
 
+def test_a_quoted_dotted_key_cannot_drop_or_misattribute_a_leaf() -> None:
+    """A TOML key containing dots must not collide with a nested path.
+
+    `tomllib.loads('"a.b" = 1')` yields the single key `a.b`. Provenance keyed
+    by dotted string could not tell that from the nested path `a` → `b`, so a
+    user who wrote a quoted dotted key made the administrator's audit view drop
+    a live sibling leaf (`_drop_ancestor_entries` treated `a` as an ancestor of
+    `a.b`) or credit managed policy for a value the user still controls.
+    """
+    merged, provenance = merge_toml_tables(
+        {"a": "user-scalar", "x": 1},
+        {"a.b": "managed-flat"},
+        lower_source="config.toml",
+        higher_source="managed config",
+    )
+    assert merged == {"a": "user-scalar", "x": 1, "a.b": "managed-flat"}
+    # The user's `a` is still effective, so it must still be attributed.
+    assert provenance["a"] == "config.toml"
+    assert provenance["x"] == "config.toml"
+    assert provenance["a.b"] == "managed config"
+
+
+def test_managed_snapshot_rejects_data_it_could_not_have_read() -> None:
+    """An unhealthy snapshot must never carry a table.
+
+    Every reader treats an empty managed table as "nothing declared", so a
+    snapshot that reports a failure while carrying values would have both
+    meanings at once.
+    """
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    corrupt = ProviderStatus("managed config", None, ProviderHealth.CORRUPT)
+    with pytest.raises(ValueError, match="must carry no data"):
+        TomlSnapshot({"startup": {"mode": "yolo"}}, corrupt)
+    # The empty pairing is the legitimate one.
+    assert TomlSnapshot({}, corrupt).data == {}
+
+
 def test_writer_reports_a_mis_encoded_config_instead_of_raising(
     tmp_path: Path,
 ) -> None:
@@ -1122,13 +1203,19 @@ def test_write_result_rejects_a_change_on_a_failed_write() -> None:
         WriteResult(False, True, "boom")
 
 
-def test_write_result_accepts_the_three_real_outcomes() -> None:
-    """The guard must not reject an outcome the writer actually returns."""
+def test_write_result_accepts_only_the_three_real_outcomes() -> None:
+    """The guard must accept every real outcome and reject the impossible ones."""
     from deepagents_code.configuration.writer import WriteResult
 
     assert WriteResult(True, True).changed is True
     assert WriteResult(True, False).changed is False
     assert WriteResult(False, False, "boom").ok is False
+    # A success carrying an error detail is the fourth combination, and it
+    # describes no transaction the writer can perform.
+    with pytest.raises(ValueError, match="cannot carry an error"):
+        WriteResult(True, True, "boom")
+    with pytest.raises(ValueError, match="must carry an error"):
+        WriteResult(False, False)
 
 
 def test_writer_reports_caller_bugs_separately_from_disk_errors(
@@ -1187,7 +1274,7 @@ def test_reload_keeps_a_user_shell_allow_list(
     managed = tmp_path / "managed.toml"
     managed.write_text("", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -1214,7 +1301,7 @@ def test_managed_shell_allow_list_still_wins_a_reload(
     managed = tmp_path / "managed.toml"
     managed.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -1288,14 +1375,20 @@ def _managed_policy_args() -> argparse.Namespace:
     produces for an omitted `--sandbox` (the argument declares
     `default="none"`). Using `None` here made the "does not force a sandbox"
     regression tests pass against code that forced one.
+
+    Every field managed policy revokes starts at a *user-set* value, never at
+    the empty default. `interpreter_tools=None` made the assertion that managed
+    `interpreter.ptc` clears it unfalsifiable: the field already held `None`, so
+    a regression that stopped clearing a user's `--interpreter-tools all` passed
+    the test. The same held for `interpreter`.
     """
     return argparse.Namespace(
         model=None,
         auto_classifier_model=None,
-        interpreter=None,
+        interpreter=False,
         recursion_limit=None,
         sandbox="none",
-        interpreter_tools=None,
+        interpreter_tools="all",
         shell_allow_list="all",
         auto_approve=False,
         yolo=True,
@@ -1362,7 +1455,7 @@ def test_rejected_managed_privilege_value_stops_the_launch(
 
     managed = tmp_path / "managed.toml"
     managed.write_text(managed_toml, encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
@@ -1396,7 +1489,7 @@ def test_managed_auto_mode_does_not_set_the_headless_incompatible_flag(
     managed = tmp_path / "managed.toml"
     managed.write_text('[startup]\nmode = "auto"\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     args = _managed_policy_args()
@@ -1427,7 +1520,7 @@ def test_managed_sandbox_default_does_not_force_a_sandbox(
 
     managed = tmp_path / "managed.toml"
     managed.write_text('[sandboxes]\ndefault = "modal"\n', encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         for unsandboxed in ("none", None):
@@ -1456,7 +1549,7 @@ def test_unavailable_managed_sandbox_leaves_an_unsandboxed_launch_alone(
         '[sandboxes]\ndefault = "not-a-real-provider"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
@@ -1483,7 +1576,7 @@ def test_unavailable_managed_sandbox_stops_a_sandboxed_launch(
         '[sandboxes]\ndefault = "not-a-real-provider"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     args = _managed_policy_args()
     args.sandbox = "not-a-real-provider"
@@ -1512,7 +1605,7 @@ def _managed_only(
     managed.write_text(managed_toml, encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     return managed
@@ -1577,30 +1670,41 @@ def test_agent_launch_commands_stop_on_unusable_managed_policy(
 @pytest.mark.self_managed_update_check
 @pytest.mark.parametrize(
     "managed_toml",
-    ["[broken", "[update]\ncheck = 5\n"],
-    ids=["unparseable", "wrong-type"],
+    [
+        "[broken",
+        "[update]\ncheck = 5\nauto_update = 5\n",
+        '[update]\ncheck = "false"\nauto_update = "false"\n',
+    ],
+    ids=["unparseable", "wrong-type", "quoted-boolean"],
 )
-def test_update_checks_fail_closed_on_unusable_managed_policy(
+def test_update_settings_fail_closed_on_any_managed_policy_error(
     managed_toml: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A feature that reaches the network turns off when policy cannot be read.
+    """A feature that reaches the network turns off on any policy error.
 
-    A wrong type falls through to the lower layers instead, because the value
-    itself is what could not be read — not the file.
+    A present-but-unreadable value takes the same branch as an unreadable file.
+    Falling through to the lower layers inverted the risk: *deleting* the
+    managed file forced auto-update off, while a typo like `auto_update =
+    "false"` handed the decision back to the user's own preference — so an
+    administrator locking down a fleet silently kept the permissive default.
+
+    A user layer is written underneath so this proves the managed error wins,
+    rather than agreeing with the built-in default by coincidence.
     """
-    from deepagents_code import update_check
+    from deepagents_code import model_config, update_check
     from deepagents_code.configuration import service
 
-    _managed_only(tmp_path, monkeypatch, managed_toml)
+    managed = _managed_only(tmp_path, monkeypatch, managed_toml)
+    assert managed.exists()
+    model_config.DEFAULT_CONFIG_PATH.write_text(
+        "[update]\ncheck = true\nauto_update = true\n", encoding="utf-8"
+    )
+    service.invalidate_config_sources()
     try:
-        if managed_toml == "[broken":
-            assert update_check.is_update_check_enabled() is False
-            assert update_check.is_auto_update_enabled() is False
-        else:
-            # The file is readable, so only this key is ignored.
-            assert update_check.is_update_check_enabled() is True
+        assert update_check.is_update_check_enabled() is False
+        assert update_check.is_auto_update_enabled() is False
     finally:
         service.invalidate_config_sources()
 
@@ -1674,7 +1778,7 @@ def test_managed_sandbox_settings_survive_an_unusable_user_config(
     # `sandbox_config` binds the default path at import, so patching
     # `model_config` alone leaves it reading the real user config.
     monkeypatch.setattr(sandbox_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -1707,7 +1811,7 @@ def test_managed_async_subagents_survive_an_unusable_user_config(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -1827,7 +1931,7 @@ def test_both_layer_read_errors_are_reported(
     managed = tmp_path / "managed.toml"
     managed.write_text("[also-broken", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -1861,7 +1965,7 @@ def test_thread_config_is_not_cached_while_the_user_config_is_broken(
     managed = tmp_path / "managed.toml"
     managed.write_text("", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -1905,7 +2009,7 @@ def test_managed_auto_classifier_does_not_set_the_acp_incompatible_flag(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     args = _managed_policy_args()
@@ -1997,7 +2101,7 @@ def test_structured_resolution_matches_the_effective_merge(
     managed = tmp_path / "managed.toml"
     managed.write_text('[themes]\nmytheme = "pinned"\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -2055,25 +2159,36 @@ def test_diagnostics_report_an_unenforceable_managed_policy(
         service.invalidate_config_sources()
 
 
-def test_managed_path_fallback_is_reported_as_a_guess(
+def test_a_guessed_managed_path_is_not_a_clean_missing_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed registry read must not look like "no policy deployed".
 
     The guessed path holds no file, which is the same state as a machine with
-    no managed policy at all, so the reason has to reach the status detail.
+    no managed policy at all. Reporting that as `MISSING` made every managed
+    setting silently inert on a host whose ProgramData is relocated: `MISSING`
+    is usable, so the startup gate passed and every reader saw an empty managed
+    table. The reason has to reach the status, and the status has to be
+    unusable.
     """
     from deepagents_code.configuration import paths, service
+    from deepagents_code.configuration.paths import ResolvedManagedPath
 
-    monkeypatch.setattr(paths._path_state, "registry_fallback", "registry unreadable")
-    monkeypatch.setattr(
-        service, "managed_config_path", lambda: Path("/nonexistent/managed.toml")
+    guessed = ResolvedManagedPath(
+        Path("/nonexistent/managed.toml"), "registry unreadable"
     )
+    for module in (paths, service):
+        monkeypatch.setattr(module, "resolve_managed_path", lambda **_k: guessed)
     service.invalidate_config_sources()
     try:
         status = service.managed_config_status(refresh=True)
-        assert status.health is ProviderHealth.MISSING
+        assert status.health is ProviderHealth.INDETERMINATE
         assert status.detail == "registry unreadable"
+        assert status.usable is False
+        # The gate must refuse the launch rather than run with no policy.
+        with pytest.raises(service.ManagedConfigError) as excinfo:
+            service.require_healthy_managed_config(refresh=True)
+        assert "registry unreadable" in str(excinfo.value)
     finally:
         service.invalidate_config_sources()
 
@@ -2096,7 +2211,7 @@ def test_default_read_includes_policy_and_an_explicit_path_does_not(
     managed = tmp_path / "managed.toml"
     managed.write_text('[models]\ndefault = "managed:model"\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         default_read = service.get_config_sources()
@@ -2206,7 +2321,7 @@ def test_managed_structured_table_displaces_a_valid_user_table(
     managed = tmp_path / "managed.toml"
     managed.write_text('[models]\nproviders = "junk"\n', encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -2236,7 +2351,7 @@ def test_loaded_config_cannot_mutate_the_shared_managed_snapshot(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -2287,6 +2402,236 @@ def test_managed_theme_outranks_the_environment(
         assert source.startswith("managed config")
     finally:
         service.invalidate_config_sources()
+
+
+def test_managed_yolo_switcher_removes_yolo_from_the_approval_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed `yolo_switcher = false` must take YOLO out of Shift+Tab.
+
+    The rejection half of this key was covered; the applied half was not. It
+    reaches the runtime through `resolve_scalar`'s implicit managed tier rather
+    than through `_apply_managed_runtime_policy`, so a reader switched to
+    `managed_toml_data={}` — as two auto-classifier readers deliberately are —
+    would make enforcement a silent no-op with the fail-closed test still green.
+    """
+    from deepagents_code import config, model_config
+    from deepagents_code.approval_mode import ApprovalMode, next_approval_mode
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[startup]\nyolo_switcher = false\n")
+    model_config.DEFAULT_CONFIG_PATH.write_text(
+        "[startup]\nyolo_switcher = true\n", encoding="utf-8"
+    )
+    service.invalidate_config_sources()
+    try:
+        assert config.is_yolo_switcher_enabled() is False
+        assert (
+            next_approval_mode(
+                ApprovalMode.AUTO,
+                auto_eligible=True,
+                yolo_switcher_enabled=config.is_yolo_switcher_enabled(),
+            )
+            is ApprovalMode.MANUAL
+        )
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_langsmith_redaction_outranks_a_user_opt_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed `langsmith_redact = true` cannot be turned off locally."""
+    from deepagents_code import config, model_config
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, "[tracing]\nlangsmith_redact = true\n")
+    model_config.DEFAULT_CONFIG_PATH.write_text(
+        "[tracing]\nlangsmith_redact = false\n", encoding="utf-8"
+    )
+    service.invalidate_config_sources()
+    try:
+        assert config.is_langsmith_redaction_enabled() is True
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_managed_ptc_acknowledgement_outranks_a_user_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed acknowledgement value wins over the user's own file.
+
+    This key decides whether the interpreter may call every tool
+    programmatically, so a user value must never outrank policy.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+    from deepagents_code.configuration import service
+
+    _managed_only(
+        tmp_path,
+        monkeypatch,
+        "[interpreter]\nptc_acknowledge_unsafe = false\n",
+    )
+    model_config.DEFAULT_CONFIG_PATH.write_text(
+        "[interpreter]\nptc_acknowledge_unsafe = true\n", encoding="utf-8"
+    )
+    service.invalidate_config_sources()
+    option = get_option("interpreter.ptc_acknowledge_unsafe")
+    assert option is not None
+    try:
+        value, source = resolve_scalar(option, toml_data=load_config_toml())
+        assert value is False
+        assert source == "managed config"
+    finally:
+        service.invalidate_config_sources()
+
+
+@pytest.mark.parametrize(
+    "managed_toml",
+    [
+        pytest.param('[threads]\nrelative_time = "invalid"\n', id="wrong-typed-scalar"),
+        pytest.param("[ui]\ncursor_style = 5\n", id="wrong-typed-ui-scalar"),
+    ],
+)
+def test_a_benign_managed_typo_still_launches(
+    managed_toml: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected non-enforced managed value must not stop a launch.
+
+    The negative control for the fail-closed set. Only
+    `ENFORCED_MANAGED_KEYS` and a malformed known section exit 78; every other
+    rejected value falls through to the user tier by design. Without this,
+    widening enforcement — adding a scalar key to the enforced tuple, or making
+    the shape check reject wrong-typed leaves — would exit 78 on every machine
+    whose administrator has a harmless typo, and the whole suite would stay
+    green.
+
+    The value is still *reported*, so the administrator can find it.
+    """
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, managed_toml)
+    try:
+        # No exception: the launch gate accepts the file.
+        service.require_healthy_managed_config(refresh=True)
+        health = service.managed_health(refresh=True)
+        assert health.ok is True
+        assert health.violations == ()
+        # But it must not be silent, or an administrator cannot learn the value
+        # was dropped: the only other announcement is a `logger.warning` that
+        # the package's in-memory handler keeps off stderr.
+        assert health.rejections != ()
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_every_managed_table_path_is_enforced() -> None:
+    """Each declared table path must really produce a shape violation.
+
+    The analogue of `test_every_enforced_managed_key_resolves_to_a_manifest_option`
+    for `MANAGED_TABLE_PATHS`. Two entries are not derivable from a manifest
+    option's parents (`async_subagents` and `effort`), so a renamed section
+    would silently stop being guarded — and a managed scalar would then replace
+    the user's whole section instead of being rejected.
+    """
+    from deepagents_code.configuration.service import (
+        MANAGED_TABLE_PATHS,
+        managed_section_shape_violations,
+    )
+
+    unguarded = []
+    for path in MANAGED_TABLE_PATHS:
+        managed: dict[str, Any] = {}
+        node: dict[str, Any] = managed
+        for part in path[:-1]:
+            child: dict[str, Any] = {}
+            node[part] = child
+            node = child
+        # A scalar where the section belongs.
+        node[path[-1]] = "not-a-table"
+        if ".".join(path) not in managed_section_shape_violations(managed):
+            unguarded.append(".".join(path))
+    assert unguarded == []
+
+
+def test_a_managed_scalar_cannot_replace_the_user_effort_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`[effort]` has no manifest option, so it needs its own shape guard.
+
+    `README.md` promised that a scalar at a known section stops the launch, but
+    the check derived its paths from manifest-backed options, and `[effort]` is
+    read and written by `model_config` without one. A managed `effort = "bad"`
+    was therefore accepted and replaced the user's entire table.
+    """
+    from deepagents_code.configuration import service
+
+    _managed_only(tmp_path, monkeypatch, 'effort = "bad"\n')
+    try:
+        with pytest.raises(service.ManagedPolicyError) as excinfo:
+            service.require_healthy_managed_config(refresh=True)
+        assert "effort" in str(excinfo.value)
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_the_writer_refuses_the_managed_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The managed tier is read-only by guard, not only by convention.
+
+    `THREAT_MODEL.md` states that the CLI never writes the managed file. That
+    held because no caller passed the path, which is not the same as being
+    unable to.
+    """
+    from deepagents_code.configuration import writer
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+
+    def mutate(data: dict[str, Any]) -> bool:
+        data["startup"] = {"mode": "yolo"}
+        return True
+
+    result = writer.update_user_config(mutate, config_path=managed)
+    assert result.ok is False
+    assert result.changed is False
+    assert result.error is not None
+    assert "read-only" in result.error
+    # The file on disk is untouched.
+    assert 'mode = "manual"' in managed.read_text(encoding="utf-8")
+
+
+def test_no_credential_option_reads_managed_policy() -> None:
+    """Managed policy cannot supply a credential, so no reader may imply it.
+
+    `_resolve` carried a managed branch ahead of the `auth.json` store that
+    could never fire: `resolve_scalar` consults managed policy only for an
+    option with `toml_keys`, and no credential option has them. If a credential
+    option ever gains `toml_keys`, that decision should be deliberate — the
+    managed file is world-readable by design.
+    """
+    from deepagents_code.config_manifest import get_config_options
+
+    with_toml_keys = [
+        option.key
+        for option in get_config_options()
+        if option.group == "Credentials" and option.toml_keys
+    ]
+    assert with_toml_keys == []
 
 
 def test_failed_write_leaves_no_temporary_file_behind(
@@ -2461,7 +2806,7 @@ def test_saving_a_shadowed_ui_preference_says_policy_still_wins(
     managed = tmp_path / "managed.toml"
     managed.write_text("[ui]\nshow_scrollbar = true\n", encoding="utf-8")
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
@@ -2510,7 +2855,7 @@ def test_blocked_reload_keeps_policy_and_says_so(
 
     managed = tmp_path / "managed.toml"
     managed.write_text(managed_toml, encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     previous = _reload_previous()
     try:
@@ -2536,7 +2881,7 @@ def test_managed_startup_mode_revokes_a_user_yolo_flag(
 
     managed = tmp_path / "managed.toml"
     managed.write_text('[startup]\nmode = "manual"\n', encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
@@ -2573,7 +2918,7 @@ def test_managed_auto_classifier_clears_the_cli_flag(
         encoding="utf-8",
     )
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL", raising=False)
     service.invalidate_config_sources()
     model_config.clear_caches()
@@ -2603,7 +2948,7 @@ def test_managed_shell_allow_list_clears_the_cli_grant(
 
     managed = tmp_path / "managed.toml"
     managed.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
@@ -2624,7 +2969,7 @@ def test_managed_recursion_limit_is_range_checked_before_it_wins(
 
     managed = tmp_path / "managed.toml"
     managed.write_text("[runtime]\nrecursion_limit = 500\n", encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
@@ -2678,9 +3023,17 @@ def test_windows_program_data_comes_from_the_registry(
     monkeypatch.setitem(_sys.modules, "winreg", fake)
     monkeypatch.setattr(paths.sys, "platform", "win32")
 
-    # Target the helper directly: the autouse isolation fixture replaces
-    # `managed_config_path` itself.
-    assert paths._windows_program_data(None) == expected_root
+    # Target the helper directly: the autouse isolation fixture replaces both
+    # public path entry points.
+    root, fallback = paths._windows_program_data(None)
+    assert root == expected_root
+    # A guessed root must say so. Without the reason, an empty read at the
+    # guessed path is indistinguishable from an administrator deploying no
+    # policy at all, which is the fail-open this pairing exists to prevent.
+    if registry_value:
+        assert fallback is None
+    else:
+        assert fallback is not None
 
 
 def test_disabled_server_write_recomputes_inside_the_lock(
@@ -2721,7 +3074,7 @@ def test_startup_gate_exits_78_on_unusable_managed_policy(
 
     managed = tmp_path / "managed.toml"
     managed.write_text("[broken", encoding="utf-8")
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
     try:
         with pytest.raises(SystemExit) as excinfo:
@@ -2739,9 +3092,7 @@ def test_startup_gate_accepts_a_missing_managed_file(
     from deepagents_code import main
     from deepagents_code.configuration import service
 
-    monkeypatch.setattr(
-        service, "managed_config_path", lambda: tmp_path / "absent.toml"
-    )
+    redirect_managed_config(monkeypatch, tmp_path / "absent.toml")
     service.invalidate_config_sources()
     try:
         main._require_managed_config_or_exit()

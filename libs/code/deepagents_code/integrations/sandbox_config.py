@@ -146,6 +146,13 @@ class SandboxConfig:
             detail = sources.user.status.detail or "unknown read error"
             logger.warning("Could not read config file %s: %s", config_path, detail)
             parse_error = f"could not read config file: {detail}"
+        dropped = sources.dropped_managed_detail()
+        if dropped is not None:
+            logger.error(
+                "Managed policy from %s is not being applied: %s",
+                sources.managed.status.path,
+                dropped,
+            )
         data, _ = sources.merged()
         section = data.get("sandboxes", {})
         if not isinstance(section, dict):

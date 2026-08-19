@@ -495,7 +495,7 @@ def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
 _warned_non_table_paths: set[tuple[str, ...]] = set()
 
 
-def _toml_lookup(
+def toml_lookup(
     data: Mapping[str, Any], keys: tuple[str, ...], *, source: str = "config.toml"
 ) -> tuple[bool, Any]:
     """Navigate nested `keys` in one TOML source.
@@ -837,8 +837,8 @@ def resolve_scalar(
             union deny list draws on both layers — `"managed config +
             config.toml"`. A `THEME_DELEGATE` option reports the richer
             `[ui.*]` sources its own resolver produces. Callers that ask "did
-            managed policy win?" must not compare `source` with `==` for an
-            option that can produce a combined label.
+            managed policy win?" must use `service.managed_decided(source)`
+            rather than `==`, which answers `False` for every combined label.
     """
     managed_data = (
         load_managed_config_toml() if managed_toml_data is None else managed_toml_data
@@ -849,7 +849,7 @@ def resolve_scalar(
     managed_found = False
     managed_raw: object = None
     if option.toml_keys:
-        managed_found, managed_raw = _toml_lookup(
+        managed_found, managed_raw = toml_lookup(
             managed_data,
             option.toml_keys,
             source="managed config",
@@ -908,61 +908,33 @@ def resolve_scalar(
                 return value, f"env ({name})"
 
     if option.toml_keys:
-        found, raw = _toml_lookup(toml_data, option.toml_keys)
+        found, raw = toml_lookup(toml_data, option.toml_keys)
         if option.kind is OptionKind.STRUCTURED and managed_found:
+            from deepagents_code.configuration.resolver import (
+                union_entries,
+                union_lists,
+            )
             from deepagents_code.configuration.service import (
                 UNION_PATHS,
-                union_paths_under,
+                merge_managed_over_user,
             )
 
             if found and isinstance(raw, dict) and isinstance(managed_raw, dict):
-                from deepagents_code.configuration.resolver import merge_toml_tables
-                from deepagents_code.configuration.service import (
-                    is_valid_managed_scalar,
-                )
-
-                prefix = option.toml_keys or ()
-
-                def managed_leaf_is_valid(
-                    path: tuple[str, ...],
-                    value: object,
-                    _prefix: tuple[str, ...] = prefix,
-                ) -> bool:
-                    """Validate one leaf against its absolute manifest path.
-
-                    Returns:
-                        Whether managed policy may apply the value at this leaf.
-                    """
-                    return is_valid_managed_scalar((*_prefix, *path), value)
-
-                # Must match `ConfigSources.merged`, which is what the runtime
-                # readers use. Omitting the validator was not cosmetic: the
-                # merger gates the "managed scalar displaces a user table" rule
-                # on `higher_leaf_is_valid is None`, so this path kept a user
-                # table that `merged` replaces. `dcode config --json --verbose`
-                # takes `value` from here and `provenance` from the validated
-                # merge, so one row could report the user's table as effective
-                # while its provenance said managed policy owned that leaf.
-                merged, _ = merge_toml_tables(
-                    raw,
-                    managed_raw,
-                    lower_source="config.toml",
-                    higher_source="managed config",
-                    union_paths=union_paths_under(prefix),
-                    higher_leaf_is_valid=managed_leaf_is_valid,
+                merged, _ = merge_managed_over_user(
+                    raw, managed_raw, prefix=option.toml_keys
                 )
                 return merged, "managed config + config.toml"
-            if (
-                found
-                and option.toml_keys in UNION_PATHS
-                and isinstance(raw, list)
-                and isinstance(managed_raw, list)
-            ):
-                merged_list = list(raw)
-                for item in managed_raw:
-                    if item not in merged_list:
-                        merged_list.append(item)
-                return merged_list, "managed config + config.toml"
+            if found and option.toml_keys in UNION_PATHS:
+                # Both spellings of a deny list union here, exactly as the
+                # merge and the runtime readers do; a managed string layer that
+                # fell through to the replace below dropped the user's denials.
+                user_entries = union_entries(raw)
+                managed_entries = union_entries(managed_raw)
+                if user_entries is not None and managed_entries is not None:
+                    return (
+                        union_lists(user_entries, managed_entries),
+                        "managed config + config.toml",
+                    )
             return managed_raw, "managed config"
         if found:
             value = _coerce_toml(option, raw)
@@ -1068,7 +1040,9 @@ def resolve_auto_classifier_timeout_with_source(
     if _is_valid_auto_classifier_timeout(value):
         return value, source
 
-    if source == "managed config":
+    from deepagents_code.configuration.service import managed_decided
+
+    if managed_decided(source):
         logger.warning(
             "Ignoring managed auto_classifier_timeout %r (expected seconds in "
             "[%g, %g]); falling through to the next config source",
@@ -1227,7 +1201,9 @@ def resolve_auto_classifier_model_with_source(
         toml_data=data,
         managed_toml_data=managed_data,
     )
-    if source == "managed config":
+    from deepagents_code.configuration.service import managed_decided
+
+    if managed_decided(source):
         return (
             value.strip() if isinstance(value, str) and value.strip() else None
         ), source
@@ -1320,7 +1296,9 @@ def resolve_recursion_limit(
     if is_valid_recursion_limit(value):
         return value
 
-    if source == "managed config":
+    from deepagents_code.configuration.service import managed_decided
+
+    if managed_decided(source):
         logger.warning(
             "Ignoring managed recursion_limit %r (expected int in [%d, %d]); "
             "falling through to the next config source",
@@ -2221,14 +2199,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_project_servers"),
     ),
-    # Unlike the two trust lists above, this one is managed by `mcp_disabled`
-    # (the server viewer's disable toggle), not `load_mcp_server_trust_lists`;
-    # it plays no part in the project-trust security boundary. It is STRUCTURED
-    # here purely for discovery.
+    # Read by `mcp_disabled` (the server viewer's disable toggle) rather than by
+    # `load_mcp_server_trust_lists`, but it is security-load-bearing all the
+    # same: it is in `UNION_PATHS`, so the managed and user lists accumulate,
+    # and `mcp_disabled._managed_disabled_servers` fails closed on a managed
+    # value it cannot read, which disables every MCP server.
     ConfigOption(
         key="mcp.disabled_servers",
         group="MCP",
-        summary="MCP server names disabled by the user from the server viewer.",
+        summary=(
+            "MCP server names denied by the server viewer or by managed policy; "
+            "the managed and user lists union."
+        ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
     ),
@@ -2448,8 +2430,9 @@ def get_config_options() -> tuple[ConfigOption, ...]:
     Cached: provider credentials are generated once from `PROVIDER_API_KEY_ENV`
     on first call (which lazily imports `model_config`). The cache assumes that
     registry is an immutable module constant; a test that monkeypatches it must
-    call `get_config_options.cache_clear()` (and `_options_by_key.cache_clear()`
-    and `_options_by_toml_path.cache_clear()`).
+    call `get_config_options.cache_clear()` (and `_options_by_key.cache_clear()`,
+    `_options_by_toml_path.cache_clear()`, and
+    `configuration.service._managed_table_paths.cache_clear()`).
     """
     return _credential_options() + _STATIC_OPTIONS
 

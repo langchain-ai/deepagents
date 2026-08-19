@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 
 from deepagents_code import mcp_disabled
-from deepagents_code.configuration import service
 from deepagents_code.configuration.service import invalidate_config_sources
 from deepagents_code.mcp_disabled import (
     get_disabled_servers,
     is_server_disabled,
     set_server_disabled,
 )
+from unit_tests.conftest import redirect_managed_config
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def managed_and_user_configs(
     user = tmp_path / "config.toml"
     managed = tmp_path / "managed.toml"
     monkeypatch.setattr(mcp_disabled, "_DEFAULT_CONFIG_PATH", user)
-    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    redirect_managed_config(monkeypatch, managed)
     invalidate_config_sources()
     yield user, managed
     invalidate_config_sources()

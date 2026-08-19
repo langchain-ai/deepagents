@@ -910,13 +910,32 @@ self-deadlock. Cross-process races are out of scope (mirrors the existing
 helpers)."""
 
 
+def _effective_source_label(config_path: Path) -> str:
+    """Return log context for a value that may have come from either layer.
+
+    `_load_effective_config_data` returns the *user* path alongside *merged*
+    data, so "Ignoring X in ~/.deepagents/config.toml" can name a file that does
+    not contain the offending value and send the reader to edit the wrong one.
+
+    Returns:
+        The user path, noting managed policy when it declares anything.
+    """
+    from deepagents_code.configuration.service import get_managed_snapshot
+
+    if get_managed_snapshot().data:
+        return f"{config_path} or managed config"
+    return str(config_path)
+
+
 def _load_effective_config_data(
     config_path: Path | None,
 ) -> tuple[dict[str, Any], Path]:
     """Load user TOML plus managed policy for default-path reads.
 
     Passing a non-`None` `config_path` excludes managed policy, so production
-    callers must pass `None`.
+    callers must pass `None`. The returned path is the user file while the data
+    is merged, so a caller logging about one value wants
+    `_effective_source_label` rather than the bare path.
 
     Returns:
         Effective data and resolved user path.
@@ -946,6 +965,13 @@ def _load_effective_config_data(
             detail,
         )
         return dict(sources.managed.data), resolved_path
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
     data = sources.merged()[0] if is_default else sources.user.data
     return dict(data), resolved_path
 
@@ -2776,6 +2802,13 @@ class ModelConfig:
                 config_path,
                 sources.user.status.detail or "unknown read error",
             )
+        dropped = sources.dropped_managed_detail()
+        if dropped is not None:
+            logger.error(
+                "Managed policy from %s is not being applied: %s",
+                sources.managed.status.path,
+                dropped,
+            )
         if user_unreadable:
             # Do not let a privileged process read a config the owning user has
             # made unavailable, but preserve administrator-managed policy.
@@ -2786,6 +2819,9 @@ class ModelConfig:
             data = deepcopy(sources.managed.data)
         else:
             data, _ = sources.merged()
+        # `data` is merged, so a warning below must not assert that the value
+        # sits in the user's file.
+        source_label = _effective_source_label(config_path)
         try:
             models_section = data.get("models", {})
             stored_classifier = models_section.get("auto_classifier")
@@ -2797,16 +2833,24 @@ class ModelConfig:
             # `AttributeError` out of a loader every caller treats as total.
             config = cls(
                 default_model=_toml_model_spec(
-                    models_section.get("default"), key="default", path=config_path
+                    models_section.get("default"),
+                    key="default",
+                    path=config_path,
+                    source_label=source_label,
                 ),
                 recent_model=_toml_model_spec(
-                    models_section.get("recent"), key="recent", path=config_path
+                    models_section.get("recent"),
+                    key="recent",
+                    path=config_path,
+                    source_label=source_label,
                 ),
                 auto_classifier_model=(
                     stored_classifier if isinstance(stored_classifier, str) else None
                 ),
                 providers=_toml_providers_table(
-                    models_section.get("providers", {}), path=config_path
+                    models_section.get("providers", {}),
+                    path=config_path,
+                    source_label=source_label,
                 ),
             )
         except (AttributeError, TypeError) as e:
@@ -3538,7 +3582,7 @@ def load_effort_for_model(
         if not isinstance(effort_section, dict):
             logger.warning(
                 "Ignoring malformed [effort] in %s: expected a table, got %s",
-                config_path,
+                _effective_source_label(config_path),
                 type(effort_section).__name__,
             )
             return None
@@ -3548,7 +3592,7 @@ def load_effort_for_model(
         if not isinstance(by_model, dict):
             logger.warning(
                 "Ignoring malformed [effort.by_model] in %s: expected a table, got %s",
-                config_path,
+                _effective_source_label(config_path),
                 type(by_model).__name__,
             )
             return None
@@ -3560,7 +3604,7 @@ def load_effort_for_model(
                 "Ignoring malformed reasoning effort for %s in %s: expected a "
                 "string, got %s",
                 model_spec,
-                config_path,
+                _effective_source_label(config_path),
                 type(effort).__name__,
             )
             return None
@@ -4399,13 +4443,18 @@ def _parse_csv_env(name: str) -> list[str] | None:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _toml_model_spec(value: object, *, key: str, path: Path) -> str | None:
+def _toml_model_spec(
+    value: object, *, key: str, path: Path, source_label: str | None = None
+) -> str | None:
     """Return a `[models]` model spec, or `None` when it is not a string.
 
     Args:
         value: The raw TOML value.
         key: The key name inside `[models]`, for log context.
         path: The config file the value came from, for log context.
+        source_label: Overrides `path` in the log when the value came from a
+            merge of both layers, so the message does not name a file that may
+            not hold it. See `_effective_source_label`.
 
     Returns:
         The spec string, or `None` when the value cannot be one.
@@ -4415,18 +4464,22 @@ def _toml_model_spec(value: object, *, key: str, path: Path) -> str | None:
     logger.warning(
         "Ignoring [models].%s in %s: expected a string, got %s",
         key,
-        path,
+        source_label or path,
         type(value).__name__,
     )
     return None
 
 
-def _toml_providers_table(value: object, *, path: Path) -> dict[str, Any]:
+def _toml_providers_table(
+    value: object, *, path: Path, source_label: str | None = None
+) -> dict[str, Any]:
     """Return the `[models.providers]` table, or an empty one when unusable.
 
     Args:
         value: The raw TOML value.
         path: The config file the value came from, for log context.
+        source_label: Overrides `path` in the log when the value came from a
+            merge of both layers. See `_effective_source_label`.
 
     Returns:
         The providers table, empty when the value is not a table.
@@ -4435,7 +4488,7 @@ def _toml_providers_table(value: object, *, path: Path) -> dict[str, Any]:
         return cast("dict[str, Any]", value)
     logger.warning(
         "Ignoring [models].providers in %s: expected a table, got %s",
-        path,
+        source_label or path,
         type(value).__name__,
     )
     return {}
@@ -4627,9 +4680,8 @@ def load_mcp_server_trust_lists(
     managed_disabled: list[str] = []
     managed_approvals_explicit = False
     legacy_ignored: list[str] = []
-    # Accumulated, not overwritten. The user-layer branches run first and the
-    # managed-layer branches ran second, so a user with a corrupt `config.toml`
-    # *and* a corrupt managed file was told about the managed file only.
+    # Accumulated, not overwritten: both layers can fail, and both errors must
+    # reach the user.
     read_errors: list[str] = []
     if not sources.user.status.usable:
         # The file exists but is unreadable/unparseable. Record it so callers

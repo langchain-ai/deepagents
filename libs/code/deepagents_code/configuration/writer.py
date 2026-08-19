@@ -42,6 +42,9 @@ class WriteResult:
         if self.changed and not self.ok:
             msg = "a failed write cannot have changed the file"
             raise ValueError(msg)
+        if self.ok and self.error is not None:
+            msg = "a successful write cannot carry an error detail"
+            raise ValueError(msg)
 
 
 def update_user_config(
@@ -51,12 +54,16 @@ def update_user_config(
 ) -> WriteResult:
     """Serialize a read-modify-write of the user config and replace it atomically.
 
+    Writes the user tier only. The managed path is refused rather than trusted
+    to be unreachable.
+
     Args:
         mutate: Edit applied to the table parsed inside the write lock. It must
             edit that table in place and return whether anything changed;
             overwriting it wholesale discards concurrent edits to sibling
             tables, which is the hazard the shared lock exists to prevent.
         config_path: Override the default config location; intended for tests.
+            The managed-config path is rejected.
 
     Returns:
         Transaction success, changed state, and safe error detail.
@@ -65,6 +72,14 @@ def update_user_config(
         from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
         config_path = DEFAULT_CONFIG_PATH
+    from deepagents_code.configuration.paths import managed_config_path
+
+    if config_path == managed_config_path():
+        # The managed tier is read-only, and `THREAT_MODEL.md` states that as a
+        # security property. It held only because no caller passed this path;
+        # make it structural, so the claim does not depend on every future
+        # caller knowing it.
+        return WriteResult(False, False, "managed config is read-only")
     with USER_CONFIG_WRITE_LOCK:
         try:
             if config_path.exists():

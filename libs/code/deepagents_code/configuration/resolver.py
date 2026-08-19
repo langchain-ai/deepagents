@@ -14,6 +14,54 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
 
+def union_lists(lower: list[Any], higher: list[Any]) -> list[Any]:
+    """Accumulate two deny-list layers, keeping order and dropping duplicates.
+
+    Shared with the merger so a deny list cannot union in one reader and
+    replace in another.
+
+    Returns:
+        The lower list followed by the higher entries it does not already hold.
+    """
+    union = deepcopy(lower)
+    for item in higher:
+        if item not in union:
+            union.append(deepcopy(item))
+    return union
+
+
+def union_entries(value: object) -> list[Any] | None:
+    """Normalize one deny-list layer to its entries.
+
+    A deny list may be written as a TOML array or as a comma-separated string
+    (`disabled_servers = "a, b"`), and the runtime readers treat the two as
+    equivalent — `mcp_disabled._strict_entries` and `model_config._toml_str_list`
+    both split on commas. The merge has to accept both spellings too. It did
+    not, so a managed string layer was dropped in favor of the user's array and
+    the provenance then credited the user's file for a leaf managed policy
+    contributes to.
+
+    Returns:
+        The trimmed entries, or `None` when the value cannot hold entries.
+    """
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return value
+    return None
+
+
+def leaf_provenance(value: object, source: str) -> dict[str, str]:
+    """Attribute every leaf under `value` to one source.
+
+    For a table that only one tier declares, where there is nothing to merge.
+
+    Returns:
+        Dotted leaf-to-source mapping.
+    """
+    return _dotted(_leaf_provenance(value, source, ()))
+
+
 def merge_toml_tables(
     lower: Mapping[str, Any],
     higher: Mapping[str, Any],
@@ -38,7 +86,10 @@ def merge_toml_tables(
             it displaces a `lower` one. Return `False` to keep the lower value,
             which stops a wrong-typed higher value from discarding a valid
             lower subtree. Receives paths on the same relative basis as
-            `union_paths`.
+            `union_paths`. Every managed merge passes one, by way of
+            `service.merge_managed_over_user`; omitting it leaves the merger
+            with no type information, so it displaces only a table that holds
+            no nested table.
 
     Returns:
         Merged table and dotted leaf-to-source mapping.
@@ -51,10 +102,27 @@ def merge_toml_tables(
         union_paths=union_paths,
         higher_leaf_is_valid=higher_leaf_is_valid,
     )
-    return merged, _drop_ancestor_entries(provenance)
+    return merged, _dotted(_drop_ancestor_entries(provenance))
 
 
-def _drop_ancestor_entries(provenance: dict[str, str]) -> dict[str, str]:
+def _dotted(provenance: dict[tuple[str, ...], str]) -> dict[str, str]:
+    """Join tuple paths for display.
+
+    Provenance is keyed by path tuple everywhere inside this module. TOML allows
+    a quoted key that contains dots (`"a.b" = 1` parses to the single key
+    `a.b`), so a dotted string is a lossy key: it made `_drop_ancestor_entries`
+    delete a live sibling leaf named `a`, and credited the wrong tier for the
+    flat key. Joining happens once, here, where the ambiguity is only cosmetic.
+
+    Returns:
+        Provenance keyed by dotted path.
+    """
+    return {".".join(path): source for path, source in provenance.items()}
+
+
+def _drop_ancestor_entries(
+    provenance: dict[tuple[str, ...], str],
+) -> dict[tuple[str, ...], str]:
     """Remove entries that are a strict ancestor of another entry.
 
     A lower empty table that the higher table fills leaves an entry for the
@@ -69,9 +137,9 @@ def _drop_ancestor_entries(provenance: dict[str, str]) -> dict[str, str]:
     """
     keys = tuple(provenance)
     return {
-        key: source
-        for key, source in provenance.items()
-        if not any(other.startswith(f"{key}.") for other in keys)
+        path: source
+        for path, source in provenance.items()
+        if not any(other[: len(path)] == path and other != path for other in keys)
     }
 
 
@@ -83,9 +151,9 @@ def _merge(
     higher_source: str,
     union_paths: frozenset[tuple[str, ...]],
     higher_leaf_is_valid: Callable[[tuple[str, ...], object], bool] | None,
-    lower_provenance: dict[str, str] | None = None,
+    lower_provenance: dict[tuple[str, ...], str] | None = None,
     path_prefix: tuple[str, ...] = (),
-) -> tuple[dict[str, Any], dict[str, str]]:
+) -> tuple[dict[str, Any], dict[tuple[str, ...], str]]:
     """Recursive half of `merge_toml_tables`.
 
     Separate so the public signature carries no parameter a caller must not
@@ -93,7 +161,7 @@ def _merge(
     an unscoped mapping produces wrong provenance with no error.
 
     Returns:
-        Merged table and dotted leaf-to-source mapping.
+        Merged table and path-keyed leaf-to-source mapping.
     """
     merged: dict[str, Any] = deepcopy(dict(lower))
     provenance = dict(
@@ -101,7 +169,6 @@ def _merge(
     )
     for key, value in higher.items():
         path = (*path_prefix, key)
-        dotted = ".".join(path)
         existing = merged.get(key)
         # A higher scalar must replace a lower table, whatever the table holds.
         # Keeping the table lets a shape collision defeat the higher value.
@@ -127,12 +194,17 @@ def _merge(
         # dictionary that later runtime readers cannot use.
         if higher_leaf_is_valid is not None and not higher_leaf_is_valid(path, value):
             continue
-        if (
-            path in union_paths
-            and isinstance(existing, list)
-            and not isinstance(value, list)
-        ):
-            continue
+        if path in union_paths:
+            lower_entries = union_entries(existing)
+            higher_entries = union_entries(value)
+            if lower_entries is not None and higher_entries is None:
+                # A higher value that cannot hold names must never replace a
+                # deny list: that would drop the lower layer's denials.
+                continue
+            if lower_entries is not None and higher_entries is not None:
+                merged[key] = union_lists(lower_entries, higher_entries)
+                provenance[path] = _combined_source(lower_source, higher_source)
+                continue
         if isinstance(existing, dict) and isinstance(value, dict):
             nested, nested_provenance = _merge(
                 existing,
@@ -144,7 +216,7 @@ def _merge(
                 lower_provenance={
                     leaf: source
                     for leaf, source in provenance.items()
-                    if leaf == dotted or leaf.startswith(f"{dotted}.")
+                    if leaf[: len(path)] == path
                 },
                 path_prefix=path,
             )
@@ -155,25 +227,13 @@ def _merge(
             # user-controlled — in the output an administrator reads to audit
             # what policy enforces.
             for leaf in tuple(provenance):
-                if leaf == dotted or leaf.startswith(f"{dotted}."):
+                if leaf[: len(path)] == path:
                     provenance.pop(leaf)
             provenance.update(nested_provenance)
             continue
-        if (
-            path in union_paths
-            and isinstance(existing, list)
-            and isinstance(value, list)
-        ):
-            union = deepcopy(existing)
-            for item in value:
-                if item not in union:
-                    union.append(deepcopy(item))
-            merged[key] = union
-            provenance[dotted] = _combined_source(lower_source, higher_source)
-            continue
         merged[key] = deepcopy(value)
         for leaf in tuple(provenance):
-            if leaf == dotted or leaf.startswith(f"{dotted}."):
+            if leaf[: len(path)] == path:
                 provenance.pop(leaf)
         provenance.update(_leaf_provenance(value, higher_source, path))
     return merged, provenance
@@ -195,22 +255,22 @@ def _overriding_table_is_scalar_only(table: dict[str, Any]) -> bool:
 
 def _leaf_provenance(
     value: object, source: str, path: tuple[str, ...]
-) -> dict[str, str]:
+) -> dict[tuple[str, ...], str]:
     """Return provenance entries for every leaf under `value`."""
     if isinstance(value, dict):
         if not value:
-            # An empty table at the root is not a leaf: joining `()` yields the
-            # key `""`. Every merge on a machine with no user `config.toml`
+            # An empty table at the root is not a leaf: it would key the whole
+            # mapping. Every merge on a machine with no user `config.toml`
             # produced that entry, in the output an administrator reads to audit
             # what policy enforces.
             if not path:
                 return {}
-            return {".".join(path): source}
-        result: dict[str, str] = {}
+            return {path: source}
+        result: dict[tuple[str, ...], str] = {}
         for key, child in cast("dict[str, object]", value).items():
             result.update(_leaf_provenance(child, source, (*path, key)))
         return result
-    return {".".join(path): source}
+    return {path: source}
 
 
 def _combined_source(lower: str, higher: str) -> str:

@@ -2965,6 +2965,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     provider must produce a `credentials.<name>` option after the cache resets.
     """
     from deepagents_code import config_manifest, model_config
+    from deepagents_code.configuration import service
 
     patched = {
         **model_config.PROVIDER_API_KEY_ENV,
@@ -2972,6 +2973,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     }
     monkeypatch.setattr(model_config, "PROVIDER_API_KEY_ENV", patched)
     config_manifest.get_config_options.cache_clear()
+    service._managed_table_paths.cache_clear()
     config_manifest._options_by_key.cache_clear()
     config_manifest._options_by_toml_path.cache_clear()
     try:
@@ -2983,6 +2985,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     finally:
         # Restore the cache so later tests rebuild against the real registry.
         config_manifest.get_config_options.cache_clear()
+        service._managed_table_paths.cache_clear()
         config_manifest._options_by_key.cache_clear()
         config_manifest._options_by_toml_path.cache_clear()
 

@@ -2285,7 +2285,8 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Override the main agent's LangGraph recursion_limit (graph step "
         "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
-        "[runtime].recursion_limit; defaults to 2000.",
+        "[runtime].recursion_limit, unless managed config sets it; "
+        "defaults to 2000.",
     )
 
     parser.add_argument(
@@ -2353,7 +2354,7 @@ def parse_args() -> argparse.Namespace:
         metavar="LIST",
         help="Comma-separated list of shell commands to auto-approve, "
         "'recommended' for safe defaults, or 'all' to allow any command. "
-        "Applies to both -n and interactive modes.",
+        "Applies to both -n and interactive modes. Managed config overrides it.",
     )
     parser.add_argument(
         "--mcp-config",
@@ -4257,18 +4258,33 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
     stop the launch, the same way an unparseable managed file does. See
     `configuration.service.ENFORCED_MANAGED_KEYS`. Keys that cannot grant
     privilege keep the ordinary ignore-and-fall-through rule.
+
+    Raises:
+        AssertionError: If managed policy is unusable, which means the startup
+            health gate did not run first.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_managed_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration.service import (
+        get_managed_snapshot,
         managed_declaration,
         managed_policy_violations,
+        managed_scalar,
     )
 
-    managed_data = load_managed_config_toml()
+    snapshot = get_managed_snapshot()
+    if not snapshot.status.usable:
+        # `_require_managed_config_or_exit` ran ~35 lines earlier in `cli_main`,
+        # so this is unreachable. Assert it rather than inferring health from an
+        # empty table: an unusable snapshot carries `{}`, so the `if not
+        # managed_data: return` below would read "no policy to apply" and leave
+        # every user flag in force — the exact fail-open this function prevents.
+        # The ordering is a cross-module invariant with nothing else enforcing it.
+        msg = (
+            "managed policy is unusable when runtime policy is applied; the "
+            f"startup gate must run first (health: {snapshot.status.health.value})"
+        )
+        raise AssertionError(msg)
+    managed_data = snapshot.data
     if not managed_data:
         return
 
@@ -4280,15 +4296,12 @@ def _apply_managed_runtime_policy(args: argparse.Namespace) -> None:
         return managed_declaration(managed_data, option.toml_keys) is not None
 
     def managed_value(key: str) -> tuple[bool, object]:
-        option = get_option(key)
-        if option is None:
-            return False, None
-        value, source = resolve_scalar(
-            option,
-            toml_data={},
-            managed_toml_data=managed_data,
-        )
-        return source == "managed config", value
+        """Resolve one key against managed policy alone.
+
+        Returns:
+            Whether managed policy decided the value, and the value.
+        """
+        return managed_scalar(key, managed_data)
 
     violations = managed_policy_violations(managed_data)
     if violations:
@@ -4360,15 +4373,31 @@ def _apply_managed_sandbox(
     `--sandbox`, but it runs before managed policy is applied, so an
     unavailable managed name would otherwise skip `is_available` and reach the
     sandbox factory instead of producing a curated error.
+
+    A launch that bypasses a named managed backend prints a note. The key does
+    not force containment, and an administrator who read it as if it did would
+    otherwise see an unsandboxed launch with no diagnostic at all.
     """
     found, value = resolved
     # `--sandbox` defaults to the string `"none"`, so an omitted flag never
-    # leaves `args.sandbox` as `None`. Checking only `None` here assigned the
-    # managed backend to every launch, which forced a sandbox onto one that
-    # asked for none and failed an unsandboxed launch outright when the managed
-    # backend was unavailable. `_resolve_and_validate_sandbox` treats both
-    # spellings as "no sandbox"; this must match it.
-    if not found or getattr(args, "sandbox", None) in {None, "none"}:
+    # leaves `args.sandbox` as `None`. Both spellings mean "no sandbox" to
+    # `_resolve_and_validate_sandbox`, and this must match it: checking only
+    # `None` forces a sandbox onto a launch that asked for none.
+    if not found:
+        return
+    if getattr(args, "sandbox", None) in {None, "none"}:
+        # Policy named a backend and this launch is not using one. That is the
+        # documented meaning of the key, but an administrator who set it
+        # believing it forces containment would otherwise get an unsandboxed
+        # launch, exit 0, and a green `dcode doctor` row.
+        if isinstance(value, str) and value not in {"", "none"}:
+            sys.stderr.write(
+                f"Note: managed config sets [sandboxes].default to '{value}', "
+                "which names the backend for a sandboxed launch. This launch "
+                "asked for no sandbox, so it runs on the host. Pass --sandbox "
+                "to use the managed backend.\n"
+            )
+            sys.stderr.flush()
         return
     if not isinstance(value, str) or not value:
         return
@@ -4492,9 +4521,9 @@ def cli_main() -> None:
 
         # Every remaining command can read or act on managed policy, so none
         # may run while that policy is unenforceable. `config`, `doctor`, and
-        # `auth path` returned above precisely because they are the tools for
-        # diagnosing a broken managed file; gating them would leave an
-        # administrator no way to see what is wrong. `help` reads no policy.
+        # `auth path` returned above because they are the tools for diagnosing
+        # a broken managed file. Gating them would leave an administrator no way
+        # to see what is wrong. `help` reads no policy.
         if command != "help":
             _require_managed_config_or_exit()
 
@@ -4530,7 +4559,10 @@ def cli_main() -> None:
         from deepagents_code.config import console, settings
 
         if command is None:
-            # The health gate already ran above, for every command.
+            # The health gate already ran above, for every command, so the
+            # violation check inside cannot fire. Kept as defense in depth: it
+            # is the only thing standing between a future entry point that
+            # forgets the gate and a launch that silently ignores policy.
             _apply_managed_runtime_policy(args)
 
         if command == "auth":

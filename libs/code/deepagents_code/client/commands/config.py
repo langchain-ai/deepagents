@@ -239,15 +239,13 @@ def _resolve(
     )
     from deepagents_code.model_config import ProviderAuthSource
 
-    if option.group == "Credentials":
-        managed_value, managed_source = resolve_scalar(
-            option,
-            toml_data=toml_data,
-            managed_toml_data=managed_toml_data,
-        )
-        if managed_source == "managed config":
-            return True, managed_source, managed_value
-
+    # No managed branch for credentials: every `Credentials` option is built
+    # without `toml_keys` (see `_credential_options`), and `resolve_scalar`
+    # consults managed policy only for an option that has them. A managed
+    # check here could never fire, while implying to a reader that policy can
+    # supply a credential. `test_no_credential_option_reads_managed_policy`
+    # fails if that ever changes, so this can be reconsidered deliberately
+    # rather than found by a reader.
     if (
         option.group == "Credentials"
         and option.provider is not None
@@ -432,24 +430,6 @@ def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
     }
 
 
-def _nested_value(
-    data: Mapping[str, Any], keys: tuple[str, ...] | None
-) -> tuple[bool, object]:
-    """Return one nested value without conflating explicit empty and missing.
-
-    Returns:
-        Presence flag and value.
-    """
-    if keys is None:
-        return False, None
-    value: object = data
-    for key in keys:
-        if not isinstance(value, dict) or key not in value:
-            return False, None
-        value = value[key]
-    return True, value
-
-
 def _option_provenance(
     option: ConfigOption,
     *,
@@ -462,64 +442,42 @@ def _option_provenance(
     Returns:
         Effective or dotted leaf-to-source mapping.
     """
-    from deepagents_code.config_manifest import OptionKind
+    from deepagents_code.config_manifest import OptionKind, toml_lookup
 
-    if option.redacted or option.kind is not OptionKind.STRUCTURED:
+    if (
+        option.redacted
+        or option.kind is not OptionKind.STRUCTURED
+        or option.toml_keys is None
+    ):
         return {"effective": source}
-    user_found, user_value = _nested_value(toml_data or {}, option.toml_keys)
-    managed_found, managed_value = _nested_value(
-        managed_toml_data or {}, option.toml_keys
+    user_found, user_value = toml_lookup(toml_data or {}, option.toml_keys)
+    managed_found, managed_value = toml_lookup(
+        managed_toml_data or {}, option.toml_keys, source="managed config"
     )
     if managed_found and isinstance(managed_value, dict):
-        from deepagents_code.configuration.resolver import merge_toml_tables
+        from deepagents_code.configuration.service import merge_managed_over_user
 
         lower = (
             cast("dict[str, Any]", user_value)
             if user_found and isinstance(user_value, dict)
             else {}
         )
-        from deepagents_code.configuration.service import (
-            is_valid_managed_scalar,
-            union_paths_under,
-        )
-
-        prefix = option.toml_keys or ()
-
-        def managed_leaf_is_valid(path: tuple[str, ...], value: object) -> bool:
-            """Validate one leaf against its absolute manifest path.
-
-            Returns:
-                Whether managed policy may apply the value at this leaf.
-            """
-            return is_valid_managed_scalar((*prefix, *path), value)
-
-        # Must match `ConfigSources.merged` exactly. Merging without the
-        # validator and the union set reports a leaf as `config.toml` that
-        # managed policy actually controls, and this is the output an
-        # administrator uses to audit what is enforced. Both have to be rebased
-        # onto this subtree: the merge matches paths relative to where it
-        # starts, so an absolute deny-list path never matches, and an
-        # unprefixed leaf path matches no manifest option at all — which makes
-        # the validator accept everything.
-        _, provenance = merge_toml_tables(
+        # Shares `ConfigSources.merged`'s helper rather than restating its
+        # arguments: this is the output an administrator uses to audit what is
+        # enforced, so a merge that drifted from the runtime one would credit
+        # the wrong tier for a leaf.
+        _, provenance = merge_managed_over_user(
             lower,
             cast("dict[str, Any]", managed_value),
-            lower_source="config.toml",
-            higher_source="managed config",
-            union_paths=union_paths_under(prefix),
-            higher_leaf_is_valid=managed_leaf_is_valid,
+            prefix=option.toml_keys or (),
         )
         return provenance or {"effective": source}
     if user_found and isinstance(user_value, dict):
-        from deepagents_code.configuration.resolver import merge_toml_tables
+        from deepagents_code.configuration.resolver import leaf_provenance
 
-        _, provenance = merge_toml_tables(
-            {},
-            cast("dict[str, Any]", user_value),
-            lower_source="default",
-            higher_source="config.toml",
-        )
-        return provenance or {"effective": source}
+        # Nothing to merge: managed policy declares nothing at this path, so
+        # every leaf is the user's.
+        return leaf_provenance(user_value, "config.toml") or {"effective": source}
     return {"effective": source}
 
 
@@ -652,24 +610,34 @@ def _managed_health_warning() -> str | None:
     Returns:
         A user-facing notice, or `None` when managed policy is enforceable.
     """
-    from deepagents_code.configuration.service import (
-        managed_config_status,
-        managed_policy_violations,
-    )
+    from deepagents_code.configuration.service import managed_health
 
-    status = managed_config_status()
+    # Refresh, like the path row in the same command: this warning exists to
+    # explain a policy problem, and the cache can still hold the last snapshot
+    # that was enforceable while the file on disk is not.
+    health = managed_health(refresh=True)
+    status = health.status
     if not status.usable:
         detail = f": {status.detail}" if status.detail else ""
         return (
             f"managed config at {status.path} is {status.health.value.lower()}"
             f"{detail}; the values below do not reflect managed policy."
         )
-    violations = managed_policy_violations()
-    if violations:
+    if health.violations:
         return (
             f"managed config at {status.path} rejects "
-            f"{', '.join(violations)}; an agent launch will refuse to start "
-            "until an administrator corrects the value."
+            f"{', '.join(health.violations)}; an agent launch will refuse to "
+            "start until an administrator corrects the value."
+        )
+    if health.rejections:
+        # The values below are correct — these keys fell through to the user
+        # tier by design. Say so, because the warning that records it cannot
+        # reach a terminal.
+        return (
+            f"managed config at {status.path} declares "
+            f"{', '.join(health.rejections)} with a value that cannot be read; "
+            "those keys are ignored and the values below come from a lower "
+            "source."
         )
     return None
 
@@ -1043,15 +1011,12 @@ def _config_path_status(label: str, *, exists: bool) -> str:
         A short status word for the row.
     """
     if label == _MANAGED_PATH_LABEL:
-        from deepagents_code.configuration.service import (
-            managed_config_status,
-            managed_policy_violations,
-        )
+        from deepagents_code.configuration.service import managed_health
 
-        status = managed_config_status(refresh=True)
-        if status.usable and managed_policy_violations():
+        health = managed_health(refresh=True)
+        if health.status.usable and health.violations:
             return "rejected"
-        return status.health.value.lower()
+        return health.status.health.value.lower()
     return "ok" if exists else "missing"
 
 

@@ -514,12 +514,10 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     Returns:
         Managed config diagnostic row.
     """
-    from deepagents_code.configuration.service import (
-        managed_config_status,
-        managed_policy_violations,
-    )
+    from deepagents_code.configuration.service import managed_health
 
-    status = managed_config_status(refresh=True)
+    health = managed_health(refresh=True)
+    status = health.status
     path = status.path or "(unknown)"
     suffix = status.health.value.lower()
     detail = f" - {status.detail}" if status.detail else ""
@@ -528,17 +526,22 @@ def _managed_config_diagnostic() -> DiagnosticItem:
     # nothing new here.
     hint = "" if status.usable else "; ask your administrator to repair or remove it"
     # A file that parses is not necessarily enforceable, and both halves of
-    # exit 78 have to show up here. Reporting only `usable` gave a green row to
-    # the `ManagedPolicyError` half, so a user whose launch was just refused was
-    # told managed config was fine.
-    violations = managed_policy_violations() if status.usable else ()
+    # exit 78 have to show up here: reporting only `usable` gives a green row
+    # to the `ManagedPolicyError` half. `managed_health` reads both from one
+    # snapshot, so the refreshed status cannot be paired with stale violations.
+    violations = health.violations
     if violations:
         detail += f" - rejects {', '.join(violations)}"
         hint = "; ask your administrator to correct the value"
+    if health.rejections:
+        # Declared but ignored, which is not a launch failure and so not part of
+        # `ok`. It still has to appear somewhere: the only other announcement is
+        # a `logger.warning` that cannot reach stderr.
+        detail += f" - ignores {', '.join(health.rejections)}"
     return DiagnosticItem(
         "Managed config",
         f"{path} ({suffix}){detail}{hint}",
-        ok=status.usable and not violations,
+        ok=health.ok,
     )
 
 

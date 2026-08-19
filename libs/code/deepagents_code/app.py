@@ -1319,6 +1319,13 @@ def _load_terminal_default() -> str | None:
         # Managed policy parsed cleanly and must still apply, so keep
         # going with the merged data (managed-only when the user file
         # failed) instead of discarding it with the user's file.
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
     data, _ = sources.merged()
     ui = data.get("ui")
     if not isinstance(ui, dict):
@@ -1518,7 +1525,8 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     if name not in theme.get_registry():
         logger.warning("Refusing to save unknown theme '%s'", name)
@@ -1642,7 +1650,8 @@ def _save_terminal_theme_mapping_result(
 
     Returns:
         Write status and a message suitable for a toast when the user needs to
-            know about a repair or failure.
+            know about a repair or failure, or a notice that managed config
+            keeps the saved preference from taking effect.
     """
     if name not in theme.get_registry():
         logger.warning("Refusing to map unknown theme '%s'", name)
@@ -1775,12 +1784,14 @@ def _save_ui_bool_result(
 
     option = get_option(option_key)
     if option is not None:
+        from deepagents_code.configuration.service import managed_decided
+
         _, source = resolve_scalar(
             option,
             toml_data={},
             managed_toml_data=load_managed_config_toml(),
         )
-        if source == "managed config":
+        if managed_decided(source):
             return _ConfigWriteResult(
                 True,
                 "Preference saved, but managed config remains effective.",

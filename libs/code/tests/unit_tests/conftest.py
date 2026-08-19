@@ -564,6 +564,27 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def redirect_managed_config(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Point every managed-config seam at `path`.
+
+    The snapshot loader resolves through `resolve_managed_path`, error messages
+    render `managed_config_path`, and both names are also bound at import time
+    in the modules that read them. Patching one seam leaves a test reading the
+    developer's real host policy file — or, worse, silently reading nothing —
+    so they are redirected together.
+    """
+    from deepagents_code.configuration import paths, service
+    from deepagents_code.configuration.paths import ResolvedManagedPath
+
+    for module in (paths, service):
+        monkeypatch.setattr(module, "managed_config_path", lambda **_kwargs: path)
+        monkeypatch.setattr(
+            module,
+            "resolve_managed_path",
+            lambda **_kwargs: ResolvedManagedPath(path),
+        )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_managed_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -575,19 +596,13 @@ def _isolate_managed_config(
     unrelated tests change behavior. The snapshot is cached process-wide, so it
     is also cleared on both sides of every test.
     """
-    from deepagents_code.configuration import paths, service
+    from deepagents_code.configuration import service
 
     absent = tmp_path / "absent-managed_config.toml"
-    # Patch both the definition and the name `service` bound at import time.
-    # Patching only `service.managed_config_path` leaves every other importer
-    # — `client.commands.config` among them — reading the developer's real
-    # host path.
-    monkeypatch.setattr(paths, "managed_config_path", lambda **_kwargs: absent)
-    monkeypatch.setattr(service, "managed_config_path", lambda **_kwargs: absent)
-    # The registry-fallback note and the "expected a table" dedup set are both
-    # process-global. Left alone, the first test to trip either one decides what
-    # every later test sees, and the suite runs in random order.
-    monkeypatch.setattr(paths._path_state, "registry_fallback", None)
+    redirect_managed_config(monkeypatch, absent)
+    # The "expected a table" dedup set is process-global. Left alone, the first
+    # test to trip it decides what every later test sees, and the suite runs in
+    # random order.
     from deepagents_code import config_manifest
 
     config_manifest._warned_non_table_paths.clear()

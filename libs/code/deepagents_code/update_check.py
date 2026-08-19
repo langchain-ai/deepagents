@@ -3672,11 +3672,12 @@ async def perform_install_package(
 
 
 def _managed_update_value(key: str) -> tuple[bool, bool]:
-    """Return one valid managed update boolean without masking type errors.
+    """Return one managed update boolean, failing closed on any policy error.
 
-    An unreadable or corrupt managed file reports `(True, False)`, which turns
-    the setting off. Policy that cannot be read must not be treated as absent,
-    and this is the safe direction for a feature that reaches the network. The
+    An unreadable or corrupt managed file, or a present value that is not a
+    boolean, reports `(True, False)`, which turns the setting off. Policy that
+    cannot be read must not be treated as absent, and this is the safe
+    direction for a feature that reaches the network and installs binaries. The
     condition is logged, because "disabled by policy" and "policy unreadable"
     are otherwise indistinguishable to the user.
 
@@ -3701,12 +3702,18 @@ def _managed_update_value(key: str) -> tuple[bool, bool]:
     value = section[key]
     if isinstance(value, bool):
         return True, value
-    logger.warning(
-        "Ignoring [update].%s in managed config (expected bool, got %s)",
+    # Fail closed, exactly as the unreadable-file branch above does. Returning
+    # "managed config does not decide" handed the choice back to the user's env
+    # var and `config.toml`, so an administrator who typed `auto_update =
+    # "false"` on a locked-down fleet silently kept the permissive default —
+    # while *deleting* the file correctly forced the feature off. A present but
+    # unreadable value is a policy error, not an absent policy.
+    logger.error(
+        "Managed [update].%s is %s, not a bool; disabling it until it is repaired",
         key,
         type(value).__name__,
     )
-    return False, False
+    return True, False
 
 
 def is_update_check_enabled() -> bool:
@@ -3859,14 +3866,23 @@ def _read_update_config() -> dict[str, bool]:
 
 
 def is_auto_update_explicitly_set() -> bool:
-    """Return whether the user explicitly chose an auto-update preference.
+    """Return whether an explicit auto-update preference is in force.
 
-    `True` when `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean or
+    `True` when managed policy decides the value, when
+    `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean, or when
     `[update].auto_update` is present in `config.toml`. Distinguishes a
     deliberate opt-in/out from the implicit opt-out default.
+
+    Managed policy counts: it is the most explicit preference there is, and
+    omitting it made `should_announce_auto_update_default` tell the user that
+    the implicit default was in force on a machine where an administrator had
+    set the value.
     """
     from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
 
+    managed, _ = _managed_update_value("auto_update")
+    if managed:
+        return True
     if (
         AUTO_UPDATE in os.environ
         and classify_env_bool(os.environ[AUTO_UPDATE]) is not None

@@ -2245,6 +2245,13 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
             "Could not read retries config from %s",
             sources.user.status.path,
         )
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
     # Managed policy parsed cleanly and must still apply, so keep going
     # with the merged data (managed-only when the user file failed).
     data, _ = sources.merged()
@@ -2450,6 +2457,13 @@ def _read_config_toml_skills_dirs() -> list[str] | None:
         logger.warning(
             "Could not read skills config from %s",
             sources.user.status.path,
+        )
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
         )
     # Managed policy parsed cleanly and must still apply, so keep going
     # with the merged data (managed-only when the user file failed).
@@ -2665,6 +2679,10 @@ class Settings:
 
         Returns:
             Settings instance with detected configuration
+
+        Raises:
+            RuntimeError: If the manifest is missing an enforced managed key, so
+                resolving it from the environment alone would bypass policy.
         """
         # Detect API keys (normalize empty strings to None).
         from deepagents_code.model_config import resolve_env_var
@@ -2685,9 +2703,7 @@ class Settings:
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
         from deepagents_code._env_vars import (
-            EXTRA_SKILLS_DIRS,
             LANGSMITH_PROJECT,
-            SHELL_ALLOW_LIST,
         )
 
         deepagents_langchain_project = resolve_env_var(LANGSMITH_PROJECT)
@@ -2706,29 +2722,36 @@ class Settings:
             resolve_scalar,
         )
 
+        # No `is None` fallback for either enforced key below. The manifest is a
+        # module-level constant, so a missing option is a programming error, not
+        # a runtime condition — and resolving from the environment alone would
+        # bypass managed policy for a key that grants shell auto-approval or
+        # widens the skill-content allowlist. Failing loudly beats escalating
+        # quietly. `test_every_enforced_managed_key_resolves_to_a_manifest_option`
+        # keeps this unreachable.
         shell_option = get_option("shell.allow_list")
         if shell_option is None:
-            shell_allow_list = parse_shell_allow_list(os.environ.get(SHELL_ALLOW_LIST))
-        else:
-            shell_allow_list, _ = resolve_scalar(
-                shell_option,
-                toml_data=load_config_toml(),
-            )
+            msg = "manifest is missing shell.allow_list; refusing to resolve it alone"
+            raise RuntimeError(msg)
+        shell_allow_list, _ = resolve_scalar(
+            shell_option,
+            toml_data=load_config_toml(),
+        )
 
         # Parse extra skill containment roots from env var or config.toml.
         # These extend the path allowlist for load_skill_content but do not
         # add new skill discovery locations.
         skills_option = get_option("skills.extra_allowed_dirs")
         if skills_option is None:
-            extra_skills_dirs = _parse_extra_skills_dirs(
-                os.environ.get(EXTRA_SKILLS_DIRS),
-                _read_config_toml_skills_dirs(),
+            msg = (
+                "manifest is missing skills.extra_allowed_dirs; refusing to "
+                "resolve it alone"
             )
-        else:
-            extra_skills_dirs, _ = resolve_scalar(
-                skills_option,
-                toml_data=load_config_toml(),
-            )
+            raise RuntimeError(msg)
+        extra_skills_dirs, _ = resolve_scalar(
+            skills_option,
+            toml_data=load_config_toml(),
+        )
 
         from deepagents_code.config_manifest import resolve_interpreter_kwargs
 
@@ -2755,12 +2778,21 @@ class Settings:
         start_path: Path | None,
         env: dict[str, str],
         previous: dict[str, object],
+        refresh_managed: bool = True,
     ) -> tuple[dict[str, object], str | None]:
         """Resolve reloadable settings from an environment mapping.
 
         Managed policy outranks the environment for every field it declares. A
         managed source that is present but unenforceable keeps `previous`
         unchanged, so a reload can never drop policy that is already in force.
+
+        Args:
+            start_path: Directory to start project detection from.
+            env: Environment mapping to resolve from.
+            previous: Current values, kept for any field that cannot be resolved.
+            refresh_managed: Re-read managed policy from disk. A preview passes
+                `False`: re-reading swaps the process-wide snapshot that every
+                other reader observes, which is not something a dry run may do.
 
         Returns:
             Reloadable setting values keyed by field name, and a notice when
@@ -2774,6 +2806,7 @@ class Settings:
         from deepagents_code.configuration.service import (
             ManagedConfigError,
             get_managed_snapshot,
+            managed_decided,
             require_healthy_managed_config,
         )
 
@@ -2782,8 +2815,12 @@ class Settings:
         # empty managed table if the new file fails to parse, which reads as
         # "no policy" instead of "policy unchanged". `refresh=True` keeps the
         # last snapshot that parsed cleanly and still raises on the failure.
+        #
+        # A preview must not refresh at all: it is a dry run, and re-reading
+        # replaces the snapshot that every other reader in the process observes
+        # before the user has accepted anything.
         try:
-            require_healthy_managed_config(refresh=True)
+            require_healthy_managed_config(refresh=refresh_managed)
         except ManagedConfigError as exc:
             logger.error("Keeping previous settings: %s", exc)  # noqa: TRY400
             # Report the block to the caller. Returning only `previous` reads
@@ -2814,13 +2851,19 @@ class Settings:
             # through `load_config_toml()`; passing `toml_data={}` here reset a
             # user's `[shell].allow_list` to `None` on every `/reload` and
             # accepted cwd switch, and reported a change that never happened.
-            # `skills.extra_allowed_dirs` below already reads its user layer.
+            #
+            # Accepting an *env*-tier hit would defeat the `env` argument this
+            # method exists to honor: `resolve_scalar` reads `os.environ`
+            # directly, so a preview of a `.env` edit reported the value live in
+            # the process instead of the one being previewed. Managed policy and
+            # the user's file are file-backed and safe to take from here; the
+            # env tier stays with the `env`-derived value computed above.
             resolved_shell, shell_source = resolve_scalar(
                 shell_option,
                 toml_data=load_config_toml(),
                 managed_toml_data=managed_data,
             )
-            if shell_source != "default":
+            if managed_decided(shell_source) or shell_source == "config.toml":
                 shell_allow_list = resolved_shell
 
         skills_option = get_option("skills.extra_allowed_dirs")
@@ -2831,7 +2874,7 @@ class Settings:
                 toml_data={},
                 managed_toml_data=managed_data,
             )
-            if skills_source == "managed config":
+            if managed_decided(skills_source):
                 managed_skills = resolved_skills
 
         try:
@@ -2925,6 +2968,7 @@ class Settings:
             start_path=start_path,
             env=env,
             previous=previous,
+            refresh_managed=False,
         )
         changes = self._format_reload_changes(previous, refreshed)
         return [blocked, *changes] if blocked else changes
@@ -3664,8 +3708,10 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     if option is None:
         return None, None
     toml_data = load_config_toml()
+    from deepagents_code.configuration.service import managed_decided
+
     managed_value, managed_source = resolve_scalar(option, toml_data=toml_data)
-    if managed_source == "managed config":
+    if managed_decided(managed_source):
         if isinstance(managed_value, str) and managed_value.strip():
             return managed_value.strip(), None
         # A blank managed entry is an explicit inherit; anything else blank or

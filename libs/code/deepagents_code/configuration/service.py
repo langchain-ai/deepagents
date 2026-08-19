@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -12,7 +13,7 @@ if TYPE_CHECKING:
 
 from deepagents_code.configuration.paths import (
     managed_config_path,
-    managed_path_fallback,
+    resolve_managed_path,
 )
 from deepagents_code.configuration.providers import TomlFileProvider
 from deepagents_code.configuration.resolver import merge_toml_tables
@@ -30,10 +31,15 @@ UNION_PATHS = frozenset(
 )
 """Paths whose lists accumulate instead of being replaced.
 
-Deny lists must union across layers: replacing a managed deny list with a
-user one would be a fail-open. Every merge path must read this one set, so a
-third deny list cannot get union semantics in one place and replace in
-another.
+Deny lists must union across layers: replacing a managed deny list with a user
+one would be a fail-open.
+
+Governs the two *table merges* — `merge_managed_over_user` and
+`config_manifest.resolve_scalar`. It does not govern the two readers that union
+name sets rather than TOML tables: `model_config.load_mcp_server_trust_lists`
+and `mcp_disabled.get_disabled_servers` accumulate their own layers directly,
+including the env tier this set knows nothing about. A third deny list therefore
+needs an entry here *and* a decision in those two readers.
 """
 
 MANAGED_TABLE_PATHS = frozenset(
@@ -44,14 +50,21 @@ MANAGED_TABLE_PATHS = frozenset(
         ("async_subagents",),
         ("sandboxes", "providers"),
         ("threads", "columns"),
+        ("effort",),
     }
 )
-"""Structured manifest paths whose values must be TOML tables.
+"""Sections whose managed value must be a TOML table.
 
 The manifest also uses `STRUCTURED` for list-valued settings such as MCP
 allowlists, so this cannot be derived from `OptionKind` alone. Parent paths
 for every manifest option are added dynamically by
 `managed_section_shape_violations` below.
+
+`("effort",)` has no manifest option at all — it is written and read by
+`model_config.load_effort_for_model` — so nothing else here would cover it, and
+a managed scalar would replace the user's whole `[effort]` table.
+`test_every_managed_table_path_is_enforced` pins every entry, because a renamed
+section would otherwise stop being guarded silently.
 """
 
 
@@ -71,12 +84,95 @@ def union_paths_under(prefix: tuple[str, ...]) -> frozenset[tuple[str, ...]]:
     return frozenset(path[depth:] for path in UNION_PATHS if path[:depth] == prefix)
 
 
+MANAGED_SOURCE = "managed config"
+"""Provenance label for a value managed policy decided."""
+
+USER_SOURCE = "config.toml"
+"""Provenance label for a value the user's own file decided."""
+
+
+def managed_decided(source: str) -> bool:
+    """Return whether managed policy decided a value with this source label.
+
+    A structured option merges both layers and reports a combined label, so
+    `source == MANAGED_SOURCE` is the wrong test and silently answers `False`
+    for a leaf managed policy does control.
+
+    Returns:
+        Whether managed policy contributed the value.
+    """
+    return source == MANAGED_SOURCE or source.startswith(f"{MANAGED_SOURCE} + ")
+
+
+def merge_managed_over_user(
+    user: Mapping[str, Any],
+    managed: Mapping[str, Any],
+    *,
+    prefix: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Merge managed policy over user config with this project's precedence.
+
+    The single statement of managed-over-user precedence. It was assembled by
+    hand at three call sites, two carrying "must match" comments, and had
+    already drifted once: the site that omitted the validator reported a user
+    table as effective while its provenance credited managed policy.
+
+    Args:
+        user: Lower-precedence user table.
+        managed: Higher-precedence managed table, whose leaves win.
+        prefix: Absolute manifest path of the subtree being merged. The union
+            set and the validator both match paths relative to where the merge
+            starts, so a subtree merge needs them rebased: an absolute deny-list
+            path never matches inside a subtree, and an unprefixed leaf path
+            resolves to no manifest option, which makes the validator accept
+            everything.
+
+    Returns:
+        Merged table and dotted leaf-to-source mapping.
+    """
+
+    def managed_leaf_is_valid(path: tuple[str, ...], value: object) -> bool:
+        """Validate one leaf against its absolute manifest path.
+
+        Returns:
+            Whether managed policy may apply the value at this leaf.
+        """
+        return is_valid_managed_scalar((*prefix, *path), value)
+
+    return merge_toml_tables(
+        user,
+        managed,
+        lower_source=USER_SOURCE,
+        higher_source=MANAGED_SOURCE,
+        union_paths=union_paths_under(prefix),
+        higher_leaf_is_valid=managed_leaf_is_valid,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ConfigSources:
     """Managed and user TOML snapshots from one resolution generation."""
 
     managed: TomlSnapshot
     user: TomlSnapshot
+
+    def dropped_managed_detail(self) -> str | None:
+        """Return why the managed layer is absent from `merged`, if it is.
+
+        Every reader here gates on `user.status.usable` and then merges. None
+        inspected the *managed* status, so an unreadable managed layer merged as
+        `{}` and the user's own values applied unopposed — with a warning about
+        the user's file and nothing about the policy that vanished. The startup
+        gate normally prevents an unusable managed snapshot from being observed,
+        so this covers the gate-exempt commands and any future entry point that
+        forgets it.
+
+        Returns:
+            A short reason, or `None` when managed policy is participating.
+        """
+        if self.managed.status.usable:
+            return None
+        return self.managed.status.detail or self.managed.status.health.value
 
     def merged(self) -> tuple[dict[str, Any], dict[str, str]]:
         """Return a deep merge where managed leaves outrank user leaves.
@@ -89,14 +185,7 @@ class ConfigSources:
         Returns:
             Merged table and dotted leaf-to-source mapping.
         """
-        return merge_toml_tables(
-            self.user.data,
-            self.managed.data,
-            lower_source="config.toml",
-            higher_source="managed config",
-            union_paths=UNION_PATHS,
-            higher_leaf_is_valid=is_valid_managed_scalar,
-        )
+        return merge_managed_over_user(self.user.data, self.managed.data)
 
 
 def is_valid_managed_scalar(path: tuple[str, ...], value: object) -> bool:
@@ -134,23 +223,29 @@ ENFORCED_MANAGED_KEYS = (
 """Manifest keys whose managed value must never resolve in the user's favor.
 
 Every key here either grants a privilege (approval mode, the YOLO entry in the
-Shift+Tab cycle, shell auto-approval, the interpreter and its programmatic
-tool-calling list and the acknowledgement that exposes every tool to it) or
-draws a containment boundary (the skill-content allowlist, the sandbox backend,
-the recursion limit, the
-classifier that reviews gated actions, and trace redaction). Ignoring an
+Shift+Tab cycle, shell auto-approval, the interpreter, its programmatic
+tool-calling list, and the acknowledgement that exposes every tool to it) or
+draws a containment boundary (the skill-content allowlist, the recursion limit,
+the classifier that reviews gated actions, and trace redaction). Ignoring an
 unusable value for one of these leaves the user's own flag or environment
 variable in force, which is the escalation the policy meant to forbid, so the
 launch stops instead.
 
-Enforcing `startup.mode` while leaving `startup.yolo_switcher` unenforced was
-the sharpest version of that gap: policy could pin approval mode while YOLO
-stayed one keypress away in the same file.
+`sandboxes.default` is enforced for its *value*, not as a containment boundary.
+It names which backend a bare `--sandbox` selects; it does not decide whether to
+sandbox, so a launch that asks for no sandbox still runs on the host. Enforcement
+here rejects a value that cannot be applied, and `_apply_managed_sandbox` prints
+a notice when a launch bypasses the named backend, so the gap is visible rather
+than assumed away.
 
-Keys that cannot grant privilege keep the ordinary ignore-and-fall-through
-rule. `test_every_enforced_managed_key_resolves` pins each entry to a manifest
-option, because `managed_policy_violations` skips a key it cannot resolve —
-so a rename would otherwise turn enforcement into a silent no-op.
+`startup.mode` and `startup.yolo_switcher` must both be listed. Pinning the
+approval mode while leaving the YOLO entry unenforced keeps unrestricted mode one
+keypress away in the same file.
+
+Keys that cannot grant privilege keep the ordinary ignore-and-fall-through rule.
+`test_every_enforced_managed_key_resolves_to_a_manifest_option` pins each entry
+to a manifest option, because `managed_policy_violations` skips a key it cannot
+resolve, so a rename would turn enforcement into a silent no-op.
 """
 
 
@@ -179,7 +274,7 @@ def managed_declaration(
 
 
 def managed_policy_violations(
-    managed_data: Mapping[str, Any] | None = None,
+    managed_data: Mapping[str, Any],
 ) -> tuple[str, ...]:
     """Return managed settings whose declaration cannot be safely applied.
 
@@ -188,9 +283,15 @@ def managed_policy_violations(
     cases matter because "wrong shape" is not "absent": merging such a value
     can erase a user subtree before a reader falls back to a default.
 
+    Required rather than defaulted to the process snapshot: `managed_health`
+    pairs this with the health of the *same* snapshot, and a default that
+    silently read the cache is what let a refreshed status be reported next to
+    stale violations.
+
     Args:
-        managed_data: Managed table to inspect; defaults to the process
-            snapshot.
+        managed_data: Managed table to inspect. Must come from a snapshot whose
+            status is `usable`, since an unhealthy snapshot carries `{}` and
+            would report no violations.
 
     Returns:
         The violating keys, sorted, empty when policy is enforceable.
@@ -201,8 +302,6 @@ def managed_policy_violations(
         resolve_scalar,
     )
 
-    if managed_data is None:
-        managed_data = get_managed_snapshot().data
     if not managed_data:
         return ()
 
@@ -222,7 +321,7 @@ def managed_policy_violations(
             toml_data={},
             managed_toml_data=managed_data,
         )
-        if source != "managed config":
+        if not managed_decided(source):
             violations.append(key)
         elif key == "runtime.recursion_limit" and not is_valid_recursion_limit(value):
             # `resolve_scalar` applies no range check, and the flag outranks
@@ -230,6 +329,66 @@ def managed_policy_violations(
             # managed value would otherwise be assigned verbatim.
             violations.append(key)
     return tuple(sorted(set(violations)))
+
+
+def managed_scalar(key: str, managed_data: Mapping[str, Any]) -> tuple[bool, object]:
+    """Resolve one manifest key against managed policy alone.
+
+    Returns:
+        Whether managed policy decided the value, and the value.
+    """
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+
+    option = get_option(key)
+    if option is None:
+        return False, None
+    value, source = resolve_scalar(
+        option,
+        toml_data={},
+        managed_toml_data=managed_data,
+    )
+    return managed_decided(source), value
+
+
+def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return manifest keys managed policy declares whose value was dropped.
+
+    Not a launch failure: only `ENFORCED_MANAGED_KEYS` stops a launch, and every
+    other rejected managed value deliberately falls through to the user tier.
+    But the fall-through was announced only through `logger.warning`, which the
+    package's in-memory log handler makes unreachable from stderr — the handler
+    installed at import time means `logging.lastResort` never fires. An
+    administrator who typed `max_tokens = "8000"` saw a clean green table and
+    had no way to learn the value was ignored.
+
+    Args:
+        managed_data: Managed table to inspect. Must come from a snapshot whose
+            status is `usable`.
+
+    Returns:
+        The rejected keys, sorted, empty when every declared value is readable.
+    """
+    from deepagents_code.config_manifest import (
+        OptionKind,
+        get_config_options,
+        option_accepts_toml,
+        toml_lookup,
+    )
+
+    if not managed_data:
+        return ()
+    rejected: list[str] = []
+    for option in get_config_options():
+        if not option.toml_keys or option.kind is OptionKind.STRUCTURED:
+            # Structured options own their own validation in typed readers, and
+            # report through those readers' own diagnostics.
+            continue
+        if managed_declaration(managed_data, option.toml_keys) != "declared":
+            continue
+        found, raw = toml_lookup(managed_data, option.toml_keys, source=MANAGED_SOURCE)
+        if found and not option_accepts_toml(option, raw, source=MANAGED_SOURCE):
+            rejected.append(option.key)
+    return tuple(sorted(rejected))
 
 
 def managed_section_shape_violations(
@@ -242,17 +401,8 @@ def managed_section_shape_violations(
     structured options that specifically represent tables. Rejecting a scalar
     at one of those paths prevents it from replacing an entire user section.
     """
-    from deepagents_code.config_manifest import get_config_options
-
-    table_paths: set[tuple[str, ...]] = set(MANAGED_TABLE_PATHS)
-    for option in get_config_options():
-        if option.toml_keys:
-            table_paths.update(
-                option.toml_keys[:depth] for depth in range(1, len(option.toml_keys))
-            )
-
     violations: list[str] = []
-    for path in table_paths:
+    for path in _managed_table_paths():
         node: object = managed_data
         for part in path:
             if not isinstance(node, dict) or part not in node:
@@ -264,6 +414,30 @@ def managed_section_shape_violations(
     return tuple(sorted(violations))
 
 
+@lru_cache(maxsize=1)
+def _managed_table_paths() -> frozenset[tuple[str, ...]]:
+    """Return every managed path whose value must be a table.
+
+    A pure function of `get_config_options`, which is itself cached, so the
+    derived set is cached too: this runs at least twice on the startup path and
+    six times per launch, and rebuilt a nested comprehension over 89+ options
+    every time. Tests that monkeypatch the registry already call
+    `get_config_options.cache_clear`, and must clear this alongside it.
+
+    Returns:
+        Declared table sections plus every manifest option's parent paths.
+    """
+    from deepagents_code.config_manifest import get_config_options
+
+    table_paths: set[tuple[str, ...]] = set(MANAGED_TABLE_PATHS)
+    for option in get_config_options():
+        if option.toml_keys:
+            table_paths.update(
+                option.toml_keys[:depth] for depth in range(1, len(option.toml_keys))
+            )
+    return frozenset(table_paths)
+
+
 class ManagedConfigError(RuntimeError):
     """Raised when an enforced managed source cannot be read safely."""
 
@@ -272,10 +446,19 @@ class ManagedConfigError(RuntimeError):
         if message is None:
             path = status.path or managed_config_path()
             detail = f": {status.detail}" if status.detail else ""
-            message = (
-                f"Managed config at {path} is {status.health.value}{detail}. "
-                "Ask your administrator to repair or remove the file."
-            )
+            if status.health is ProviderHealth.INDETERMINATE:
+                # The file was never the problem — the location is unknown, so
+                # "repair or remove the file" would send the reader to a path
+                # that may hold nothing on a correctly configured host.
+                message = (
+                    f"Managed config location could not be determined{detail}. "
+                    "Ask your administrator to verify the managed-config path."
+                )
+            else:
+                message = (
+                    f"Managed config at {path} is {status.health.value}{detail}. "
+                    "Ask your administrator to repair or remove the file."
+                )
         super().__init__(message)
         self.status = status
 
@@ -316,24 +499,30 @@ _snapshot_state = _SnapshotState()
 def _load_managed(path: Path | None = None) -> TomlSnapshot:
     """Load the managed provider without applying startup policy.
 
+    An explicit `path` is read as given: it is a test-and-tooling operation on
+    one named file, so the OS path resolution — and any reason that path would
+    be a guess — does not apply to it.
+
     Returns:
         Parsed managed snapshot and health.
     """
-    resolved = managed_config_path() if path is None else path
-    snapshot = TomlFileProvider("managed config", resolved).load()
-    fallback = managed_path_fallback()
-    if fallback is None or snapshot.status.health is not ProviderHealth.MISSING:
+    if path is not None:
+        return TomlFileProvider("managed config", path).load()
+    resolved = resolve_managed_path()
+    snapshot = TomlFileProvider("managed config", resolved.path).load()
+    is_guess = resolved.fallback is not None
+    if not is_guess or snapshot.status.health is not ProviderHealth.MISSING:
         return snapshot
-    # "No file at a guessed path" is not "no policy deployed". Record why the
-    # path is a guess so `doctor` can say so instead of reporting a clean
-    # missing file.
+    # "No file at a guessed path" is not "no policy deployed", so this is not a
+    # clean `MISSING`. `INDETERMINATE` is not usable, which stops the launch
+    # instead of letting every reader see an empty managed table and treat
+    # unreadable policy as absent policy.
     return TomlSnapshot(
         snapshot.data,
-        ProviderStatus(
-            snapshot.status.name,
-            snapshot.status.path,
-            snapshot.status.health,
-            fallback,
+        replace(
+            snapshot.status,
+            health=ProviderHealth.INDETERMINATE,
+            detail=resolved.fallback,
         ),
     )
 
@@ -380,7 +569,6 @@ def get_config_sources(
     *,
     user_path: Path | None = None,
     managed_path: Path | None = None,
-    refresh_managed: bool = False,
 ) -> ConfigSources:
     """Load one user snapshot and the current managed snapshot.
 
@@ -391,9 +579,8 @@ def get_config_sources(
 
     Deliberately not a caller-supplied flag: an `include_managed=False` source
     is indistinguishable from a machine with no policy installed, because the
-    fabricated status reports `MISSING` and the table is empty. Deriving it
-    here keeps that state one keyword out of reach and removes the six
-    restatements of `include_managed=config_path is None` this replaced.
+    fabricated status reports `MISSING` and the table is empty. Deriving it here
+    keeps that state one keyword out of reach.
 
     Args:
         user_path: Read this file as the user layer instead of the default, and
@@ -401,8 +588,6 @@ def get_config_sources(
             inspects one file.
         managed_path: Read managed policy from this file instead of the fixed
             OS path, bypassing the process snapshot. Intended for tests.
-        refresh_managed: Re-read managed policy instead of using the cached
-            snapshot. A failed re-read keeps the last snapshot that parsed.
 
     Returns:
         Both snapshots from one resolution generation.
@@ -422,7 +607,7 @@ def get_config_sources(
     from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
     return ConfigSources(
-        managed=get_managed_snapshot(refresh=refresh_managed, path=managed_path),
+        managed=get_managed_snapshot(path=managed_path),
         user=TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load(),
     )
 
@@ -464,3 +649,48 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
 def managed_config_status(*, refresh: bool = False) -> ProviderStatus:
     """Return managed provider health for diagnostics and config inspection."""
     return get_managed_snapshot(refresh=refresh).status
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedHealth:
+    """Provider health and policy enforceability from one managed snapshot."""
+
+    status: ProviderStatus
+    violations: tuple[str, ...]
+    rejections: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        """Whether managed policy is both readable and enforceable.
+
+        Rejections are excluded on purpose: they are values policy declared and
+        the runtime ignored, which is the documented behavior for a key that
+        cannot grant a privilege. They still have to be *reported*, so they are
+        carried here rather than folded into the verdict.
+        """
+        return self.status.usable and not self.violations
+
+
+def managed_health(*, refresh: bool = False) -> ManagedHealth:
+    """Return both halves of exit 78 for one managed snapshot.
+
+    Reading health and violations as two calls is a live bug, not a style
+    choice. `get_managed_snapshot` declines to cache a candidate it cannot
+    enforce, so a refreshed status describes the file on disk while a second,
+    non-refreshed violation read still sees the last enforceable snapshot and
+    reports none. Every diagnostic surface then shows `ok` for the exact file
+    that just refused to launch. One snapshot, both answers.
+
+    Returns:
+        Health, violations, and ignored rejections that cannot disagree.
+    """
+    snapshot = get_managed_snapshot(refresh=refresh)
+    if not snapshot.status.usable:
+        return ManagedHealth(snapshot.status, (), ())
+    violations = managed_policy_violations(snapshot.data)
+    # A key that stops the launch is not also "ignored": reporting it in both
+    # lists made `doctor` print "rejects startup.mode - ignores startup.mode".
+    rejections = tuple(
+        key for key in managed_rejections(snapshot.data) if key not in violations
+    )
+    return ManagedHealth(snapshot.status, violations, rejections)

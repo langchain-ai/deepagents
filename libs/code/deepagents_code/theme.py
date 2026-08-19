@@ -589,6 +589,13 @@ def _load_user_themes(
         # Managed policy parsed cleanly and must still apply, so keep
         # going with the merged data (managed-only when the user file
         # failed) instead of discarding it with the user's file.
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
     data, _ = sources.merged()
     themes_section: Any = data.get("themes")
     if not isinstance(themes_section, dict) or not themes_section:

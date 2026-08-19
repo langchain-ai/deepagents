@@ -36,6 +36,7 @@ import logging
 import os
 import shlex
 import shutil
+import tomllib
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -141,6 +142,7 @@ class Dcode(BaseAgent):
     _REMOTE_PROJECT_DIR = PurePosixPath("/installed-agent/langgraph-project")
     _REMOTE_RUNNER_PATH = PurePosixPath("/installed-agent/langgraph_runner.py")
     _REMOTE_VENV_DIR = PurePosixPath("/opt/dcode-langgraph-venv")
+    _REMOTE_WHEELHOUSE_DIR = PurePosixPath("/opt/dcode-wheelhouse")
     _REMOTE_INSTRUCTION_PATH = PurePosixPath("/installed-agent/instruction.txt")
     _RESULT_FILENAME = "result.json"
     _OUTPUT_FILENAME = "dcode.txt"
@@ -268,9 +270,8 @@ class Dcode(BaseAgent):
         """Return the PyPI-resolvable deps from ``langgraph.json``.
 
         The ``./.local_deps/...`` relative-path entries point at staged local
-        packages that are uploaded at ``setup()`` time (not present in the
-        build-time context), so they are excluded here and installed offline in
-        ``setup()`` with ``--no-deps``.
+        packages that are built into wheels at image-build time, so they are
+        excluded here.
         """
         config_path = self.project_path / self.config
         config = json.loads(config_path.read_text())
@@ -281,18 +282,55 @@ class Dcode(BaseAgent):
             if isinstance(dep, str) and not dep.startswith(".")
         ]
 
+    def _local_dep_rel_dirs(self) -> list[PurePosixPath]:
+        """Return the project-relative source dirs of the local ``.local_deps``."""
+        config_path = self.project_path / self.config
+        config = json.loads(config_path.read_text())
+        deps = config.get("dependencies", [])
+        return [
+            PurePosixPath(dep)
+            for dep in deps
+            if isinstance(dep, str) and dep.startswith(".")
+        ]
+
+    def _local_dep_dirs(self) -> list[str]:
+        """Return the container-side source paths of the local ``.local_deps``."""
+        return [
+            (self._REMOTE_PROJECT_DIR / rel).as_posix()
+            for rel in self._local_dep_rel_dirs()
+        ]
+
+    def _local_dep_names(self) -> list[str]:
+        """Return the distribution names of the local ``.local_deps`` packages.
+
+        Read from each staged package's ``pyproject.toml`` so ``setup()``
+        installs exactly what was built, without hardcoding names.
+        """
+        names = []
+        for rel in self._local_dep_rel_dirs():
+            pyproject = self.project_path / rel / "pyproject.toml"
+            try:
+                data = tomllib.loads(pyproject.read_text())
+                name = data["project"]["name"]
+            except Exception:  # noqa: BLE001 - fall back to dir name
+                name = rel.name
+            names.append(name)
+        return names
+
     def install_spec(self) -> AgentInstallSpec:
-        """Build the agent venv in the task image (host-side, networked).
+        """Build the agent venv + local-dep wheels in the image (host, networked).
 
         Pier inlines these steps into the agent image build, which runs on the
-        host *with* network — the only phase where dependency installation is
+        host *with* network — the only phase where dependency resolution is
         possible for DeepSWE's air-gapped (``network_mode = "no-network"``)
         tasks. Installs a pinned uv, a managed CPython, all PyPI deps from
-        ``langgraph.json``, and the setuptools/hatchling build backends the local
-        ``.local_deps`` packages need. Those local sources are then layered on
-        top in ``setup()`` (offline, ``--no-build-isolation --no-deps``).
+        ``langgraph.json``, and the build backends needed to build the local
+        ``.local_deps`` packages. ``setup()`` then builds those local sources
+        into wheels and installs them with the pre-installed backends, so no
+        PyPI access is needed at agent-setup time.
         """
         venv_dir = shlex.quote(self._REMOTE_VENV_DIR.as_posix())
+        wheelhouse = shlex.quote(self._REMOTE_WHEELHOUSE_DIR.as_posix())
         python_version = shlex.quote(self._python_version)
         deps = " ".join(shlex.quote(d) for d in self._langgraph_dependencies())
         agent_run = f"""
@@ -303,11 +341,11 @@ uv python install {python_version}
 uv venv {venv_dir} --python {python_version} --clear
 . {venv_dir}/bin/activate
 uv pip install --prerelease=if-necessary langgraph python-dotenv {deps}
-# Build backends for the local .local_deps sources, pre-installed so setup()
-# can install them offline with --no-build-isolation (no PyPI fetch). The
-# setuptools backend builds deepagents; hatchling builds deepagents-code/acp/
-# quickjs, and hatchling's *editable* build additionally needs `editables`.
+# Build backends + `wheel` for the local .local_deps sources, pre-installed so
+# setup() can `uv build --wheel` them offline with --no-build-isolation (no
+# PyPI fetch).
 uv pip install setuptools wheel hatchling editables
+mkdir -p {wheelhouse}
 """
         return AgentInstallSpec(
             agent_name=self.name(),
@@ -336,14 +374,13 @@ uv pip install setuptools wheel hatchling editables
         )
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Stage the project/runner and install local sources (offline).
+        """Stage sources, build local-dep wheels, and install them (offline).
 
-        No network here: the venv, its PyPI deps, and the setuptools/hatchling
-        build backends were already built into the image by ``install_spec()``.
-        This copies the ``langgraph_project`` and runner in, then installs the
-        local ``.local_deps`` packages with ``--no-build-isolation --no-deps``
-        (reusing the pre-installed backends) so the dcode/deepagents sources
-        match this checkout without touching PyPI.
+        No PyPI here: the venv, its PyPI deps, and the build backends were built
+        into the image by ``install_spec()``. This copies the project + runner
+        in, builds each local ``.local_deps`` package into a wheel with the
+        pre-installed backends (``--no-build-isolation``), and installs those
+        wheels (``--no-deps`` — the runtime deps are already in the venv).
         """
         agent_user = str(environment.default_user or "root")
         quoted_agent_user = shlex.quote(agent_user)
@@ -363,35 +400,31 @@ uv pip install setuptools wheel hatchling editables
         await environment.exec(
             f"chown -R {quoted_agent_user}:{quoted_agent_user} "
             f"{shlex.quote(self._REMOTE_PROJECT_DIR.as_posix())} "
-            f"{shlex.quote(self._REMOTE_VENV_DIR.as_posix())}",
+            f"{shlex.quote(self._REMOTE_VENV_DIR.as_posix())} "
+            f"{shlex.quote(self._REMOTE_WHEELHOUSE_DIR.as_posix())}",
             user="root",
         )
 
-        project_dir = shlex.quote(self._REMOTE_PROJECT_DIR.as_posix())
         venv_python = shlex.quote((self._REMOTE_VENV_DIR / "bin" / "python").as_posix())
-        config_name = shlex.quote(self.config)
-        install_program = (
-            "import json, os, subprocess\n"
-            f"project_dir = {project_dir!r}\n"
-            f"config_name = {config_name!r}\n"
-            f"venv_python = {venv_python!r}\n"
-            "with open(os.path.join(project_dir, config_name)) as f:\n"
-            "    config = json.load(f)\n"
-            "for dep in config.get('dependencies', []):\n"
-            "    dep_path = os.path.join(project_dir, dep) if isinstance(dep, str) else None\n"
-            "    if dep_path and os.path.isdir(dep_path):\n"
-            "        subprocess.check_call(\n"
-            "            ['uv', 'pip', 'install', '--python', venv_python,\n"
-            "             '--no-build-isolation', '--no-deps', '-e', dep_path]\n"
-            "        )\n"
-        )
-        result = await environment.exec(
+        wheelhouse = shlex.quote(self._REMOTE_WHEELHOUSE_DIR.as_posix())
+        local_dirs = " ".join(shlex.quote(d) for d in self._local_dep_dirs())
+        local_names = " ".join(shlex.quote(n) for n in self._local_dep_names())
+        build_and_install = (
             "set -euo pipefail; "
             'export PATH="$HOME/.local/bin:$PATH"; '
-            f"{venv_python} - <<'PY'\n{install_program}PY",
+            # Build each local source into a wheel, reusing the pre-installed
+            # backends (--no-build-isolation => no PyPI fetch).
+            f"for src in {local_dirs}; do "
+            f'  uv build --wheel --python {venv_python} --no-build-isolation '
+            f'    --out-dir {wheelhouse} "$src"; '
+            "done; "
+            # Install the built wheels; runtime deps already in the venv.
+            f"uv pip install --python {venv_python} --no-deps "
+            f"--find-links {wheelhouse} --no-index {local_names}"
         )
+        result = await environment.exec(build_and_install)
         if result.return_code != 0:
-            stderr = result.stderr or result.stdout or "dcode local-source install failed"
+            stderr = result.stderr or result.stdout or "dcode local-dep wheel install failed"
             raise RuntimeError(stderr)
 
     def _runtime_env(self, environment: BaseEnvironment, model: str | None) -> dict[str, str]:

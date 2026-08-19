@@ -28,7 +28,8 @@
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
 - Skill management (`skills/commands.py`)
-- Persisted goal/rubric state notices (`goal_state_notice.py`, `goal_tools.py`)
+- Persisted goal/rubric state notices (`goal_state_notice.py`, `goal_tools.py`,
+  `goal_state_limits.py`)
 
 ### Out of Scope
 
@@ -267,7 +268,17 @@
 #### TB12: Goal/Rubric State → Model Context
 
 - **Inside**: `goal_state_notice.project_goal_state` only exposes an objective and status note while the goal is actionable, and `build_goal_state_notice` HTML-escapes embedded text before wrapping it in boundary tags. `GoalToolsMiddleware` fingerprints notices, writes a replacement when state is stale or compacted, and re-pins the notice into model requests when necessary.
-- **Outside**: Goal objectives and criteria originate from user input; `/rubric file` reads the selected local text file. Status notes can be model-authored through `update_goal`. The flow rejects raw text above 8,000 characters for an objective, 12,000 for a rubric, 12,000 for an accepted objective and criteria combined, 4,000 for a status note or prior blocker, and 16,000 across a notice. These character counts do not account for expansion during HTML escaping, provider tokenization, or a provider-specific request budget. Labels such as "context data, not instructions" and escaping preserve message structure but do not prevent the model from interpreting natural-language content as instructions. No provider-transmission confirmation is present in this flow.
+- **Outside**: Goal objectives and criteria originate from user input. `/rubric file` reads the selected local text file. Status notes can be model-authored through `update_goal`. `goal_state_limits` rejects raw text above these limits:
+
+    | Value | Limit (characters) |
+    | --- | --- |
+    | Goal objective | 8,000 |
+    | Rubric or acceptance criteria | 12,000 |
+    | Accepted objective and criteria combined | 12,000 |
+    | Status note or prior blocker | 4,000 |
+    | Total text across one notice | 16,000 |
+
+    These counts do not account for expansion during HTML escaping, provider tokenization, or a provider-specific request budget. Labels such as "context data, not instructions" and escaping preserve message structure. They do not prevent the model from interpreting natural-language content as instructions. This flow has no provider-transmission confirmation.
 - **Crossing mechanism**: `DeepAgentsApp._persist_goal_rubric_state` writes state and notices to the checkpoint; `GoalToolsMiddleware._notice_update` and `_request_with_goal_notice` append them to the persisted or transient model-message list.
 
 ---
@@ -382,20 +393,20 @@
 #### T15: Stored Prompt Injection Through Goal/Rubric State
 
 - **Flow**: DF26/DF27 (user or local-file content → checkpointed notice → primary-model context)
-- **Description**: The change embeds the full actionable objective, active criteria, and status note in a synthetic `HumanMessage`. A rubric loaded from an untrusted repository file, or a crafted status note, can therefore persist instructions that influence later model behavior. HTML escaping and boundary labels prevent literal tag forgery but do not stop natural-language prompt injection. Interactive HITL still gates side-effecting tool calls, while Auto and non-interactive configurations can reduce that protection.
+- **Description**: The goal-state notice embeds the full actionable objective, active criteria, and status note in a synthetic `HumanMessage`. A rubric loaded from an untrusted repository file, or a crafted status note, can therefore persist instructions that influence later model behavior. HTML escaping and boundary labels prevent literal tag forgery. They do not stop natural-language prompt injection. Interactive HITL still gates side-effecting tool calls. Auto and non-interactive configurations can reduce that protection.
 - **Preconditions**: (1) The user accepts a goal/rubric or loads a file containing attacker-controlled instructions; (2) the state is actionable or the rubric remains active; (3) the primary model follows the injected content; (4) for side effects, the resulting tool call is approved or an approval-bypassing mode is active.
 
 #### T16: Automatic Disclosure of File-Loaded Rubrics
 
 - **Flow**: DF26/DF27 (`/rubric file` → checkpoint → primary-model request)
-- **Description**: `/rubric file` reads the entire selected UTF-8 text file, persists its nonempty contents, and this change embeds the criteria into primary-model context without a warning or confirmation specific to provider transmission. A user can inadvertently select a secret-bearing or proprietary file. The changed flow handles user content, not provider credentials; credential storage and provider retention are outside the scoped implementation.
+- **Description**: `/rubric file` reads the entire selected UTF-8 text file and persists its nonempty contents. The notice then embeds the criteria into primary-model context. There is no warning or confirmation specific to provider transmission, so a user can inadvertently select a secret-bearing or proprietary file. This flow handles user content, not provider credentials. Credential storage and provider retention are outside the scoped implementation.
 - **Preconditions**: (1) A user selects a file with sensitive content; (2) it becomes an active rubric; (3) a model request is made while the rubric is active.
 
 #### T17: Provider Context Pressure Despite Character Limits
 
 - **Flow**: DF26/DF27 (character-bounded text → escaped notice → model request)
-- **Description**: Direct, file-loaded, generated, and tool-authored goal-state paths enforce raw-character limits before persistence or notice construction. HTML escaping happens afterward and can expand the rendered notice (for example, `&` becomes `&amp;`), while provider tokenization and available context budgets vary. Because the middleware restores or re-pins the current notice after compaction, a valid near-limit notice can remain recurring model-request overhead that increases spend or contributes to a provider context-limit failure.
-- **Preconditions**: A user, file, or model-supplied status note produces a valid near-limit notice whose escaped or tokenized representation is large relative to the configured provider's available context, and the corresponding goal or rubric remains model-visible.
+- **Description**: Direct, file-loaded, generated, and tool-authored goal-state paths enforce raw-character limits before persistence or notice construction. HTML escaping happens afterward and can expand the rendered notice (for example, `&` becomes `&amp;`), while provider tokenization and available context budgets vary. The middleware restores or re-pins the current notice after compaction. A valid near-limit notice therefore remains recurring model-request overhead. This increases spend. It can also contribute to a provider context-limit failure.
+- **Preconditions**: (1) A user, file, or model-supplied status note produces a valid near-limit notice; (2) its escaped or tokenized representation is large relative to the configured provider's available context; (3) the corresponding goal or rubric remains model-visible.
 
 #### T2: Shell Allow-List Bypass via `SHELL_ALLOW_ALL`
 

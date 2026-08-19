@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import tempfile
@@ -9,13 +10,17 @@ from collections.abc import AsyncIterator, Callable  # noqa: TC003
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
-from typing import Annotated, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypedDict, cast
 from unittest.mock import AsyncMock, MagicMock, patch
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 import pytest
 from deepagents.backends.utils import validate_path
 from langgraph.graph.message import add_messages
 from langgraph.runtime import Runtime
+from textual.worker import WorkerCancelled
 
 from deepagents_code import offload
 from deepagents_code._cli_context import CLIContextSchema
@@ -30,6 +35,7 @@ from deepagents_code.offload import (
     _offload_fallback_root,
     delete_offloaded_history,
 )
+from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -99,6 +105,20 @@ def _state_values(
     return values
 
 
+def _compacted_result() -> dict[str, Any]:
+    """Build a successful server-owned offload result."""
+    return {
+        "status": "compacted",
+        "messages_offloaded": 6,
+        "messages_kept": 4,
+        "tokens_before": 1000,
+        "tokens_after": 250,
+        "archive_path": "/conversation_history/test-thread.md",
+        "archive_ephemeral": False,
+        "error": None,
+    }
+
+
 def _setup_server_offload_app(app: DeepAgentsApp) -> MagicMock:
     """Configure a `DeepAgentsApp` as a server-backed agent for offload tests.
 
@@ -162,16 +182,49 @@ class TestOffloadCommand:
                 "Nothing to offload" in str(w._content) for w in app.query(AppMessage)
             )
 
-    async def test_agent_running_shows_error(self) -> None:
+    async def test_offload_while_busy_queues_instead_of_overlapping(self) -> None:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            _setup_server_offload_app(app)
-            app._agent_running = True
-            await app._handle_offload()
-            assert any(
-                "agent is running" in str(w._content) for w in app.query(AppMessage)
-            )
+            remote = _setup_server_offload_app(app)
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+            drive_calls = 0
+
+            async def block_offload(**_kwargs: Any) -> dict[str, Any]:
+                nonlocal drive_calls
+                drive_calls += 1
+                drive_started.set()
+                if drive_calls == 1:
+                    await release_drive.wait()
+                return _compacted_result()
+
+            remote.aoffload = AsyncMock(side_effect=block_offload)
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(app, "_run_session_start_hook", new=AsyncMock()),
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                assert drive_calls == 1
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            assert drive_calls == 2
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
 
     async def test_server_result_is_rendered_without_reading_checkpoint_state(
         self,
@@ -595,6 +648,183 @@ class TestLocalOffloadReporting:
             "freeing up context window space" in content for content in contents
         )
         assert any("context increased" in content for content in contents)
+
+
+class TestOffloadInterrupt:
+    """Test that Escape can cancel `/offload` through the real App dispatch."""
+
+    async def test_command_reserves_turn_before_worker_starts(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            worker = MagicMock()
+            scheduled: list[Coroutine[Any, Any, None]] = []
+
+            def defer_worker(
+                work: Coroutine[Any, Any, None], **_kwargs: object
+            ) -> MagicMock:
+                scheduled.append(work)
+                return worker
+
+            with patch.object(app, "run_worker", side_effect=defer_worker):
+                await app._handle_command("/offload")
+
+            assert app._agent_running is True
+            assert app._offload_worker is worker
+            assert app._offload_task_started is False
+            assert len(scheduled) == 1
+
+            coroutine = scheduled[0]
+            try:
+                await app._submit_input("hello", "normal")
+                assert len(app._pending_messages) == 1
+                app._cancel_worker(worker)
+            finally:
+                coroutine.close()
+
+            worker.cancel.assert_called_once_with()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_escape_cancels_server_owned_offload(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            drive_started = asyncio.Event()
+            drive_cancelled = asyncio.Event()
+
+            async def block_offload(**_kwargs: Any) -> dict[str, Any]:
+                drive_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    drive_cancelled.set()
+                return _compacted_result()
+
+            remote.aoffload = AsyncMock(side_effect=block_offload)
+            app.post_message(ChatInput.Submitted("/offload", "command"))
+            await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+            worker = app._offload_worker
+            assert worker is not None
+            assert app._agent_running is True
+
+            await pilot.press("escape")
+            await asyncio.wait_for(drive_cancelled.wait(), timeout=1)
+            with pytest.raises(WorkerCancelled):
+                await worker.wait()
+
+            assert worker.is_cancelled
+            assert app._agent_running is False
+            assert app._agent_quiescent.is_set()
+            assert app._loading_widget is None
+
+    async def test_escape_cancels_local_fallback(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_local_offload_app(app)
+            before = _state_values(_make_dict_messages(6))
+            reconciled = _state_values(_make_dict_messages(6))
+            drive_started = asyncio.Event()
+            drive_cancelled = asyncio.Event()
+
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                drive_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    drive_cancelled.set()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new=AsyncMock(side_effect=[before, reconciled]),
+                ),
+                patch.object(
+                    app,
+                    "_drive_local_seeded_compaction",
+                    new=AsyncMock(side_effect=block_drive),
+                ),
+                patch.object(
+                    app,
+                    "_remove_unanswered_offload_seed",
+                    new=AsyncMock(return_value=True),
+                ) as cleanup,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                worker = app._offload_worker
+                assert worker is not None
+                await pilot.press("escape")
+                await asyncio.wait_for(drive_cancelled.wait(), timeout=1)
+                with pytest.raises(WorkerCancelled):
+                    await worker.wait()
+
+            cleanup.assert_awaited_once()
+            assert app._agent_running is False
+            assert app._loading_widget is None
+
+    async def test_offload_blocks_queued_prompt_until_done(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+
+            async def block_offload(**_kwargs: Any) -> dict[str, Any]:
+                drive_started.set()
+                await release_drive.wait()
+                return _compacted_result()
+
+            remote.aoffload = AsyncMock(side_effect=block_offload)
+            dispatch = AsyncMock()
+            with (
+                patch.object(
+                    app, "_sync_session_cost_from_checkpoint", new=AsyncMock()
+                ),
+                patch.object(app, "_run_session_start_hook", new=AsyncMock()),
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                with patch.object(app, "_dispatch_queued_message", new=dispatch):
+                    app.post_message(ChatInput.Submitted("hello", "prompt"))
+                    await pilot.pause()
+                    assert app._agent_running is True
+                    assert len(app._pending_messages) == 1
+                    dispatch.assert_not_awaited()
+
+                    release_drive.set()
+                    worker = app._offload_worker
+                    assert worker is not None
+                    await worker.wait()
+                    await pilot.pause()
+
+            dispatch.assert_awaited_once()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_server_failure_releases_busy_state_and_spinner(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = _setup_server_offload_app(app)
+            remote.aoffload = AsyncMock(side_effect=RuntimeError("server unavailable"))
+
+            with patch.object(app, "_set_spinner", new_callable=AsyncMock) as spinner:
+                await app._handle_offload()
+
+            spinner.assert_any_await("Offloading")
+            spinner.assert_awaited_with(None)
+            assert app._agent_running is False
+            assert app._agent_quiescent.is_set()
 
 
 class TestOffloadFallbackRoot:

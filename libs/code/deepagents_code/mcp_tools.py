@@ -1911,6 +1911,9 @@ def _build_cached_mcp_tool(
                     expected_session=session,
                 )
                 raise ToolException(str(reauth)) from exc
+            # `_handle_cached_mcp_tool_error` is the sole logging site for the
+            # `ToolException`s raised below; do not log here too, or every
+            # failure is reported twice.
             if not _is_transient_session_error(exc):
                 msg = (
                     f"MCP tool {lc_tool_name!r} failed on server "

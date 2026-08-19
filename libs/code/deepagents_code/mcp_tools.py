@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 import copy
+import errno
 import fnmatch
 import functools
 import io
@@ -206,6 +208,17 @@ _MCP_ENV_REFERENCE_RE = re.compile(r"\$\{([^}]+)\}")
 _MCP_STDERR_LINE_LIMIT = 4096
 _MCP_STDERR_READ_SIZE = 8192
 _MCP_STDERR_TRUNCATION_MARKER = "... [truncated]"
+_MCP_STDERR_DRAIN_JOIN_TIMEOUT = 2.0
+"""Bound on joining the stderr drain thread during session teardown.
+
+The drain thread blocks in `os.read` until the pipe hits EOF, which only
+happens once *every* process holding the write end closes it. MCP's stdio
+shutdown terminates the server's process tree, but a server that spawns a
+longer-lived descendant escaping its process group keeps the inherited pipe
+open — so an unbounded join would wedge session close (discovery failure,
+reload, shutdown). After this timeout the read end is closed to force the
+thread's `os.read` to fail and exit.
+"""
 
 
 def _resolve_stdio_env(
@@ -257,6 +270,7 @@ class _MCPStderrSink(io.TextIOBase):
         )
         self._line = ""
         self._truncated = False
+        self._read_fd_closed = False
         self._read_fd, write_fd = os.pipe()
         try:
             self._writer = os.fdopen(write_fd, "wb", buffering=0)
@@ -332,9 +346,33 @@ class _MCPStderrSink(io.TextIOBase):
             self._writer.close()
 
     async def wait_closed(self) -> None:
-        """Wait off the event loop until the pipe reader reaches EOF."""
+        """Wait off the event loop until the pipe reader reaches EOF.
+
+        The join is bounded: if the drain thread is still blocked after
+        `_MCP_STDERR_DRAIN_JOIN_TIMEOUT` (the pipe's write end is held open by a
+        surviving server descendant), the read end is closed to force the
+        thread's `os.read` to fail, then the thread is rejoined. This keeps a
+        leaked stderr pipe from hanging session cleanup.
+        """
         self.close()
+        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
+        if not self._thread.is_alive():
+            return
+        self._close_read_fd()
+        logger.debug(
+            "MCP server %r stderr pipe still held open after process exit; "
+            "forcing the drain thread closed",
+            self._server_name,
+        )
         await asyncio.to_thread(self._thread.join)
+
+    def _close_read_fd(self) -> None:
+        """Close the pipe read end once, from the reader thread or a closer."""
+        if self._read_fd_closed:
+            return
+        self._read_fd_closed = True
+        with contextlib.suppress(OSError):
+            os.close(self._read_fd)
 
     def _drain(self) -> None:
         """Drain subprocess bytes so stderr can never block the child."""
@@ -347,14 +385,16 @@ class _MCPStderrSink(io.TextIOBase):
                 if self._line or self._truncated:
                     self._emit_line()
         except OSError as exc:
-            if self._capture:
+            # EBADF is the expected teardown path when wait_closed force-closes
+            # the read end while the thread is blocked on a leaked pipe.
+            if self._capture and exc.errno != errno.EBADF:
                 logger.debug(
                     "MCP server %r stderr capture failed: %s",
                     self._server_name,
                     exc,
                 )
         finally:
-            os.close(self._read_fd)
+            self._close_read_fd()
 
     def _decode(self, data: bytes, *, final: bool = False) -> None:
         """Decode one byte chunk without allowing malformed stderr to stop draining."""

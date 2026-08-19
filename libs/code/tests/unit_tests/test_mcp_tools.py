@@ -939,6 +939,54 @@ class TestMCPStderrCapture:
             for thread in threading.enumerate()
         )
 
+    async def test_stderr_drain_does_not_hang_on_inherited_pipe(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A surviving descendant holding stderr cannot wedge session close.
+
+        The child keeps its stderr write end open after the server exits, so
+        the pipe never reaches EOF. `wait_closed` must give up on the bounded
+        join and force the drain thread closed rather than block forever.
+        """
+        started = tmp_path / "started"
+        # The child duplicates the inherited stderr fd and sleeps; the server
+        # exits as soon as its stdin closes, leaving the child holding the pipe.
+        spawn = (
+            "subprocess.Popen("
+            "[sys.executable, '-c', 'import time; time.sleep(60)'], "
+            "stderr=err, start_new_session=True)"
+        )
+        script = "\n".join(
+            [
+                "import os, subprocess, sys",
+                f"open({str(started)!r}, 'w').close()",
+                "err = os.dup(2)",
+                spawn,
+                "sys.stdin.buffer.read()",
+            ]
+        )
+        connection = cast(
+            "Connection",
+            {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": ["-c", script],
+            },
+        )
+        async with _create_mcp_session(connection, server_name="fake"):
+            for _ in range(100):
+                if await asyncio.to_thread(started.exists):
+                    break
+                await asyncio.sleep(0.01)
+            assert started.exists()
+        # Reaching here means __aexit__ (and wait_closed) returned instead of
+        # hanging on the leaked pipe.
+        assert not any(
+            thread.name == "mcp-stderr-fake" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+
     async def test_remote_session_delegates_to_adapter(self) -> None:
         """Non-stdio transports retain the adapter's session handling."""
         session = AsyncMock()

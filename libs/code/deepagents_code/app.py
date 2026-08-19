@@ -2391,6 +2391,16 @@ class _ThreadHistoryPayload:
     goal_criteria_request_active: bool = False
     """Whether a newer or unfinished criteria request remains in the checkpoint."""
 
+    goal_status_recorded: bool = False
+    """Whether the checkpoint carried a `_goal_status` channel at all.
+
+    Distinct from `goal_status`: legacy checkpoints predate the status channel,
+    so absence means the goal ran as `active` (the implicit pre-status status),
+    while a *present* value that `coerce_goal_status` does not recognize means a
+    corrupt or forward-version checkpoint. Only the latter is normalized to
+    `paused` on restore; the former keeps its legacy `active` behavior.
+    """
+
     @property
     def has_model_usage(self) -> bool:
         """Whether restored state contains evidence of model usage."""
@@ -13149,6 +13159,7 @@ class DeepAgentsApp(App):
             sticky_rubric_recorded="_sticky_rubric" in state_values,
             goal_objective=_as_str(state_values.get("_goal_objective")),
             goal_status=coerce_goal_status(state_values.get("_goal_status")),
+            goal_status_recorded="_goal_status" in state_values,
             goal_rubric=_as_str(state_values.get("_goal_rubric")),
             goal_status_note=_as_str(state_values.get("_goal_status_note")),
             pending_goal_completion_note=_as_str(
@@ -13198,7 +13209,9 @@ class DeepAgentsApp(App):
         # stale auto-completion on resume/thread-switch.
         self._active_goal = payload.goal_objective
         status_unrecognized = (
-            payload.goal_objective is not None and payload.goal_status is None
+            payload.goal_objective is not None
+            and payload.goal_status is None
+            and payload.goal_status_recorded
         )
         if status_unrecognized:
             # `coerce_goal_status` discarded a corrupt or forward-version status,
@@ -13207,7 +13220,10 @@ class DeepAgentsApp(App):
             # work it), but `_resume_goal` requires exactly `"paused"` to resume,
             # so neither side can move it. Restore the same recoverable `paused`
             # the notice shows, and persist it so the checkpoint itself becomes
-            # resumable and the two reads stop disagreeing.
+            # resumable and the two reads stop disagreeing. A checkpoint with no
+            # `_goal_status` channel at all is legacy, not corrupt: it keeps its
+            # implicit pre-status `active` (matching the notice) instead of
+            # being silently paused.
             self._goal_status = "paused"
         else:
             self._goal_status = payload.goal_status

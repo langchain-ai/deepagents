@@ -10878,6 +10878,7 @@ class TestGoalCommand:
                 "",
                 goal_objective="ship it",
                 goal_status=None,
+                goal_status_recorded=True,
                 goal_rubric="- tests pass",
             )
 
@@ -10894,6 +10895,34 @@ class TestGoalCommand:
             await app._resume_goal()
 
             assert app._goal_status == "active"
+
+    async def test_restore_legacy_goal_without_status_stays_active(self) -> None:
+        """A checkpoint with no `_goal_status` channel is legacy, not corrupt.
+
+        Goals predate the status channel, so a persisted objective with the
+        channel absent ran as `active` — the notice projects the same absence
+        as `active`. Restore must preserve that instead of normalizing it to
+        `paused`, and must not write a status the checkpoint never recorded.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(aupdate_state=AsyncMock())
+            app._lc_thread_id = "thread-1"
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="ship it",
+                goal_status=None,
+                goal_rubric="- tests pass",
+            )
+
+            await app._restore_goal_rubric_state(payload)
+
+            assert app._active_goal == "ship it"
+            assert app._goal_status is None
+            app._agent.aupdate_state.assert_not_awaited()
 
     async def test_load_oversized_legacy_goal_surfaces_recovery(self) -> None:
         """Resuming old unsafe state stays usable and explains how to recover."""
@@ -11781,6 +11810,61 @@ class TestGoalCommand:
                 await app._sync_goal_rubric_state_from_thread()
 
             assert app._goal_status == "paused"
+
+    async def test_sync_goal_rubric_state_keeps_missing_status_active(self) -> None:
+        """A checkpoint with no `_goal_status` channel is legacy, not corrupt.
+
+        The channel predates status persistence, so its absence means the goal
+        ran as `active` — matching what the notice projects. Sync must leave
+        the restored goal working instead of pausing it.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._goal_status is None
+            assert app._active_goal == "add refresh tokens"
+
+    async def test_sync_goal_rubric_state_normalizes_explicit_null_status_to_paused(
+        self,
+    ) -> None:
+        """An explicit `_goal_status: null` is recorded-but-unrecognized.
+
+        Unlike a missing channel (legacy), a present `null` went through
+        `coerce_goal_status` and failed, so restore normalizes it to the same
+        recoverable `paused` as any other unrecognized persisted value.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": None,
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._goal_status == "paused"
+            assert app._active_goal == "add refresh tokens"
 
     async def test_sync_goal_rubric_state_notifies_on_corruption(self) -> None:
         """A discarded malformed channel surfaces a user-facing corruption notice.

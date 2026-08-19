@@ -101,7 +101,11 @@ from deepagents_code.offload import (
     _artifacts_root,
     _offload_fallback_root,
 )
-from deepagents_code.offload_middleware import _create_cli_compaction_middleware
+from deepagents_code.offload_middleware import (
+    OffloadOperation,
+    _create_cli_compaction_middleware,
+    attach_offload_operation,
+)
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
@@ -116,6 +120,7 @@ from deepagents_code.unicode_security import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 _MEMORY_READONLY_SYSTEM_PROMPT = (
     "<agent_memory>\n"
@@ -2876,7 +2881,7 @@ def create_cli_agent(
         trusted_root, narrow_allow_list = auto_mode_config
         # An explicit argument wins; otherwise the env var / `config.toml`
         # preference is read here, where agent construction already runs off the
-        # blockbuster-guarded server loop (see `server_graph._make_graph`).
+        # blockbuster-guarded server loop (see `server_graph._make_graphs`).
         classifier_model = (
             auto_classifier_model
             if auto_classifier_model is not None
@@ -2906,7 +2911,16 @@ def create_cli_agent(
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
     hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
+    server_hooks_middleware = ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
+    agent_middleware.append(server_hooks_middleware)
+
+    # Publish the server operation on the backend shared with `server_graph`.
+    # The custom HTTP route owns checkpoint access and persistence, while this
+    # object retains the exact compaction and hook instances used by the agent.
+    attach_offload_operation(
+        composite_backend,
+        OffloadOperation(compaction_middleware, server_hooks_middleware),
+    )
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an

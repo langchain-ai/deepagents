@@ -293,7 +293,7 @@ def _resolve_openai_prompt_cache_key_enabled() -> bool:
     Called once when `ConfigurableModelMiddleware` is constructed. The read is
     kept off the blockbuster-guarded server loop by the caller: on the server
     path `create_cli_agent` runs inside `asyncio.to_thread` (see
-    `server_graph._make_graph`), so the synchronous `config.toml` read happens
+    `server_graph._make_graphs`), so the synchronous `config.toml` read happens
     on a worker thread.
 
     On an unexpected failure this defaults to enabled: breaking agent

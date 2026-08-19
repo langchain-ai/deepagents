@@ -552,6 +552,15 @@ otherwise wedge the thread with only a log warning; surfacing this tells the
 user why an unrelated next turn might fail and how to recover.
 """
 
+_OFFLOAD_MAX_RESUME_ROUNDS = 10
+"""Bound on interrupt fulfill/resume rounds during a seeded `/offload`.
+
+A hook that keeps raising fresh interrupt payloads would otherwise loop the
+fulfill/resume cycle forever. The server HTTP operation owns its independent
+transport bound; this value applies only to the local compatibility driver,
+where compaction may already have committed before a later approval retry.
+"""
+
 
 def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
     """Return the absolute cutoff index of a `_summarization_event`.
@@ -563,11 +572,11 @@ def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
     Returns:
         The `cutoff_index`, or `0` when the event is missing or malformed.
     """
-    if isinstance(event, dict):
-        cutoff = event.get("cutoff_index")
-        if isinstance(cutoff, int):
-            return cutoff
-    return 0
+    from deepagents_code.offload_middleware import _event_cutoff
+
+    # Shared with the server operation's no-advance check so the local fallback
+    # and server service cannot drift apart.
+    return _event_cutoff(event)
 
 
 def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401
@@ -645,11 +654,14 @@ def _is_tool_message(msg: Any) -> bool:  # noqa: ANN401
 def _find_compaction_failure(messages: list[Any]) -> str | None:
     """Return a persisted forced-compaction failure message, if present.
 
-    `/offload` primarily detects tool failures from the live message stream,
-    but a stream hiccup (or an update-injected `ToolMessage` that never surfaces
-    on the `messages` stream) can drop that signal even though the failure
-    `ToolMessage` still lands in durable state. Scanning committed state closes
-    that gap so a genuine failure is not misreported as "nothing to offload".
+    This covers the seeded driver used for local in-process agents, which is
+    the only `/offload` path that produces a `ToolMessage` at all. It primarily
+    detects tool failures from the live message stream, but a stream hiccup (or
+    an update-injected `ToolMessage` that never surfaces on the `messages`
+    stream) can drop that signal even though the failure `ToolMessage` still
+    lands in durable state. Scanning committed state closes that gap so a
+    genuine failure is not misreported as "nothing to offload". The server-side
+    HTTP operation returns a typed failure instead, so it never reaches this scan.
 
     The caller passes only the messages produced by the *current* `/offload`
     attempt (the tail after the pre-seed prefix). This matters because the
@@ -16359,6 +16371,193 @@ class DeepAgentsApp(App):
         _, conversation = await self._get_context_usage_counts()
         return conversation
 
+    async def _handle_server_offload(self, config: RunnableConfig) -> None:
+        """Request and render the built-in server-owned offload operation."""
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
+        remote = self._remote_agent()
+        if remote is None:
+            await self._mount_message(
+                ErrorMessage("Offload failed: no dcode server is connected.")
+            )
+            return
+        try:
+            await self._set_spinner("Offloading")
+            from deepagents_code._cli_context import CLIContext
+            from deepagents_code.config import settings
+
+            context = CLIContext(
+                model=self._effective_model_spec(),
+                model_params=self._model_params_override or {},
+                profile_overrides=self._profile_override or {},
+                model_context_limit=settings.model_context_limit,
+                thread_id=self._lc_thread_id,
+            )
+            self._hooks.apply_graph_context(context)
+            result = await remote.aoffload(
+                config=config,
+                context=context,
+                fulfill_hook=self._hooks.fulfill_interrupt,
+            )
+            await self._sync_session_cost_from_checkpoint()
+
+            status = result.get("status")
+            if status == "empty":
+                await self._mount_message(
+                    AppMessage("Nothing to offload — start a conversation first")
+                )
+                return
+            if status == "noop":
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to offload — the conversation is already compact."
+                    )
+                )
+                return
+            if status in {"denied", "failed"}:
+                error = result.get("error") or "The server rejected the operation."
+                await self._mount_message(ErrorMessage(f"Offload failed: {error}"))
+                return
+            if status != "compacted":
+                await self._mount_message(
+                    ErrorMessage(
+                        "Offload failed: the server returned an invalid result."
+                    )
+                )
+                return
+
+            # The server reports `count_tokens_approximately` over the effective
+            # conversation, so these are conversation-scale estimates. Report
+            # them on the same terms as the seeded path: `usage_label` is what
+            # tells the user which metric they are reading, because
+            # "Conversation" excludes the system/tool overhead that "Context"
+            # includes and the two percentages are not comparable across
+            # offloads.
+            conversation_tokens_before = result["tokens_before"]
+            conversation_tokens_after = result["tokens_after"]
+            # A cached count from a real model turn is the provider's own total;
+            # an approximate one is our own estimate, and rescaling an estimate
+            # by an estimate would compound the error. Only the former promotes
+            # the report to context scale, which is the seeded path's
+            # "usable provider total" precondition using data already in hand.
+            reported_tokens_before = (
+                0 if self._tokens_approximate else self._context_tokens
+            )
+            if reported_tokens_before:
+                # Subtract the *delta* from the provider total rather than
+                # rebuilding it as `overhead + conversation_after`; see the
+                # seeded path for why only this form keeps both figures on the
+                # provider's scale. The estimator's error appears with opposite
+                # signs in the two conversation counts and largely cancels in
+                # the difference, so only `after` carries a `~`.
+                tokens_before = reported_tokens_before
+                tokens_after = max(
+                    0,
+                    reported_tokens_before
+                    - (conversation_tokens_before - conversation_tokens_after),
+                )
+                usage_label = "Context"
+                before = format_token_count(tokens_before)
+                after = f"~{format_token_count(tokens_after)}"
+            else:
+                tokens_before = conversation_tokens_before
+                tokens_after = conversation_tokens_after
+                usage_label = "Conversation"
+                before = f"~{format_token_count(tokens_before)}"
+                after = f"~{format_token_count(tokens_after)}"
+            # Floored at zero: a summary can come out larger than the messages
+            # it replaced, and in the reported branch `tokens_after` mixes an
+            # exact provider total with an estimated delta. Neither should ever
+            # render as a negative "decrease".
+            pct = (
+                max(0, round((tokens_before - tokens_after) / tokens_before * 100))
+                if tokens_before > 0
+                else 0
+            )
+            kept_message_label = (
+                "message" if result["messages_kept"] == 1 else "messages"
+            )
+            if tokens_after <= tokens_before:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                    f"{result['messages_kept']} {kept_message_label} kept."
+                )
+            else:
+                stats_line = (
+                    f"{usage_label}: {before} → {after} tokens (increase), "
+                    f"{result['messages_kept']} {kept_message_label} kept."
+                )
+            offloaded_message_label = (
+                "message" if result["messages_offloaded"] == 1 else "messages"
+            )
+            offloaded_counts = (
+                f"{result['messages_offloaded']} older {offloaded_message_label}"
+            )
+            outcome = (
+                f"Offloaded {offloaded_counts}, freeing up context window space."
+                if tokens_after <= tokens_before
+                else (
+                    f"Offloaded {offloaded_counts}, but the summary was larger "
+                    "than the messages it replaced, so context increased."
+                )
+            )
+            if result.get("archive_path"):
+                caveat = (
+                    "\nNote: history was saved to temporary storage and may not "
+                    "survive a restart."
+                    if result.get("archive_ephemeral")
+                    else ""
+                )
+                await self._mount_message(
+                    AppMessage(f"{outcome}\n{stats_line}{caveat}")
+                )
+            else:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Offloaded {offloaded_counts} "
+                        "and freed context, but the conversation history could not "
+                        "be saved to storage, so those messages are not recoverable. "
+                        f"Check logs for details.\n{stats_line}"
+                    )
+                )
+            # Flagged approximate in both branches: the conversation-scale
+            # figure is an estimate outright, and the provider-scale one mixes an
+            # exact total with an estimated delta.
+            self._on_tokens_update(tokens_after, approximate=True)
+
+            # Fired only after the outcome is on screen. Compaction has already
+            # committed server-side, so a hook that raises must not be allowed
+            # to replace the user's result with "Offload failed" and leave the
+            # status bar on pre-offload counts. `_run_session_start_hook` mounts
+            # a stop reason itself, so the user sees both facts in order.
+            from deepagents_code.hooks.models.domain import SessionStartCause
+
+            try:
+                await self._run_session_start_hook(SessionStartCause.COMPACT)
+            except ClientHookStopError:
+                # The stop reason is already mounted; the offload itself stands.
+                pass
+            except Exception:
+                logger.exception("SessionStart hook failed after server offload")
+                await self._mount_message(
+                    ErrorMessage(
+                        "The conversation was offloaded, but a configured "
+                        "SessionStart hook failed. Check logs for details."
+                    )
+                )
+        except ClientHookStopError:
+            # Raised before the compaction committed (e.g. from a hook the
+            # operation routed back to this client); the reason is mounted by
+            # the hook executor, so adding "Offload failed" would double-report.
+            return
+        except Exception as exc:
+            from deepagents_code.client.remote_client import format_agent_exception
+
+            logger.exception("Server offload failed")
+            await self._mount_message(
+                ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
+            )
+
     async def _run_offload_task(self) -> None:
         """Run a synchronously reserved `/offload` outside the App message pump."""
         self._offload_task_started = True
@@ -16390,13 +16589,14 @@ class DeepAgentsApp(App):
     async def _offload_impl(self) -> None:
         """Offload older messages to free context window space.
 
-        Runs offload SERVER-SIDE by driving the agent's own
-        `compact_conversation` tool (with `force=True`) instead of
-        reimplementing summarization + persistence client-side. This keeps the
-        offloaded archive in the agent's composite backend so it is readable
-        via `read_file` in every run mode (server, sandbox, in-process). The
-        client only seeds the tool call, approves the resulting HITL interrupt,
-        drains the run, and renders the persisted `_summarization_event`.
+        Dcode servers own offload behind a dedicated HTTP operation (no model
+        node, no synthetic tool call); local in-process `Pregel` agents
+        drive the agent's own `compact_conversation` tool (with `force=True`)
+        via a seeded tool call instead. Either way the offloaded archive lands
+        in the agent's composite backend so it is readable via `read_file` in
+        every run mode (server, sandbox, in-process). The seeded path's tool is
+        HITL-gated with no approval bypass, so its driver answers the resulting
+        interrupt itself, approving only the forced `compact_conversation` call.
 
         Raises:
             CancelledError: If the offload worker is interrupted.
@@ -16412,6 +16612,35 @@ class DeepAgentsApp(App):
             return
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+
+        remote = self._remote_agent()
+        if remote is not None:
+            try:
+                supports_offload = await remote.asupports_offload()
+            except Exception as exc:  # remote capability request
+                # A probe that fails for any reason other than "no such route"
+                # (timeout, gateway 401/403/405, transient 5xx) says nothing
+                # about whether offload can work. The seeded path drives the
+                # agent's own tool and works against any server, so degrade to
+                # it rather than refusing an operation that has a working
+                # implementation. Say so: the fallback spends an extra model
+                # call and behaves differently on failure.
+                from deepagents_code.client.remote_client import (
+                    format_agent_exception,
+                )
+
+                logger.warning("Offload capability probe failed", exc_info=True)
+                await self._mount_message(
+                    AppMessage(
+                        "Could not confirm server offload support "
+                        f"({format_agent_exception(exc)}); using the "
+                        "compatibility path."
+                    )
+                )
+                supports_offload = False
+            if supports_offload:
+                await self._handle_server_offload(config)
+                return
 
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
@@ -16441,10 +16670,11 @@ class DeepAgentsApp(App):
             seed_tool_call_id = str(uuid.uuid4())
 
             try:
-                tool_error = await self._drive_server_side_compaction(
+                tool_error = await self._drive_local_seeded_compaction(
                     config, seed_tool_call_id
                 )
             except ClientHookStopError:
+                # The seeded driver mounts the stop reason before raising.
                 return
             except (asyncio.CancelledError, Exception) as stream_error:
                 # A server graph can checkpoint the tool-node update before a
@@ -16468,9 +16698,9 @@ class DeepAgentsApp(App):
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
                 if _summarization_cutoff(reconciled_event) <= prior_cutoff:
-                    # Compaction did not commit, so the seeded tool call was
-                    # never answered. Remove it before re-raising so a failed
-                    # `/offload` cannot wedge the thread with a dangling
+                    # Compaction did not commit. The seeded driver may have left
+                    # its tool call unanswered; remove it before re-raising so a
+                    # failed `/offload` cannot wedge the thread with a dangling
                     # `tool_use` that the model API rejects on the next turn.
                     if not await self._remove_unanswered_offload_seed(
                         config, seed_tool_call_id
@@ -16508,20 +16738,20 @@ class DeepAgentsApp(App):
                 if failure is not None:
                     await self._mount_message(ErrorMessage(failure))
                     return
-                # A no-op still commits the synthetic assistant seed and its
-                # tool result. Restore the exact pre-run conversation so an
-                # operation reported as doing nothing truly changes nothing.
+                # A no-op seeded run still commits the synthetic assistant seed
+                # and its tool result. Restore the exact pre-run conversation so
+                # an operation reported as doing nothing truly changes nothing.
                 await self._remove_offload_artifacts(
                     config, current_messages, prior_event
                 )
                 # `force=True` bypasses the eligibility gate, so this branch is
                 # reached when there is nothing older than the retention window
-                # to summarize (effective cutoff 0). It also absorbs the
-                # degenerate chained case where only the prior summary would be
-                # re-summarized (effective cutoff 1 -> new_cutoff == prior_cutoff
-                # via `_compute_state_cutoff`): a fresh event may commit but the
-                # absolute cutoff does not advance, so "nothing to offload" is
-                # the correct, if conservative, report.
+                # to summarize (effective cutoff 0), or in the degenerate
+                # chained case where only the prior summary would be
+                # re-summarized (effective cutoff 1 -> the absolute cutoff would
+                # not advance). This path still commits a replacement event in
+                # that second case, which is what `_remove_offload_artifacts`
+                # above undoes.
                 await self._mount_message(
                     AppMessage(
                         "Nothing to offload \u2014 the conversation is already "
@@ -16668,23 +16898,33 @@ class DeepAgentsApp(App):
             self._on_tokens_update(tokens_after, approximate=True)
 
         except Exception as exc:  # surface offload errors to user
-            logger.exception("Offload failed")
-            await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
+            from deepagents_code.client.remote_client import format_agent_exception
 
-    async def _drive_server_side_compaction(
+            logger.exception("Offload failed")
+            # HTTP transport failures may carry LangGraph-style remote errors;
+            # normalize those before rendering them.
+            await self._mount_message(
+                ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
+            )
+
+    async def _drive_local_seeded_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None
     ) -> str | None:
-        """Trigger the server-side `compact_conversation` tool with `force=True`.
+        """Drive a local agent's `compact_conversation` tool with `force=True`.
+
+        This is `/offload`'s sole implementation for local in-process `Pregel`
+        agents, including ACP mode, and the compatibility fallback for custom
+        servers that do not expose the built-in operation route.
 
         Seeds an assistant `compact_conversation` tool call attributed to the
         model node, then advances the graph so the agent's own `ToolNode`
-        executes the tool. The tool is HITL-gated, so `astream(None)` surfaces
-        an approval interrupt; only the first forced `compact_conversation`
-        request is approved here (this is an explicit user-initiated
-        `/offload`). The runtime context carries the seeded call ID so the
-        compaction middleware can reject every other tool independently of
-        HITL configuration, including tools requested by the trailing model
-        turn.
+        executes the tool. The tool is HITL-gated and the seed is not an
+        approval bypass, so `astream(None)` surfaces an approval interrupt; only
+        the first forced `compact_conversation` request is approved here (this is
+        an explicit user-initiated `/offload`). The runtime context carries the
+        seeded call ID so the compaction middleware can reject every other tool
+        independently of HITL configuration, including tools requested by the
+        trailing model turn.
 
         A first-turn `Command(update=..., goto=...)` is intentionally avoided:
         the LangGraph API server rebuilds it with `goto=None` and crashes
@@ -16751,6 +16991,11 @@ class DeepAgentsApp(App):
 
         # Remote dev servers separate checkpoint persistence from HTTP thread
         # registration; register before mutating state so the write lands.
+        # Reached with a live remote agent whenever the server lacks the
+        # built-in offload route -- a custom `graph_ref`, an older server, a
+        # protocol-version skew, or a failed capability probe -- so this call is
+        # load-bearing on a production path. `None` only for local in-process
+        # `Pregel` agents.
         if remote := self._remote_agent():
             await remote.aensure_thread(
                 {"configurable": {"thread_id": self._lc_thread_id}}
@@ -16923,16 +17168,15 @@ class DeepAgentsApp(App):
         # rejected gated call could prompt another. The middleware blocks
         # execution even when HITL is disabled; this bound handles HITL retries.
         try:
-            max_resume_rounds = 10
             pending = await _drain(None)
             rounds = 0
             while pending:
                 rounds += 1
-                if rounds > max_resume_rounds:
+                if rounds > _OFFLOAD_MAX_RESUME_ROUNDS:
                     logger.warning(
                         "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
                         "unresolved",
-                        max_resume_rounds,
+                        _OFFLOAD_MAX_RESUME_ROUNDS,
                         len(pending),
                     )
                     # Compaction itself already committed in round 1, so the caller
@@ -16970,7 +17214,13 @@ class DeepAgentsApp(App):
         messages: list[Any],
         prior_event: object,
     ) -> None:
-        """Restore state changed by a no-op `/offload` graph run.
+        """Restore state changed by a no-op seeded `/offload` run.
+
+        Applies only to the seeded (local-agent) path. The server operation
+        commits no synthetic messages and, since it stops before the model call
+        when the cutoff would not advance, no replacement event either — so it
+        has nothing for this to undo.
+
 
         Best-effort: a failed restoration is logged and swallowed rather than
         raised. The no-op path answers the seed with a valid tool result, so the

@@ -1,5 +1,7 @@
 """Tests for RemoteAgent, _convert_message_data, and helpers."""
 
+import itertools
+import logging
 import uuid
 from collections.abc import Sequence
 from types import SimpleNamespace
@@ -23,6 +25,18 @@ from deepagents_code.client.remote_client import (
 )
 
 _TEST_THREAD_ID = "01966f3a-0000-7000-8000-000000000001"
+
+_COMPACTED_RESULT = {
+    "status": "compacted",
+    "messages_offloaded": 2,
+    "messages_kept": 3,
+    "tokens_before": 100,
+    "tokens_after": 40,
+    "archive_path": "/conversation_history/thread.md",
+    "archive_ephemeral": False,
+    "error": None,
+}
+"""A well-formed `compacted` result, for tests that perturb one field."""
 
 
 # ---------------------------------------------------------------------------
@@ -1086,3 +1100,361 @@ class TestAgentErrorType:
 
     def test_non_dict_payload_uses_class_name(self) -> None:
         assert agent_error_type(ValueError("boom")) == "ValueError"
+
+
+class TestSupportsOffload:
+    """Capability discovery uses only the dcode HTTP boundary."""
+
+    async def test_detects_route_and_caches_result(self) -> None:
+        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
+        http = SimpleNamespace(
+            get=AsyncMock(return_value={"offload": True, "version": 1})
+        )
+        graph = _offload_graph(http)
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            assert await agent.asupports_offload() is True
+            assert await agent.asupports_offload() is True
+
+        http.get.assert_awaited_once_with("/dcode/offload")
+
+    async def test_missing_route_selects_fallback(self) -> None:
+        """The SDK surfaces a 404 as `NotFoundError`, not `httpx.HTTPStatusError`."""
+        import httpx
+        from langgraph_sdk.errors import NotFoundError
+
+        agent = RemoteAgent("http://localhost:1234", graph_name="custom")
+        request = httpx.Request("GET", "http://localhost/dcode/offload")
+        response = httpx.Response(404, request=request)
+        http = SimpleNamespace(
+            get=AsyncMock(
+                side_effect=NotFoundError("missing", response=response, body=None)
+            )
+        )
+        graph = _offload_graph(http)
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            assert await agent.asupports_offload() is False
+
+    async def test_other_http_errors_propagate(self) -> None:
+        """Non-404 statuses surface as their typed SDK errors, not the fallback."""
+        import httpx
+        from langgraph_sdk.errors import InternalServerError
+
+        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
+        request = httpx.Request("GET", "http://localhost/dcode/offload")
+        response = httpx.Response(500, request=request)
+        http = SimpleNamespace(
+            get=AsyncMock(
+                side_effect=InternalServerError("boom", response=response, body=None)
+            )
+        )
+        graph = _offload_graph(http)
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            pytest.raises(InternalServerError),
+        ):
+            await agent.asupports_offload()
+
+    async def test_client_and_server_protocol_versions_agree(self) -> None:
+        """The duplicated version constant must not drift from the server's."""
+        from deepagents_code.client.remote_client import _OFFLOAD_PROTOCOL_VERSION
+        from deepagents_code.offload_api import _OFFLOAD_API_VERSION
+
+        assert _OFFLOAD_PROTOCOL_VERSION == _OFFLOAD_API_VERSION
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"offload": True, "version": 2},
+            {"offload": True},
+            {"offload": False, "version": 1},
+            {"unexpected": "proxy error page"},
+            "not json at all",
+        ],
+    )
+    async def test_unusable_capability_response_selects_fallback(
+        self, body: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Every negative outcome degrades to the fallback *and* leaves a log."""
+        agent = RemoteAgent("http://localhost:1234", graph_name="agent")
+        http = SimpleNamespace(get=AsyncMock(return_value=body))
+        graph = _offload_graph(http)
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            caplog.at_level(logging.WARNING),
+        ):
+            assert await agent.asupports_offload() is False
+
+        assert "fallback" in caplog.text
+
+
+def _offload_graph(http: SimpleNamespace) -> SimpleNamespace:
+    """Build a graph stub that also satisfies `aensure_thread`.
+
+    `aoffload` registers the thread before its first POST, so a stub that only
+    carries `client.http` no longer suffices. `threads.create` is recorded so
+    tests can assert the registration happened, and happened first.
+    """
+    threads = SimpleNamespace(create=AsyncMock(return_value=None))
+    client = SimpleNamespace(http=http, threads=threads)
+    return SimpleNamespace(
+        client=client,
+        _validate_client=lambda: client,
+    )
+
+
+class TestServerOffload:
+    """The remote client transports operation data without graph state."""
+
+    async def test_registers_the_thread_before_the_first_request(self) -> None:
+        """The operation must not be requested against an unregistered thread.
+
+        Checkpoint persistence and HTTP thread registration are separate on the
+        dev server, so a resumed thread has state on disk and no live row, and
+        every request below would 404. Ordering is the whole point -- registering
+        after the POST would not help -- so assert the call sequence rather than
+        just that both calls happened.
+        """
+        calls: list[str] = []
+
+        async def record_post(  # noqa: RUF029 -- must satisfy the async post signature
+            *_args: object, **_kwargs: object
+        ) -> dict[str, object]:
+            calls.append("post")
+            return {"status": "complete", "result": dict(_COMPACTED_RESULT)}
+
+        async def record_create(  # noqa: RUF029 -- must satisfy the async create signature
+            *_args: object, **_kwargs: object
+        ) -> None:
+            calls.append("create")
+
+        http = SimpleNamespace(post=AsyncMock(side_effect=record_post))
+        graph = _offload_graph(http)
+        graph.client.threads.create.side_effect = record_create
+
+        agent = RemoteAgent("http://localhost:1234")
+        with patch.object(agent, "_get_graph", return_value=graph):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={"model": "test:model"},
+                fulfill_hook=AsyncMock(),
+            )
+
+        assert calls == ["create", "post"]
+        create_kwargs = graph.client.threads.create.await_args.kwargs
+        assert create_kwargs["thread_id"] == "thread"
+        assert create_kwargs["if_exists"] == "do_nothing"
+
+    async def test_fulfills_hook_and_returns_typed_result(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 2,
+            "messages_kept": 3,
+            "tokens_before": 100,
+            "tokens_after": 40,
+            "archive_path": "/conversation_history/thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        http = SimpleNamespace(
+            post=AsyncMock(
+                side_effect=[
+                    {
+                        "status": "interrupt",
+                        "request": {
+                            "type": "hook_invocation",
+                            "request": {"invocation_id": "hook-1"},
+                        },
+                    },
+                    {"status": "complete", "result": result},
+                ]
+            )
+        )
+        graph = _offload_graph(http)
+        fulfill = AsyncMock(return_value={"decision": "allow"})
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            actual = await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={"model": "test:model"},
+                fulfill_hook=fulfill,
+            )
+
+        assert actual == result
+        assert http.post.await_count == 2
+        first = http.post.await_args_list[0].kwargs["json"]
+        second = http.post.await_args_list[1].kwargs["json"]
+        assert first["context"] == {"model": "test:model"}
+        assert "messages" not in first
+        assert first["operation_id"] == second["operation_id"]
+        assert second["hook_responses"] == {"hook-1": {"decision": "allow"}}
+        fulfill.assert_awaited_once()
+
+    async def test_hook_interrupt_payload_round_trips_from_the_server(self) -> None:
+        """A real server-built interrupt payload must survive the client's parse.
+
+        Uses `build_hook_interrupt_payload` output rather than a hand-written
+        dict, and feeds the client's reply back through the server-side lookup
+        key, so a payload-field rename or a UUID/str key mismatch fails here
+        instead of breaking `/offload` only for users with hooks configured.
+        """
+        from datetime import UTC, datetime, timedelta
+        from pathlib import Path
+        from uuid import uuid4
+
+        from deepagents_code.hooks.interrupt import build_hook_interrupt_payload
+        from deepagents_code.hooks.models.domain import (
+            ApprovalMode,
+            HookContext,
+            HookEvent,
+            HookInvocation,
+            PreCompactEvent,
+        )
+        from deepagents_code.hooks.models.transport import HookInvocationRequest
+
+        invocation_id = uuid4()
+        request = HookInvocationRequest(
+            protocol_version=1,
+            invocation_id=invocation_id,
+            snapshot_id="snapshot-1",
+            run_id="run-1",
+            invocation=HookInvocation(
+                context=HookContext(
+                    thread_id="thread",
+                    cwd=Path("/tmp"),
+                    approval_mode=ApprovalMode.MANUAL,
+                ),
+                event=PreCompactEvent(event=HookEvent.PRE_COMPACT, trigger="manual"),
+            ),
+            deadline=datetime.now(UTC) + timedelta(seconds=60),
+        )
+        payload = build_hook_interrupt_payload(request)
+
+        agent = RemoteAgent("http://localhost:1234")
+        result = {
+            "status": "compacted",
+            "messages_offloaded": 1,
+            "messages_kept": 1,
+            "tokens_before": 10,
+            "tokens_after": 5,
+            "archive_path": "/conversation_history/thread.md",
+            "archive_ephemeral": False,
+            "error": None,
+        }
+        http = SimpleNamespace(
+            post=AsyncMock(
+                side_effect=[
+                    {"status": "interrupt", "request": payload},
+                    {"status": "complete", "result": result},
+                ]
+            )
+        )
+        graph = _offload_graph(http)
+        fulfill = AsyncMock(return_value={"decision": "allow"})
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            actual = await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=fulfill,
+            )
+
+        assert actual == result
+        # The key the client accumulates must be exactly the key the server's
+        # `_invoke_hook` looks up: `str(request.invocation_id)`.
+        responses = http.post.await_args_list[1].kwargs["json"]["hook_responses"]
+        assert responses == {str(invocation_id): {"decision": "allow"}}
+
+    @pytest.mark.parametrize(
+        ("result", "match"),
+        [
+            ({"status": "compacted"}, "messages_offloaded"),
+            ({**_COMPACTED_RESULT, "tokens_before": "100"}, "tokens_before"),
+            ({**_COMPACTED_RESULT, "tokens_after": True}, "tokens_after"),
+            ({}, "no status"),
+            ("not a dict", "without a typed result"),
+        ],
+    )
+    async def test_malformed_complete_result_is_refused(
+        self, result: object, match: str
+    ) -> None:
+        """A drifted payload must fail naming the field, not `KeyError` later.
+
+        The renderer indexes these fields unguarded, and the server has already
+        committed the compaction by this point, so a `KeyError` here would be
+        reported as "Offload failed" for work that actually succeeded.
+        """
+        agent = RemoteAgent("http://localhost:1234")
+        http = SimpleNamespace(
+            post=AsyncMock(return_value={"status": "complete", "result": result})
+        )
+        graph = _offload_graph(http)
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            pytest.raises(RuntimeError, match=match),
+        ):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(),
+            )
+
+    async def test_non_compacted_result_needs_no_statistics(self) -> None:
+        """`empty`/`noop`/`denied` results carry no stats the renderer reads."""
+        agent = RemoteAgent("http://localhost:1234")
+        result = {"status": "denied", "error": "Blocked by a compaction hook"}
+        http = SimpleNamespace(
+            post=AsyncMock(return_value={"status": "complete", "result": result})
+        )
+        graph = _offload_graph(http)
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            actual = await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(),
+            )
+
+        assert actual == result
+
+    async def test_round_limit_logs_the_ids_it_saw(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Exhaustion must be diagnosable and must not assert a cause."""
+        from deepagents_code.client.remote_client import _OFFLOAD_MAX_RESUME_ROUNDS
+
+        agent = RemoteAgent("http://localhost:1234")
+        counter = itertools.count()
+
+        async def _always_interrupt(  # noqa: RUF029  # must be awaitable
+            *_args: object, **_kwargs: object
+        ) -> dict:
+            return {
+                "status": "interrupt",
+                "request": {
+                    "type": "hook_invocation",
+                    "request": {"invocation_id": f"hook-{next(counter)}"},
+                },
+            }
+
+        http = SimpleNamespace(post=_always_interrupt)
+        graph = _offload_graph(http)
+
+        with (
+            patch.object(agent, "_get_graph", return_value=graph),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(RuntimeError, match="hook rounds"),
+        ):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(return_value={}),
+            )
+
+        assert f"exceeded {_OFFLOAD_MAX_RESUME_ROUNDS} hook rounds" in caplog.text
+        assert "hook-0" in caplog.text

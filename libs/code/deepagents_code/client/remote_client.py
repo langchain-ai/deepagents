@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+
+    from deepagents_code.offload_middleware import OffloadResult
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,68 @@ finish its in-flight tool call.
 Concurrent cancels keep aggregate wall time bounded by this value regardless of
 how many runs are active.
 """
+
+_OFFLOAD_MAX_RESUME_ROUNDS = 32
+"""Bound hook transport rounds for a single server operation.
+
+Counts *hook fulfillments*, not POSTs: the loop runs one extra iteration so the
+round that follows the last fulfillment can observe completion. Exceeding this
+many distinct invocations means either genuinely many hooks or an unstable
+invocation-id derivation server-side.
+"""
+
+_OFFLOAD_PROTOCOL_VERSION = 1
+"""Offload operation protocol version this client speaks.
+
+Must equal `offload_api._OFFLOAD_API_VERSION`; the duplication is deliberate,
+because importing the server module here would pull the whole server runtime
+(Starlette, graph construction) into every client process. A unit test pins the
+two together.
+"""
+
+_OFFLOAD_RESULT_INT_FIELDS = (
+    "messages_offloaded",
+    "messages_kept",
+    "tokens_before",
+    "tokens_after",
+)
+
+
+def _validated_offload_result(result: object) -> OffloadResult:
+    """Check a server offload result before any caller indexes it.
+
+    The renderer reads these fields positionally and unguarded. Validating here
+    means a protocol skew fails with a message naming the problem, instead of a
+    `KeyError` that a caller reports as "Offload failed" for an offload the
+    server already committed -- prompting the user to compact a second time.
+
+    Args:
+        result: The `result` object from a `complete` operation response.
+
+    Returns:
+        The same mapping, once its required fields are known to be present.
+
+    Raises:
+        RuntimeError: If a required field is missing or has the wrong type.
+    """
+    if not isinstance(result, dict):
+        msg = "Offload server completed without a typed result."
+        raise RuntimeError(msg)  # noqa: TRY004  # protocol fault, not a type misuse
+    status = result.get("status")
+    if not isinstance(status, str) or not status:
+        msg = "Offload result has no status."
+        raise RuntimeError(msg)
+    # Statistics are only meaningful (and only read) for a committed compaction.
+    if status == "compacted":
+        for field in _OFFLOAD_RESULT_INT_FIELDS:
+            value = result.get(field)
+            if not isinstance(value, int) or isinstance(value, bool):
+                msg = (
+                    f"Offload result field {field!r} must be an integer, got "
+                    f"{type(value).__name__}."
+                )
+                raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
+    return cast("OffloadResult", result)
 
 
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:
@@ -73,7 +137,7 @@ def agent_error_type(exc: BaseException) -> str:
 
 
 def format_agent_exception(exc: BaseException) -> str:
-    """Render an exception from `RemoteAgent.astream` for the UI.
+    """Render an exception from any `RemoteAgent` call for the UI.
 
     The LangGraph server serializes non-allowlisted exceptions as
     `{"error": <ExceptionType>, "message": <text or "An internal error occurred">}`
@@ -82,7 +146,8 @@ def format_agent_exception(exc: BaseException) -> str:
     Python dict repr in the UI.
 
     Args:
-        exc: The exception caught from the agent stream.
+        exc: The exception caught from an agent call -- the SSE stream, or an
+            HTTP operation such as the offload route and its capability probe.
 
     Returns:
         `"<ErrorType>: <message>"` for `RemoteException` dict payloads,
@@ -136,6 +201,7 @@ class RemoteAgent:
         self._api_key = api_key
         self._headers = headers
         self._graph: Any = None
+        self._supports_offload: bool | None = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -153,6 +219,169 @@ class RemoteAgent:
                 headers=self._headers,
             )
         return self._graph
+
+    async def asupports_offload(self) -> bool:
+        """Return whether this server exposes dcode's offload HTTP operation.
+
+        Capability discovery is read-only and cached. A missing route identifies
+        a custom or older server and selects the compatibility fallback without
+        inspecting graph nodes or checkpoint schemas.
+
+        The SDK maps a 404 to `NotFoundError` (handled here); any other error
+        status surfaces as its own typed `APIStatusError` subclass and
+        propagates to the caller.
+
+        Every negative outcome is logged. Selecting the fallback is not a
+        neutral choice -- it seeds synthetic messages, spends a model call, and
+        can wedge a thread on failure -- so a misrouted 404 or a proxy-injected
+        `200` body must leave a trace rather than silently downgrading.
+
+        Returns:
+            `True` when the server exposes a protocol version this client
+                speaks.
+        """
+        if self._supports_offload is None:
+            from langgraph_sdk.errors import NotFoundError
+
+            graph = self._get_graph()
+            try:
+                response = await graph.client.http.get("/dcode/offload")
+            except NotFoundError:
+                logger.info(
+                    "Server has no /dcode/offload route; using the seeded "
+                    "compaction fallback for /offload"
+                )
+                self._supports_offload = False
+            else:
+                self._supports_offload = self._offload_capability_supported(response)
+        return self._supports_offload
+
+    @staticmethod
+    def _offload_capability_supported(response: object) -> bool:
+        """Decide whether a capability response advertises a usable protocol.
+
+        Args:
+            response: Decoded body of the capability probe.
+
+        Returns:
+            `True` only for an advertised offload route at a known version.
+        """
+        if not isinstance(response, dict) or response.get("offload") is not True:
+            logger.warning(
+                "Unexpected /dcode/offload capability response (%r); using the "
+                "seeded compaction fallback for /offload",
+                response,
+            )
+            return False
+        version = response.get("version")
+        if version != _OFFLOAD_PROTOCOL_VERSION:
+            # A server speaking a protocol this client does not know may return
+            # a differently shaped result. The fallback works against any
+            # server, so prefer it over guessing at the payload.
+            logger.warning(
+                "Server advertises offload protocol version %r but this client "
+                "speaks %d; using the seeded compaction fallback for /offload",
+                version,
+                _OFFLOAD_PROTOCOL_VERSION,
+            )
+            return False
+        return True
+
+    async def aoffload(
+        self,
+        *,
+        config: Mapping[str, Any],
+        context: Mapping[str, Any],
+        fulfill_hook: Callable[[object], Awaitable[dict[str, object]]],
+    ) -> OffloadResult:
+        """Request server-owned offload and fulfill its hook callbacks.
+
+        Args:
+            config: Runnable config identifying the thread.
+            context: Runtime model and Hooks v2 context.
+            fulfill_hook: Client hook executor for server requests.
+
+        Returns:
+            Typed offload result from the server operation.
+
+        Raises:
+            TypeError: If the server response is not a JSON object.
+            RuntimeError: If the server returns an invalid protocol response or
+                exceeds the hook round limit.
+            APIStatusError: From the server operation. A 409 (conflict) or 422
+                (malformed request) means no state was committed; a 500 raised
+                as indeterminate means a commit may have landed and carries
+                user-actionable text the caller must surface rather than
+                swallow.
+        """  # noqa: DOC502 -- APIStatusError is raised by the SDK transport
+        from uuid import uuid4
+
+        from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+
+        thread_id = _require_thread_id(config)
+        # The operation reads and writes thread state over HTTP, so the thread's
+        # live row must exist first. Checkpoint persistence and registration are
+        # separate on the dev server (see `aensure_thread`), so a resumed thread
+        # -- or one whose server restarted mid-session -- has state on disk and
+        # no row, and every request below would 404.
+        await self.aensure_thread({"configurable": {"thread_id": thread_id}})
+        operation_id = str(uuid4())
+        hook_responses: dict[str, object] = {}
+        graph = self._get_graph()
+        for round_index in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
+            response = await graph.client.http.post(
+                f"/dcode/threads/{thread_id}/offload",
+                json={
+                    "operation_id": operation_id,
+                    "context": dict(context),
+                    "hook_responses": hook_responses,
+                },
+            )
+            if not isinstance(response, dict):
+                msg = "Offload server returned a non-object response."
+                raise TypeError(msg)
+            status = response.get("status")
+            if status == "complete":
+                return _validated_offload_result(response.get("result"))
+            request = response.get("request")
+            if status != "interrupt" or not is_hook_interrupt_payload(request):
+                msg = "Offload server returned an invalid operation response."
+                raise RuntimeError(msg)
+            invocation = request.get("request")
+            invocation_id = (
+                invocation.get("invocation_id")
+                if isinstance(invocation, dict)
+                else None
+            )
+            if not isinstance(invocation_id, str) or not invocation_id:
+                msg = "Offload hook request has no invocation id."
+                raise RuntimeError(msg)
+            logger.debug(
+                "Offload round %d fulfilling hook invocation %s",
+                round_index,
+                invocation_id,
+            )
+            if round_index == _OFFLOAD_MAX_RESUME_ROUNDS:
+                # The extra iteration exists to POST the last fulfillment and
+                # read the result, not to answer one more hook. Without this the
+                # loop fulfills 33 hooks and then reports "after 32 rounds".
+                break
+            hook_responses[invocation_id] = await fulfill_hook(request)
+        # The server only re-requests an invocation id it has not been given, so
+        # exhaustion means this many *distinct* ids. That is either genuinely
+        # many hooks or an unstable invocation-id derivation server-side; log the
+        # ids so the two are distinguishable, and do not assert a cause in the
+        # user-facing message.
+        logger.warning(
+            "Offload exceeded %d hook rounds; fulfilled invocation ids: %s",
+            _OFFLOAD_MAX_RESUME_ROUNDS,
+            sorted(hook_responses),
+        )
+        msg = (
+            f"Offload did not complete after {_OFFLOAD_MAX_RESUME_ROUNDS} hook "
+            "rounds. Check the server log for the hook invocations it requested."
+        )
+        raise RuntimeError(msg)
 
     async def astream(
         self,

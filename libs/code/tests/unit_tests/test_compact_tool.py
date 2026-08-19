@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import warnings
 from types import MethodType, SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -244,6 +244,216 @@ class TestCLICompactionMiddleware:
         assert result.update is not None
         assert result.update["_summarization_event"]["cutoff_index"] == 2
 
+    async def test_forced_compact_writes_through_the_archive_guard(self) -> None:
+        """The archive write is guarded even though the summarizer is not.
+
+        `_ArchiveReadGuard` deliberately exposes only the read/write methods it
+        has to intercept, so it cannot stand in for the composite backend the
+        summarizer needs (see `test_runtime_model_builds_matching_summarizer`).
+        The two therefore have to be handed out separately, and this pins that
+        the write half still gets the guard.
+        """
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        await middleware._arun_forced_compact(runtime)
+
+        write_backend = summarization._aoffload_to_backend.await_args.args[0]
+        assert isinstance(write_backend, _ArchiveReadGuard)
+        assert write_backend._backend is summarization._backend
+        assert not hasattr(write_backend, "artifacts_root")
+
+    async def test_operation_path_writes_through_the_archive_guard(self) -> None:
+        """The server `/offload` operation's write path has the same invariant.
+
+        The guard is applied per write site rather than by the backend's type, so
+        the server operation entry point does not inherit it from the tool paths
+        — it has to apply it itself, and nothing but a test says so.
+        """
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        await middleware.arun_forced_compaction_update(
+            {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+        )
+
+        write_backend = summarization._aoffload_to_backend.await_args.args[0]
+        assert isinstance(write_backend, _ArchiveReadGuard)
+        assert write_backend._backend is summarization._backend
+
+    async def test_operation_path_returns_an_absolute_cutoff(self) -> None:
+        """The committed event must carry the absolute cutoff, not the relative one.
+
+        `_determine_cutoff_index` is relative to the *effective* conversation
+        (post-previous-summary), while the persisted `cutoff_index` indexes the
+        full message list — `_compute_state_cutoff` converts between them. The
+        two coincide on a thread's first `/offload`, so returning the relative
+        value passes every other test here and only corrupts the *second*
+        `/offload`, which reads this back as its base.
+        """
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 2
+        summarization._compute_state_cutoff.return_value = 9
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        prior = {"cutoff_index": 7, "summary_message": None, "file_path": None}
+
+        result = await middleware.arun_forced_compaction_update(
+            cast(
+                "Any",
+                {
+                    "messages": [HumanMessage("one"), HumanMessage("two")],
+                    "_summarization_event": prior,
+                },
+            ),
+            runtime,
+        )
+
+        assert result is not None
+        event = result["_summarization_event"]
+        summarization._compute_state_cutoff.assert_called_once_with(prior, 2)
+        assert event["cutoff_index"] == 9
+        assert event["file_path"] == "/conversation_history/thread.md"
+        assert isinstance(event["summary_message"], HumanMessage)
+
+    async def test_operation_path_threads_and_persists_the_session_id(self) -> None:
+        """`/offload` must reuse and re-commit the SDK's archive-file id.
+
+        The SDK's `_offload_to_backend` names the archive by `session_id`, and
+        the committed `_summarization_session_id` is what makes a later
+        compaction append to the same file instead of starting a new one. The
+        server operation bypasses the SDK's own state update, so it has to
+        thread the id through and write it back itself.
+        """
+        summarization = self._summarization()
+        summarization._get_session_id.return_value = "session_abc"
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        result = await middleware.arun_forced_compaction_update(
+            {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+        )
+
+        assert result is not None
+        assert result["_summarization_session_id"] == "session_abc"
+        assert summarization._aoffload_to_backend.await_args.args[2] == "session_abc"
+
+    async def test_operation_path_refuses_a_chained_no_advance_compaction(
+        self,
+    ) -> None:
+        """A compaction that would not advance the cutoff must not commit.
+
+        The degenerate chained case: everything eligible already sits behind the
+        prior event, so the only thing left to summarize is the previous summary
+        itself. `_compute_state_cutoff` returns the prior absolute cutoff
+        unchanged, and the client — which keys its report on that value moving —
+        reports "nothing to offload". Committing anyway would spend a model
+        call, replace the in-context summary with a summary-of-a-summary, and
+        drop the prior archive's `file_path`, all while telling the user nothing
+        happened. Stop before the model call so the report and the state agree.
+        """
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 1
+        summarization._compute_state_cutoff.return_value = 7
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        prior = {
+            "cutoff_index": 7,
+            "summary_message": None,
+            "file_path": "/conversation_history/thread.md",
+        }
+
+        result = await middleware.arun_forced_compaction_update(
+            cast(
+                "Any",
+                {
+                    "messages": [HumanMessage("summary"), HumanMessage("recent")],
+                    "_summarization_event": prior,
+                },
+            ),
+            runtime,
+        )
+
+        assert result is None
+        # Neither the billable step nor the archive write may happen.
+        summarization._acreate_summary.assert_not_awaited()
+        summarization._aoffload_to_backend.assert_not_awaited()
+
+    async def test_operation_path_rejects_an_empty_conversation(self) -> None:
+        """An empty `messages` must raise rather than report a clean no-op.
+
+        The server operation normally handles an empty thread before invoking
+        compaction. A direct caller that bypasses that service check still gets
+        an explicit error instead of a misleading successful no-op.
+        """
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        with pytest.raises(ValueError, match="checkpointed conversation"):
+            await middleware.arun_forced_compaction_update(
+                cast("Any", {"messages": [], "_summarization_event": None}), runtime
+            )
+
+        summarization._acreate_summary.assert_not_awaited()
+
+    async def test_operation_path_logs_a_failed_archive_write(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `None` archive path must leave a trace naming this call site.
+
+        `_aoffload_to_backend` catches every write failure and returns `None` —
+        including `_ArchiveReadGuard`'s deliberate "refusing to overwrite
+        existing history" `RuntimeError`. The compaction still commits (the
+        client reports the missing archive to the user), but without this the
+        only server-side record is a warning inside the SDK that names neither
+        the thread nor `/offload`.
+        """
+        summarization = self._summarization()
+        summarization._aoffload_to_backend = AsyncMock(return_value=None)
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        with caplog.at_level("ERROR"):
+            result = await middleware.arun_forced_compaction_update(
+                {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+            )
+
+        assert result is not None
+        assert result["_summarization_event"]["file_path"] is None
+        assert "archive write failed" in caplog.text
+
+    async def test_operation_path_returns_none_when_nothing_to_compact(self) -> None:
+        """A cutoff of 0 must be `None`, not an event pinning cutoff 0.
+
+        The caller distinguishes "nothing old enough" from a real compaction by
+        this return value; an empty-but-present event would advance nothing while
+        still reading as success.
+        """
+        summarization = self._summarization()
+        summarization._determine_cutoff_index = MagicMock(return_value=0)
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        result = await middleware.arun_forced_compaction_update(
+            {"messages": [HumanMessage("one")]}, runtime
+        )
+
+        assert result is None
+        summarization._aoffload_to_backend.assert_not_awaited()
+
     def test_runtime_model_builds_matching_summarizer(self) -> None:
         """A `/model` override selects the summarizer used by `/offload`."""
         startup = self._summarization()
@@ -274,8 +484,13 @@ class TestCLICompactionMiddleware:
             extra_kwargs={"temperature": 0},
             profile_overrides=None,
         )
-        create_summarization.assert_called_once_with(active_model, startup._backend)
-        assert actual._backend._backend is startup._backend
+        create_summarization.assert_called_once()
+        assert create_summarization.call_args.args[0] is active_model
+        # The summarizer gets the composite backend itself, not the
+        # `_ArchiveReadGuard` wrapper: it reads `artifacts_root` to prefix the
+        # archive path, and the guard exposes no such attribute. The write path
+        # applies the guard separately (see `test_forced_compact_writes_guarded`).
+        assert create_summarization.call_args.args[1] is startup._backend
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
@@ -310,7 +525,9 @@ class TestCLICompactionMiddleware:
             profile_overrides={"max_input_tokens": 32_000},
         )
         assert active_model.profile["max_input_tokens"] == 24_000
-        create_summarization.assert_called_once_with(active_model, startup._backend)
+        create_summarization.assert_called_once()
+        assert create_summarization.call_args.args[0] is active_model
+        assert create_summarization.call_args.args[1] is startup._backend
 
     async def test_force_noops_when_nothing_old_enough(self) -> None:
         """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""
@@ -727,6 +944,7 @@ class TestSdkContractGuards:
             "_acreate_summary",
             "_offload_to_backend",
             "_aoffload_to_backend",
+            "_get_session_id",
         ):
             assert callable(getattr(SummarizationMiddleware, name, None)), name
 

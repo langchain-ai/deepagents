@@ -82,7 +82,13 @@
 │                 └─►C12: RemoteAgent────┘ (HTTP+SSE on 127.0.0.1)    │
 │                     (client/remote_client.py)                        │
 │                            │                                         │
-│                     C3: Agent Engine (server_graph.py)               │
+│                 ┌──────────┴───────────┐                             │
+│                 ▼                      ▼                             │
+│       C18: Offload HTTP Boundary  C3: Agent Engine                  │
+│       (custom route + operation)  (server_graph.py)                 │
+│                 │                      │                             │
+│                 └──────────┬───────────┘                             │
+│                            │                                         │
 │                     (create_cli_agent, deepagents SDK)               │
 │                            │                                         │
 │  User Prompt ──────────────┘                                         │
@@ -138,6 +144,7 @@
 | C15 | LocalContext Middleware      | Runs a bash detection script via backend; injects git/project/env context into system prompt each turn              | framework-controlled | Yes⁶     | `local_context.LocalContextMiddleware.before_agent`, `local_context.build_detect_script`          |
 | C16 | Custom Subagent Loader      | Reads `{dir}/{name}/AGENTS.md` YAML frontmatter from `.deepagents/agents/` and project `.agents/` directories      | user-controlled      | No       | `subagents.list_subagents`, `subagents._parse_subagent_file`                                      |
 | C17 | Model Config Loader         | Resolves model provider, supports `class_path` for arbitrary `BaseChatModel` instantiation via `importlib`          | user-controlled      | N/A      | `config.create_model`, `config._create_model_from_class`, `model_config.ModelConfig.load`         |
+| C18 | Server Offload Boundary     | Custom HTTP route registered with LangGraph's route-auth layer; reads thread state, runs the agent's shared compaction/hooks/backend, and commits a state-only result plus cost | framework-controlled | Yes for built-in graph⁷ | `offload_api.offload`, `offload_api._execute_offload`, `offload_middleware.OffloadOperation.execute` |
 
 **Notes:**
 1. `http_request` and `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
@@ -146,6 +153,7 @@
 4. Sandbox mode requires explicit `--sandbox` CLI flag.
 5. Both TUI and non-interactive modes now always spawn a local LangGraph dev server and connect via `RemoteAgent`.
 6. `LocalContextMiddleware` is added whenever `LocalShellBackend` or an `_AsyncExecutableBackend` is in use (`agent.py:create_cli_agent`).
+7. Custom graph references do not receive dcode's HTTP app and use the compatibility seeded-tool path instead.
 
 ---
 
@@ -183,7 +191,8 @@
 #### DC5: Offloaded Conversation History
 
 - **Fields**: Timestamped, formatted conversation messages written by `offload.offload_messages_to_backend`.
-- **Storage**: Sandbox backend filesystem at path `/conversation_history/{thread_id}.md` where `thread_id` is a UUID7 (via `sessions.generate_thread_id`).
+- **Producers**: Three paths write this data — automatic trigger-based compaction, the model-initiated `compact_conversation` tool (HITL-gated, see TB2), and the explicit `/offload` command. On the built-in server the last runs behind C18, which reads checkpoint state and writes the archive without entering the tool-approval path. Only the *forced* paths (`/offload`, whether through C18 or the seeded compatibility call) wrap the backend in `offload_middleware._ArchiveReadGuard`, which fails closed rather than truncating existing history when its prerequisite read fails; the automatic and model-initiated paths write through the raw backend on the SDK's own code path. The guard is applied per write site rather than by the backend's type, so a new write site does not inherit it — see the `_guarded_backend()` call sites.
+- **Storage**: Sandbox backend filesystem at path `/conversation_history/session_{uuid4hex}.md`. The leaf is the *summarization session* id (`SummarizationMiddleware._get_history_path`), not the thread id: it is minted per summarization session and persisted under `_summarization_session_id` so later compactions append to the same file. One thread can therefore own several archives.
 - **Access**: Accessible within the sandbox session; depends on provider access controls.
 - **Encryption**: Depends on sandbox provider storage backend.
 - **Retention**: Sandbox session lifetime (destroyed when sandbox is deleted).
@@ -222,6 +231,10 @@
 - **Outside**: Once the user clicks "approve" (interactive) or a command passes the allow-list check (non-interactive), the tool executes with no further framework-level gating.
 - **Crossing mechanism**: LangGraph HITL interrupt routed through `RemoteAgent` SSE stream.
 - **Key note**: `auto_approve` mode bypasses all HITL approval prompts while still displaying Unicode/URL warnings.
+- **Key note**: This boundary gates the *model-initiated* `compact_conversation` tool. Whether the explicit `/offload` command crosses it depends on the agent:
+  - **Built-in server-backed agent**: `/offload` does *not* cross this boundary. C18 invokes the agent's shared compaction service directly, with no tool node or synthetic message; the slash command is the authorization. The operation still dispatches `PreCompact` and `PreToolUse` against an in-memory forced call. Hooks may veto or interrupt, and the TUI returns opaque hook replies over the operation protocol. A `PreToolUse` `ask` decision cannot prompt on this path — the operation transport carries hook invocations, not HITL review requests, and `interrupt()` requires a Pregel task — so `_ask_permission_via_hitl` converts it into a deny carrying that reason. `ask` is therefore fail-closed here, not an approval prompt. The archive write reaches `backend.awrite()` without traversing tool approval. See DF25 and DF26.
+  - **Local in-process `Pregel` agent (including ACP mode)**: `/offload` *does* cross this boundary. `app._drive_local_seeded_compaction` seeds a `compact_conversation` tool call through the agent's own HITL-gated `ToolNode`, and the **client approves the resulting interrupt itself** — that self-approval is the trust decision on this path, scoped to exactly one forced `compact_conversation` call keyed on the seeded call id. Every other tool requested during that run is rejected by the compaction middleware independently of HITL configuration.
+- **Key note**: Only the *pre* hook events fire for `/offload` through C18. `PostToolUse`/`PostToolUseFailure`, which `ServerHooksMiddleware` records in `awrap_tool_call` and dispatches from `_before_model` via `_maybe_post_tool_use` on the next model turn, do not fire: there is no tool node to record the pending entry, and no following model turn to drain it. Likewise an allowing `PreToolUse` hook's `additionalContext` is discarded (logged, not injected): there is no tool result to carry it.
 
 #### TB3: Tool Result → LLM Context
 
@@ -251,7 +264,8 @@
 
 - **Inside**: Server bound to `127.0.0.1` by default; `client/launch/server.py:_DEFAULT_HOST = "127.0.0.1"`. `RemoteAgent` only connects to the URL returned by `ServerProcess.url`. Server is ephemeral — started at session start, stopped at session end. Binds a free ephemeral port by default (`client/launch/server.py:_EPHEMERAL_PORT`); an explicit port is honored but still falls back to a free port if occupied.
 - **Outside**: `LANGGRAPH_AUTH_TYPE=noop` disables all LangGraph server authentication. Any process on localhost that discovers the port can submit requests, read thread state, or inject messages.
-- **Crossing mechanism**: HTTP POST/GET to `http://127.0.0.1:{port}` using `langgraph.pregel.remote.RemoteGraph`.
+- **Crossing mechanism**: HTTP POST/GET to `http://127.0.0.1:{port}` using `langgraph.pregel.remote.RemoteGraph` for graph operations and the same configured HTTP client for C18.
+- **Key note**: The default built-in `graph_ref` registers one `agent` graph plus the C18 custom HTTP app. A custom `graph_ref` registers only its graph and therefore falls back to the seeded-tool compatibility path. C18 accepts operation identity, model/hook context, and opaque hook replies; it does not accept messages, checkpoint identifiers, graph names, or state updates. The server reads and hydrates checkpoint messages, rejects active/pending/changed threads, and refuses any operation update containing the `messages` channel. Its final thread-state update is state-only and targets the latest checkpoint, so it cannot branch from a stale checkpoint and hide concurrently appended messages. `offload_api._execute_offload` and `client.remote_client.RemoteAgent.aoffload` enforce these constraints.
 
 #### TB11: Config File → Code Execution
 
@@ -291,7 +305,9 @@
 | DF22 | C14 Async Config | C3 Agent | AsyncSubAgent specs (URL, graph_id, headers) from config.toml | — | None | TOML parse + dict |
 | DF23 | C9 Config    | C17 Model Config | `class_path` string from `config.toml` | —              | TB11             | TOML parse → importlib |
 | DF24 | C5 MCP Config | MCP Subprocess | `env` dict from `.mcp.json` forwarded to stdio subprocess | DC1 | TB4 | subprocess environment |
-| DF25 | C3 Agent     | C7 Sandbox   | Conversation messages for offload             | DC5            | TB6              | `backend.awrite()`     |
+| DF25 | C3 Agent, C18 Server Offload Boundary | C7 Sandbox | Conversation messages for offload | DC5 | TB6 | `backend.awrite()` |
+| DF26 | C12 RemoteAgent | C18 Server Offload Boundary | Thread ID, operation identity, model/hook context, opaque hook replies; typed result or hook request | — | TB10 | HTTP+JSON (localhost) |
+| DF27 | C18 Server Offload Boundary | C8 Sessions | Checkpoint message read; summarization event and additive cost update (never a messages write) | DC2 | None | In-process LangGraph SDK |
 
 ### Flow Details
 
@@ -342,7 +358,7 @@
 | T3  | DF7       | —              | Unicode-homoglyph URL in LLM-generated tool args deceives user during approval              | TB2      | Low      | Disproven  | `unicode_security.check_url_safety`, `agent._format_fetch_url_description` |
 | T4  | DF5, DF9  | —              | Auto-approve mode bypasses all HITL gates; any LLM-initiated tool call executes             | TB2      | Low      | Verified   | `agent.create_cli_agent` (`auto_approve` param), `agent._add_interrupt_on` |
 | T5  | DF13, DF14| DC2            | Local SQLite checkpoint file tampered with to inject adversarial content into future LLM context | None | Low   | Unverified | `sessions.get_db_path`                                                 |
-| T6  | DF3, DF4  | DC2            | Unauthenticated LangGraph dev server on localhost can be accessed by any local process     | TB10     | Medium   | Verified   | `server._build_server_env`, `server._DEFAULT_HOST`                    |
+| T6  | DF3, DF4, DF26 | DC2       | Unauthenticated LangGraph dev server on localhost can be accessed by any local process     | TB10     | Medium   | Verified   | `server._build_server_env`, `server._DEFAULT_HOST`, `offload_api.app` |
 | T7  | DF19, DF20| DC3            | Makefile or project file content injected into system prompt via LocalContextMiddleware    | TB9      | Low      | Verified   | `local_context._section_makefile`, `local_context.LocalContextMiddleware._get_modified_request` |
 | T8  | DF21      | DC3            | Custom subagent AGENTS.md body used verbatim as system_prompt without content validation   | None     | Low      | Verified   | `subagents._parse_subagent_file`, `agent.create_cli_agent`            |
 | T9  | DF23      | —              | `class_path` in config.toml triggers arbitrary Python code execution via `importlib.import_module()` | TB11 | Low | Verified | `config._create_model_from_class`, `model_config.ProviderConfig`      |
@@ -385,8 +401,8 @@
 
 #### T6: Unauthenticated LangGraph Dev Server on Localhost
 
-- **Flow**: DF3/DF4 (CLI ↔ LangGraph dev server)
-- **Description**: The CLI spawns a `langgraph dev` server subprocess with `LANGGRAPH_AUTH_TYPE=noop` (`client/launch/server.py:_build_server_env`). This disables all server-side authentication. The server binds to `127.0.0.1:{port}` (a free ephemeral port by default, so it no longer squats the well-known `langgraph dev` port 2024). Any local process that discovers the port can: send arbitrary inputs to the running agent thread, read the agent's conversation state (including tool results that may contain file contents or secrets), inject messages into the conversation history, or trigger state updates. The server is ephemeral — it lives only for the duration of the CLI session — but this is the entire attack window. Port discovery is feasible via localhost port scanning or by reading `/proc/{pid}/cmdline` which contains the `--port` argument.
+- **Flow**: DF3/DF4/DF26 (CLI ↔ LangGraph dev server)
+- **Description**: The CLI spawns a `langgraph dev` server subprocess with `LANGGRAPH_AUTH_TYPE=noop` (`client/launch/server.py:_build_server_env`). This disables all server-side authentication. The server binds to `127.0.0.1:{port}` (a free ephemeral port by default, so it no longer squats the well-known `langgraph dev` port 2024). Any local process that discovers the port can send inputs, read conversation state (including tool results that may contain file contents or secrets), inject messages, trigger state updates, or request server-owned offload for a known thread. The offload route does not accept conversation state and cannot write `messages`, so it adds model/archive work but not the client-driven message seeding the built-in path no longer uses. The server is ephemeral — it lives only for the duration of the CLI session — but this is the entire attack window. Port discovery is feasible via localhost port scanning or by reading `/proc/{pid}/cmdline` which contains the `--port` argument.
 - **Preconditions**: (1) Attacker has a local process running as the same user (or as root); (2) Attacker discovers the server port (port scan on localhost, or reads process arguments).
 
 #### T7: LocalContextMiddleware Injects Host File Contents into System Prompt
@@ -458,6 +474,7 @@
 | Configuration         | DF10, DF12, DF15, DF23| T9, T10, T12, T14  | Dotenv shell-env precedence; TOML schema; MCP schema + allow/deny lists; JSON structure check; `class_path` format check; project-`.env` denylist for the Auto classifier model | User | Project `.env` can set shell startup-hook vars; `class_path` executes module code before type check; MCP env dict unfiltered; Auto classifier strength is a user choice with no floor enforced (T14) |
 | Session restore       | DF14                  | T5            | OS file permissions; SQLite                                                | Project        | Unencrypted at rest                                                                           |
 | Server IPC (env vars) | DF18                  | T6            | `ServerConfig` serialization; parent env passed to child                   | Project        | Provider API keys flow to server subprocess; system prompt in env                            |
+| Offload operation     | DF26, DF27            | T6            | Per-field request schema on consumed context keys; idle/pending/checkpoint checks; state-only update typed to permitted channels; messages writes rejected | Project | `context.model`/`model_params`/`profile_overrides` are type-checked but their values flow to `config.create_model` (see C17/TB11 for `class_path`); unknown context keys pass through by design; local built-in route relies on loopback and `noop` auth; custom deployments own route auth and thread authorization |
 | Host environment      | DF19, DF20            | T7            | Static script; exit code check; 30s timeout                                | Shared         | Makefile content injected into system prompt without sanitization                            |
 | Custom subagents (FS) | DF21                  | T8            | `yaml.safe_load`; HITL on `task` tool                                      | User           | Subagent body text not content-filtered                                                      |
 | Async subagent config | DF22                  | None direct   | TOML parse; type validation in `load_async_subagents`                      | User           | URL and headers for remote subagents are user-controlled; no URL validation                 |
@@ -521,4 +538,5 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | 2026-07-28 | manual update                      | Extended the out-of-scope hooks row for plugin-contributed hooks: enabled plugins may supply `hooks/hooks.json`, gated by install plus enablement rather than workspace trust, with each handler's environment overlaid only by its own plugin path variables |
 | 2026-08-03 | manual update                      | Added T14 (a weaker Auto classifier model weakens action review) under TB2, covering the selectable classifier (`--auto-classifier-model`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, `[models].auto_classifier`, `/auto model`), its restriction to trusted config surfaces via `config._PROJECT_DOTENV_DENIED_ENV_KEYS`, and its fail-closed construction behavior (deny, then latch to human approval; never fall back to the main model). Extended the "LLM output" and "Configuration" input-coverage rows with T14 |
 | 2026-08-04 | manual update                      | Extended T14 for the configurable Auto classifier review deadline (`DEEPAGENTS_CODE_AUTO_CLASSIFIER_TIMEOUT`, `[models].auto_classifier_timeout`): bounded by `config_manifest.resolve_auto_classifier_timeout` between a floor and ceiling so the deadline cannot be removed, denied from a project `.env` via `config._PROJECT_DOTENV_DENIED_ENV_KEYS`, and fail-closed on expiry |
+| 2026-08-17 | langster-threat-model (diff)       | Replaced the client-driven offload graph lifecycle with C18, a server-owned custom HTTP boundary. Updated the architecture, DC5, TB2, TB10, DF25-DF27, T6, and input coverage. The route now owns checkpoint hydration, shared compaction/hooks/backend selection, state-only persistence typed to permitted channels, and cost rollback; the client sends no graph or checkpoint state. The built-in path no longer replays client-authored messages; the seeded compatibility path (custom graphs, older servers, version skew, failed capability probe) retains that surface, as TB2 and DF25 record. Recorded that `PreToolUse` `ask` is fail-closed (converted to a deny) on this path because the operation transport carries no HITL channel; no new threat was identified. |
 | 2026-08-17 | manual update                      | Extended T14 for `ask_user` question text as a classifier injection source: the receipt attests display and answer, not content, so a question claiming prior or blanket authorization is untrusted content; recorded the `_CLASSIFIER_POLICY` clauses that keep a paired question to an action/target description matched against canonical arguments. Narrowed the T14 "deterministic allow/deny" guard wording, which overstated the deny side: deterministic denies do not cover the Deny categories, and an affirmative classifier allow is not re-checked downstream |

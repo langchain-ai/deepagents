@@ -34,15 +34,17 @@ from __future__ import annotations
 import logging
 import math
 import os
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, replace
+from enum import Enum, StrEnum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from deepagents_code import _env_vars
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
+
+    from deepagents_code.configuration.resolver import ResolvedValue
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +202,14 @@ class OptionKind(Enum):
     """User-defined table parsed by a dedicated loader; not scalar-coerced."""
 
 
+class MergeStrategy(StrEnum):
+    """How valid provider values for one manifest option compose."""
+
+    REPLACE = "replace"
+    UNION = "union"
+    DEEP_MERGE = "deep_merge"
+
+
 _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.BOOL: "bool",
     OptionKind.BOOL_MODE_DEFAULT: "bool",
@@ -327,6 +337,9 @@ class ConfigOption:
     empty_env_is_false: bool = False
     """Whether an explicitly present empty env value disables a bool option."""
 
+    merge_strategy: MergeStrategy = MergeStrategy.REPLACE
+    """How provider values compose after each tier has coerced its own input."""
+
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
 
@@ -361,6 +374,12 @@ class ConfigOption:
             OptionKind.BOOL_MODE_DEFAULT,
         }:
             msg = f"{self.key}: empty_env_is_false requires a bool option kind"
+            raise TypeError(msg)
+        if (
+            self.merge_strategy is not MergeStrategy.REPLACE
+            and self.kind is not OptionKind.STRUCTURED
+        ):
+            msg = f"{self.key}: accumulating merge strategies require STRUCTURED"
             raise TypeError(msg)
 
         default = self.default
@@ -625,13 +644,13 @@ def _resolve_effective_theme(
     return user if user is not None else (theme.DEFAULT_THEME, "default")
 
 
-def resolve_scalar(
+def _resolve_scalar_legacy(
     option: ConfigOption,
     *,
     toml_data: Mapping[str, Any],
     managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[Any, str]:
-    """Resolve an option through managed, environment, user, and default tiers.
+    """Resolve through the pre-ranked engine retained for shadow comparison.
 
     Resolution order is managed config, then the environment, then user
     `config.toml`, then the typed default. An invalid value at one tier falls
@@ -767,6 +786,245 @@ def resolve_scalar(
         return ("DEBUG" if is_env_truthy(DEBUG) else "INFO"), "default"
 
     return option.default, "default"
+
+
+def _ranked_theme_result(value: object, source: str) -> ResolvedValue[object]:
+    """Attach ranked metadata to one already-parsed theme result.
+
+    The parser cannot run twice in shadow mode because its warnings are part of
+    the public behavior net. This helper still exercises rank selection and
+    source rendering independently from the legacy precedence branches.
+
+    Returns:
+        A rank-keyed theme result.
+
+    Raises:
+        RuntimeError: If the selected theme tier is unexpectedly unset.
+    """
+    from deepagents_code.configuration.resolver import (
+        DEFAULT_RANK,
+        ENVIRONMENT_RANK,
+        MANAGED_RANK,
+        USER_RANK,
+        RankedProviderValue,
+        resolve_ranked,
+    )
+    from deepagents_code.configuration.types import (
+        Found,
+        ProviderHealth,
+        ProviderStatus,
+        Unset,
+    )
+
+    if source.startswith("managed config"):
+        rank = MANAGED_RANK
+    elif source.startswith("env ("):
+        rank = ENVIRONMENT_RANK
+    elif source.startswith("config.toml"):
+        rank = USER_RANK
+    else:
+        rank = DEFAULT_RANK
+    statuses = {
+        MANAGED_RANK: ProviderStatus("managed config", None, ProviderHealth.OK),
+        ENVIRONMENT_RANK: ProviderStatus("environment", None, ProviderHealth.OK),
+        USER_RANK: ProviderStatus("config.toml", None, ProviderHealth.OK),
+        DEFAULT_RANK: ProviderStatus("default", None, ProviderHealth.OK),
+    }
+    providers = [
+        RankedProviderValue(
+            candidate,
+            candidate != ENVIRONMENT_RANK,
+            replace(statuses[candidate], name=source)
+            if candidate == rank
+            else statuses[candidate],
+            Found(value) if candidate == rank else Unset(),
+        )
+        for candidate in statuses
+    ]
+    resolved = resolve_ranked(providers)
+    if resolved is None:
+        msg = "selected theme provider was unset"
+        raise RuntimeError(msg)
+    return resolved
+
+
+def resolve_ranked_scalar(
+    option: ConfigOption,
+    *,
+    toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any] | None = None,
+) -> ResolvedValue[object]:
+    """Resolve one option through the ranked durable-mask engine.
+
+    This is the typed migration seam for consumers. Until the final engine
+    flip, `resolve_scalar` still returns the legacy engine's result and asserts
+    this result matches it.
+
+    Args:
+        option: Manifest option to resolve.
+        toml_data: Parsed user `config.toml` mapping.
+        managed_toml_data: Parsed managed mapping, or the process snapshot when
+            omitted.
+
+    Returns:
+        A rank-keyed `ResolvedValue`.
+
+    Raises:
+        RuntimeError: If the always-present default provider is unexpectedly unset.
+    """
+    from deepagents_code.configuration.providers import (
+        ranked_default_value,
+        ranked_environment_value,
+        ranked_toml_value,
+    )
+    from deepagents_code.configuration.resolver import (
+        DEFAULT_RANK,
+        ENVIRONMENT_RANK,
+        MANAGED_RANK,
+        USER_RANK,
+        RankedProviderValue,
+        resolve_ranked,
+    )
+    from deepagents_code.configuration.types import (
+        Found,
+        ProviderHealth,
+        ProviderStatus,
+    )
+
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
+    )
+    if option.kind is OptionKind.THEME_DELEGATE:
+        # Theme resolution includes registry aliases and terminal mappings. It
+        # becomes a first-class provider read in the dedicated theme migration;
+        # for shadow mode, retain that exact parser and attach rank metadata.
+        value, source = _resolve_effective_theme(toml_data, managed_data)
+        return _ranked_theme_result(value, source)
+
+    managed_status = ProviderStatus("managed config", None, ProviderHealth.OK)
+    user_status = ProviderStatus("config.toml", None, ProviderHealth.OK)
+    providers = (
+        ranked_toml_value(
+            option,
+            managed_data,
+            rank=MANAGED_RANK,
+            durable=True,
+            status=managed_status,
+        ),
+        ranked_environment_value(option, os.environ, rank=ENVIRONMENT_RANK),
+        ranked_toml_value(
+            option,
+            toml_data,
+            rank=USER_RANK,
+            durable=True,
+            status=user_status,
+        ),
+        ranked_default_value(option, rank=DEFAULT_RANK),
+    )
+    resolved = resolve_ranked(providers, strategy=option.merge_strategy.value)
+    if resolved is None:
+        fallback = RankedProviderValue(
+            DEFAULT_RANK,
+            True,
+            ProviderStatus("default", None, ProviderHealth.OK),
+            Found(option.default),
+        )
+        resolved = resolve_ranked((fallback,))
+    if resolved is None:
+        msg = f"fallback provider was unset for {option.key}"
+        raise RuntimeError(msg)
+    return resolved
+
+
+def _ranked_source(resolved: ResolvedValue[object]) -> str:
+    """Render rank-keyed provenance through provider display metadata.
+
+    Returns:
+        The compatibility source label for `resolve_scalar`.
+    """
+    return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
+
+
+def _shadow_values_equal(legacy: object, ranked: object) -> bool:
+    """Compare shadow values while treating IEEE NaN as stable.
+
+    Returns:
+        Whether both engines produced observably equal values.
+    """
+    if isinstance(legacy, float) and isinstance(ranked, float):
+        return legacy == ranked or (math.isnan(legacy) and math.isnan(ranked))
+    if isinstance(legacy, dict) and isinstance(ranked, dict):
+        legacy_dict = cast("dict[object, object]", legacy)
+        ranked_dict = cast("dict[object, object]", ranked)
+        return legacy_dict.keys() == ranked_dict.keys() and all(
+            _shadow_values_equal(legacy_dict[key], ranked_dict[key])
+            for key in legacy_dict
+        )
+    if isinstance(legacy, (list, tuple)) and isinstance(ranked, (list, tuple)):
+        if len(legacy) != len(ranked):
+            return False
+        for left, right in zip(legacy, ranked, strict=True):
+            if not _shadow_values_equal(left, right):
+                return False
+        return True
+    return legacy == ranked
+
+
+def resolve_scalar(
+    option: ConfigOption,
+    *,
+    toml_data: Mapping[str, Any],
+    managed_toml_data: Mapping[str, Any] | None = None,
+) -> tuple[Any, str]:
+    """Resolve an option while asserting parity with the ranked shadow engine.
+
+    The public-ish signature and legacy return shape stay stable during the RFC
+    migration. Provider reads in the shadow engine do not emit diagnostics, so
+    callers observe warnings from the authoritative legacy path exactly once.
+
+    Args:
+        option: Manifest option to resolve.
+        toml_data: Parsed user `config.toml` mapping.
+        managed_toml_data: Parsed managed TOML mapping. The process snapshot is
+            used when omitted; pass an empty mapping for an isolated user source.
+
+    Returns:
+        `(value, source)` from the legacy engine after a ranked parity assertion.
+
+    Raises:
+        AssertionError: If the shadow engine changes the value or source.
+    """
+    legacy = _resolve_scalar_legacy(
+        option,
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
+    )
+    if option.kind is OptionKind.THEME_DELEGATE:
+        # Running the theme parser twice would duplicate its user-visible
+        # warnings. The theme callsite commit moves that parser into a provider;
+        # until then, shadow its already-parsed result with independent rank
+        # selection rather than re-coercing the same input.
+        ranked_theme = _ranked_theme_result(*legacy)
+        if not _shadow_values_equal(legacy[0], ranked_theme.value):
+            msg = f"ranked config value mismatch for {option.key}"
+            raise AssertionError(msg)
+        if legacy[1] != _ranked_source(ranked_theme):
+            msg = f"ranked config source mismatch for {option.key}"
+            raise AssertionError(msg)
+        return legacy
+
+    ranked = resolve_ranked_scalar(
+        option,
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
+    )
+    if not _shadow_values_equal(legacy[0], ranked.value):
+        msg = f"ranked config value mismatch for {option.key}"
+        raise AssertionError(msg)
+    if legacy[1] != _ranked_source(ranked):
+        msg = f"ranked config source mismatch for {option.key}"
+        raise AssertionError(msg)
+    return legacy
 
 
 def resolve_interpreter_kwargs(
@@ -1405,6 +1663,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("themes",),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     ConfigOption(
         key="display.terminal_themes",
@@ -1412,6 +1671,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Per-`TERM_PROGRAM` default theme, written by the theme picker.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("ui", "terminal_themes"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     ConfigOption(
         key="display.show_header",
@@ -1602,6 +1862,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("models", "providers"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
         # A provider table's `params` are forwarded verbatim to the constructor
         # and can carry credentials, so the value is never printed — `config`
         # reports source and presence only.
@@ -1644,6 +1905,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Remote LangGraph deployments exposed to the agent as subagents.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("async_subagents",),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
         # A subagent `headers` table can carry `Authorization` tokens, so the
         # value is never printed — `config` reports source and presence only.
         redacted=True,
@@ -1668,6 +1930,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("sandboxes", "providers"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
         # A provider table's `params` are forwarded verbatim to the constructor
         # and can carry credentials, so the value is never printed — `config`
         # reports source and presence only.
@@ -1918,6 +2181,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Per-column visibility for the threads list.",
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
@@ -2013,6 +2277,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_project_servers"),
+        merge_strategy=MergeStrategy.UNION,
     ),
     # Read by `mcp_disabled` (the server viewer's disable toggle) rather than by
     # `load_mcp_server_trust_lists`, but it is security-load-bearing all the
@@ -2028,6 +2293,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "disabled_servers"),
+        merge_strategy=MergeStrategy.UNION,
     ),
     # --- Plugins --------------------------------------------------------
     ConfigOption(

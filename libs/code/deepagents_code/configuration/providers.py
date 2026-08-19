@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, assert_never, cast
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, assert_never, cast
 
 from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.resolver import RankedProviderValue
 
 from deepagents_code.configuration.types import (
     Found,
@@ -20,6 +22,7 @@ from deepagents_code.configuration.types import (
     ProviderResult,
     ProviderStatus,
     TomlSnapshot,
+    Unset,
 )
 
 
@@ -208,6 +211,123 @@ def coerce_toml_value(
             return Invalid(f"Ignoring {label} in {source}: {exc}")
 
     return Invalid(f"Ignoring {label}={raw!r} in {source} (expected {option.type})")
+
+
+def ranked_toml_value(
+    option: ConfigOption,
+    data: Mapping[str, Any],
+    *,
+    rank: int,
+    durable: bool,
+    status: ProviderStatus,
+) -> RankedProviderValue[object]:
+    """Read and coerce one option from a parsed TOML provider.
+
+    Args:
+        option: Manifest option to read.
+        data: Parsed provider table.
+        rank: Numeric precedence rank.
+        durable: Whether this tier masks lower-priority ephemeral tiers.
+        status: Provider health and display metadata.
+
+    Returns:
+        Ranked `Found`, `Unset`, or `Invalid` provider result.
+    """
+    from deepagents_code.config_manifest import toml_lookup
+    from deepagents_code.configuration.resolver import RankedProviderValue
+
+    if not status.usable or not option.toml_keys:
+        result: ProviderResult[object] = Unset()
+    else:
+        found, raw = toml_lookup(data, option.toml_keys, source=status.name)
+        result = (
+            coerce_toml_value(option, raw, source=status.name) if found else Unset()
+        )
+    return RankedProviderValue(rank, durable, status, result)
+
+
+def ranked_environment_value(
+    option: ConfigOption,
+    environ: Mapping[str, str],
+    *,
+    rank: int,
+) -> RankedProviderValue[object]:
+    """Read and coerce one option from the process-environment domain.
+
+    Args:
+        option: Manifest option to read.
+        environ: Environment mapping, normally `os.environ`.
+        rank: Numeric precedence rank.
+
+    Returns:
+        Ranked provider result. Fallback names remain one provider tier.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+
+    names: list[str] = []
+    if option.env_var:
+        canonical = option.env_var
+        prefixed = (
+            canonical
+            if canonical.startswith("DEEPAGENTS_CODE_")
+            else f"DEEPAGENTS_CODE_{canonical}"
+        )
+        names.append(prefixed if prefixed in environ else canonical)
+    names.extend(option.fallback_env_vars)
+
+    status = ProviderStatus("environment", None, ProviderHealth.OK)
+    last_invalid: Invalid | None = None
+    for name in names:
+        raw = environ.get(name)
+        if raw is None:
+            continue
+        status = replace(status, name=f"env ({name})")
+        if not raw.strip():
+            if option.empty_env_is_false:
+                return RankedProviderValue(rank, False, status, Found(False))
+            continue
+        result = coerce_environment_value(option, raw, name)
+        if isinstance(result, Found):
+            return RankedProviderValue(rank, False, status, result)
+        if isinstance(result, Invalid):
+            last_invalid = result
+    return RankedProviderValue(rank, False, status, last_invalid or Unset())
+
+
+def ranked_default_value(
+    option: ConfigOption, *, rank: int
+) -> RankedProviderValue[object]:
+    """Produce an option's typed or mode-dependent default provider result.
+
+    Args:
+        option: Manifest option whose default should be produced.
+        rank: Numeric precedence rank.
+
+    Returns:
+        Durable ranked default result.
+    """
+    from deepagents_code.config_manifest import OptionKind
+    from deepagents_code.configuration.resolver import RankedProviderValue
+
+    if option.kind is OptionKind.BOOL_MODE_DEFAULT:
+        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
+
+        value: object = is_env_truthy(DEBUG) or is_env_truthy(EXPERIMENTAL)
+    elif option.kind is OptionKind.LOG_LEVEL_DELEGATE:
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
+
+        value = "DEBUG" if is_env_truthy(DEBUG) else "INFO"
+    elif option.kind is OptionKind.THEME_DELEGATE:
+        from deepagents_code import theme
+
+        value = theme.DEFAULT_THEME
+    elif option.kind is OptionKind.STRUCTURED:
+        status = ProviderStatus("default", None, ProviderHealth.OK)
+        return RankedProviderValue(rank, True, status, Unset())
+    else:
+        value = option.default
+    status = ProviderStatus("default", None, ProviderHealth.OK)
+    return RankedProviderValue(rank, True, status, Found(value))
 
 
 @dataclass(frozen=True, slots=True)

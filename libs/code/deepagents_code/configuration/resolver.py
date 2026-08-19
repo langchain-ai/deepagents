@@ -1,17 +1,295 @@
-"""Pure deep-merge logic for layered TOML configuration.
+"""Pure ranked resolution and deep-merge logic for layered configuration.
 
-Precedence itself lives in `service.ConfigSources.merged` and in
-`config_manifest.resolve_scalar`; this module only composes two tables once a
-caller has decided which one outranks the other.
+The ranked engine is intentionally unaware of the manifest, UI, model, theme,
+environment, or filesystem. Providers coerce their own domains before handing
+`Found`, `Unset`, or `Invalid` results to this module. Human-readable source
+labels likewise remain in `ProviderStatus`; provenance and health here use only
+numeric ranks.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
+
+from deepagents_code.configuration.types import (
+    Found,
+    ProviderResult,
+    ProviderStatus,
+)
+
+MANAGED_RANK = 200
+"""Managed policy rank; lower numeric ranks have stronger precedence."""
+
+CLI_RANK = 300
+"""Reserved seam for a future CLI provider; no CLI provider ships today."""
+
+ENVIRONMENT_RANK = 400
+"""Process-environment rank."""
+
+USER_RANK = 500
+"""User `config.toml` rank."""
+
+DEFAULT_RANK = 1000
+"""Typed manifest-default rank."""
+
+
+@dataclass(frozen=True, slots=True)
+class RankedProviderValue[T]:
+    """One provider's already-coerced result for an option."""
+
+    rank: int
+    durable: bool
+    status: ProviderStatus
+    result: ProviderResult[T]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedValue[T]:
+    """Resolved value with rank-keyed provenance and provider health."""
+
+    value: T
+    provenance: Mapping[int, frozenset[tuple[str, ...]]]
+    tier_health: Mapping[int, ProviderResult[T]]
+    provider_status: Mapping[int, ProviderStatus]
+    masked_ranks: frozenset[int] = frozenset()
+    selected_ranks: tuple[int, ...] = ()
+
+    @property
+    def ranks(self) -> tuple[int, ...]:
+        """Contributing ranks in precedence order."""
+        return self.selected_ranks or tuple(sorted(self.provenance))
+
+
+def resolve_ranked[T](
+    providers: Sequence[RankedProviderValue[T]],
+    *,
+    strategy: str = "replace",
+) -> ResolvedValue[T] | None:
+    """Resolve provider results by numeric rank and per-option merge strategy.
+
+    Lower ranks win. For replacement options, a `Found` from a durable tier
+    masks lower-precedence non-durable tiers. The mask is intentionally
+    directional: a persisted user value at rank 500 cannot retroactively hide
+    a higher-precedence environment value at rank 400.
+
+    Accumulating strategies combine tiers by definition, so they retain every
+    valid contribution. This preserves the existing fail-closed deny-list
+    unions and deep TOML composition; treating accumulation as replacement
+    would silently discard restrictions or sibling table leaves.
+
+    Args:
+        providers: Already-coerced provider results. Ranks must be unique.
+        strategy: `replace`, `union`, or `deep_merge`.
+
+    Returns:
+        A resolved value, or `None` when no provider returned `Found`.
+
+    Raises:
+        ValueError: If ranks repeat or `strategy` is unknown.
+    """
+    ordered = sorted(providers, key=lambda provider: provider.rank)
+    ranks = [provider.rank for provider in ordered]
+    if len(set(ranks)) != len(ranks):
+        msg = "ranked config providers must have unique ranks"
+        raise ValueError(msg)
+    if strategy not in {"replace", "union", "deep_merge"}:
+        msg = f"unknown config merge strategy: {strategy}"
+        raise ValueError(msg)
+
+    tier_health = MappingProxyType(
+        {provider.rank: provider.result for provider in ordered}
+    )
+    provider_status = MappingProxyType(
+        {provider.rank: provider.status for provider in ordered}
+    )
+    found = [provider for provider in ordered if isinstance(provider.result, Found)]
+    if not found:
+        return None
+    if strategy == "union":
+        return _resolve_ranked_union(found, tier_health, provider_status)
+    if strategy == "deep_merge":
+        return _resolve_ranked_deep_merge(found, tier_health, provider_status)
+
+    durable_ranks = tuple(provider.rank for provider in found if provider.durable)
+    masked = frozenset(
+        provider.rank
+        for provider in found
+        if not provider.durable
+        and any(durable_rank < provider.rank for durable_rank in durable_ranks)
+    )
+    winner = next(provider for provider in found if provider.rank not in masked)
+    return ResolvedValue(
+        _provider_value(winner),
+        MappingProxyType({winner.rank: frozenset({()})}),
+        tier_health,
+        provider_status,
+        masked,
+        (winner.rank,),
+    )
+
+
+def _resolve_ranked_union[T](
+    found: Sequence[RankedProviderValue[T]],
+    tier_health: Mapping[int, ProviderResult[T]],
+    provider_status: Mapping[int, ProviderStatus],
+) -> ResolvedValue[T]:
+    """Accumulate list-like providers from weakest to strongest rank.
+
+    Returns:
+        The union, or the highest-ranked replacement when a value is not list-like.
+    """
+    entries = [union_entries(_provider_value(provider)) for provider in found]
+    if any(value is None for value in entries):
+        winner = found[0]
+        return ResolvedValue(
+            _provider_value(winner),
+            MappingProxyType({winner.rank: frozenset({()})}),
+            tier_health,
+            provider_status,
+            selected_ranks=(winner.rank,),
+        )
+    union: list[Any] = []
+    for value in reversed(entries):
+        union = union_lists(union, cast("list[Any]", value))
+    provenance = MappingProxyType(
+        {provider.rank: frozenset({()}) for provider in found}
+    )
+    return ResolvedValue(
+        cast("T", union),
+        provenance,
+        tier_health,
+        provider_status,
+        selected_ranks=tuple(provider.rank for provider in found),
+    )
+
+
+def _resolve_ranked_deep_merge[T](
+    found: Sequence[RankedProviderValue[T]],
+    tier_health: Mapping[int, ProviderResult[T]],
+    provider_status: Mapping[int, ProviderStatus],
+) -> ResolvedValue[T]:
+    """Deep-merge mapping providers from weakest to strongest rank.
+
+    Returns:
+        The merged mapping, or the highest-ranked scalar replacement.
+    """
+    weakest = found[-1]
+    value = _provider_value(weakest)
+    if not isinstance(value, dict):
+        winner = found[0]
+        return ResolvedValue(
+            _provider_value(winner),
+            MappingProxyType({winner.rank: frozenset({()})}),
+            tier_health,
+            provider_status,
+            selected_ranks=(winner.rank,),
+        )
+    merged = deepcopy(cast("dict[str, Any]", value))
+    leaves = _ranked_leaf_provenance(merged, weakest.rank)
+    for provider in reversed(found[:-1]):
+        higher = _provider_value(provider)
+        if not isinstance(higher, dict):
+            return ResolvedValue(
+                higher,
+                MappingProxyType({provider.rank: frozenset({()})}),
+                tier_health,
+                provider_status,
+                selected_ranks=(provider.rank,),
+            )
+        merged, leaves = _merge_ranked_tables(
+            merged,
+            cast("dict[str, Any]", higher),
+            leaves,
+            provider.rank,
+        )
+    grouped: dict[int, set[tuple[str, ...]]] = {}
+    for path, rank in leaves.items():
+        grouped.setdefault(rank, set()).add(path)
+    provenance = MappingProxyType(
+        {rank: frozenset(paths) for rank, paths in grouped.items()}
+    )
+    return ResolvedValue(
+        cast("T", merged),
+        provenance,
+        tier_health,
+        provider_status,
+        selected_ranks=tuple(provider.rank for provider in found),
+    )
+
+
+def _merge_ranked_tables(
+    lower: dict[str, Any],
+    higher: dict[str, Any],
+    provenance: dict[tuple[str, ...], int],
+    higher_rank: int,
+    *,
+    prefix: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], dict[tuple[str, ...], int]]:
+    """Deep-merge two mappings while retaining tuple-path rank provenance.
+
+    Returns:
+        The merged table and tuple-path-to-rank provenance.
+    """
+    merged = deepcopy(lower)
+    ranked = dict(provenance)
+    for key, value in higher.items():
+        path = (*prefix, key)
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key], ranked = _merge_ranked_tables(
+                cast("dict[str, Any]", existing),
+                cast("dict[str, Any]", value),
+                ranked,
+                higher_rank,
+                prefix=path,
+            )
+            continue
+        merged[key] = deepcopy(value)
+        for leaf in tuple(ranked):
+            if leaf[: len(path)] == path:
+                ranked.pop(leaf)
+        ranked.update(_ranked_leaf_provenance(value, higher_rank, path))
+    return merged, ranked
+
+
+def _ranked_leaf_provenance(
+    value: object, rank: int, path: tuple[str, ...] = ()
+) -> dict[tuple[str, ...], int]:
+    """Attribute every leaf under `value` to a numeric provider rank.
+
+    Returns:
+        Tuple-path-to-rank provenance for every leaf.
+    """
+    if isinstance(value, dict):
+        if not value:
+            return {path: rank} if path else {}
+        result: dict[tuple[str, ...], int] = {}
+        for key, child in cast("dict[str, object]", value).items():
+            result.update(_ranked_leaf_provenance(child, rank, (*path, key)))
+        return result
+    return {path: rank}
+
+
+def _provider_value[T](provider: RankedProviderValue[T]) -> T:
+    """Narrow a provider known by the resolver to hold `Found`.
+
+    Returns:
+        The provider's coerced value.
+
+    Raises:
+        RuntimeError: If an internal accumulating resolver receives a non-found tier.
+    """
+    result = provider.result
+    if isinstance(result, Found):
+        return cast("T", result.value)
+    msg = f"rank {provider.rank} did not contain a found value"
+    raise RuntimeError(msg)
 
 
 def union_lists(lower: list[Any], higher: list[Any]) -> list[Any]:

@@ -2247,6 +2247,49 @@ class TestGoalCriteriaFallback:
         assert update["_pending_goal_rubric"] == "- salvaged criteria"
         fallback.invoke.assert_called_once()
 
+    def test_size_rejection_is_never_swallowed_by_the_fallback(self) -> None:
+        """A size rejection is deterministic, so the fallback cannot help.
+
+        `GoalStateSizeError` is a `ValueError`, which `_CRITERIA_FALLBACK_ERRORS`
+        would otherwise catch — logging a character-limit problem as a context
+        fault and re-asking with less context, which fails the same way while
+        the limit message never reaches the caller.
+        """
+        criteria = MagicMock()
+        criteria.invoke.side_effect = GoalStateSizeError(
+            label="Goal objective and criteria combined",
+            actual=12_500,
+            limit=12_000,
+        )
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(GoalStateSizeError, match="Remove at least 500"):
+            middleware.before_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+        fallback.invoke.assert_not_called()
+
+    async def test_async_size_rejection_is_never_swallowed_by_the_fallback(
+        self,
+    ) -> None:
+        criteria = MagicMock()
+        criteria.ainvoke = AsyncMock(
+            side_effect=GoalStateSizeError(
+                label="Goal objective and criteria combined",
+                actual=12_500,
+                limit=12_000,
+            )
+        )
+        fallback = self._fallback()
+        middleware = GoalCriteriaMiddleware(criteria, fallback)
+
+        with pytest.raises(GoalStateSizeError, match="Remove at least 500"):
+            await middleware.abefore_agent(
+                self._state(), TestGoalCriteriaMiddleware._runtime()
+            )
+        fallback.ainvoke.assert_not_awaited()
+
     def test_hitl_interrupt_is_never_swallowed_by_the_fallback(self) -> None:
         criteria = MagicMock()
         criteria.invoke.side_effect = GraphInterrupt(())

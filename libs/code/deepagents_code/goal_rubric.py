@@ -88,7 +88,10 @@ _CRITERIA_RESULT_LOG_LIMIT = 500
 _FALLBACK_RECURSION_LIMIT = 8
 # Failures from the context-enabled criteria agent that should degrade to
 # goal-only generation rather than surface as a hard error. `GraphInterrupt`
-# (HITL) is deliberately excluded so tool-approval pauses still propagate.
+# (HITL) is deliberately excluded so tool-approval pauses still propagate, and
+# `GoalStateSizeError` is re-raised at each call site: it is a `ValueError`, so
+# this tuple would otherwise catch a deterministic size rejection, log it as a
+# context fault, and spend the fallback on a request that fails the same way.
 _CRITERIA_FALLBACK_ERRORS: tuple[type[BaseException], ...] = (
     GraphRecursionError,
     NotImplementedError,
@@ -1333,6 +1336,11 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
 
         Returns:
             Pending-goal state updates, or `None` for a normal agent run.
+
+        Raises:
+            GoalStateSizeError: If the applied objective and criteria exceed the
+                notice budget. Re-raised past the goal-only fallback, which
+                cannot make oversized text fit.
         """
         value = state.get("goal_criteria_request")
         if value is None:
@@ -1341,6 +1349,10 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         child_input = self._input(request, state.get("messages", []))
         try:
             result = self._criteria_agent.invoke(child_input, context=runtime.context)
+        except GoalStateSizeError:
+            # Deterministic: less context cannot make the text fit, and the
+            # caller needs the limit message rather than a silent retry.
+            raise
         except _CRITERIA_FALLBACK_ERRORS:
             if self._fallback_agent is None:
                 raise
@@ -1373,6 +1385,11 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
 
         Returns:
             Pending-goal state updates, or `None` for a normal agent run.
+
+        Raises:
+            GoalStateSizeError: If the applied objective and criteria exceed the
+                notice budget. Re-raised past the goal-only fallback, which
+                cannot make oversized text fit.
         """
         value = state.get("goal_criteria_request")
         if value is None:
@@ -1383,6 +1400,10 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
             result = await self._criteria_agent.ainvoke(
                 child_input, context=runtime.context
             )
+        except GoalStateSizeError:
+            # Deterministic: less context cannot make the text fit, and the
+            # caller needs the limit message rather than a silent retry.
+            raise
         except _CRITERIA_FALLBACK_ERRORS:
             if self._fallback_agent is None:
                 raise

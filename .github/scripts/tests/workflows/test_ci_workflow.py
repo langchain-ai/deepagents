@@ -45,7 +45,9 @@ def _load_workflow(path: Path) -> dict[str, Any]:
 
 def _find_step(workflow: dict[str, Any], *, job: str, name: str) -> dict[str, Any]:
     """Return one named workflow step."""
-    matches = [step for step in workflow["jobs"][job]["steps"] if step.get("name") == name]
+    matches = [
+        step for step in workflow["jobs"][job]["steps"] if step.get("name") == name
+    ]
     assert len(matches) == 1, f"expected one {name!r} step, found {len(matches)}"
     return matches[0]
 
@@ -195,11 +197,15 @@ def test_non_release_pr_ripgrep_install_has_two_minute_timeout() -> None:
     assert "continue-on-error" not in step
     assert "timeout-minutes" not in step
 
-    upload = _find_step(
-        workflow, job="build", name="📤 Record ripgrep install timeout"
+    upload = _find_step(workflow, job="build", name="📤 Record ripgrep install timeout")
+    # Both the soft step (genuine timeout) and the strict step (bypassed
+    # release-PR failure) feed the same marker artifact to the comment workflow.
+    assert "steps.ripgrep-install.outputs.timed-out == 'true'" in upload["if"]
+    assert "steps.ripgrep-strict.outputs.timed-out == 'true'" in upload["if"]
+    assert (
+        upload["with"]["name"]
+        == "${{ steps.ripgrep-install.outputs.artifact || steps.ripgrep-strict.outputs.artifact }}"
     )
-    assert upload["if"] == "steps.ripgrep-install.outputs.timed-out == 'true'"
-    assert upload["with"]["name"] == "${{ steps.ripgrep-install.outputs.artifact }}"
 
 
 def test_only_two_ripgrep_install_steps_exist() -> None:
@@ -220,8 +226,16 @@ def _run_install_script(
     *,
     timeout_status: int,
     rg_available: bool = False,
+    apt_status: int | None = None,
+    bypass: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
-    """Execute the install step's `run:` body against stubbed binaries."""
+    """Execute the install step's `run:` body against stubbed binaries.
+
+    The soft step routes apt through `sudo timeout ... bash -c '...apt-get...'`,
+    so `timeout_status` drives its outcome. The strict step calls
+    `sudo apt-get ...` directly, so `apt_status` (when set) stubs `apt-get`
+    itself; `bypass` feeds the step's `BYPASS` env (the resolved PR label).
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
 
@@ -237,6 +251,8 @@ def _run_install_script(
     stub("timeout", f"exit {timeout_status}")
     stub("dpkg", "exit 0")
     stub("rg", "exit 0" if rg_available else "exit 127")
+    if apt_status is not None:
+        stub("apt-get", f"exit {apt_status}")
 
     output = tmp_path / "github-output"
     output.touch()
@@ -253,6 +269,7 @@ def _run_install_script(
         # Explicit, minimal environment: inheriting os.environ would let a
         # developer's BASH_ENV/SHELLOPTS leak into the script under test.
         env={
+            "BYPASS": bypass,
             "GITHUB_ENV": str(env_file),
             "GITHUB_OUTPUT": str(output),
             "MATRIX_OS": "ubuntu-latest",
@@ -337,15 +354,80 @@ def test_timeout_with_usable_ripgrep_is_not_reported(tmp_path: Path) -> None:
     assert EXPECTED_ENV in env_lines
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell script")
+@pytest.mark.parametrize(
+    ("bypass", "apt_status", "rg_available", "expected_status", "expect_env"),
+    [
+        # Unlabeled: any apt failure fails the job, ripgrep never promised.
+        ("", 1, False, 1, False),
+        ("", 100, False, 100, False),
+        # Labeled: a failed install is tolerated; without a usable `rg` the leg
+        # reports the timeout artifact and does not promise ripgrep to the tests.
+        ("true", 1, False, 0, False),
+        # Labeled but `rg` is actually present anyway: promise ripgrep, no warning.
+        ("true", 1, True, 0, True),
+    ],
+    ids=[
+        "unlabeled-fails",
+        "unlabeled-fails-100",
+        "labeled-bypasses",
+        "labeled-rg-present",
+    ],
+)
+def test_strict_ripgrep_install_bypass(
+    tmp_path: Path,
+    bypass: str,
+    apt_status: int,
+    rg_available: bool,
+    expected_status: int,
+    expect_env: bool,
+) -> None:
+    """The strict step fails on apt errors unless the PR carries the bypass label."""
+    workflow = _load_workflow(TEST_WORKFLOW)
+    step = _find_step(workflow, job="build", name=STRICT_STEP)
+    result, output_lines, env_lines = _run_install_script(
+        step["run"],
+        tmp_path,
+        timeout_status=0,
+        apt_status=apt_status,
+        rg_available=rg_available,
+        bypass=bypass,
+    )
+
+    assert result.returncode == expected_status
+    assert (EXPECTED_ENV in env_lines) is expect_env
+
+    timed_out = [line for line in output_lines if line.startswith("timed-out=")]
+    if expected_status == 0 and not expect_env:
+        # A bypassed failure with no usable rg reports the artifact for the
+        # comment workflow to pick up.
+        assert timed_out == ["timed-out=true"]
+        assert "::warning::" in result.stdout
+        assert f"artifact={ARTIFACT_PREFIX}libs-code-ubuntu-latest-3.14" in output_lines
+    elif expected_status != 0:
+        assert timed_out == []
+        assert "::error::" in result.stdout
+
+
 def test_release_and_non_pr_ripgrep_install_is_strict() -> None:
-    """Release PRs, pushes, and merge queues install ripgrep with no timeout."""
+    """Release runs install ripgrep with no soft timeout, and only bypass on a label.
+
+    The install itself is unbounded — the only `timeout` in the step is the
+    dpkg unwind that runs *after* a bypassed failure, never around the install.
+    The bypass is read from the live PR label, and the tests are only promised
+    ripgrep when the install actually succeeded.
+    """
     workflow = _load_workflow(TEST_WORKFLOW)
     step = _find_step(workflow, job="build", name=STRICT_STEP)
 
     assert APT_INSTALL in step["run"]
-    assert "timeout" not in step["run"]
     assert "continue-on-error" not in step
     assert "timeout-minutes" not in step
+    # No `timeout` wrapping the apt install itself; only the post-failure dpkg
+    # unwind is bounded.
+    assert "timeout --signal=TERM --kill-after=10s 120s" not in step["run"]
+    # Bypass comes from the resolved PR label, not the event payload.
+    assert step["env"]["BYPASS"] == "${{ steps.ripgrep-bypass.outputs.bypass }}"
     # Promises ripgrep to the tests, turning a missing `rg` into a failure
     # instead of a silent skip.
     assert EXPECTED_ENV in step["run"]
@@ -409,6 +491,10 @@ def test_ripgrep_timeout_comment_uses_isolated_workflow_run() -> None:
     assert "pullRequest.head.sha !== run.head_sha" in script
     assert "listWorkflowRunArtifacts" in script
     assert ARTIFACT_PREFIX in script
+    # A labeled release PR's bypassed legs must be reported as such, not lumped
+    # in with the soft-timeout wording.
+    assert "listLabelsOnIssue" in script
+    assert "bypass-ripgrep-check" in script
     assert "createComment" in script
     assert "updateComment" in script
     assert "deleteComment" in script
@@ -418,6 +504,8 @@ def test_ripgrep_timeout_comment_uses_isolated_workflow_run() -> None:
     assert "run.head_repository.owner.login" in script
     # An unreportable timeout is a broken mechanism, not a no-op.
     assert "core.setFailed" in script
+    # The comment workflow needs the label to branch its bypass wording.
+    assert workflow["permissions"]["issues"] == "write"
 
 
 def test_ripgrep_timeout_comment_concurrency_is_keyed_on_head_sha() -> None:

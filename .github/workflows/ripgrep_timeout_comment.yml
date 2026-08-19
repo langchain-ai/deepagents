@@ -108,6 +108,22 @@ jobs:
               return;
             }
 
+            // A labeled release PR produces the same artifacts via the strict
+            // step's bypass path, so the comment text must distinguish "hit the
+            // soft timeout" from "bypassed under bypass-ripgrep-check". Read the
+            // label fail-closed: an API error means the bypass note is simply
+            // omitted, never wrongly claimed.
+            let hasBypassLabel = false;
+            try {
+              const labels = await github.paginate(
+                github.rest.issues.listLabelsOnIssue,
+                { owner, repo, issue_number: prNumber, per_page: 100 },
+              );
+              hasBypassLabel = labels.some(label => label.name === 'bypass-ripgrep-check');
+            } catch (error) {
+              core.warning(`Could not read labels for PR #${prNumber}; treating bypass-ripgrep-check as absent.`);
+            }
+
             const comments = await github.paginate(
               github.rest.issues.listComments,
               { owner, repo, issue_number: prNumber, per_page: 100 },
@@ -147,20 +163,33 @@ jobs:
               .map(artifact => artifact.name.replace(/^ripgrep-timeout-/, ''))
               .sort();
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${run.id}`;
-            const body = [
-              marker,
-              '**Warning: ripgrep did not install in time.**',
-              '',
-              'Installation took more than two minutes on these test runners:',
-              '',
-              ...legs.map(leg => `- \`${leg}\``),
-              '',
-              'Those runners ran without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check. `grep` on the filesystem backend used the Python fallback, which is slower and does not skip `.gitignore`d or hidden files, so some results differ.',
-              '',
-              'Release PRs, merge-queue runs, and the release workflow do not use this timeout. They fail if ripgrep does not install.',
-              '',
-              `No action is needed to merge. Re-run CI to get ripgrep coverage. [View the CI run](${runUrl})`,
-            ].join('\n');
+            const body = hasBypassLabel
+              ? [
+                  marker,
+                  '**Notice: the strict ripgrep install failed and was bypassed.**',
+                  '',
+                  'Installation failed on these release-PR test runners:',
+                  '',
+                  ...legs.map(leg => `- \`${leg}\``),
+                  '',
+                  'Those runners continued without ripgrep under the `bypass-ripgrep-check` label, so the real-binary grep tests — including the symlink containment check — were skipped there. When this PR merges, the publish run is dispatched with `dangerous-skip-ripgrep-check=true`, so its artifact tests skip ripgrep the same way.',
+                  '',
+                  `Merge only if the apt failure is genuinely transient. Remove the label and re-run CI to restore ripgrep coverage. [View the CI run](${runUrl})`,
+                ].join('\n')
+              : [
+                  marker,
+                  '**Warning: ripgrep did not install in time.**',
+                  '',
+                  'Installation took more than two minutes on these test runners:',
+                  '',
+                  ...legs.map(leg => `- \`${leg}\``),
+                  '',
+                  'Those runners ran without ripgrep. The real-binary grep tests were skipped there, including the symlink containment check. `grep` on the filesystem backend used the Python fallback, which is slower and does not skip `.gitignore`d or hidden files, so some results differ.',
+                  '',
+                  'Release PRs, merge-queue runs, and the release workflow do not use this timeout. They fail if ripgrep does not install — unless the PR carries `bypass-ripgrep-check`, which reports the failure through this same comment instead.',
+                  '',
+                  `No action is needed to merge. Re-run CI to get ripgrep coverage. [View the CI run](${runUrl})`,
+                ].join('\n');
 
             if (existing) {
               await github.rest.issues.updateComment({

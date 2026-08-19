@@ -1006,6 +1006,7 @@ jobs:
       VERSION: ${{ needs.detect-release-commit.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
       SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
+      RIPGREP_BYPASS_LABEL: "bypass-ripgrep-check"
       RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
         }}/actions/workflows/release.yml
       CLI_RELEASE: ${{ needs.detect-release-commit.outputs.cli-release }}
@@ -1141,6 +1142,13 @@ jobs:
             [ "$1" = "deepagents-code" ] && [ "$AUTO_SKIP_SDK_PIN_CHECK" = "true" ]
           }
 
+          # The ripgrep bypass applies to every package's publish run — each one
+          # runs the same strict `Install ripgrep` step in release.yml. Reads the
+          # job-global AUTO_SKIP_RIPGREP_CHECK at call time (set below).
+          ripgrep_skip_applies() {
+            [ "$AUTO_SKIP_RIPGREP_CHECK" = "true" ]
+          }
+
           dispatch() {
             local package="$1"
             local cmd=(
@@ -1151,12 +1159,16 @@ jobs:
               -f version="$VERSION"
               -f release-sha="$RELEASE_SHA"
             )
+            local notes=""
             if skip_applies_to "$package"; then
               cmd+=(-f dangerous-skip-sdk-pin-check=true)
-              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA, dangerous-skip-sdk-pin-check=true)"
-            else
-              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+              notes="dangerous-skip-sdk-pin-check=true"
             fi
+            if ripgrep_skip_applies; then
+              cmd+=(-f dangerous-skip-ripgrep-check=true)
+              notes="${notes:+$notes, }dangerous-skip-ripgrep-check=true"
+            fi
+            echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA${notes:+, $notes})"
             # `--repo` is required: this job has no `actions/checkout` step, so
             # `gh` cannot discover the target repo from a local `.git/` and
             # would otherwise fail with `fatal: not a git repository`.
@@ -1257,6 +1269,14 @@ jobs:
             echo "Release PR has '$SDK_PIN_BYPASS_LABEL'; dispatching deepagents-code with dangerous-skip-sdk-pin-check=true."
           fi
 
+          # Not package-gated like the SDK-pin check: every package's publish run
+          # shares the same strict ripgrep install, so the label softens them all.
+          AUTO_SKIP_RIPGREP_CHECK=false
+          if release_pr_has_label "$RIPGREP_BYPASS_LABEL"; then
+            AUTO_SKIP_RIPGREP_CHECK=true
+            echo "Release PR has '$RIPGREP_BYPASS_LABEL'; dispatching with dangerous-skip-ripgrep-check=true."
+          fi
+
           # Banner: log + step summary. The step summary renders at the top of the
           # run page, so operators see the link before scrolling through step logs.
           echo ""
@@ -1316,6 +1336,9 @@ jobs:
                 if skip_applies_to "$p"; then
                   suffix=" _(SDK pin check skipped from release PR label)_"
                 fi
+                if ripgrep_skip_applies; then
+                  suffix="$suffix _(ripgrep check skipped from release PR label)_"
+                fi
                 url="${RUN_URLS[$p]:-}"
                 if [ -n "$url" ]; then
                   echo "- [\`$p\` @ \`$VERSION\`]($url)$suffix"
@@ -1335,11 +1358,14 @@ jobs:
               echo ""
               echo '```'
               for p in "${FAILED[@]}"; do
+                rec="gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
                 if skip_applies_to "$p"; then
-                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA -f dangerous-skip-sdk-pin-check=true"
-                else
-                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
+                  rec="$rec -f dangerous-skip-sdk-pin-check=true"
                 fi
+                if ripgrep_skip_applies; then
+                  rec="$rec -f dangerous-skip-ripgrep-check=true"
+                fi
+                echo "$rec"
               done
               echo '```'
             fi

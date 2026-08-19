@@ -1005,6 +1005,17 @@ If the older pin is intentional, add the `release: skip sdk pin check` label to 
 
 3. **Verify the `autorelease: pending` label was swapped.** The `mark-release` job will attempt to find the release PR by label and update it automatically, even on manual dispatch. If the label wasn't swapped (e.g., the job failed), fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If you skip this step, release-please will not create new release PRs.**
 
+### Release Failed: Ripgrep Install
+
+The strict ripgrep install in CI (and the `Install ripgrep` step in `release.yml`) runs with no timeout on release-sensitive paths, because the rg-gated tests — including the symlink containment check — must exercise the real binary rather than the Python fallback. A transient apt or mirror failure therefore fails the job even though nothing is wrong with the code.
+
+If the failure is genuinely transient infrastructure flake, add the `bypass-ripgrep-check` label to the release PR and re-run CI. With the label present:
+
+- **In CI** (`_test.yml`): the strict install still runs, but a failure becomes a tolerated continue. `DEEPAGENTS_RIPGREP_EXPECTED` is left unset, so `require_ripgrep()` skips the gated tests on that leg instead of failing them. The run posts a sticky comment on the PR recording which legs ran without ripgrep.
+- **At dispatch** (`release-please.yml`): the automatic release dispatch passes `dangerous-skip-ripgrep-check=true` to `release.yml`, so the publish run's `Install ripgrep` step tolerates the same apt failure and its rg-gated artifact tests skip rather than re-failing on the flake.
+
+The label is honored only on release PRs (`pull_request` with a `release-please--` branch or `release(` title). `push`-to-`main` and merge-queue runs have no PR label to read, so they always enforce the strict install. Remove the label and re-run CI to restore full ripgrep coverage before relying on the result.
+
 ### "Untagged, merged release PRs outstanding" Error
 
 If release-please logs show:

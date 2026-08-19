@@ -75,6 +75,14 @@ on:
         description:
           "(deepagents-code only) Skip SDK pin validation
           (danger!) - Only use when intentionally pinning an older SDK"
+      dangerous-skip-ripgrep-check:
+        required: false
+        type: boolean
+        default: false
+        description:
+          "Tolerate a ripgrep install failure in pre-release checks
+          (danger!) - the rg-gated artifact tests will skip. Passed automatically
+          when the merged release PR carries the bypass-ripgrep-check label"
 
 env:
   UV_NO_SYNC: "true"
@@ -181,6 +189,7 @@ jobs:
           INPUT_SHA: ${{ inputs.release-sha }}
           IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
           SKIP_SDK_PIN_CHECK: ${{ inputs.dangerous-skip-sdk-pin-check }}
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
         run: |
           set -euo pipefail
 
@@ -220,6 +229,9 @@ jobs:
             fi
             if [ "${SKIP_SDK_PIN_CHECK}" = "true" ]; then
               echo "| \`dangerous-skip-sdk-pin-check\` | ⚠️ enabled |"
+            fi
+            if [ "${SKIP_RIPGREP_CHECK}" = "true" ]; then
+              echo "| \`dangerous-skip-ripgrep-check\` | ⚠️ enabled |"
             fi
             echo ""
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write dispatch-inputs summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
@@ -743,11 +755,29 @@ jobs:
 
       # No timeout here: release artifacts must be validated with the real
       # ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1` makes the
-      # rg-gated tests fail rather than skip if `rg` goes missing anyway.
+      # rg-gated tests fail rather than skip if `rg` goes missing anyway. A
+      # dispatch carrying `dangerous-skip-ripgrep-check=true` (set from the
+      # `bypass-ripgrep-check` label on the merged release PR) tolerates an apt
+      # failure instead: the install still runs, but a failure neither sets the
+      # expectation nor fails the job, so the gated tests skip rather than error.
       - name: Install ripgrep
+        env:
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
         run: |
+          set +e
           sudo apt-get update && sudo apt-get install -y ripgrep
-          echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "$SKIP_RIPGREP_CHECK" = "true" ]; then
+            echo "::warning::ripgrep install failed; dangerous-skip-ripgrep-check set — the rg-gated artifact tests will skip"
+            exit 0
+          fi
+          echo "::error::ripgrep install failed and dangerous-skip-ripgrep-check is not set."
+          exit "$status"
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="-v"

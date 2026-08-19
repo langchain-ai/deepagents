@@ -1736,6 +1736,38 @@ def test_doctor_reports_managed_parse_health(
         service.invalidate_config_sources()
 
 
+def test_both_layer_read_errors_are_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt user file and a corrupt managed file must both be named.
+
+    Regression: `read_error` was a single string assigned at seven sites. The
+    user-layer branches run first and the managed-layer branches second, so the
+    managed message overwrote the user one and a user with both problems was
+    told about the managed file only.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text("[broken", encoding="utf-8")
+    managed = tmp_path / "managed.toml"
+    managed.write_text("[also-broken", encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        trust = model_config.load_mcp_server_trust_lists()
+    finally:
+        service.invalidate_config_sources()
+
+    assert trust.read_error is not None
+    assert str(user) in trust.read_error
+    assert str(managed) in trust.read_error
+
+
 def test_thread_config_is_not_cached_while_the_user_config_is_broken(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

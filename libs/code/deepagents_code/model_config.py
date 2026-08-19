@@ -4627,11 +4627,14 @@ def load_mcp_server_trust_lists(
     managed_disabled: list[str] = []
     managed_approvals_explicit = False
     legacy_ignored: list[str] = []
-    read_error: str | None = None
+    # Accumulated, not overwritten. The user-layer branches run first and the
+    # managed-layer branches ran second, so a user with a corrupt `config.toml`
+    # *and* a corrupt managed file was told about the managed file only.
+    read_errors: list[str] = []
     if not sources.user.status.usable:
         # The file exists but is unreadable/unparseable. Record it so callers
         # fail closed rather than silently proceeding with an empty deny list.
-        read_error = (
+        read_errors.append(
             f"Could not read MCP trust lists from {config_path}: "
             f"{sources.user.status.detail or sources.user.status.health.value}"
         )
@@ -4668,7 +4671,7 @@ def load_mcp_server_trust_lists(
             if disabled_malformed:
                 # A wrong-typed deny list cannot be read, so proceeding as if
                 # nothing were denied would be a fail-open.
-                read_error = (
+                read_errors.append(
                     f"[mcp].disabled_project_servers in {config_path} must be "
                     "a list of strings; refusing to proceed with an "
                     "unenforced deny list"
@@ -4676,7 +4679,7 @@ def load_mcp_server_trust_lists(
         else:
             # An `[mcp]` value that is not a table means the deny list is
             # unreadable too; fail closed rather than leave it unenforced.
-            read_error = (
+            read_errors.append(
                 f"[mcp] in {config_path} must be a table, got "
                 f"{type(mcp_section).__name__}"
             )
@@ -4689,7 +4692,7 @@ def load_mcp_server_trust_lists(
 
     managed_status = sources.managed.status
     if not managed_status.usable:
-        read_error = (
+        read_errors.append(
             f"Could not enforce MCP trust lists from {managed_status.path}: "
             f"{managed_status.detail or managed_status.health.value}"
         )
@@ -4721,7 +4724,7 @@ def load_mcp_server_trust_lists(
                     # of narrowing it. Fail closed as the deny list below does.
                     managed_approvals_explicit = True
                     toml_approvals = []
-                    read_error = (
+                    read_errors.append(
                         f"[mcp].{approvals_key} in "
                         f"{managed_status.path or config_path} must be a list "
                         "of approval entries; refusing to proceed with an "
@@ -4742,7 +4745,7 @@ def load_mcp_server_trust_lists(
                 # A wrong-typed deny list cannot be read, so proceeding as if
                 # nothing were denied would be a fail-open. Administrator
                 # policy must fail closed at least as hard as user config.
-                read_error = (
+                read_errors.append(
                     "[mcp].disabled_project_servers in "
                     f"{managed_status.path or config_path} must be a list of "
                     "strings; refusing to proceed with an unenforced managed "
@@ -4756,7 +4759,7 @@ def load_mcp_server_trust_lists(
         elif managed_mcp is not None:
             # An `[mcp]` value that is not a table means the managed deny list
             # is unreadable too; fail closed rather than leave it unenforced.
-            read_error = (
+            read_errors.append(
                 f"[mcp] in managed config {managed_status.path or config_path} "
                 f"must be a table, got {type(managed_mcp).__name__}"
             )
@@ -4783,7 +4786,8 @@ def load_mcp_server_trust_lists(
     # Keep both active so the escape hatch cannot make the interactive prompt's
     # successfully persisted choices ineffective on the next launch.
     enabled = frozenset(() if managed_approvals_explicit else (env_enabled or ()))
-    approvals = frozenset(() if read_error is not None else toml_approvals)
+    read_error = "; ".join(read_errors) if read_errors else None
+    approvals = frozenset(() if read_errors else toml_approvals)
     disabled = (
         frozenset(toml_disabled)
         | frozenset(managed_disabled)

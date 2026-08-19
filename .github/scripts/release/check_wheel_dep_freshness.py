@@ -175,6 +175,66 @@ class DependencyCheck:
     constraint: str
     passed: bool
     message: str
+    warning: bool = False
+
+
+def _intersection_omits_only_unreleased_minors(
+    wheel_requires_python: str,
+    published_constraints: Sequence[str],
+    *,
+    current_minor: int,
+) -> bool:
+    """Whether the dependency's Python coverage gap touches no existing minor.
+
+    A minor line is installable when at least one of its probed versions
+    satisfies both the wheel's `Requires-Python` and every published file
+    constraint. The gap must then start at the first unreleased minor and
+    extend contiguously to the wheel's own ceiling, i.e. a "not tested on the
+    next minor yet" upper bound such as `<3.15`. A gap at the wheel's minimum
+    (the dependency rejects the release's install floor), in the middle of the
+    claimed range, or covering already-released minors still fails.
+
+    Args:
+        wheel_requires_python: `Requires-Python` declared by the release wheel.
+        published_constraints: `requires_python` values from the published files.
+        current_minor: Minor version of the newest released CPython line (e.g.
+            14 when 3.14 is current).
+
+    Returns:
+        `True` when only the next unreleased CPython minor and later are
+        excluded by the dependency's upper bound.
+    """
+    wheel_specifier = SpecifierSet(wheel_requires_python)
+    dep_specifiers = tuple(
+        SpecifierSet(constraint) for constraint in published_constraints if constraint
+    )
+    wheel_minors: set[tuple[int, ...]] = set()
+    dep_minors: set[tuple[int, ...]] = set()
+    for version in _supported_python_versions(
+        wheel_requires_python,
+        additional_constraints=published_constraints,
+    ):
+        minor = version.release[:2]
+        wheel_minors.add(minor)
+        if all(
+            specifier.contains(version, prereleases=True)
+            for specifier in dep_specifiers
+        ):
+            dep_minors.add(minor)
+    missing = sorted(wheel_minors - dep_minors)
+    if not missing:
+        return False
+    floor = min(
+        minor[1]
+        for minor in wheel_minors
+        if wheel_specifier.contains(Version(".".join(map(str, minor))))
+    )
+    if missing[0][1] <= floor:
+        return False
+    first_unreleased = current_minor + 1
+    return missing[0][1] == first_unreleased and [
+        minor for minor in sorted(wheel_minors) if minor[1] >= first_unreleased
+    ] == missing
 
 
 def _escape_command(value: object) -> str:
@@ -189,6 +249,10 @@ def _escape_command(value: object) -> str:
 
 def _notice(message: str) -> None:
     print(f"::notice::{_escape_command(message)}")
+
+
+def _warning(path: Path, message: str) -> None:
+    print(f"::warning file={_escape_command(path)}::{_escape_command(message)}")
 
 
 def _error(path: Path, message: str) -> None:
@@ -724,13 +788,22 @@ def compare_wheel_with_pypi(
     from an unpublished sibling metadata change such as the coordinated Code/Talon
     Python-floor bump.
 
+    A third-party dependency whose newest eligible release covers every existing
+    CPython minor the wheel claims, but stops below a future minor (for example
+    `requires-python<3.15` against the wheel's `<4.0`), degrades to a warning:
+    resolvers already refuse that extra on the unreleased interpreter, so the
+    release is not blocked on another project widening its bound. Gaps at real
+    installation targets (the wheel's minimum, or any minor the dependency
+    excludes in the middle of the range) stay hard failures.
+
     Args:
         metadata: Parsed metadata from the package being released.
         pypi_payloads: Canonical dependency names mapped to PyPI project JSON.
         sibling_requires_python: Current Python constraints for repo-managed siblings.
 
     Returns:
-        One deterministic pass/fail result per distinct dependency constraint.
+        One deterministic result per distinct dependency constraint; warnings have
+        `passed=True` and `warning=True`.
 
     Raises:
         ValueError: If the release wheel has no concrete Python lower bound.
@@ -783,6 +856,7 @@ def compare_wheel_with_pypi(
             else matching_versions
         )
         passed = False
+        warning = False
         for _, files in candidates:
             python_constraints = _file_python_constraints(files)
             required_python = _applicable_python_versions(
@@ -797,15 +871,26 @@ def compare_wheel_with_pypi(
             ):
                 passed = True
                 break
+        if not passed and expected_constraint is None and matching_versions:
+            _, files = matching_versions[0]
+            published_python = _file_python_constraints(files)
+            if _intersection_omits_only_unreleased_minors(
+                metadata.requires_python,
+                published_python,
+                current_minor=sys.version_info[1],
+            ):
+                passed = True
+                warning = True
         checks.append(
             DependencyCheck(
                 dependency_name=requirement.name,
                 constraint=constraint,
                 passed=passed,
+                warning=warning,
                 message=(
                     f"{requirement.name} has a published release satisfying {constraint} "
                     f"and Python {metadata.requires_python}."
-                    if passed
+                    if passed and not warning
                     else _failure_message(
                         metadata,
                         requirement,
@@ -879,11 +964,25 @@ def validate_wheel(
         sibling_requires_python=sibling_constraints,
     )
     failures = [check for check in checks if not check.passed]
+    warnings = [check for check in checks if check.warning]
+    for check in warnings:
+        _warning(wheel_path, check.message)
     if not failures:
         _notice(
             f"All {len(checks)} dependency constraints in {wheel_path.name} have "
             "compatible published metadata."
         )
+        if warnings:
+            summary = [
+                "## Dependency metadata warnings",
+                "",
+                f"`{metadata.name}=={metadata.version}` can be released, but these "
+                "third-party dependencies do not yet publish support for every "
+                "Python minor the wheel claims:",
+                "",
+            ]
+            summary.extend(f"- {check.message}" for check in warnings)
+            _write_step_summary("\n".join(summary))
         return 0
 
     for failure in failures:

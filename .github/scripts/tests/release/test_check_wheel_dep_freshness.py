@@ -174,6 +174,57 @@ def test_compare_allows_broader_third_party_python_support() -> None:
     assert checks[0].passed
 
 
+def test_compare_warns_when_third_party_caps_only_unreleased_minors(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "check_wheel_dep_freshness.sys.version_info",
+        (3, 14, 0),
+    )
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            name="deepagents-code",
+            version="0.1.58",
+            requires_python=">=3.12,<4.0",
+            requirements=("langchain-ibm>=1.1.0,<2.0.0",),
+        ),
+        {"langchain-ibm": _payload(("1.1.0", ">=3.10,<3.15"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+    assert checks[0].warning
+    assert "langchain-ibm 1.1.0 (latest on PyPI) declares" in checks[0].message
+    assert "deepagents-code 0.1.58 requires Python >=3.12,<4.0" in checks[0].message
+
+
+def test_compare_fails_when_third_party_excludes_existing_minor() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requires_python=">=3.12,<4.0",
+            requirements=("demo>=1",),
+        ),
+        {"demo": _payload(("1.0", ">=3.13,<3.14"))},
+    )
+
+    assert len(checks) == 1
+    assert not checks[0].passed
+    assert not checks[0].warning
+
+
+def test_compare_never_warns_for_sibling_python_metadata_lag() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(),
+        {"deepagents-code": _payload(("0.1.57", ">=3.12,<3.15"))},
+        sibling_requires_python={"deepagents-code": ">=3.12,<4.0"},
+    )
+
+    assert len(checks) == 1
+    assert not checks[0].passed
+    assert not checks[0].warning
+    assert "Release deepagents-code first" in checks[0].message
+
+
 def test_compare_checks_full_declared_python_range() -> None:
     checks = compare_wheel_with_pypi(
         _metadata(
@@ -597,6 +648,61 @@ def test_validate_wheel_fetches_each_project_once_and_fails_with_summary(
     )
     assert calls == ["deepagents-code"]
     assert "Release deepagents-code first" in summary.read_text(encoding="utf-8")
+
+
+def test_validate_wheel_passes_with_warning_for_unreleased_minor_cap(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        "check_wheel_dep_freshness.sys.version_info",
+        (3, 14, 0),
+    )
+    wheel = tmp_path / "code.whl"
+    _write_wheel(
+        wheel,
+        name="deepagents-code",
+        version="0.1.58",
+        requires_python=">=3.12,<4.0",
+        requirements=('langchain-ibm>=1.1.0,<2.0.0; extra == "ibm"',),
+        provides_extra=("ibm",),
+    )
+    config = tmp_path / "release-please-config.json"
+    _write_release_config(
+        config,
+        {
+            "libs/code": {
+                "package-name": "deepagents-code",
+                "component": "deepagents-code",
+            }
+        },
+    )
+    manifest = tmp_path / "libs/code/pyproject.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '[project]\nname = "deepagents-code"\nrequires-python = ">=3.12,<4.0"\n',
+        encoding="utf-8",
+    )
+    summary = tmp_path / "summary"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    def fetcher(_name: str) -> dict[str, object]:
+        return _payload(("1.1.0", ">=3.10,<3.15"))
+
+    assert (
+        validate_wheel(
+            wheel,
+            repo_root=tmp_path,
+            config_path=config,
+            fetcher=fetcher,
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert any(line.startswith("::warning ") for line in out.splitlines())
+    assert not any(line.startswith("::error ") for line in out.splitlines())
+    assert "Dependency metadata warnings" in summary.read_text(encoding="utf-8")
 
 
 def test_validate_wheel_does_not_fetch_inactive_requirement(tmp_path: Path) -> None:

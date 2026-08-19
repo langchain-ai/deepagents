@@ -3212,17 +3212,27 @@ if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ] && [ -n "$DCODE_BIN" 
   ensure_path_setup "$DCODE_NAME" "$DCODE_BIN" || path_setup_rc=$?
   if [ "$path_setup_rc" -ne 0 ] && [ "$path_setup_rc" -ne 3 ] && \
     [ "$path_setup_rc" -ne 4 ]; then
-    # rc=1: ensure_path_setup printed a specific warning; add the fallback.
+    # rc=1: ensure_path_setup already printed a specific warning; keep the
+    #   fallback in warning styling since profile setup genuinely failed.
     # rc=2: startup files were written, or no change was needed — either way
-    #   the *running* shell still lacks ~/.local/bin on PATH, so emit the
-    #   reload/source hint.
+    #   the *running* shell still lacks ~/.local/bin on PATH. Render the hint
+    #   as a friendly next step (new terminals already work), not a warning.
     # rc=0/3/4 are silent here: PATH is already fixed, MDM owns it, or the user
     #   declined and was already given the one line that would help.
-    log_warn "  Restart your shell, or run:"
-    if [ -f "${HOME}/.local/bin/env" ]; then
-      log_warn "  source ~/.local/bin/env"
+    if [ "$path_setup_rc" -eq 2 ]; then
+      log_info "To use ${DCODE_NAME} in this shell, run:"
+      if [ -f "${HOME}/.local/bin/env" ]; then
+        printf "  ${CYAN}>${NC} source ~/.local/bin/env\n"
+      else
+        printf "  ${CYAN}>${NC} export PATH=\"\$HOME/.local/bin:\$PATH\"\n"
+      fi
     else
-      log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+      log_warn "  Restart your shell, or run:"
+      if [ -f "${HOME}/.local/bin/env" ]; then
+        log_warn "  source ~/.local/bin/env"
+      else
+        log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+      fi
     fi
   fi
 fi

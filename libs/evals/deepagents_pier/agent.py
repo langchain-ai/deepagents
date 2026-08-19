@@ -270,8 +270,7 @@ class Dcode(BaseAgent):
         """Return the PyPI-resolvable deps from ``langgraph.json``.
 
         The ``./.local_deps/...`` relative-path entries point at staged local
-        packages that are built into wheels at image-build time, so they are
-        excluded here.
+        packages, so they are excluded here (installed in ``setup()``).
         """
         config_path = self.project_path / self.config
         config = json.loads(config_path.read_text())
@@ -281,6 +280,35 @@ class Dcode(BaseAgent):
             for dep in deps
             if isinstance(dep, str) and not dep.startswith(".")
         ]
+
+    def _local_dep_runtime_deps(self) -> list[str]:
+        """Return the runtime dependencies declared by the local ``.local_deps``.
+
+        ``langgraph.json`` lists the local packages but not their transitive
+        runtime deps (e.g. ``deepagents`` needs ``wcmatch``). Those are only
+        resolvable at image-build time (networked), so read them from each local
+        package's ``pyproject.toml`` and install them alongside the
+        ``langgraph.json`` deps. Self-references between the local packages
+        (e.g. ``deepagents-code`` pinning ``deepagents==...``) are dropped — the
+        local checkouts are the source of truth and are installed in ``setup()``.
+        """
+        local_names = set(self._local_dep_names())
+        deps: list[str] = []
+        for rel in self._local_dep_rel_dirs():
+            pyproject = self.project_path / rel / "pyproject.toml"
+            try:
+                data = tomllib.loads(pyproject.read_text())
+            except Exception:  # noqa: BLE001 - missing/unreadable pyproject
+                logger.debug("Could not read local dep pyproject %s", pyproject)
+                continue
+            for dep in data["project"].get("dependencies", []):
+                # Skip deps that name another local package (e.g. `deepagents==x`
+                # or `deepagents-acp>=y`); those resolve to the local checkouts.
+                name = dep.split(" ")[0].split("=")[0].split("<")[0].split(">")[0].split("[")[0].strip()
+                if name in local_names:
+                    continue
+                deps.append(dep)
+        return deps
 
     def _local_dep_rel_dirs(self) -> list[PurePosixPath]:
         """Return the project-relative source dirs of the local ``.local_deps``."""
@@ -301,19 +329,22 @@ class Dcode(BaseAgent):
         ]
 
     def _local_dep_names(self) -> list[str]:
-        """Return the distribution names of the local ``.local_deps`` packages.
+        """Return the distribution names of all staged local ``.local_deps``.
 
-        Read from each staged package's ``pyproject.toml`` so ``setup()``
-        installs exactly what was built, without hardcoding names.
+        Covers every package staged under ``.local_deps/`` (including nested
+        ``partners/`` dirs), not just the ones listed directly in
+        ``langgraph.json`` — ``deepagents-code`` depends on ``deepagents-acp``
+        and ``langchain-quickjs`` by name, and those are local sources too.
         """
+        local_deps_root = self.project_path / ".local_deps"
         names = []
-        for rel in self._local_dep_rel_dirs():
-            pyproject = self.project_path / rel / "pyproject.toml"
+        for pyproject in sorted(local_deps_root.rglob("pyproject.toml")):
             try:
                 data = tomllib.loads(pyproject.read_text())
                 name = data["project"]["name"]
-            except Exception:  # noqa: BLE001 - fall back to dir name
-                name = rel.name
+            except Exception:  # noqa: BLE001 - skip unparseable dirs
+                logger.debug("Skipping unparseable local pyproject %s", pyproject)
+                continue
             names.append(name)
         return names
 
@@ -332,7 +363,11 @@ class Dcode(BaseAgent):
         venv_dir = shlex.quote(self._REMOTE_VENV_DIR.as_posix())
         wheelhouse = shlex.quote(self._REMOTE_WHEELHOUSE_DIR.as_posix())
         python_version = shlex.quote(self._python_version)
-        deps = " ".join(shlex.quote(d) for d in self._langgraph_dependencies())
+        # PyPI deps from langgraph.json plus the local packages' own runtime
+        # deps (langgraph.json doesn't list e.g. deepagents' wcmatch), so the
+        # venv holds the full closure before the air-gapped run.
+        all_deps = self._langgraph_dependencies() + self._local_dep_runtime_deps()
+        deps = " ".join(shlex.quote(d) for d in all_deps)
         agent_run = f"""
 set -euo pipefail
 curl -LsSf https://astral.sh/uv/{_UV_VERSION}/install.sh | sh

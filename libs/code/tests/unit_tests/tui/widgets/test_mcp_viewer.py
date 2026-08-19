@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.containers import Vertical
 from textual.notifications import Notification
 from textual.widget import Widget
 from textual.widgets import Static
@@ -188,10 +189,19 @@ class TestMCPViewerScreen:
             help_widget = screen.query_one(".mcp-viewer-help", Static)
             assert "Ctrl+R reconnect" in _widget_text(help_widget)
 
-    async def test_footer_wraps_in_narrow_window(self) -> None:
-        """A narrow viewer grows the footer instead of clipping its hints."""
+    @pytest.mark.parametrize("size", [(80, 24), (80, 14), (50, 20)])
+    async def test_footer_hints_stay_on_screen(self, size: tuple[int, int]) -> None:
+        """Every hint renders, however narrow or short the window is.
+
+        Asserts the footer's region sits inside the modal, not just that
+        its text is set: the bug being guarded here is that the string is
+        complete but laid out past the modal's bottom edge, where the
+        compositor never paints it. `_widget_text` cannot observe that.
+        `(80, 14)` and `(50, 20)` are both sizes where the footer used to
+        be pushed clean out of the modal.
+        """
         app = MCPViewerTestApp()
-        async with app.run_test(size=(50, 20)) as pilot:
+        async with app.run_test(size=size) as pilot:
             screen = MCPViewerScreen(
                 server_info=_sample_info(),
                 pending_reconnect=True,
@@ -200,9 +210,27 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             help_widget = screen.query_one(".mcp-viewer-help", Static)
-            assert help_widget.size.height > 1
+            modal = screen.query_one(Vertical)
+            assert help_widget in app.screen._compositor.visible_widgets
+            assert modal.content_region.contains_region(help_widget.region)
             assert "Ctrl+R reconnect" in _widget_text(help_widget)
             assert "Esc close" in _widget_text(help_widget)
+
+    async def test_footer_wraps_rather_than_truncating(self) -> None:
+        """A footer too long for one line grows instead of losing hints."""
+        app = MCPViewerTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=True,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            # The modal caps at `width: 80`, so the full hint string never
+            # fits on one line — it must occupy two.
+            assert help_widget.size.height == 2
 
     async def test_ctrl_r_dismisses_with_reconnect_sentinel_when_pending(
         self,
@@ -2128,6 +2156,27 @@ class TestMCPViewerScreen:
 
             body = app.screen.query_one(".mcp-error-text", Static)
             assert "No error details were reported." in _widget_text(body)
+
+    async def test_error_modal_footer_wraps_in_narrow_window(self) -> None:
+        """The error modal's footer wraps rather than truncating."""
+        server = MCPServerInfo(
+            name="broken",
+            transport="stdio",
+            status="error",
+            error="Server exited with code 1.",
+        )
+        app = MCPViewerTestApp()
+        # 30 columns leaves 25 for the hints, two short of the 27 they
+        # need — the narrowest realistic window that forces a wrap.
+        async with app.run_test(size=(30, 12)) as pilot:
+            app.push_screen(MCPServerErrorScreen(server))
+            await pilot.pause()
+
+            help_widget = app.screen.query_one(".mcp-error-help", Static)
+            modal = app.screen.query_one(Vertical)
+            assert help_widget.size.height == 2
+            assert modal.content_region.contains_region(help_widget.region)
+            assert "Esc close" in _widget_text(help_widget)
 
     async def test_click_expands_tool(self) -> None:
         """Clicking a tool selects it and toggles expand."""

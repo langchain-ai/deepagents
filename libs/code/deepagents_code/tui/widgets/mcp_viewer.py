@@ -551,8 +551,13 @@ class MCPServerErrorScreen(ModalScreen[None]):
         color: $text;
     }
 
+    /* Same treatment as `.mcp-viewer-help`: `height: auto` so the hints
+    wrap instead of truncating on a narrow window, `dock: bottom` so the
+    rows they wrap onto are reserved before `.mcp-error-body` claims the
+    rest — otherwise wrapping pushes the footer past the modal's edge. */
     MCPServerErrorScreen .mcp-error-help {
-        height: 1;
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -897,7 +902,13 @@ class MCPViewerScreen(ModalScreen[str | None]):
         margin-top: 2;
     }
 
+    /* `height: auto` lets the hints wrap instead of truncating on a narrow
+    window. `dock: bottom` then reserves those rows before `.mcp-list` takes
+    the remainder — without it the list's `min-height` wins the fight for
+    space and shoves the whole footer past the modal's bottom edge, hiding
+    `Esc close` entirely on terminals under ~24 rows. */
     MCPViewerScreen .mcp-viewer-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;

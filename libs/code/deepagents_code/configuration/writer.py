@@ -87,15 +87,31 @@ def update_user_config(
             return WriteResult(True, False)
         try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
+            # Imported before `mkstemp` so a missing writer dependency cannot
+            # leak the descriptor: the cleanup below can unlink the temp path,
+            # but only `os.fdopen` takes ownership of the descriptor, so an
+            # `ImportError` between the two left it open.
+            import tomli_w
+
             descriptor, temporary = tempfile.mkstemp(
                 dir=config_path.parent,
                 suffix=".tmp",
             )
             temporary_path = Path(temporary)
             try:
-                import tomli_w
-
-                with os.fdopen(descriptor, "wb") as handle:
+                handle = os.fdopen(descriptor, "wb")
+            except BaseException:
+                # Nothing adopted the descriptor, so close it here. Closing it
+                # in the handler below instead would risk closing an unrelated
+                # file: once `os.fdopen` succeeds and its `with` block exits,
+                # the number is free for another thread to reuse.
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+                with contextlib.suppress(OSError):
+                    temporary_path.unlink()
+                raise
+            try:
+                with handle:
                     tomli_w.dump(data, handle)
                 temporary_path.replace(config_path)
             except BaseException:

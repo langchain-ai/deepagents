@@ -24,7 +24,7 @@ from deepagents_code.configuration.types import ProviderHealth
 from deepagents_code.configuration.writer import update_user_config
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping, Sequence
 
 
 @pytest.mark.parametrize(
@@ -2207,6 +2207,55 @@ def test_failed_write_leaves_no_temporary_file_behind(
         config_path=target,
     )
     assert result.ok is False
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_a_missing_writer_dependency_leaks_no_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An `ImportError` between `mkstemp` and `os.fdopen` must not leak an fd.
+
+    Regression: `import tomli_w` sat inside the `try` that follows `mkstemp`, so
+    on an install without the writer dependency the cleanup handler unlinked the
+    temp path but never closed the descriptor — only `os.fdopen` takes ownership
+    of it. Repeated failed writes exhausted the process fd limit.
+    """
+    import builtins
+
+    from deepagents_code.configuration import writer
+
+    target = tmp_path / "config.toml"
+    target.write_text("", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def refuse_tomli_w(
+        name: str,
+        globals_: Mapping[str, object] | None = None,
+        locals_: Mapping[str, object] | None = None,
+        fromlist: Sequence[str] = (),
+        level: int = 0,
+    ) -> object:
+        if name == "tomli_w":
+            msg = "simulated missing writer dependency"
+            raise ImportError(msg)
+        return real_import(name, globals_, locals_, fromlist, level)
+
+    def open_descriptor_count() -> int:
+        return len(list(Path("/dev/fd").iterdir()))
+
+    monkeypatch.setattr(builtins, "__import__", refuse_tomli_w)
+    before = open_descriptor_count()
+    for _ in range(20):
+        result = writer.update_user_config(
+            lambda data: bool(data.__setitem__("ui", {"theme": "light"})) or True,
+            config_path=target,
+        )
+        assert result.ok is False
+    monkeypatch.undo()
+
+    assert open_descriptor_count() == before
     assert list(tmp_path.glob("*.tmp")) == []
 
 

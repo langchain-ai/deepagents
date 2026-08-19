@@ -1791,21 +1791,11 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="extensions.enabled",
         group="Extensions",
-        summary="Enable loading local Python extensions.",
+        summary="Enable loading Python extensions from plugins and projects.",
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.EXTENSIONS,
         toml_keys=("extensions", "enabled"),
-    ),
-    ConfigOption(
-        key="extensions.paths",
-        group="Extensions",
-        summary=(
-            "Additional extension files or directories; the environment "
-            "override uses the platform path separator."
-        ),
-        kind=OptionKind.STRUCTURED,
-        toml_keys=("extensions", "paths"),
     ),
     ConfigOption(
         key="extensions.trust",
@@ -2221,8 +2211,6 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,
-        # Platform-separated list parsed by the extension settings loader.
-        _env_vars.EXTENSIONS_PATHS,
         # Env equivalents of the STRUCTURED `[mcp]` lists. They are read by the
         # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
         # `mcp.*` STRUCTURED options describe for discovery), not by the scalar

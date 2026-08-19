@@ -217,10 +217,7 @@ Any non-empty value enables the flag (including `"0"` or `"false"`).
 """
 
 EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
-"""Enable loading local Python extensions."""
-
-EXTENSIONS_PATHS = "DEEPAGENTS_CODE_EXTENSIONS_PATHS"
-"""Platform-separated extension files or directories added to discovery."""
+"""Enable loading installed-plugin and trusted-project Python extensions."""
 
 EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
 """Default project extension trust policy: `ask`, `always`, or `never`."""

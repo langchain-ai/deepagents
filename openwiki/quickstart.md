@@ -3,6 +3,12 @@ type: Codebase Guide
 title: Deep Agents monorepo quickstart
 description: "Entry point for engineers working on the Deep Agents Python monorepo: package roles, runtime boundaries, validation, and change-sensitive areas."
 tags: [deepagents, python, monorepo, engineering]
+openwiki:
+  roles: [repository, workflow]
+  change_kinds: [task-routing, operations]
+  source_paths: [libs/deepagents/deepagents/graph.py, .github/workflows/openwiki-update.yml]
+  test_paths: [.github/scripts/tests/workflows/test_workflow_secret_scoping.py]
+  validation_commands: ["uv run --directory libs/deepagents --group test pytest -q .github/scripts/tests/workflows/test_workflow_secret_scoping.py"]
 ---
 # Deep Agents monorepo
 
@@ -33,6 +39,17 @@ Deep Agents is an opinionated, extensible agent harness built on LangChain and L
 
 The core SDK in [Architecture overview](architecture/overview.md) supplies the harness that [Deep Agents Code](workflows/deep-agents-code.md) configures for interactive coding. That agent is exercised and compared through [Evaluation and release](workflows/evaluation-and-release.md); package checks and publishing rules live in [Operations and testing](engineering/operations-and-testing.md).
 
+## Task routing
+
+Use this table to reach the owning behavior and the smallest evidence-backed check without a repository-wide search. Package tests belong in the affected package; the workflow guard is runnable from the SDK `uv` environment.
+
+| Change area or user intent | Relevant wiki page | Exact source entry points | Important symbols or types | Focused tests | Minimal validation command |
+| --- | --- | --- | --- | --- | --- |
+| Construct or extend a Deep Agent graph, middleware, backend, or profile | [Architecture overview](architecture/overview.md) | `libs/deepagents/deepagents/graph.py`, `middleware/`, `backends/`, `profiles/` | `create_deep_agent`, `DeepAgentState` | `libs/deepagents/tests/unit_tests/` nearest behavior suite | `cd libs/deepagents && make test TEST_FILE=tests/unit_tests/<focused_test>.py` |
+| Change the dcode UI/server, approvals, Auto policy, sandbox, or MCP behavior | [Deep Agents Code](workflows/deep-agents-code.md) | `libs/code/deepagents_code/{main,server_graph,agent,approval_mode,auto_mode,mcp_tools}.py` | `create_cli_agent`, `make_graph` | `test_approval_mode.py`, `test_auto_mode.py`, or `test_server_graph.py` | `cd libs/code && make test TEST_FILE=tests/unit_tests/<focused_test>.py` |
+| Change eval results, unified Harbor orchestration, or package release behavior | [Evaluation and release](workflows/evaluation-and-release.md) | `libs/evals/deepagents_evals/cli.py`, `.github/scripts/evals/{unified_prep,aggregate_unified}.py`, `.github/workflows/{unified_evals,release}.yml` | `deepagents-evals`, `counts.failed` | `libs/evals/tests/unit_tests/` or `.github/scripts/tests/evals/` nearest suite | `cd libs/evals && make test TEST_FILE=tests/unit_tests/<focused_test>.py` |
+| Change scheduled OpenWiki updates, their secret boundary, or generated-document commit behavior | [Operations and testing](engineering/operations-and-testing.md#generated-openwiki-maintenance) | `.github/workflows/openwiki-update.yml`, `AGENTS.md` | `update` job; `test_openwiki_uses_dedicated_environment` | `.github/scripts/tests/workflows/test_workflow_secret_scoping.py` | `uv run --directory libs/deepagents --group test pytest -q .github/scripts/tests/workflows/test_workflow_secret_scoping.py` |
+
 ## Fast local loop
 
 Use `uv`; repository guidance explicitly disallows using `pip`, Poetry, or Conda for environment/dependency operations. Install dependencies within the affected package and use its Makefile as the command source of truth:
@@ -55,12 +72,9 @@ The common package targets are `make test` (socket-restricted unit tests), `make
 
 ## Current repository context
 
-The supplied working-tree snapshot had a modified `AGENTS.md` plus untracked OpenWiki workflow/wiki files; source documentation work should not overwrite that unrelated state. Recent history indicates active work in two high-risk areas:
+Current HEAD is `fix(infra): stabilize OpenWiki updates`. The available checkout is shallow, so the last wiki `gitHead` is not locally resolvable for a range diff; this update is grounded in the current commit and current sources.
 
-- `feat(code): classifier-backed Auto approval mode` introduced a large Auto-mode and approval-routing surface in `libs/code`; fail-closed behavior and prompt-authority provenance are critical.
-- HEAD, `feat(evals): compare branch variants with a neutral harness`, expanded unified Harbor evaluation to compare branch variants without changing the evaluator/harness baseline.
-
-Treat both as change-sensitive seams and follow the linked workflow pages for their exact checks and limits.
+The OpenWiki workflow now installs `openwiki@0.3.3` under Node.js 26, invokes `openwiki code --update --print` with LangSmith tracing disabled, and runs in the dedicated `openwiki` GitHub environment. Before creating an update PR, it restores its own workflow file and stages only `openwiki` and `AGENTS.md`. Those boundaries prevent a generated documentation run from committing a changed CI workflow; the focused workflow guard test currently asserts the dedicated environment. See [Operations and testing](engineering/operations-and-testing.md#generated-openwiki-maintenance) before changing that automation.
 
 ## Backlog
 

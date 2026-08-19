@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 
 from deepagents_code._env_vars import (
     EXTENSIONS,
-    EXTENSIONS_PATHS,
     EXTENSIONS_TRUST,
     classify_env_bool,
 )
@@ -32,9 +30,6 @@ class ExtensionSettings:
 
     enabled: bool = True
     """Whether extension discovery is enabled."""
-
-    paths: tuple[Path, ...] = field(default_factory=tuple)
-    """Additional user-authorized extension files or directories."""
 
     trust: TrustPolicy = TrustPolicy.ASK
     """Fallback policy for project extension code."""
@@ -104,16 +99,6 @@ def load_extension_settings() -> ExtensionSettings:
         else:
             enabled = parsed_enabled
 
-    configured_paths = section.get("paths")
-    paths = (
-        [item for item in configured_paths if isinstance(item, str)]
-        if isinstance(configured_paths, list)
-        else []
-    )
-    env_paths = os.environ.get(EXTENSIONS_PATHS)
-    if env_paths is not None and env_paths.strip():
-        paths = [item for item in env_paths.split(os.pathsep) if item.strip()]
-
     configured_trust = parse_trust_policy(section.get("trust")) or TrustPolicy.ASK
     trust = configured_trust
     env_trust = os.environ.get(EXTENSIONS_TRUST)
@@ -130,6 +115,5 @@ def load_extension_settings() -> ExtensionSettings:
 
     return ExtensionSettings(
         enabled=enabled,
-        paths=tuple(Path(item).expanduser() for item in paths),
         trust=trust,
     )

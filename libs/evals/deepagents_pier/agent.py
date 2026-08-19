@@ -303,8 +303,10 @@ uv venv {venv_dir} --python {python_version} --clear
 . {venv_dir}/bin/activate
 uv pip install --prerelease=if-necessary langgraph python-dotenv {deps}
 # Build backends for the local .local_deps sources, pre-installed so setup()
-# can install them offline with --no-build-isolation (no PyPI fetch).
-uv pip install setuptools wheel hatchling
+# can install them offline with --no-build-isolation (no PyPI fetch). The
+# setuptools backend builds deepagents; hatchling builds deepagents-code/acp/
+# quickjs, and hatchling's *editable* build additionally needs `editables`.
+uv pip install setuptools wheel hatchling editables
 """
         return AgentInstallSpec(
             agent_name=self.name(),

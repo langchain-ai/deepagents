@@ -404,6 +404,44 @@ def test_oversized_state_notice_settles_after_one_append() -> None:
         assert GoalToolsMiddleware._notice_update(settled) is None
 
 
+def test_oversized_state_keeps_clearing_the_rubric_on_later_turns() -> None:
+    """The steady state is a `rubric` clear with no `messages` key at all.
+
+    `rubric` is a public per-invocation input the app re-sets each turn, so from
+    turn two onward the notice already matches and only the clear is left. If
+    the clear were ever made conditional on writing a notice, grading would
+    silently resume re-injecting the oversized criteria from turn two on — the
+    exact failure the oversized path exists to prevent.
+    """
+    rubric = "x" * (RUBRIC_CHAR_LIMIT + 1)
+    messages: list[object] = [HumanMessage(content="continue")]
+    state = cast(
+        "AgentState[Any]",
+        {"rubric": rubric, "_sticky_rubric": rubric, "messages": messages},
+    )
+
+    first = GoalToolsMiddleware._notice_update(state)
+
+    assert first is not None
+    assert set(first) == {"messages", "rubric"}
+    assert first["rubric"] is None
+
+    # Turn two: the notice is in history, but the app has re-set `rubric`.
+    resent = cast(
+        "AgentState[Any]",
+        {
+            "rubric": rubric,
+            "_sticky_rubric": rubric,
+            "messages": [*messages, *first["messages"]],
+        },
+    )
+    second = GoalToolsMiddleware._notice_update(resent)
+
+    assert second is not None
+    assert set(second) == {"rubric"}
+    assert second["rubric"] is None
+
+
 async def test_abefore_model_matches_before_model() -> None:
     # The async boundary must produce the same notice update as the sync one;
     # tests elsewhere only exercise `_notice_update` directly, so drive the

@@ -152,3 +152,23 @@ def test_size_error_exposes_the_excess_it_reports() -> None:
 
     assert error.excess == 500
     assert "Remove at least 500 characters" in str(error)
+
+
+def test_notice_text_rejects_an_oversized_objective_without_criteria() -> None:
+    """The objective-only branch is reachable whenever no rubric is active."""
+    with pytest.raises(GoalStateSizeError, match=r"^Goal objective is"):
+        validate_goal_notice_text(
+            objective="x" * (GOAL_OBJECTIVE_CHAR_LIMIT + 1),
+            criteria=None,
+            status_note=None,
+        )
+
+
+def test_notice_text_rejects_oversized_criteria_without_an_objective() -> None:
+    """A standalone rubric stays bounded with no goal in play."""
+    with pytest.raises(GoalStateSizeError, match=r"^Rubric is"):
+        validate_goal_notice_text(
+            objective=None,
+            criteria="x" * (RUBRIC_CHAR_LIMIT + 1),
+            status_note=None,
+        )

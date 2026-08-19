@@ -238,9 +238,12 @@ def test_schema_version_is_past_the_unbounded_notice_era() -> None:
 def test_prior_schema_notice_is_not_authoritative() -> None:
     """A notice from a prior schema version stops counting as authoritative.
 
-    Version 2 notices could truncate the objective and rubric, while version 1
-    notices named read tools that no longer exist. Both must be superseded rather
-    than trusted on resume.
+    The mutation below is `GOAL_MESSAGE_SCHEMA_VERSION - 1`, so the defect this
+    covers is whichever the current version fixed — today version 3's unbounded
+    objective and rubric text. Every earlier version has its own defect
+    (version 2 truncated that text; version 1 named read tools that no longer
+    exist), so any prior version must be superseded rather than trusted on
+    resume.
     """
     state = {"_goal_objective": "ship it", "_goal_status": "active"}
     stale = build_goal_state_notice(state, event_id="old-schema")

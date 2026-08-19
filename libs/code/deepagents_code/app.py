@@ -2429,18 +2429,25 @@ class _GoalApplication:
     request_id: str | None = None
 
     def __post_init__(self) -> None:
-        """Reject empty objective or rubric at construction.
+        """Reject an empty or oversized objective or rubric at construction.
 
-        Callers already screen these (`_accept_goal_rubric`), so this only
-        guards against a future construction site skipping that check and
-        queuing a goal that would clear the active one to nothing.
+        Callers already screen these (`_accept_goal_rubric`), so this guards
+        against a future construction site skipping that check — queuing a goal
+        that would clear the active one to nothing, or one whose text cannot
+        render as a goal-state notice. Holding both invariants here means they
+        do not depend on every construction site remembering; callers keep their
+        own checks so they can report a targeted message before mutating UI
+        state.
 
         Raises:
             ValueError: If `objective` or `rubric` is empty.
-        """
+            GoalStateSizeError: If either exceeds its own limit, or their
+                combined text exceeds `GOAL_APPLICATION_CHAR_LIMIT`.
+        """  # noqa: DOC502 - propagates from `validate_goal_application`
         if not self.objective or not self.rubric:
             msg = "goal application requires a non-empty objective and rubric"
             raise ValueError(msg)
+        validate_goal_application(self.objective, self.rubric)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1477,6 +1477,35 @@ class TestMCPViewerScreen:
 
             assert dismissed_with == ["github"]
 
+    async def test_enter_on_authenticated_remote_reauthenticates(self) -> None:
+        """Activating a healthy remote server starts OAuth again."""
+        info = [
+            MCPServerInfo(
+                name="slack",
+                transport="http",
+                tools=(MCPToolInfo(name="search", description="Search Slack"),),
+            )
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            header = screen._row_widgets[0]
+            assert isinstance(header, MCPServerHeaderItem)
+            assert "Enter to re-auth" in _widget_text(header)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == ["slack"]
+
     async def test_error_header_hides_error_until_enter(self) -> None:
         """Error headers show an affordance, not the raw exception text."""
         app = MCPViewerTestApp()
@@ -1553,12 +1582,17 @@ class TestMCPViewerScreen:
 
             assert dismissed_with == []
 
-    async def test_enter_on_server_header_is_noop(self) -> None:
-        """Enter on a server header does not expand or crash."""
+    async def test_enter_on_stdio_server_header_is_noop(self) -> None:
+        """Enter on a healthy stdio server does not start OAuth or expand."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
             screen = MCPViewerScreen(server_info=_sample_info())
-            app.push_screen(screen)
+            app.push_screen(screen, on_dismiss)
             await pilot.pause()
 
             assert isinstance(screen._row_widgets[0], MCPServerHeaderItem)
@@ -1568,6 +1602,7 @@ class TestMCPViewerScreen:
             # affect any tool's expansion state.
             await pilot.press("enter")
             await pilot.pause()
+            assert dismissed_with == []
             assert screen._selected_index == 0
             assert all(not tool._expanded for tool in screen._tool_widgets)
 
@@ -1741,6 +1776,7 @@ class TestMCPViewerScreen:
             text = _widget_text(help_widgets[0]).lower()
             assert "navigate" in text
             assert "enter" in text
+            assert "re-auth" in text
             assert "f2" in text
             assert "ctrl+e" in text
             assert "filter" in text

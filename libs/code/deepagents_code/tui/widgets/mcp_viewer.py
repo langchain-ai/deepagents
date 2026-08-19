@@ -170,6 +170,13 @@ def _sort_servers_for_display(
     return sorted(server_info, key=lambda s: priority.get(s.status, 2))
 
 
+def _can_start_login(server: MCPServerInfo) -> bool:
+    """Return whether activating `server` should start OAuth login."""
+    return server.needs_attention() or (
+        server.status == "ok" and server.transport in {"http", "sse"}
+    )
+
+
 def _visible_tools_for(
     server: MCPServerInfo, tokens: list[str]
 ) -> tuple[MCPToolInfo, ...] | None:
@@ -455,10 +462,12 @@ def _render_server_header(
     t_label = "tool" if tool_count == 1 else "tools"
     if server.status == "ok":
         summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
+        login_hint = " — Enter to re-auth" if _can_start_login(server) else ""
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
             (server.name, "bold"),
             (summary, dim_style),
+            (login_hint, dim_style),
         )
     if server.status == "unauthenticated":
         login_hint = " — Enter to log in"
@@ -621,8 +630,8 @@ class MCPServerHeaderItem(Static):
 
     Cursor-selectable so users can navigate to every server — even those
     in `unauthenticated` or `error` states which have no tool rows by the
-    `MCPServerInfo` invariant — and read the full status / error text on
-    the line. Not expandable: `Enter` and `Ctrl+E` are no-ops here.
+    `MCPServerInfo` invariant — and activate login, re-authentication, or
+    error details. Server headers are not expandable.
     """
 
     def __init__(
@@ -734,12 +743,12 @@ class MCPServerHeaderItem(Static):
         )
 
     def on_click(self, event: Click) -> None:
-        """Handle click — select the header, or start login on unauth re-click.
+        """Handle click — select the header or activate its primary action.
 
         Headers are not expandable. Clicking once moves the cursor;
-        clicking the already-selected header either starts login for
-        an `unauthenticated` server or opens details for an `error`
-        server.
+        clicking the already-selected header starts login for an
+        unauthenticated or authenticated remote server, or opens details
+        for an `error` server.
 
         Args:
             event: The click event.
@@ -748,7 +757,7 @@ class MCPServerHeaderItem(Static):
         screen = self.screen
         if not isinstance(screen, MCPViewerScreen):
             return
-        if self._selected and self._server.needs_attention():
+        if self._selected and _can_start_login(self._server):
             screen.dismiss(self._server.name)
             return
         if self._selected and self._server.status == "error":
@@ -762,16 +771,15 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
     Displays servers grouped by name with transport type and tool count.
     Navigate with arrow keys, Enter to expand/collapse tool descriptions,
-    start in-app OAuth login for an unauthenticated server, or inspect a
-    failed server. Ctrl+R requests a reconnect, F2 on a server header
-    toggles its disabled state, and Escape closes the modal.
+    start in-app OAuth login or re-authentication, or inspect a failed server.
+    Ctrl+R requests a reconnect, F2 on a server header toggles its disabled
+    state, and Escape closes the modal.
 
     Dismisses with `None` when closed without action, the server name to
-    drive an in-TUI OAuth login when the user activates an
-    `unauthenticated` server header, or `MCP_VIEWER_RECONNECT_REQUEST`
-    for a reconnect. The disable/enable toggle (`F2`) is handled in-place
-    via the `on_toggle_disable` callback so the screen never tears down
-    — see the constructor.
+    drive in-TUI OAuth when the user activates a login-capable server header,
+    or `MCP_VIEWER_RECONNECT_REQUEST` for a reconnect. The disable/enable
+    toggle (`F2`) is handled in-place via the `on_toggle_disable` callback so
+    the screen never tears down — see the constructor.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -1253,7 +1261,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """
         help_parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-            "Enter expand/login/details",
+            "Enter expand/login/re-auth/details",
             "F2 disable/enable",
             "Ctrl+E expand all",
         ]
@@ -1518,13 +1526,12 @@ class MCPViewerScreen(ModalScreen[str | None]):
         self.app.push_screen(MCPServerErrorScreen(server))
 
     def action_toggle_expand(self) -> None:
-        """Toggle expand on a tool row, log in, or show error details.
+        """Toggle a tool, start server login, or show server error details.
 
-        Tool rows expand/collapse as before; activating a header row for
-        a server in `unauthenticated` state dismisses the viewer with the
-        server name so the app can drive in-TUI OAuth login. Activating an
-        `error` header opens a read-only detail modal. Headers for other
-        states (ok, awaiting reconnect, disabled) remain no-ops.
+        Tool rows expand or collapse. Activating an unauthenticated server
+        starts login, while activating an authenticated HTTP or SSE server
+        starts re-authentication. Error headers open a read-only detail modal;
+        awaiting-reconnect, disabled, and healthy stdio headers remain no-ops.
         """
         if not self._row_widgets:
             return
@@ -1537,7 +1544,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             self.call_after_refresh(row.scroll_visible)
             return
         server = row.server
-        if server.needs_attention():
+        if _can_start_login(server):
             self.dismiss(server.name)
             return
         if server.status == "error":

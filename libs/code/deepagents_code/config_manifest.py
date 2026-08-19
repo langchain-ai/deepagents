@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.types import ProviderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -853,6 +854,8 @@ def resolve_ranked_scalar(
     *,
     toml_data: Mapping[str, Any],
     managed_toml_data: Mapping[str, Any] | None = None,
+    managed_status: ProviderStatus | None = None,
+    user_status: ProviderStatus | None = None,
 ) -> ResolvedValue[object]:
     """Resolve one option through the ranked durable-mask engine.
 
@@ -865,6 +868,8 @@ def resolve_ranked_scalar(
         toml_data: Parsed user `config.toml` mapping.
         managed_toml_data: Parsed managed mapping, or the process snapshot when
             omitted.
+        managed_status: Health/display metadata for the supplied managed table.
+        user_status: Health/display metadata for the supplied user table.
 
     Returns:
         A rank-keyed `ResolvedValue`.
@@ -901,8 +906,10 @@ def resolve_ranked_scalar(
         value, source = _resolve_effective_theme(toml_data, managed_data)
         return _ranked_theme_result(value, source)
 
-    managed_status = ProviderStatus("managed config", None, ProviderHealth.OK)
-    user_status = ProviderStatus("config.toml", None, ProviderHealth.OK)
+    managed_status = managed_status or ProviderStatus(
+        "managed config", None, ProviderHealth.OK
+    )
+    user_status = user_status or ProviderStatus("config.toml", None, ProviderHealth.OK)
     providers = (
         ranked_toml_value(
             option,

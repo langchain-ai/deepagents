@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import ToolException
 from pydantic import TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
@@ -18,6 +19,8 @@ from deepagents_code._ask_user_types import (
     QUESTION_TYPES,
     Question,
     _requires_choices,
+    decode_multi_select_answer,
+    encode_multi_select_answer,
 )
 from deepagents_code.ask_user import (
     AskUserMiddleware,
@@ -48,21 +51,21 @@ class TestValidateQuestions:
     """Tests for `_validate_questions`."""
 
     def test_rejects_empty_questions(self) -> None:
-        with pytest.raises(ValueError, match="at least one question"):
+        with pytest.raises(ToolException, match="at least one question"):
             _validate_questions([])
 
     def test_rejects_empty_question_text(self) -> None:
-        with pytest.raises(ValueError, match="non-empty 'question'"):
+        with pytest.raises(ToolException, match="non-empty 'question'"):
             _validate_questions([{"question": "   ", "type": "text"}])
 
     def test_rejects_multiple_choice_without_choices(self) -> None:
-        with pytest.raises(ValueError, match="requires a non-empty 'choices'"):
+        with pytest.raises(ToolException, match="requires a non-empty 'choices'"):
             _validate_questions(
                 [{"question": "Pick one", "type": "multiple_choice", "choices": []}]
             )
 
     def test_rejects_text_question_with_choices(self) -> None:
-        with pytest.raises(ValueError, match="must not define 'choices'"):
+        with pytest.raises(ToolException, match="must not define 'choices'"):
             _validate_questions(
                 [
                     {
@@ -74,14 +77,14 @@ class TestValidateQuestions:
             )
 
     def test_rejects_multi_select_without_choices(self) -> None:
-        with pytest.raises(ValueError, match=r"multi_select question .* non-empty"):
+        with pytest.raises(ToolException, match=r"multi_select question .* non-empty"):
             _validate_questions(
                 [{"question": "Pick some", "type": "multi_select", "choices": []}]
             )
 
     def test_rejects_blank_choice_value(self) -> None:
         """A blank label would render as a selectable option with no answer."""
-        with pytest.raises(ValueError, match="missing or blank 'value'"):
+        with pytest.raises(ToolException, match="missing or blank 'value'"):
             _validate_questions(
                 [
                     {
@@ -106,21 +109,31 @@ class TestValidateQuestions:
                 }
             ],
         )
-        with pytest.raises(ValueError, match="missing or blank 'value'"):
+        with pytest.raises(ToolException, match="missing or blank 'value'"):
             _validate_questions(questions)
 
-    def test_rejects_multi_select_choice_containing_separator(self) -> None:
-        """Commas in values would make the joined answer ambiguous."""
-        with pytest.raises(ValueError, match="would make the joined answer ambiguous"):
-            _validate_questions(
-                [
-                    {
-                        "question": "Where?",
-                        "type": "multi_select",
-                        "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
-                    }
-                ]
-            )
+    def test_allows_comma_in_multi_select_choice_value(self) -> None:
+        """The JSON-array answer encoding keeps a comma inside a value exact."""
+        _validate_questions(
+            [
+                {
+                    "question": "Where?",
+                    "type": "multi_select",
+                    "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
+                }
+            ]
+        )
+
+    def test_validation_errors_are_tool_exceptions(self) -> None:
+        """A `ValueError` would escape `ToolNode` and kill the turn.
+
+        `ToolNode` only converts `ToolException` into an error `ToolMessage`
+        the model can read and correct. Every rejection above must therefore be
+        one; this pins the exception type on a representative failure rather
+        than relying on each test's `pytest.raises` to notice a drift back.
+        """
+        with pytest.raises(ToolException):
+            _validate_questions([])
 
     def test_allows_comma_in_multiple_choice_value(self) -> None:
         """Single-selection answers are unambiguous, so commas are fine there."""
@@ -137,7 +150,7 @@ class TestValidateQuestions:
     def test_rejects_unknown_question_type(self) -> None:
         """Nothing outside `QuestionType` may reach the interrupt."""
         questions = cast("list[Question]", [{"question": "Q?", "type": "multiselect"}])
-        with pytest.raises(ValueError, match="unsupported ask_user question type"):
+        with pytest.raises(ToolException, match="unsupported ask_user question type"):
             _validate_questions(questions)
 
     def test_rejects_non_boolean_required(self) -> None:
@@ -152,7 +165,7 @@ class TestValidateQuestions:
             "list[Question]",
             [{"question": "Q?", "type": "text", "required": "false"}],
         )
-        with pytest.raises(ValueError, match="non-boolean 'required'"):
+        with pytest.raises(ToolException, match="non-boolean 'required'"):
             _validate_questions(questions)
 
     def test_tool_schema_rejects_non_boolean_required(self) -> None:
@@ -225,7 +238,7 @@ class TestValidateQuestions:
                     }
                 ],
             )
-            with pytest.raises(ValueError, match="must not define 'choices'"):
+            with pytest.raises(ToolException, match="must not define 'choices'"):
                 _validate_questions(questions)
 
     def test_accepts_valid_question_set(self) -> None:
@@ -556,6 +569,84 @@ class TestParseAnswers:
         message = _extract_tool_message(cmd)
         assert message.status == "error"
         assert "expected 1, got 2" in str(message.content)
+
+
+class TestMultiSelectEncoding:
+    """Tests for the JSON-array encoding of `multi_select` answers on the wire."""
+
+    def test_answer_with_commas_quotes_and_newlines_round_trips(self) -> None:
+        """Punctuation that broke the joined encoding must survive verbatim."""
+        questions: list[Question] = [
+            {
+                "question": "Which constraints apply?",
+                "type": "multi_select",
+                "choices": [
+                    {"value": 'push-to-main — no PR label, always "strict"'},
+                    {"value": "line one\nline two"},
+                ],
+            }
+        ]
+        answer = encode_multi_select_answer(
+            ['push-to-main — no PR label, always "strict"', "line one\nline two"]
+        )
+
+        cmd = _parse_answers(
+            {"answers": [answer]},
+            questions,
+            "tc-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+
+        message = _extract_tool_message(cmd)
+        assert message.status == "success"
+        assert f"A: {answer}" in str(message.content)
+        receipt = message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY]
+        assert decode_multi_select_answer(receipt["answers"][0]) == [
+            'push-to-main — no PR label, always "strict"',
+            "line one\nline two",
+        ]
+
+    def test_transcript_renders_the_json_array_verbatim(self) -> None:
+        """The model sees the self-delimiting form, not a re-joined string."""
+        questions: list[Question] = [
+            {
+                "question": "Where?",
+                "type": "multi_select",
+                "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
+            }
+        ]
+        answer = encode_multi_select_answer(["Boston, MA", "Austin"])
+
+        content = _extract_tool_message_content(
+            _parse_answers({"answers": [answer]}, questions, "tc-1")
+        )
+
+        assert content == 'Q: Where?\nA: ["Boston, MA", "Austin"]'
+
+    def test_empty_multi_select_answer_keeps_its_receipt(self) -> None:
+        """`[]` is a real answer — it must not read as a blank `A:` line."""
+        questions: list[Question] = [
+            {
+                "question": "Extras?",
+                "type": "multi_select",
+                "choices": [{"value": "docs"}],
+                "required": False,
+            }
+        ]
+
+        cmd = _parse_answers(
+            {"answers": [encode_multi_select_answer([])]},
+            questions,
+            "tc-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+
+        message = _extract_tool_message(cmd)
+        assert "A: []" in str(message.content)
+        receipt = message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY]
+        assert decode_multi_select_answer(receipt["answers"][0]) == []
 
 
 def _turn_state(turn_id: str) -> dict[str, object]:

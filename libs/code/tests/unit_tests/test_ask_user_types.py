@@ -17,6 +17,8 @@ from deepagents_code._ask_user_types import (
     ASK_USER_FAILED_SUMMARY,
     ASK_USER_NO_ANSWER,
     AskUserRowSummary,
+    decode_multi_select_answer,
+    encode_multi_select_answer,
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
@@ -89,6 +91,44 @@ class TestFormatAskUserTranscript:
 
         assert result == f"Q: Name?\nA: {crafted}"
         assert result.count("Q: ") == 2
+
+
+class TestMultiSelectAnswerEncoding:
+    """Tests for `encode_multi_select_answer` / `decode_multi_select_answer`."""
+
+    def test_round_trips_selected_values(self) -> None:
+        values = ["Boston, MA", 'quoted "value"', "line one\nline two", "🚀"]
+
+        encoded = encode_multi_select_answer(values)
+
+        assert encoded == (
+            '["Boston, MA", "quoted \\"value\\"", "line one\\nline two", "🚀"]'
+        )
+        assert decode_multi_select_answer(encoded) == values
+
+    def test_round_trips_an_empty_selection(self) -> None:
+        """An untouched optional multi-select encodes as `[]`, not `""`."""
+        assert encode_multi_select_answer([]) == "[]"
+        assert decode_multi_select_answer("[]") == []
+
+    def test_encode_produces_a_single_line(self) -> None:
+        """The transcript is blank-line separated, so the encoding must not be."""
+        encoded = encode_multi_select_answer(["a\nb", "c"])
+
+        assert "\n" not in encoded
+
+    def test_decode_rejects_non_json(self) -> None:
+        assert decode_multi_select_answer("a, b") is None
+
+    def test_decode_rejects_a_json_object(self) -> None:
+        assert decode_multi_select_answer('{"a": 1}') is None
+
+    def test_decode_rejects_non_string_elements(self) -> None:
+        assert decode_multi_select_answer('["a", 1]') is None
+
+    def test_decode_rejects_a_bare_json_string(self) -> None:
+        """A JSON string is decodable but is not a multi-select answer."""
+        assert decode_multi_select_answer('"a"') is None
 
 
 class TestFormatAskUserErrorAnswer:

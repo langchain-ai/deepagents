@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 
 from deepagents_code._ask_user_types import (
     CHOICE_QUESTION_TYPES,
-    MULTI_SELECT_ANSWER_SEPARATOR,
-    MULTI_SELECT_FORBIDDEN_IN_VALUE,
     QUESTION_TYPES,
+    decode_multi_select_answer,
+    encode_multi_select_answer,
 )
 from deepagents_code.config import get_glyphs
 from deepagents_code.editor import editor_display_name
@@ -47,10 +47,6 @@ ADD_ANOTHER_OTHER_LABEL = "Add another custom answer"
 MAX_MULTI_SELECT_OTHER_ENTRIES = 10
 MISSING_ANSWER_TOAST = "Please provide an answer to all questions before continuing."
 MISSING_OTHER_TEXT_TOAST = "Please type a custom answer for Other, or uncheck it."
-MULTI_SELECT_COMMA_TOAST = (
-    "Custom multi-select answers cannot contain a comma "
-    f"({MULTI_SELECT_FORBIDDEN_IN_VALUE!r})."
-)
 MAX_OTHER_ENTRIES_TOAST = (
     f"At most {MAX_MULTI_SELECT_OTHER_ENTRIES} custom answers can be added to one "
     "question. Combine values into an existing field to add more."
@@ -390,16 +386,19 @@ class AskUserMenu(Container):
         # others still hold: the user can Shift+Tab back into a confirmed
         # question and edit it (`focus_input` even drops the cursor straight into
         # a checked Other field), or leave a question unconfirmed entirely and
-        # Tab past it. Without this, a comma typed into a custom multi-select
-        # answer after confirming reaches the agent as two selections, silently
-        # breaking the guarantee `_validate_choices` enforces on the tool side.
+        # Tab past it. Without this, a custom multi-select answer cleared after
+        # confirming would vanish from the answer the agent receives while its
+        # checkbox stays on.
         #
         # This subsumes the empty-required check for `multi_select`, and reports
         # the more specific Other-row errors in preference to the generic
-        # "answer all questions" toast.
+        # "answer all questions" toast. A raw `.strip()` is not enough for
+        # emptiness here: an untouched multi-select encodes as the truthy
+        # string `"[]"`, so the check goes through
+        # `_QuestionWidget.answer_is_empty`.
         for i, qw in enumerate(self._question_widgets):
             error = qw.validate_for_submit()
-            if error is None and not self._answers[i].strip() and qw._required:
+            if error is None and qw._required and qw.answer_is_empty():
                 error = MISSING_ANSWER_TOAST
             if error is not None:
                 self._confirmed[i] = False
@@ -984,17 +983,13 @@ class _QuestionWidget(Vertical):
         so the agent receives the full pasted content, not the compact
         `[Pasted text #N]` token.
 
-        A multi-select answer is the toggled predefined values in choice-list
-        order, then each filled custom Other value in slot order, joined with
-        `MULTI_SELECT_ANSWER_SEPARATOR`, and is empty when nothing is toggled.
-        A custom value duplicating an already-selected one is dropped, so the
-        agent never sees the same selection twice.
-
-        On the tool path `_validate_choices` rejects predefined values containing
-        `MULTI_SELECT_FORBIDDEN_IN_VALUE`, and `validate_for_submit` blocks
-        submitting Other text that contains it — including on the final
-        all-confirmed submit, since answers are read live and a confirmed
-        question can still be edited.
+        A multi-select answer is a JSON array (via `encode_multi_select_answer`)
+        of the toggled predefined values in choice-list order, then each filled
+        custom Other value in slot order — `[]` when nothing is toggled. JSON
+        is self-delimiting, so values carrying commas, quotes, or newlines
+        round-trip exactly through `decode_multi_select_answer`. A custom value
+        duplicating an already-selected one is dropped, so the agent never sees
+        the same selection twice.
         """
         if self._q_type == "text":
             return self._text_input.submitted_value if self._text_input else ""
@@ -1011,7 +1006,7 @@ class _QuestionWidget(Vertical):
                 other_text = self._entry_custom_text(entry)
                 if other_text and other_text not in selected:
                     selected.append(other_text)
-            return MULTI_SELECT_ANSWER_SEPARATOR.join(selected)
+            return encode_multi_select_answer(selected)
 
         if self._is_other_selected and self._other_input:
             return self._other_input.submitted_value
@@ -1020,6 +1015,26 @@ class _QuestionWidget(Vertical):
             return self._choices[self._selected_choice].get("value", "")
 
         return ""
+
+    def answer_is_empty(self) -> bool:
+        """Return whether the current answer counts as "no answer".
+
+        A raw `.strip()` on `get_answer` misreads a multi-select with nothing
+        toggled: its encoding is the truthy string `"[]"`. Decoding is what
+        makes emptiness decidable for that type; any other answer is empty when
+        it is blank.
+
+        Returns:
+            `True` when the question has no substantive answer — an empty
+            multi-select selection, or a blank answer of any other type.
+        """
+        answer = self.get_answer()
+        if self._q_type == "multi_select":
+            # `get_answer` always produces a decodable array for this type;
+            # the `or []` only keeps a hypothetical malformed string on the
+            # fail-closed side of a required-question check.
+            return not (decode_multi_select_answer(answer) or [])
+        return not answer.strip()
 
     def validate_for_submit(self) -> str | None:
         """Return a user-facing error if this question cannot be submitted yet.
@@ -1040,9 +1055,7 @@ class _QuestionWidget(Vertical):
             other_text = entry.text_input.submitted_value
             if not other_text.strip():
                 return MISSING_OTHER_TEXT_TOAST
-            if MULTI_SELECT_FORBIDDEN_IN_VALUE in other_text:
-                return MULTI_SELECT_COMMA_TOAST
-        if not self.get_answer().strip() and self._required:
+        if self._required and self.answer_is_empty():
             return MISSING_ANSWER_TOAST
         return None
 

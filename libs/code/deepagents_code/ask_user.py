@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import ToolException, tool
 from langgraph.types import Command, interrupt
 from pydantic import Field
 
@@ -28,7 +28,6 @@ from deepagents_code._ask_user_types import (
     ASK_USER_CANCELLED_ANSWER,
     CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
-    MULTI_SELECT_FORBIDDEN_IN_VALUE,
     QUESTION_TYPES,
     AskUserAuthorizationReceipt,
     AskUserRequest,
@@ -50,7 +49,7 @@ Each question can be one of:
 
 For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options and may also add one or more custom free-form Other values among the selected values.
 
-A "multi_select" answer is returned as the selected values joined with ", " (an optional question the user leaves untouched returns an empty string). Because of that joining, "multi_select" choice values and custom Other text must not themselves contain a comma.
+A "multi_select" answer is returned as a JSON array of the selected values, e.g. ["a", "b"] (an optional question the user leaves untouched returns "[]"). "multi_select" choice values and custom Other text may themselves contain commas, quotes, and newlines.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
@@ -85,19 +84,15 @@ def _validate_choices(
     """Validate the choice list of a choice-type question.
 
     Rejects blank values, which would otherwise render as an unlabelled option
-    the user can select but whose answer reads as "no answer". For
-    `multi_select`, also rejects values containing
-    `MULTI_SELECT_FORBIDDEN_IN_VALUE`, since a value carrying the punctuation
-    that separates selections would make the joined answer ambiguous.
+    the user can select but whose answer reads as "no answer".
 
     Args:
         choices: Candidate `choices` value from a question definition.
         question_text: Question text, for error messages.
-        question_type: Question type. Selects the `multi_select`-only
-            forbidden-substring check, and names the type in error messages.
+        question_type: Question type. Names the type in error messages.
 
     Raises:
-        ValueError: If any choice is malformed, blank, or ambiguous.
+        ToolException: If any choice is malformed or blank.
     """
     # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
     # so the shape checks below are redundant there. They are kept — and the
@@ -110,14 +105,7 @@ def _validate_choices(
                 f"{question_type} question {question_text!r} has a choice with a "
                 f"missing or blank 'value': {choice!r}"
             )
-            raise ValueError(msg)
-        if question_type == "multi_select" and MULTI_SELECT_FORBIDDEN_IN_VALUE in value:
-            msg = (
-                f"multi_select question {question_text!r} has a choice value "
-                f"containing {MULTI_SELECT_FORBIDDEN_IN_VALUE!r}, which would "
-                f"make the joined answer ambiguous: {value!r}"
-            )
-            raise ValueError(msg)
+            raise ToolException(msg)
 
 
 def _validate_questions(questions: list[Question]) -> None:
@@ -127,22 +115,26 @@ def _validate_questions(questions: list[Question]) -> None:
         questions: Question definitions provided to the `ask_user` tool.
 
     Raises:
-        ValueError: If the questions list or an individual question is invalid.
+        ToolException: If the questions list or an individual question is
+            invalid. `ToolException` (not `ValueError`) pairs with
+            `handle_tool_error=True` on the tool below, so the failure reaches
+            the model as an error `ToolMessage` it can read and retry against
+            instead of re-raising up the graph as a fatal turn error.
     """
     if not questions:
         msg = "ask_user requires at least one question"
-        raise ValueError(msg)
+        raise ToolException(msg)
 
     for q in questions:
         question_text = q.get("question")
         if not isinstance(question_text, str) or not question_text.strip():
             msg = "ask_user questions must have non-empty 'question' text"
-            raise ValueError(msg)
+            raise ToolException(msg)
 
         question_type = q.get("type")
         if question_type not in QUESTION_TYPES:
             msg = f"unsupported ask_user question type: {question_type!r}"
-            raise ValueError(msg)
+            raise ToolException(msg)
 
         # Belt-and-braces: on the tool path `Question.required` is `strict=True`,
         # so pydantic has already rejected a non-boolean before this runs. This
@@ -157,7 +149,7 @@ def _validate_questions(questions: list[Question]) -> None:
                 f"ask_user question {question_text!r} has a non-boolean "
                 f"'required': {required!r}"
             )
-            raise ValueError(msg)
+            raise ToolException(msg)
 
         if question_type in CHOICE_QUESTION_TYPES:
             choices = q.get("choices")
@@ -167,7 +159,7 @@ def _validate_questions(questions: list[Question]) -> None:
                     f"{q.get('question')!r} requires a "
                     f"non-empty 'choices' list"
                 )
-                raise ValueError(msg)
+                raise ToolException(msg)
             _validate_choices(
                 choices,
                 question_text=question_text,
@@ -181,7 +173,7 @@ def _validate_questions(questions: list[Question]) -> None:
             msg = (
                 f"{question_type} question {question_text!r} must not define 'choices'"
             )
-            raise ValueError(msg)
+            raise ToolException(msg)
 
 
 def _context_string(context: object, name: str) -> str | None:
@@ -495,6 +487,12 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             )
 
         _ask_user.name = "ask_user"
+        # Convert `ToolException` (from `_validate_questions`) into an error
+        # `ToolMessage` the model can read and retry against. `BaseTool.run`
+        # otherwise re-raises it, and since langgraph's default
+        # `handle_tool_errors` only converts `ToolInvocationError`, the
+        # exception would escape `ToolNode` and kill the whole agent turn.
+        _ask_user.handle_tool_error = True
         self.tools = [_ask_user]
 
     def wrap_model_call(

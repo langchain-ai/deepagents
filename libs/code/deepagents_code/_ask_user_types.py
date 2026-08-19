@@ -11,6 +11,7 @@ side produces it and which reads it.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal, NotRequired, assert_never, get_args
 
 from pydantic import Field
@@ -61,23 +62,46 @@ same as being *rendered* as a choice list: the TUI has its own exhaustive
 dispatch in `_QuestionWidget.compose`.
 """
 
-MULTI_SELECT_ANSWER_SEPARATOR = ", "
-"""Separator joining the selected values of a `multi_select` answer."""
 
-MULTI_SELECT_FORBIDDEN_IN_VALUE = ","
-"""Substring a `multi_select` choice value must not contain.
+def encode_multi_select_answer(values: list[str]) -> str:
+    """Encode the selected values of a `multi_select` answer for the wire.
 
-Deliberately stated outright rather than derived from
-`MULTI_SELECT_ANSWER_SEPARATOR`, so the two can evolve independently: a separator
-of `" and "` would, if the forbidden text were derived from it, reject every value
-containing "and".
+    The answer stays one string so `answers: list[str]` keeps one slot per
+    question, positionally matched. JSON is self-delimiting, so values carrying
+    commas, quotes, or newlines round-trip exactly; nothing else on the path
+    needs to change.
 
-This buys *legibility* of the joined answer, not invertibility. Nothing decodes a
-multi-select answer back into its components, and per
-`format_ask_user_transcript` the transcript is not unambiguously decodable
-anyway. If one is ever written, that is the moment to introduce a structured
-answer type instead of leaning on this ban.
-"""
+    Args:
+        values: Selected values — toggled predefined choices in choice-list
+            order, then custom Other values in slot order.
+
+    Returns:
+        The values as a compact JSON array, e.g. `["a", "b"]`. An empty
+        selection encodes as `[]`.
+    """
+    return json.dumps(values, ensure_ascii=False)
+
+
+def decode_multi_select_answer(raw: str) -> list[str] | None:
+    """Decode a `multi_select` answer produced by `encode_multi_select_answer`.
+
+    Args:
+        raw: The raw answer string for a `multi_select` question.
+
+    Returns:
+        The selected values, or `None` when `raw` is not a JSON array of
+            strings — malformed input must fail loudly at the caller rather
+            than be silently mis-split.
+    """
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, list) or not all(
+        isinstance(value, str) for value in decoded
+    ):
+        return None
+    return decoded
 
 
 class Choice(TypedDict):
@@ -88,7 +112,9 @@ class Choice(TypedDict):
         Field(
             description=(
                 "The display label for this choice. Also the text returned as "
-                "the answer when this choice is selected."
+                "the answer when this choice is selected. For 'multi_select' "
+                "questions it appears verbatim in the JSON array the answer is "
+                "encoded as, so it may contain commas, quotes, and newlines."
             )
         ),
     ]
@@ -108,10 +134,10 @@ class Question(TypedDict):
                 "one or more predefined options. Both choice types always append an "
                 "'Other' free-form option automatically; multi-select can accept "
                 "multiple custom Other values (filling one reveals another). A "
-                "'multi_select' answer comes back as the selected values "
-                "(including any custom Other text) joined with ', '; if nothing "
-                "is selected on an optional question the answer is an empty "
-                "string."
+                "'multi_select' answer comes back as a JSON array of the selected "
+                "values (including any custom Other text), e.g. "
+                '["a", "b"]; if nothing is selected on an optional question the '
+                'answer is "[]".'
             )
         ),
     ]
@@ -124,9 +150,10 @@ class Question(TypedDict):
                     "Options for 'multiple_choice' and 'multi_select' questions. "
                     "Every choice needs a non-empty 'value'. An 'Other' free-form "
                     "option is always appended automatically for both types; "
-                    "multi-select may collect multiple custom Other values. "
-                    "'multi_select' values (including custom Other text) must not "
-                    "contain ',' because the answer joins them with ', '."
+                    "multi-select may collect multiple custom Other values. A "
+                    "'multi_select' answer is a JSON array of the selected "
+                    "values, so values (including custom Other text) may "
+                    "contain commas and other punctuation."
                 )
             ),
         ]
@@ -330,12 +357,16 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
     thread. The TUI renders that authoritative text literally rather than trying
     to parse the unrestricted answer content back into structured data.
 
-    Answers are interpolated unescaped, so the encoding is not unambiguously
-    decodable: an answer containing a blank line followed by a literal
-    `Q: <text>\nA:` header is indistinguishable from a real block boundary. Only
-    the model reads it that way today. Any future decoder must anchor on the known
-    question text rather than on a generic `Q: ` pattern, or a crafted answer can
-    fabricate an extra question/answer pair.
+    A `multi_select` answer is rendered verbatim as the JSON array
+    `encode_multi_select_answer` produced — a single line, so the
+    blank-line-separated block layout stays intact and the answer decodes
+    exactly with `decode_multi_select_answer`. `text` and `multiple_choice`
+    answers stay raw: they are interpolated unescaped, so for them the encoding
+    is not unambiguously decodable — an answer containing a blank line followed
+    by a literal `Q: <text>\nA:` header is indistinguishable from a real block
+    boundary. Only the model reads it that way today. Any future decoder must
+    anchor on the known question text rather than on a generic `Q: ` pattern,
+    or a crafted answer can fabricate an extra question/answer pair.
 
     Args:
         questions: Questions that were asked. Callers must pass questions whose

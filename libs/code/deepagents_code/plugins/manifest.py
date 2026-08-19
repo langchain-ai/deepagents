@@ -110,10 +110,9 @@ def _resolve_component_path(
     try:
         root_resolved = plugin_root.resolve()
         resolved = (plugin_root / path).resolve()
-    except OSError as exc:
-        warnings.append(
-            f"ignoring {field_name}: could not resolve {declaration!r}: {exc}"
-        )
+    except (OSError, RuntimeError):
+        logger.debug("Could not resolve plugin component path", exc_info=True)
+        warnings.append(f"ignoring {field_name}: could not resolve {declaration!r}")
         return None
     if not resolved.is_relative_to(root_resolved):
         warnings.append(f"ignoring {field_name}: path escapes plugin root")

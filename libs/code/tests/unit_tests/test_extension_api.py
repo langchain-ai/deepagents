@@ -164,3 +164,28 @@ def test_plugin_manifest_rejects_python_entry_symlink_escape(tmp_path: Path) -> 
     assert manifest is not None
     assert not manifest.python_extensions
     assert any("escapes plugin root" in warning for warning in warnings)
+
+
+def test_plugin_manifest_rejects_symlink_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Symlink loops reported as `RuntimeError` on Python 3.12 fail closed."""
+    extension = tmp_path / "extension.py"
+    extension.touch()
+    _write_manifest(tmp_path, version="1.0.0")
+    original_resolve = Path.resolve
+
+    def resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == extension:
+            msg = "Symlink loop"
+            raise RuntimeError(msg)
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    manifest, _, warnings = load_manifest(tmp_path)
+
+    assert manifest is not None
+    assert not manifest.python_extensions
+    assert warnings == (
+        "ignoring pythonExtensions: could not resolve './extension.py'",
+    )

@@ -1484,7 +1484,7 @@ class ToolCallMessage(Vertical):
     DEFAULT_CSS = """
     ToolCallMessage {
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 0;
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $tool;

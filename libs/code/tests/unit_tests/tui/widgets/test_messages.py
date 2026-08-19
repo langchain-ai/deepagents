@@ -1565,6 +1565,17 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     return _ToolMsgApp(tool_name, args)
 
 
+class TestToolCallMessageAppearance:
+    """Tool rows align their prefix glyph with the transcript edge."""
+
+    async def test_has_flush_left_glyph_with_right_padding(self) -> None:
+        """The tool prefix has no left inset while content keeps its right inset."""
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test():
+            assert app.msg.styles.padding.left == 0
+            assert app.msg.styles.padding.right == 1
+
+
 class TestToolCallMessageOutputGutter:
     """The output glyph lives in a fixed gutter so wrapped lines stay aligned."""
 

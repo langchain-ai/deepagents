@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from email.parser import BytesParser
 from email.policy import default
+from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from check_release_deps import (
     _write_step_summary,
     fetch_pypi_json,
 )
+from packaging.markers import default_environment
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.utils import canonicalize_name
@@ -34,7 +36,106 @@ if TYPE_CHECKING:
     from email.message import Message
 
 MAX_FETCH_WORKERS = 8
+MAX_MARKER_VALUES_PER_VARIABLE = 16
+PYTHON_MINOR_PROBE_LIMIT = 100
 RELEASE_TITLE = re.compile(r"^release\(([^)]+)\):\s+\S+")
+MARKER_VARIABLES = (
+    "implementation_name",
+    "implementation_version",
+    "os_name",
+    "platform_machine",
+    "platform_python_implementation",
+    "platform_release",
+    "platform_system",
+    "platform_version",
+    "python_full_version",
+    "python_version",
+    "sys_platform",
+    "extra",
+)
+PLATFORM_ENVIRONMENTS: tuple[Mapping[str, str], ...] = (
+    {
+        "implementation_name": "cpython",
+        "os_name": "posix",
+        "platform_machine": "x86_64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "6.0.0",
+        "platform_system": "Linux",
+        "platform_version": "6.0.0",
+        "sys_platform": "linux",
+    },
+    {
+        "implementation_name": "cpython",
+        "os_name": "posix",
+        "platform_machine": "aarch64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "6.0.0",
+        "platform_system": "Linux",
+        "platform_version": "6.0.0",
+        "sys_platform": "linux",
+    },
+    {
+        "implementation_name": "cpython",
+        "os_name": "posix",
+        "platform_machine": "ppc64le",
+        "platform_python_implementation": "CPython",
+        "platform_release": "6.0.0",
+        "platform_system": "Linux",
+        "platform_version": "6.0.0",
+        "sys_platform": "linux",
+    },
+    {
+        "implementation_name": "cpython",
+        "os_name": "posix",
+        "platform_machine": "x86_64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "23.0.0",
+        "platform_system": "Darwin",
+        "platform_version": "23.0.0",
+        "sys_platform": "darwin",
+    },
+    {
+        "implementation_name": "cpython",
+        "os_name": "posix",
+        "platform_machine": "arm64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "23.0.0",
+        "platform_system": "Darwin",
+        "platform_version": "23.0.0",
+        "sys_platform": "darwin",
+    },
+    {
+        "implementation_name": "cpython",
+        "os_name": "nt",
+        "platform_machine": "AMD64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "10",
+        "platform_system": "Windows",
+        "platform_version": "10.0.0",
+        "sys_platform": "win32",
+    },
+    {
+        "implementation_name": "cpython",
+        "os_name": "nt",
+        "platform_machine": "ARM64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "10",
+        "platform_system": "Windows",
+        "platform_version": "10.0.0",
+        "sys_platform": "win32",
+    },
+    {
+        "implementation_name": "cpython",
+        "os_name": "posix",
+        "platform_machine": "x86_64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "14.0",
+        "platform_system": "FreeBSD",
+        "platform_version": "14.0",
+        "sys_platform": "freebsd",
+    },
+)
+MARKER_OPERATOR = r"(?:not\s+in|in|===|==|!=|~=|<=|>=|<|>)"
 
 
 @dataclass(frozen=True)
@@ -45,6 +146,15 @@ class WheelMetadata:
     version: Version
     requires_python: str
     requires_dist: tuple[Requirement, ...]
+    provides_extra: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ApplicableRequirement:
+    """One dependency constraint and the marker variants that activate it."""
+
+    requirement: Requirement
+    variants: tuple[Requirement, ...]
 
 
 @dataclass(frozen=True)
@@ -133,6 +243,7 @@ def _parse_metadata_message(message: Message, wheel_path: Path) -> WheelMetadata
         version=version,
         requires_python=requires_python,
         requires_dist=tuple(requirements),
+        provides_extra=tuple(message.get_all("Provides-Extra", [])),
     )
 
 
@@ -231,20 +342,252 @@ def load_sibling_python_metadata(
     return constraints
 
 
-def _wheel_requirements(metadata: WheelMetadata) -> tuple[Requirement, ...]:
+def _version_neighbors(version: Version) -> tuple[Version, ...]:
+    release = list(version.release)
+    neighbors = {version}
+    above = release.copy()
+    above[-1] += 1
+    neighbors.add(Version(".".join(str(part) for part in above)))
+    if len(release) == 2:
+        neighbors.add(Version(f"{release[0]}.{release[1]}.1"))
+    if release[-1] > 0:
+        below = release.copy()
+        below[-1] -= 1
+        neighbors.add(Version(".".join(str(part) for part in below)))
+    elif len(release) > 1 and release[-2] > 0:
+        below = release[:-1]
+        below[-1] -= 1
+        below.append(999)
+        neighbors.add(Version(".".join(str(part) for part in below)))
+    return tuple(neighbors)
+
+
+def _constraint_probe_versions(constraint: str) -> set[Version]:
+    probes: set[Version] = set()
+    try:
+        specifier = SpecifierSet(constraint)
+    except InvalidSpecifier:
+        return probes
+    for item in specifier:
+        raw_version = item.version.removesuffix(".*")
+        try:
+            version = Version(raw_version)
+        except InvalidVersion:
+            continue
+        probes.update(_version_neighbors(version))
+    return probes
+
+
+def _supported_python_versions(
+    requires_python: str,
+    *,
+    additional_constraints: Sequence[str] = (),
+    additional_versions: Sequence[Version] = (),
+) -> tuple[Version, ...]:
+    """Probe the supported versions in the package's current Python major.
+
+    Python major versions that do not exist yet are not actionable release targets.
+    Within the current major, every minor plus all constraint and marker boundaries
+    are included so upper bounds and patch-level exclusions produce a witness.
+    """
+    specifier = SpecifierSet(requires_python)
+    minimum = extract_minimum(specifier)
+    if minimum is None:
+        msg = f"Requires-Python has no concrete lower bound: {requires_python}"
+        raise ValueError(msg)
+    major = minimum.release[0]
+    probes = {Version(f"{major}.{minor}") for minor in range(PYTHON_MINOR_PROBE_LIMIT)}
+    for constraint in (requires_python, *additional_constraints):
+        probes.update(_constraint_probe_versions(constraint))
+    probes.update(additional_versions)
+    supported = tuple(
+        version
+        for version in sorted(probes)
+        if version.major == major and specifier.contains(version, prereleases=True)
+    )
+    if not supported:
+        msg = f"Requires-Python has no supported {major}.x versions: {requires_python}"
+        raise ValueError(msg)
+    return supported
+
+
+def _marker_literals(marker: str, variable: str) -> tuple[str, ...]:
+    escaped = re.escape(variable)
+    patterns = (
+        rf"\b{escaped}\b\s*{MARKER_OPERATOR}\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
+        rf"(?P<quote>['\"])(?P<value>.*?)(?P=quote)\s*{MARKER_OPERATOR}\s*\b{escaped}\b",
+    )
+    values: set[str] = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, marker):
+            value = match.group("value")
+            values.add(value)
+            values.update(part for part in re.split(r"[\s,]+", value) if part)
+    return tuple(sorted(values))
+
+
+def _marker_python_versions(requirement: Requirement) -> tuple[Version, ...]:
+    if requirement.marker is None:
+        return ()
+    marker = str(requirement.marker)
+    versions: set[Version] = set()
+    for variable in (
+        "implementation_version",
+        "python_full_version",
+        "python_version",
+    ):
+        for literal in _marker_literals(marker, variable):
+            try:
+                versions.update(_version_neighbors(Version(literal)))
+            except InvalidVersion:
+                continue
+    return tuple(sorted(versions))
+
+
+def _marker_environment_overrides(
+    marker: str,
+    provides_extra: Sequence[str],
+) -> tuple[dict[str, str], ...]:
+    platform_variables = [
+        variable
+        for variable in MARKER_VARIABLES
+        if variable
+        not in {
+            "extra",
+            "python_version",
+            "python_full_version",
+            "implementation_version",
+        }
+        and re.search(rf"\b{re.escape(variable)}\b", marker)
+    ]
+    environments = [
+        {
+            variable: value
+            for variable, value in environment.items()
+            if variable in platform_variables
+        }
+        for environment in PLATFORM_ENVIRONMENTS
+    ]
+    if not platform_variables:
+        environments = [{}]
+
+    unique_platforms = {
+        tuple(sorted(environment.items())): environment for environment in environments
+    }
+    environments = list(unique_platforms.values())
+    mutable_variables = sorted(
+        {"platform_release", "platform_version"}.intersection(platform_variables)
+    )
+    if mutable_variables:
+        expanded: list[dict[str, str]] = []
+        for environment in environments:
+            choices: list[tuple[str, ...]] = []
+            for variable in mutable_variables:
+                values = {environment.get(variable, "")}
+                for literal in _marker_literals(marker, variable):
+                    values.add(literal)
+                    try:
+                        values.update(
+                            str(item) for item in _version_neighbors(Version(literal))
+                        )
+                    except InvalidVersion:
+                        continue
+                if len(values) > MAX_MARKER_VALUES_PER_VARIABLE:
+                    msg = f"Marker has too many {variable} boundary values: {marker}"
+                    raise ValueError(msg)
+                choices.append(tuple(sorted(values)))
+            expanded.extend(
+                {**environment, **dict(zip(mutable_variables, values, strict=True))}
+                for values in product(*choices)
+            )
+        environments = expanded
+
+    extras = ("", *provides_extra) if re.search(r"\bextra\b", marker) else ("",)
+    unique: dict[tuple[tuple[str, str], ...], dict[str, str]] = {}
+    for environment in environments:
+        for extra in extras:
+            candidate = {**environment, "extra": extra}
+            unique[tuple(sorted(candidate.items()))] = candidate
+    return tuple(unique.values())
+
+
+def _active_python_versions(
+    metadata: WheelMetadata,
+    requirement: Requirement,
+    supported_python: Sequence[Version],
+) -> tuple[Version, ...]:
+    if requirement.marker is None:
+        return tuple(supported_python)
+
+    marker = str(requirement.marker)
+    overrides = _marker_environment_overrides(marker, metadata.provides_extra)
+    baseline = default_environment()
+    active: list[Version] = []
+    for version in supported_python:
+        python_version = f"{version.major}.{version.minor}"
+        python_full_version = ".".join(str(part) for part in version.release)
+        if len(version.release) == 2:
+            python_full_version += ".0"
+        for override in overrides:
+            environment = {
+                **baseline,
+                **override,
+                "implementation_version": python_full_version,
+                "python_full_version": python_full_version,
+                "python_version": python_version,
+            }
+            if requirement.marker.evaluate(environment=environment):
+                active.append(version)
+                break
+    return tuple(active)
+
+
+def _applicable_python_versions(
+    metadata: WheelMetadata,
+    variants: Sequence[Requirement],
+    *,
+    additional_constraints: Sequence[str] = (),
+) -> tuple[Version, ...]:
+    marker_versions = {
+        version
+        for requirement in variants
+        for version in _marker_python_versions(requirement)
+    }
+    supported_python = _supported_python_versions(
+        metadata.requires_python,
+        additional_constraints=additional_constraints,
+        additional_versions=tuple(marker_versions),
+    )
+    active: set[Version] = set()
+    for requirement in variants:
+        active.update(_active_python_versions(metadata, requirement, supported_python))
+    return tuple(sorted(active))
+
+
+def _applicable_requirements(
+    metadata: WheelMetadata,
+) -> tuple[ApplicableRequirement, ...]:
     self_name = canonicalize_name(metadata.name)
-    requirements: list[Requirement] = []
-    seen: set[tuple[str, str, str]] = set()
+    grouped: dict[tuple[str, str, str], list[Requirement]] = {}
     for requirement in metadata.requires_dist:
         name = canonicalize_name(requirement.name)
         if name == self_name:
             continue
         key = (name, str(requirement.specifier), requirement.url or "")
-        if key in seen:
+        grouped.setdefault(key, []).append(requirement)
+
+    applicable: list[ApplicableRequirement] = []
+    for variants in grouped.values():
+        python_versions = _applicable_python_versions(metadata, variants)
+        if not python_versions:
             continue
-        seen.add(key)
-        requirements.append(requirement)
-    return tuple(requirements)
+        applicable.append(
+            ApplicableRequirement(
+                requirement=variants[0],
+                variants=tuple(variants),
+            )
+        )
+    return tuple(applicable)
 
 
 def _release_versions(
@@ -281,14 +624,14 @@ def _file_python_constraints(files: Sequence[object]) -> tuple[str, ...]:
     return tuple(constraints)
 
 
-def _python_constraint_matches(
-    constraint: str,
+def _python_constraints_match(
+    constraints: Sequence[str],
     *,
-    minimum_python: Version,
+    required_python: Sequence[Version],
     expected_constraint: str | None,
 ) -> bool:
     try:
-        specifier = SpecifierSet(constraint)
+        specifiers = tuple(SpecifierSet(constraint) for constraint in constraints)
         expected = (
             SpecifierSet(expected_constraint)
             if expected_constraint is not None
@@ -296,9 +639,14 @@ def _python_constraint_matches(
         )
     except InvalidSpecifier:
         return False
-    if not specifier.contains(minimum_python, prereleases=True):
+    if not specifiers:
         return False
-    return expected is None or specifier == expected
+    if expected is not None and any(specifier != expected for specifier in specifiers):
+        return False
+    return all(
+        any(specifier.contains(version, prereleases=True) for specifier in specifiers)
+        for version in required_python
+    )
 
 
 def _constraint_label(requirement: Requirement) -> str:
@@ -377,13 +725,10 @@ def compare_wheel_with_pypi(
     Raises:
         ValueError: If the release wheel has no concrete Python lower bound.
     """
-    minimum_python = extract_minimum(SpecifierSet(metadata.requires_python))
-    if minimum_python is None:
-        msg = f"{metadata.name} has no concrete Requires-Python lower bound"
-        raise ValueError(msg)
     sibling_constraints = sibling_requires_python or {}
     checks: list[DependencyCheck] = []
-    for requirement in _wheel_requirements(metadata):
+    for applicable in _applicable_requirements(metadata):
+        requirement = applicable.requirement
         constraint = _constraint_label(requirement)
         if requirement.url:
             checks.append(
@@ -427,17 +772,21 @@ def compare_wheel_with_pypi(
             if expected_constraint is not None
             else matching_versions
         )
-        passed = any(
-            any(
-                _python_constraint_matches(
-                    python_constraint,
-                    minimum_python=minimum_python,
-                    expected_constraint=expected_constraint,
-                )
-                for python_constraint in _file_python_constraints(files)
+        passed = False
+        for _, files in candidates:
+            python_constraints = _file_python_constraints(files)
+            required_python = _applicable_python_versions(
+                metadata,
+                applicable.variants,
+                additional_constraints=python_constraints,
             )
-            for _, files in candidates
-        )
+            if _python_constraints_match(
+                python_constraints,
+                required_python=required_python,
+                expected_constraint=expected_constraint,
+            ):
+                passed = True
+                break
         checks.append(
             DependencyCheck(
                 dependency_name=requirement.name,
@@ -498,11 +847,11 @@ def validate_wheel(
         one for dependency failures or two for an indeterminate PyPI query.
     """
     metadata = parse_wheel_metadata(wheel_path)
-    requirements = _wheel_requirements(metadata)
+    requirements = _applicable_requirements(metadata)
     names = {
-        canonicalize_name(requirement.name)
-        for requirement in requirements
-        if not requirement.url
+        canonicalize_name(item.requirement.name)
+        for item in requirements
+        if not item.requirement.url
     }
     payloads, fetch_failures = _fetch_payloads(names, fetcher)
     if fetch_failures:

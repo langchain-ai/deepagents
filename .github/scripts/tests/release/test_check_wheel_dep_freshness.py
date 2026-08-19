@@ -26,12 +26,14 @@ def _metadata(
     version: str = "0.0.4",
     requires_python: str = ">=3.12",
     requirements: tuple[str, ...] = ("deepagents-code>=0.1.30,<1.0.0",),
+    provides_extra: tuple[str, ...] = ("media",),
 ) -> WheelMetadata:
     return WheelMetadata(
         name=name,
         version=Version(version),
         requires_python=requires_python,
         requires_dist=tuple(Requirement(item) for item in requirements),
+        provides_extra=provides_extra,
     )
 
 
@@ -59,6 +61,7 @@ def _write_wheel(
     version: str = "0.0.4",
     requires_python: str = ">=3.12",
     requirements: tuple[str, ...] = ("deepagents-code>=0.1.30,<1.0.0",),
+    provides_extra: tuple[str, ...] = ("media",),
 ) -> None:
     metadata = [
         "Metadata-Version: 2.4",
@@ -66,6 +69,7 @@ def _write_wheel(
         f"Version: {version}",
         f"Requires-Python: {requires_python}",
     ]
+    metadata.extend(f"Provides-Extra: {extra}" for extra in provides_extra)
     metadata.extend(f"Requires-Dist: {requirement}" for requirement in requirements)
     with zipfile.ZipFile(path, "w") as wheel:
         wheel.writestr(
@@ -93,6 +97,7 @@ def test_parse_wheel_metadata_reads_authoritative_fields(tmp_path: Path) -> None
     assert metadata.name == "deepagents-talon"
     assert metadata.version == Version("0.0.4")
     assert metadata.requires_python == ">=3.12"
+    assert metadata.provides_extra == ("media",)
     assert [requirement.name for requirement in metadata.requires_dist] == [
         "deepagents-code",
         "deepagents-code",
@@ -166,6 +171,210 @@ def test_compare_allows_broader_third_party_python_support() -> None:
     )
 
     assert checks[0].passed
+
+
+def test_compare_checks_full_declared_python_range() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requires_python=">=3.11,<4.0",
+            requirements=("demo>=1",),
+        ),
+        {"demo": _payload(("1.0", ">=3.11,<3.12"))},
+    )
+
+    assert not checks[0].passed
+    assert "requires Python >=3.11,<4.0" in checks[0].message
+
+
+def test_compare_detects_patch_level_python_exclusion() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requires_python=">=3.11,<3.12",
+            requirements=("demo>=1",),
+        ),
+        {"demo": _payload(("1.0", ">=3.11,!=3.11.1,<3.12"))},
+    )
+
+    assert not checks[0].passed
+
+
+def test_compare_combines_python_coverage_across_release_files() -> None:
+    payload = {
+        "releases": {
+            "1.0": [
+                {"requires_python": ">=3.11,<3.12"},
+                {"requires_python": ">=3.12,<3.13"},
+            ]
+        }
+    }
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requires_python=">=3.11,<3.13",
+            requirements=("demo>=1",),
+        ),
+        {"demo": payload},
+    )
+
+    assert checks[0].passed
+
+
+def test_compare_skips_requirement_outside_supported_python_range() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requires_python=">=3.11,<4.0",
+            requirements=('demo>=1; python_version < "3.10"',),
+        ),
+        {},
+    )
+
+    assert checks == ()
+
+
+def test_compare_checks_platform_specific_requirement() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(requirements=('demo>=1; sys_platform == "win32"',)),
+        {"demo": _payload(("1.0", ">=3.12"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+
+
+def test_compare_skips_impossible_platform_marker() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requirements=('demo>=1; sys_platform == "win32" and os_name == "posix"',)
+        ),
+        {},
+    )
+
+    assert checks == ()
+
+
+def test_compare_checks_other_platform_machine() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requirements=('demo>=1; platform_machine not in "x86_64 arm64 AMD64"',)
+        ),
+        {"demo": _payload(("1.0", ">=3.12"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+
+
+def test_compare_checks_windows_arm64_marker() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requirements=(
+                'demo>=1; sys_platform == "win32" and platform_machine == "ARM64"',
+            )
+        ),
+        {"demo": _payload(("1.0", ">=3.12"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+
+
+def test_compare_skips_non_cpython_marker() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(requirements=('demo>=1; implementation_name == "pypy"',)),
+        {},
+    )
+
+    assert checks == ()
+
+
+def test_compare_skips_unsupported_platform_identity() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(requirements=('demo>=1; sys_platform == "plan9"',)),
+        {},
+    )
+
+    assert checks == ()
+
+
+def test_compare_skips_unsupported_platform_combination() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requirements=(
+                'demo>=1; sys_platform == "win32" and platform_machine == "s390x"',
+            )
+        ),
+        {},
+    )
+
+    assert checks == ()
+
+
+def test_compare_checks_platform_release_and_version_literals_together() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requirements=(
+                (
+                    'demo>=1; sys_platform == "linux" and platform_release == "10" '
+                    'and platform_version == "20"'
+                ),
+            )
+        ),
+        {"demo": _payload(("1.0", ">=3.12"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+
+
+def test_compare_checks_platform_release_inequality_boundary() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requirements=(
+                'demo>=1; sys_platform == "linux" and platform_release > "10"',
+            )
+        ),
+        {"demo": _payload(("1.0", ">=3.12"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+
+
+def test_compare_honors_python_full_version_marker() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requires_python=">=3.11,<3.12",
+            requirements=('demo>=1; python_full_version >= "3.11.1"',),
+        ),
+        {"demo": _payload(("1.0", ">=3.11,<3.12"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+
+
+def test_compare_honors_patch_versions_above_minor_marker() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requires_python=">=3.11,<3.12",
+            requirements=('demo>=1; python_full_version != "3.11"',),
+        ),
+        {"demo": _payload(("1.0", ">=3.11,<3.12"))},
+    )
+
+    assert len(checks) == 1
+    assert checks[0].passed
+
+
+def test_compare_skips_requirement_for_undeclared_extra() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(
+            requirements=('demo>=1; extra == "missing"',),
+            provides_extra=("media",),
+        ),
+        {},
+    )
+
+    assert checks == ()
 
 
 def test_compare_fails_when_no_version_satisfies_constraint() -> None:
@@ -333,6 +542,32 @@ def test_validate_wheel_fetches_each_project_once_and_fails_with_summary(
     )
     assert calls == ["deepagents-code"]
     assert "Release deepagents-code first" in summary.read_text(encoding="utf-8")
+
+
+def test_validate_wheel_does_not_fetch_inactive_requirement(tmp_path: Path) -> None:
+    wheel = tmp_path / "example.whl"
+    _write_wheel(
+        wheel,
+        requires_python=">=3.11,<4.0",
+        requirements=('demo>=1; python_version < "3.10"',),
+        provides_extra=(),
+    )
+    config = tmp_path / "release-please-config.json"
+    _write_release_config(config, {})
+
+    def fetcher(_name: str) -> dict[str, object]:
+        msg = "inactive dependency should not be queried"
+        raise AssertionError(msg)
+
+    assert (
+        validate_wheel(
+            wheel,
+            repo_root=tmp_path,
+            config_path=config,
+            fetcher=fetcher,
+        )
+        == 0
+    )
 
 
 def test_target_cli_writes_actions_outputs(tmp_path: Path, monkeypatch) -> None:

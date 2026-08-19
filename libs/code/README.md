@@ -78,22 +78,28 @@ lockdown: it removes every lower-precedence grant.
 A managed value whose type contradicts the manifest is ignored, and the
 lower-precedence value stays in effect. Two exceptions:
 
-- The enforced keys (`startup.mode`, `shell.allow_list`,
-  `skills.extra_allowed_dirs`, `interpreter.enable_interpreter`,
-  `interpreter.ptc`, `models.auto_classifier`, `runtime.recursion_limit`,
-  `sandboxes.default`) stop the launch instead. Ignoring one leaves the user's
-  flag in force, which grants the escalation or removes the boundary the policy
-  declared. Three cases stop the launch and block `/reload`: a value the
-  manifest rejects, a `runtime.recursion_limit` outside its bounds, and a key
-  shadowed by a scalar ancestor (`startup = "manual"` in place of `[startup]`
-  and `mode`). A managed `[sandboxes].default` that names an unavailable backend
-  stops a sandboxed launch. A scalar at any known configuration section (for
-  example, `threads = "bad"` instead of `[threads]`) also stops launch and
-  reload rather than replacing the user's whole section.
+- The enforced keys (`startup.mode`, `startup.yolo_switcher`,
+  `shell.allow_list`, `skills.extra_allowed_dirs`,
+  `interpreter.enable_interpreter`, `interpreter.ptc`,
+  `interpreter.ptc_acknowledge_unsafe`, `models.auto_classifier`,
+  `runtime.recursion_limit`, `sandboxes.default`, `tracing.langsmith_redact`)
+  stop every command except `config`, `doctor`, `auth path`, and the help
+  screens. Ignoring one leaves the user's flag or environment variable in force,
+  which grants the escalation or removes the boundary the policy declared. Three
+  cases stop the launch and block `/reload`: a value the manifest rejects, a
+  `runtime.recursion_limit` outside its bounds, and a key shadowed by a scalar
+  ancestor (`startup = "manual"` in place of `[startup]` and `mode`). A managed
+  `[sandboxes].default` that names an unavailable backend stops a sandboxed
+  launch; a launch that asked for no sandbox is unaffected. A scalar at any
+  known configuration section (for example, `threads = "bad"` instead of
+  `[threads]`) also stops launch and reload rather than replacing the user's
+  whole section.
 - Inside structured tables (`[models.providers]`, `[themes]`,
   `[async_subagents]`, `[sandboxes.providers]`) the dedicated typed reader
   validates instead, so a wrong-typed managed leaf can displace a valid user
-  leaf. The reader then falls back to the built-in default.
+  leaf. The reader then falls back to the built-in default. A managed scalar
+  still replaces a colliding user table there, the same as on the top-level
+  merge.
 
 `[shell].allow_list` is now read from `~/.deepagents/config.toml` as well as
 from `DEEPAGENTS_CODE_SHELL_ALLOW_LIST`, so a managed file can enforce it. A
@@ -113,13 +119,18 @@ diagnose it: `--help`, `--version`, `help`, `config`, `doctor`, and
 the session keeps the policy that was in force, and the reload reports that it
 kept it. Use `dcode config path` and `dcode doctor` to inspect its
 fixed path and parse health; `dcode config` also warns when the file exists but
-could not be parsed.
+could not be parsed, or parses and declares a value that cannot be enforced.
 
 A deny list that cannot be read denies everything rather than nothing. This
-covers a managed `[mcp].disabled_servers` that is not an array of names, and a
-`[mcp]` section that is not a table. A corrupt `~/.deepagents/config.toml` does
-not disable managed policy: the user file is ignored and managed values still
-apply.
+covers a managed `[mcp].disabled_servers` that is neither an array of names nor
+a comma-separated string, and a `[mcp]` section that is not a table. A managed
+`[mcp].enabled_project_server_approvals` that is not an array is treated the
+same way: the key is present, so policy means to narrow access, and reading its
+presence as absence would leave both the user's approvals and the
+`DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` bypass in force.
+
+A corrupt `~/.deepagents/config.toml` does not disable managed policy: the user
+file is ignored and managed values still apply.
 
 Deployment tooling must create and protect this file with administrator or root
 permissions. `dcode` does not validate the file owner or mode. `dcode` provides

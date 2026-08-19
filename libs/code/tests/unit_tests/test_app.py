@@ -19994,6 +19994,10 @@ class TestRemoteAgent:
 class TestTerminalBackgroundSync:
     """Tests for syncing Textual theme background to terminal background."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_terminal_program(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+
     def test_initial_theme_sync_sets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -20136,6 +20140,25 @@ class TestTerminalBackgroundSync:
         app = DeepAgentsApp()
         calls.clear()
         app.theme = "ansi-light"
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_skips_apple_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import terminal_escape
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        app.theme = "langchain"
         app.sync_terminal_background()
 
         assert calls == []

@@ -9214,9 +9214,12 @@ class DeepAgentsApp(App):
         logged and swallowed because the OSC background sync is cosmetic.
 
         ANSI themes intentionally skip this step so the terminal's native
-        background is preserved.
+        background is preserved. Apple Terminal is also skipped because it accepts
+        the background mutation but does not reliably restore it with `OSC 111`.
         """
         if self.theme in {"ansi-dark", "ansi-light"}:
+            return
+        if os.environ.get("TERM_PROGRAM") == "Apple_Terminal":
             return
 
         from deepagents_code.terminal_escape import set_terminal_background

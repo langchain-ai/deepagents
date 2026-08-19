@@ -286,9 +286,10 @@ class Dcode(BaseAgent):
         Pier inlines these steps into the agent image build, which runs on the
         host *with* network — the only phase where dependency installation is
         possible for DeepSWE's air-gapped (``network_mode = "no-network"``)
-        tasks. Installs a pinned uv, a managed CPython, and all PyPI deps from
-        ``langgraph.json``. The local ``deepagents``/``deepagents-code`` sources
-        are layered on top later in ``setup()`` (offline).
+        tasks. Installs a pinned uv, a managed CPython, all PyPI deps from
+        ``langgraph.json``, and the setuptools/hatchling build backends the local
+        ``.local_deps`` packages need. Those local sources are then layered on
+        top in ``setup()`` (offline, ``--no-build-isolation --no-deps``).
         """
         venv_dir = shlex.quote(self._REMOTE_VENV_DIR.as_posix())
         python_version = shlex.quote(self._python_version)
@@ -301,6 +302,9 @@ uv python install {python_version}
 uv venv {venv_dir} --python {python_version} --clear
 . {venv_dir}/bin/activate
 uv pip install --prerelease=if-necessary langgraph python-dotenv {deps}
+# Build backends for the local .local_deps sources, pre-installed so setup()
+# can install them offline with --no-build-isolation (no PyPI fetch).
+uv pip install setuptools wheel hatchling
 """
         return AgentInstallSpec(
             agent_name=self.name(),
@@ -331,10 +335,12 @@ uv pip install --prerelease=if-necessary langgraph python-dotenv {deps}
     async def setup(self, environment: BaseEnvironment) -> None:
         """Stage the project/runner and install local sources (offline).
 
-        No network here: the venv and its PyPI deps were already built into the
-        image by ``install_spec()``. This only copies the ``langgraph_project``
-        and runner in, then installs the local ``.local_deps`` packages with
-        ``--no-deps`` so the dcode/deepagents sources match this checkout.
+        No network here: the venv, its PyPI deps, and the setuptools/hatchling
+        build backends were already built into the image by ``install_spec()``.
+        This copies the ``langgraph_project`` and runner in, then installs the
+        local ``.local_deps`` packages with ``--no-build-isolation --no-deps``
+        (reusing the pre-installed backends) so the dcode/deepagents sources
+        match this checkout without touching PyPI.
         """
         agent_user = str(environment.default_user or "root")
         quoted_agent_user = shlex.quote(agent_user)
@@ -372,7 +378,8 @@ uv pip install --prerelease=if-necessary langgraph python-dotenv {deps}
             "    dep_path = os.path.join(project_dir, dep) if isinstance(dep, str) else None\n"
             "    if dep_path and os.path.isdir(dep_path):\n"
             "        subprocess.check_call(\n"
-            "            ['uv', 'pip', 'install', '--python', venv_python, '--no-deps', '-e', dep_path]\n"
+            "            ['uv', 'pip', 'install', '--python', venv_python,\n"
+            "             '--no-build-isolation', '--no-deps', '-e', dep_path]\n"
             "        )\n"
         )
         result = await environment.exec(

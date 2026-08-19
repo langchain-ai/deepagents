@@ -898,7 +898,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
     }
 
     MCPViewerScreen .mcp-viewer-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;

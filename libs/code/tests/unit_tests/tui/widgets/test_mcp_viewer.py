@@ -188,6 +188,22 @@ class TestMCPViewerScreen:
             help_widget = screen.query_one(".mcp-viewer-help", Static)
             assert "Ctrl+R reconnect" in _widget_text(help_widget)
 
+    async def test_footer_wraps_in_narrow_window(self) -> None:
+        """A narrow viewer grows the footer instead of clipping its hints."""
+        app = MCPViewerTestApp()
+        async with app.run_test(size=(50, 20)) as pilot:
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=True,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert help_widget.size.height > 1
+            assert "Ctrl+R reconnect" in _widget_text(help_widget)
+            assert "Esc close" in _widget_text(help_widget)
+
     async def test_ctrl_r_dismisses_with_reconnect_sentinel_when_pending(
         self,
     ) -> None:

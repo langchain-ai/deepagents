@@ -917,13 +917,39 @@ def resolve_scalar(
 
             if found and isinstance(raw, dict) and isinstance(managed_raw, dict):
                 from deepagents_code.configuration.resolver import merge_toml_tables
+                from deepagents_code.configuration.service import (
+                    is_valid_managed_scalar,
+                )
 
+                prefix = option.toml_keys or ()
+
+                def managed_leaf_is_valid(
+                    path: tuple[str, ...],
+                    value: object,
+                    _prefix: tuple[str, ...] = prefix,
+                ) -> bool:
+                    """Validate one leaf against its absolute manifest path.
+
+                    Returns:
+                        Whether managed policy may apply the value at this leaf.
+                    """
+                    return is_valid_managed_scalar((*_prefix, *path), value)
+
+                # Must match `ConfigSources.merged`, which is what the runtime
+                # readers use. Omitting the validator was not cosmetic: the
+                # merger gates the "managed scalar displaces a user table" rule
+                # on `higher_leaf_is_valid is None`, so this path kept a user
+                # table that `merged` replaces. `dcode config --json --verbose`
+                # takes `value` from here and `provenance` from the validated
+                # merge, so one row could report the user's table as effective
+                # while its provenance said managed policy owned that leaf.
                 merged, _ = merge_toml_tables(
                     raw,
                     managed_raw,
                     lower_source="config.toml",
                     higher_source="managed config",
-                    union_paths=union_paths_under(option.toml_keys or ()),
+                    union_paths=union_paths_under(prefix),
+                    higher_leaf_is_valid=managed_leaf_is_valid,
                 )
                 return merged, "managed config + config.toml"
             if (

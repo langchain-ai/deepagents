@@ -1736,6 +1736,51 @@ def test_doctor_reports_managed_parse_health(
         service.invalidate_config_sources()
 
 
+def test_structured_resolution_matches_the_effective_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`resolve_scalar` and `ConfigSources.merged` must not disagree.
+
+    Regression: the structured branch of `resolve_scalar` merged without
+    `higher_leaf_is_valid`, and the merger gates the "managed scalar displaces a
+    user table" rule on that argument being `None`. So a managed scalar
+    colliding with a user table resolved one way for the runtime (which reads
+    `merged`) and the other way for `dcode config`, whose row takes `value` from
+    `resolve_scalar` and `provenance` from the validated merge — a row could show
+    the user's table as effective while claiming managed policy owned that leaf.
+    """
+    from deepagents_code import model_config
+    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.configuration import service
+
+    user = tmp_path / "config.toml"
+    user.write_text(
+        "[themes.mytheme.nested]\nprimary = '#ffffff'\n",
+        encoding="utf-8",
+    )
+    managed = tmp_path / "managed.toml"
+    managed.write_text('[themes]\nmytheme = "pinned"\n', encoding="utf-8")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
+    model_config.clear_caches()
+    try:
+        option = get_option("display.themes")
+        assert option is not None
+        sources = service.get_config_sources()
+        merged, _ = sources.merged()
+        value, _source = resolve_scalar(
+            option,
+            toml_data=dict(sources.user.data),
+            managed_toml_data=sources.managed.data,
+        )
+        assert value == merged["themes"]
+        assert value == {"mytheme": "pinned"}
+    finally:
+        service.invalidate_config_sources()
+
+
 def test_diagnostics_report_an_unenforceable_managed_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1040,7 +1040,6 @@ async def test_connection_refresh_waits_for_initial_refresh(
     # the await side must not depend on the default executor, which the blocked
     # initial load can starve on a loaded CI runner.
     initial_started = asyncio.Event()
-    settled_applied = asyncio.Event()
     # Read from the load thread and written once on the event loop; a one-element
     # list acts as the cross-thread release cell (item assignment is atomic).
     release_initial: list[bool] = []
@@ -1063,10 +1062,6 @@ async def test_connection_refresh_waits_for_initial_refresh(
             while not release_initial:
                 time.sleep(0.005)
             return loading_state
-
-        # The connection refresh has been dequeued and rerun with the settled
-        # snapshot; signal the await side before returning the settled state.
-        loop.call_soon_threadsafe(settled_applied.set)
         return settled_state
 
     monkeypatch.setattr(
@@ -1096,16 +1091,21 @@ async def test_connection_refresh_waits_for_initial_refresh(
         # Release the initial load; once it finishes, the queued settled refresh runs.
         release_initial.append(True)
         await initial_refresh
-        # Wait for the settled refresh to finish and apply its snapshot.
-        # `settled_applied` is set from the load thread, so also yield once to let
-        # the connection task run its `_state` assignment (the continuation after
-        # `await asyncio.to_thread(...)`).
-        await wait_for(settled_applied, "the settled refresh")
-        for _ in range(100):
-            if screen._state == settled_state:
-                break
-            await asyncio.sleep(0)
-        else:
+        # Await the connection refresh task itself rather than polling `_state`:
+        # a `sleep(0)` spin can out-poll the resumed `to_thread` continuation on
+        # a starved CI executor, failing even though the refresh would have
+        # applied the settled snapshot moments later.
+        (connection_refresh,) = screen._refresh_tasks
+        try:
+            async with asyncio.timeout(10):
+                await connection_refresh
+        except TimeoutError:
+            msg = (
+                "timed out waiting for the settled refresh; "
+                f"snapshots so far: {snapshots}"
+            )
+            raise AssertionError(msg) from None
+        if screen._state != settled_state:
             msg = (
                 f"settled load ran but `_state` was not applied; snapshots: {snapshots}"
             )

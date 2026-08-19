@@ -423,3 +423,68 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
         for i, question in enumerate(questions)
     ]
     return "\n\n".join(blocks)
+
+
+def render_ask_user_transcript_for_display(
+    questions: list[Question], transcript: str
+) -> str | None:
+    r"""Re-render a transcript with `multi_select` answers unpacked for a human.
+
+    The transcript is built for the model, where a `multi_select` answer is a
+    JSON array. A person reading the same text sees the quoting and, worse, sees
+    a multi-line custom answer flattened to a literal `\\n`. This unpacks those
+    answers back to one value per line, leaving every other answer untouched.
+
+    Recovering the answers means splitting the transcript, which
+    `format_ask_user_transcript` warns is not unambiguously decodable. So this
+    anchors on the known question text, the mitigation that docstring
+    prescribes, and gives up rather than guessing: a transcript that does not
+    match the questions exactly returns `None` and must be rendered literally.
+    The result is display-only and feeds no trust decision.
+
+    Args:
+        questions: The questions that produced `transcript`, in order.
+        transcript: Output of `format_ask_user_transcript` for those questions.
+
+    Returns:
+        The re-rendered transcript, or `None` when `transcript` does not parse
+            as exactly these questions — including when no answer needed
+            unpacking, so the caller keeps its literal rendering.
+    """
+    if not questions:
+        return None
+    anchors = [f"Q: {question.get('question', '')}\nA: " for question in questions]
+    answers: list[str] = []
+    position = 0
+    for index, anchor in enumerate(anchors):
+        if not transcript.startswith(anchor, position):
+            return None
+        position += len(anchor)
+        if index + 1 < len(anchors):
+            separator = f"\n\n{anchors[index + 1]}"
+            end = transcript.find(separator, position)
+            if end == -1:
+                return None
+            answers.append(transcript[position:end])
+            position = end + 2
+        else:
+            answers.append(transcript[position:])
+            position = len(transcript)
+    if position != len(transcript):
+        return None
+
+    changed = False
+    blocks: list[str] = []
+    for question, answer in zip(questions, answers, strict=True):
+        rendered = answer
+        if question.get("type") == "multi_select":
+            values = decode_multi_select_answer(answer)
+            if values is not None:
+                # One per line, so a value that itself spans lines stays legible.
+                # An empty selection reads as nothing chosen rather than `[]`.
+                rendered = "\n".join(values) if values else ASK_USER_NO_ANSWER
+                changed = changed or rendered != answer
+        blocks.append(f"Q: {question.get('question', '')}\nA: {rendered}")
+    if not changed:
+        return None
+    return "\n\n".join(blocks)

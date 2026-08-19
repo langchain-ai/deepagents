@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -30,6 +30,8 @@ from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_FAILED_SUMMARY,
     AskUserRowSummary,
+    Question,
+    render_ask_user_transcript_for_display,
 )
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
@@ -3495,6 +3497,16 @@ class ToolCallMessage(Vertical):
             return FormattedOutput(content=Content.styled(output, "dim"))
 
         if not is_preview:
+            # Unpack `multi_select` JSON arrays for the reader. Anything that
+            # does not parse as exactly these questions renders literally, so
+            # the authoritative text is still what reaches the row.
+            questions = self._args.get("questions")
+            if isinstance(questions, list):
+                display = render_ask_user_transcript_for_display(
+                    cast("list[Question]", questions), output
+                )
+                if display is not None:
+                    return FormattedOutput(content=Content(display))
             return FormattedOutput(content=Content(output))
 
         if self._status == "error":

@@ -2355,6 +2355,41 @@ class TestToolCallMessageAskUserOutput:
         assert result.content.plain == "User answered"
         assert result.truncation == "2 answers"
 
+    def test_expanded_renders_the_transcript_literally(self) -> None:
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(self._TRANSCRIPT, is_preview=False)
+
+        assert result.content.plain == self._TRANSCRIPT
+
+    def test_expanded_unpacks_a_multi_select_answer_for_the_reader(self) -> None:
+        """The row must not show the model's JSON array to the user."""
+        args = {
+            "questions": [
+                {"question": "Where?", "type": "multi_select", "choices": []},
+            ]
+        }
+        transcript = 'Q: Where?\nA: ["Boston, MA", "Austin"]'
+        msg = ToolCallMessage("ask_user", args)
+
+        result = msg._format_ask_user_output(transcript, is_preview=False)
+
+        assert result.content.plain == "Q: Where?\nA: Boston, MA\nAustin"
+
+    def test_expanded_keeps_an_undecodable_multi_select_answer_verbatim(self) -> None:
+        """A cancelled prompt has placeholders, not JSON, in every slot."""
+        args = {
+            "questions": [
+                {"question": "Where?", "type": "multi_select", "choices": []},
+            ]
+        }
+        transcript = "Q: Where?\nA: (cancelled)"
+        msg = ToolCallMessage("ask_user", args)
+
+        result = msg._format_ask_user_output(transcript, is_preview=False)
+
+        assert result.content.plain == transcript
+
     async def test_fallback_summary_suppression_survives_rehydration(self) -> None:
         """A rebuilt fallback row still advertises no expansion.
 

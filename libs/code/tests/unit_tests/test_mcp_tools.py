@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_tools import (
+    _MCP_STDERR_DRAIN_JOIN_TIMEOUT,
     _MCP_STDERR_LINE_LIMIT,
     _MCP_STDERR_TRUNCATION_MARKER,
     MCPServerInfo,
@@ -39,6 +40,7 @@ from deepagents_code.mcp_tools import (
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
+    _MCPStderrSink,
     _normalize_mcp_arguments,
     _warm_mcp_adapter_imports,
     classify_discovered_configs,
@@ -865,6 +867,27 @@ class TestMCPServerInfoInvariants:
 
 class TestMCPStderrCapture:
     """Tests for stdio subprocess diagnostic capture."""
+
+    async def test_stderr_drain_forced_close_join_is_bounded(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A blocked drain thread cannot make forced teardown wait forever."""
+        sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+        reader_thread = sink._thread
+        blocked_thread = MagicMock()
+        blocked_thread.is_alive.return_value = True
+        sink._thread = blocked_thread
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+            await sink.wait_closed()
+
+        assert blocked_thread.join.call_args_list == [
+            ((_MCP_STDERR_DRAIN_JOIN_TIMEOUT,), {}),
+            ((_MCP_STDERR_DRAIN_JOIN_TIMEOUT,), {}),
+        ]
+        assert "stderr drain thread did not exit after forced pipe close" in caplog.text
+        await asyncio.to_thread(reader_thread.join)
 
     async def test_stdio_stderr_is_buffered_decoded_and_bounded(
         self,

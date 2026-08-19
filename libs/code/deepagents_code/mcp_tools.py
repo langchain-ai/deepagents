@@ -217,7 +217,9 @@ shutdown terminates the server's process tree, but a server that spawns a
 longer-lived descendant escaping its process group keeps the inherited pipe
 open — so an unbounded join would wedge session close (discovery failure,
 reload, shutdown). After this timeout the read end is closed to force the
-thread's `os.read` to fail and exit.
+thread's `os.read` to fail and exit. The forced-close join is bounded too:
+on Linux, closing a file descriptor from another thread does not reliably
+interrupt an in-progress `os.read`.
 """
 
 
@@ -351,8 +353,9 @@ class _MCPStderrSink(io.TextIOBase):
         The join is bounded: if the drain thread is still blocked after
         `_MCP_STDERR_DRAIN_JOIN_TIMEOUT` (the pipe's write end is held open by a
         surviving server descendant), the read end is closed to force the
-        thread's `os.read` to fail, then the thread is rejoined. This keeps a
-        leaked stderr pipe from hanging session cleanup.
+        thread's `os.read` to fail, then the thread is rejoined with the same
+        bound. This keeps a leaked stderr pipe from hanging session cleanup
+        even where a cross-thread close does not interrupt `os.read`.
         """
         self.close()
         await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
@@ -364,7 +367,13 @@ class _MCPStderrSink(io.TextIOBase):
             "forcing the drain thread closed",
             self._server_name,
         )
-        await asyncio.to_thread(self._thread.join)
+        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
+        if self._thread.is_alive():
+            logger.warning(
+                "MCP server %r stderr drain thread did not exit after forced "
+                "pipe close",
+                self._server_name,
+            )
 
     def _close_read_fd(self) -> None:
         """Close the pipe read end once, from the reader thread or a closer."""

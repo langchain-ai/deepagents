@@ -207,6 +207,15 @@ _MCP_ENV_REFERENCE_RE = re.compile(r"\$\{([^}]+)\}")
 _MCP_STDERR_LINE_LIMIT = 4096
 _MCP_STDERR_READ_SIZE = 8192
 _MCP_STDERR_TRUNCATION_MARKER = "... [truncated]"
+_MCP_STDERR_CAPTURE_ERRORS = "replace"
+"""Encoding error handler for the stderr *capture* decoder.
+
+Deliberately independent of the server's `encoding_error_handler`, which
+governs the protocol stream and defaults to `strict`. Nothing parses captured
+stderr — it goes to a log — so one stray non-UTF-8 byte should mangle a
+character, not discard the whole 8 KiB chunk it arrived in. Dropping the chunk
+would lose exactly the diagnostic this capture exists to provide.
+"""
 _MCP_STDERR_DRAIN_JOIN_TIMEOUT = 2.0
 """Bound on joining the stderr drain thread during session teardown.
 
@@ -265,7 +274,7 @@ class _MCPStderrSink(io.TextIOBase):
         self._errors = errors
         self._capture = logger.isEnabledFor(logging.DEBUG)
         self._decoder = (
-            codecs.getincrementaldecoder(encoding)(errors=errors)
+            codecs.getincrementaldecoder(encoding)(errors=_MCP_STDERR_CAPTURE_ERRORS)
             if self._capture
             else None
         )
@@ -450,8 +459,14 @@ class _MCPStderrSink(io.TextIOBase):
             return
         try:
             text = self._decoder.decode(data, final=final)
-        except (LookupError, UnicodeError) as exc:
+        except UnicodeError as exc:
+            # Defensive: `_MCP_STDERR_CAPTURE_ERRORS` should keep this
+            # unreachable. Flush what was buffered before resetting, so a
+            # reader sees a truncated line rather than text silently spliced
+            # from either side of the discarded bytes.
             self._decoder.reset()
+            if self._line or self._truncated:
+                self._emit_line()
             logger.debug(
                 "MCP server %r stderr decode failed with %s: %s",
                 self._server_name,

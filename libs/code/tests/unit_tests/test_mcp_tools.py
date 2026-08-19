@@ -889,6 +889,66 @@ class TestMCPStderrCapture:
         assert "stderr drain thread did not exit after forced pipe close" in caplog.text
         await asyncio.to_thread(reader_thread.join)
 
+    @staticmethod
+    def _stderr_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+        """Return the captured stderr log lines, without the record prefix."""
+        marker = "stderr: "
+        return [
+            record.getMessage().split(marker, 1)[1]
+            for record in caplog.records
+            if marker in record.getMessage()
+        ]
+
+    async def test_malformed_bytes_do_not_discard_the_chunk(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A byte invalid for the declared encoding mangles one character only.
+
+        The capture decoder must not inherit the protocol's `strict` handler,
+        which would raise and drop the whole read chunk — losing the diagnostic
+        the capture exists to provide.
+        """
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+            sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+            os.write(sink.fileno(), b"before \xff after\n")
+            await sink.wait_closed()
+
+        assert self._stderr_messages(caplog) == ["before \ufffd after"]
+
+    async def test_line_at_the_limit_is_not_truncated(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A line of exactly the limit keeps every character and no marker."""
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+            sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+            os.write(sink.fileno(), b"a" * _MCP_STDERR_LINE_LIMIT + b"\n")
+            await sink.wait_closed()
+
+        assert self._stderr_messages(caplog) == ["a" * _MCP_STDERR_LINE_LIMIT]
+
+    async def test_drain_consumes_stderr_when_capture_is_off(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Below DEBUG the pipe is still drained, so the server cannot block.
+
+        Writing far more than a pipe buffer holds would block forever if the
+        drain thread skipped reading when capture is disabled.
+        """
+        with caplog.at_level(logging.INFO, logger="deepagents_code.mcp_tools"):
+            sink = _MCPStderrSink("fake", encoding="utf-8", errors="strict")
+            payload = b"x" * (1 << 20)
+            written = 0
+            while written < len(payload):
+                written += await asyncio.to_thread(
+                    os.write, sink.fileno(), payload[written:]
+                )
+            await sink.wait_closed()
+
+        assert self._stderr_messages(caplog) == []
+
     async def test_stdio_stderr_is_buffered_decoded_and_bounded(
         self,
         tmp_path: Path,

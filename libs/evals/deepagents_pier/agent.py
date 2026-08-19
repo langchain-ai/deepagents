@@ -190,6 +190,7 @@ class Dcode(BaseAgent):
             msg = f"LangGraph config file not found: {config_path}"
             raise ValueError(msg)
         self.config = config_path.relative_to(self.project_path).as_posix()
+        self._validate_graph()
 
     @staticmethod
     def name() -> str:
@@ -417,14 +418,19 @@ uv pip install setuptools wheel hatchling editables
         return json.dumps(configurable)
 
     def _runner_args(self, model: str | None) -> list[str]:
-        """Build the runner CLI args."""
+        """Build the runner CLI args.
+
+        The runner derives the graph's module:attribute path from
+        ``langgraph.json`` given ``--graph`` (and ``--config``), so there is no
+        separate ``--graph-path`` argument.
+        """
         args = [
             "--project-dir",
             self._REMOTE_PROJECT_DIR.as_posix(),
+            "--config",
+            self.config,
             "--graph",
             self.graph,
-            "--graph-path",
-            self._graph_path(),
             "--instruction-file",
             self._REMOTE_INSTRUCTION_PATH.as_posix(),
             "--result-path",
@@ -446,8 +452,8 @@ uv pip install setuptools wheel hatchling editables
         )
         return args
 
-    def _graph_path(self) -> str:
-        """Resolve the graph's module:attribute path from langgraph.json."""
+    def _validate_graph(self) -> None:
+        """Validate the graph name exists in ``langgraph.json`` (fail fast)."""
         config_path = self.project_path / self.config
         config = json.loads(config_path.read_text())
         graphs = config.get("graphs")
@@ -455,7 +461,6 @@ uv pip install setuptools wheel hatchling editables
             available = ", ".join(sorted(graphs)) if isinstance(graphs, dict) else ""
             msg = f"Unknown graph {self.graph!r}. Available graphs: {available}"
             raise ValueError(msg)
-        return graphs[self.graph]
 
     async def run(
         self,

@@ -575,12 +575,54 @@ class TestExecuteOffload:
         threads.update_state.assert_not_awaited()
         runtime.assert_not_awaited()
 
-    async def test_missing_checkpoint_is_rejected(self) -> None:
+    async def test_empty_thread_reports_nothing_to_offload(self) -> None:
+        """An empty thread is an unchanged outcome, not a failure.
+
+        `_checkpoint_id` rejects a thread with no checkpoint, so answering the
+        empty case at the boundary is what keeps `OffloadOperation.execute`'s
+        graceful `empty` branch reachable over HTTP. Without it the user is told
+        the operation failed for a thread that simply has nothing to compact --
+        the seeded path says "Nothing to offload".
+        """
         from deepagents_code import offload_api
 
         threads = SimpleNamespace(
             get=AsyncMock(return_value={"status": "idle"}),
             get_state=AsyncMock(return_value={"values": {}, "checkpoint": {}}),
+            update_state=AsyncMock(),
+        )
+        runtime = AsyncMock()
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(offload_api, "get_server_runtime", new=runtime),
+        ):
+            response = await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        assert response["status"] == "complete"
+        assert response["result"]["status"] == "empty"
+        assert response["result"]["messages_kept"] == 0
+        # Nothing is compacted, so nothing is written and no agent is built.
+        threads.update_state.assert_not_awaited()
+        runtime.assert_not_awaited()
+
+    async def test_missing_checkpoint_with_messages_is_rejected(self) -> None:
+        """State with messages but no checkpoint cannot be written against."""
+        from deepagents_code import offload_api
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(
+                return_value={**_thread_state(), "checkpoint": {}},
+            ),
             update_state=AsyncMock(),
         )
         with (

@@ -23,6 +23,7 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
+from deepagents_code.offload_middleware import unchanged_offload_result
 from deepagents_code.server_graph import get_server_runtime
 
 if TYPE_CHECKING:
@@ -322,8 +323,19 @@ async def _execute_offload(
             msg = "Cannot offload a thread with pending graph work."
             raise _OffloadConflictError(msg)
 
-        checkpoint_id = _checkpoint_id(before)
         state = _hydrate_state(before.get("values"))
+        if not state.get("messages"):
+            # An empty thread is "nothing to offload", not a failure. Answer it
+            # here: `_checkpoint_id` below rejects a thread with no checkpoint,
+            # so without this the graceful `empty` branch in
+            # `OffloadOperation.execute` is unreachable over HTTP and the user
+            # is told the operation failed.
+            return {
+                "status": "complete",
+                "result": unchanged_offload_result("empty", messages=0, tokens=0),
+            }
+
+        checkpoint_id = _checkpoint_id(before)
         context["thread_id"] = thread_id
         namespace = f"dcode_offload:{operation_id}"
         info = ExecutionInfo(

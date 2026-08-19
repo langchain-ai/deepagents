@@ -125,6 +125,41 @@ class OffloadExecution(NamedTuple):
     result: OffloadResult
 
 
+def unchanged_offload_result(
+    status: OffloadStatus,
+    *,
+    messages: int,
+    tokens: int,
+    error: str | None = None,
+) -> OffloadResult:
+    """Build a result for an operation that did not compact state.
+
+    Module-level so the HTTP boundary can report an unchanged outcome without
+    resolving the server runtime first -- an empty thread has nothing to
+    compact, and building the agent only to describe that is both wasteful and
+    a way for a construction failure to turn "nothing to do" into a 500.
+
+    Args:
+        status: A non-compacting outcome.
+        messages: Messages left in the conversation.
+        tokens: Context estimate, unchanged by definition.
+        error: Reason, for `denied` and `failed`.
+
+    Returns:
+        Typed result containing unchanged context statistics.
+    """
+    return {
+        "status": status,
+        "messages_offloaded": 0,
+        "messages_kept": messages,
+        "tokens_before": tokens,
+        "tokens_after": tokens,
+        "archive_path": None,
+        "archive_ephemeral": False,
+        "error": error,
+    }
+
+
 class OffloadCompleteResponse(TypedDict):
     """Wire response for an attempt that finished without needing the client."""
 
@@ -1229,29 +1264,7 @@ class OffloadOperation:
         self._compaction = compaction
         self._hooks = hooks
 
-    @staticmethod
-    def _result(
-        status: OffloadStatus,
-        *,
-        messages: int,
-        tokens: int,
-        error: str | None = None,
-    ) -> OffloadResult:
-        """Build a result for an operation that did not compact state.
-
-        Returns:
-            Typed result containing unchanged context statistics.
-        """
-        return {
-            "status": status,
-            "messages_offloaded": 0,
-            "messages_kept": messages,
-            "tokens_before": tokens,
-            "tokens_after": tokens,
-            "archive_path": None,
-            "archive_ephemeral": False,
-            "error": error,
-        }
+    _result = staticmethod(unchanged_offload_result)
 
     async def _run_hooks(
         self, runtime: Runtime[CLIContextSchema]

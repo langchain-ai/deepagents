@@ -291,7 +291,6 @@ jobs:
     with:
       working-directory: "libs/code"
       python-versions: '["3.12", "3.13", "3.14"]'
-      extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
       coverage-python-version: "3.14"
 
   test-talon:

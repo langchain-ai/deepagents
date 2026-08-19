@@ -1736,6 +1736,53 @@ def test_doctor_reports_managed_parse_health(
         service.invalidate_config_sources()
 
 
+def test_merge_provenance_reports_only_real_leaves() -> None:
+    """Provenance must carry no empty-root key and no stale parent entry.
+
+    Two regressions, both in the output an administrator reads to audit what
+    policy enforces. An empty lower table at the root joined `()` into the key
+    `""`, which every merge produced on a machine with no user `config.toml`. And
+    a lower empty table that the higher table filled kept an entry for the table
+    itself, claiming a table was a user-controlled leaf next to the managed
+    leaves inside it.
+    """
+    from deepagents_code.configuration.resolver import merge_toml_tables
+
+    _, empty = merge_toml_tables(
+        {},
+        {},
+        lower_source="config.toml",
+        higher_source="managed config",
+    )
+    assert empty == {}
+
+    _, managed_only = merge_toml_tables(
+        {},
+        {"startup": {"mode": "manual"}},
+        lower_source="config.toml",
+        higher_source="managed config",
+    )
+    assert managed_only == {"startup.mode": "managed config"}
+
+    _, filled = merge_toml_tables(
+        {"a": {"b": {}}},
+        {"a": {"b": {"c": 1}}},
+        lower_source="config.toml",
+        higher_source="managed config",
+    )
+    assert filled == {"a.b.c": "managed config"}
+
+    # An empty table the higher layer does not fill is still a real leaf: it is
+    # the only record that the user declared that section.
+    _, untouched = merge_toml_tables(
+        {"a": {"b": {}}},
+        {},
+        lower_source="config.toml",
+        higher_source="managed config",
+    )
+    assert untouched == {"a.b": "config.toml"}
+
+
 def test_structured_resolution_matches_the_effective_merge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

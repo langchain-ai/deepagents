@@ -43,7 +43,7 @@ def merge_toml_tables(
     Returns:
         Merged table and dotted leaf-to-source mapping.
     """
-    return _merge(
+    merged, provenance = _merge(
         lower,
         higher,
         lower_source=lower_source,
@@ -51,6 +51,28 @@ def merge_toml_tables(
         union_paths=union_paths,
         higher_leaf_is_valid=higher_leaf_is_valid,
     )
+    return merged, _drop_ancestor_entries(provenance)
+
+
+def _drop_ancestor_entries(provenance: dict[str, str]) -> dict[str, str]:
+    """Remove entries that are a strict ancestor of another entry.
+
+    A lower empty table that the higher table fills leaves an entry for the
+    table itself: it enters the recursion through `lower_provenance`, which
+    carries the parent's own path, and the level that fills it never removes it.
+    The result claimed a table was a user-controlled leaf alongside the managed
+    leaves inside it. A path cannot be both a leaf and a parent, so the ancestor
+    is always the stale one.
+
+    Returns:
+        Provenance with only leaf entries.
+    """
+    keys = tuple(provenance)
+    return {
+        key: source
+        for key, source in provenance.items()
+        if not any(other.startswith(f"{key}.") for other in keys)
+    }
 
 
 def _merge(
@@ -177,6 +199,12 @@ def _leaf_provenance(
     """Return provenance entries for every leaf under `value`."""
     if isinstance(value, dict):
         if not value:
+            # An empty table at the root is not a leaf: joining `()` yields the
+            # key `""`. Every merge on a machine with no user `config.toml`
+            # produced that entry, in the output an administrator reads to audit
+            # what policy enforces.
+            if not path:
+                return {}
             return {".".join(path): source}
         result: dict[str, str] = {}
         for key, child in cast("dict[str, object]", value).items():

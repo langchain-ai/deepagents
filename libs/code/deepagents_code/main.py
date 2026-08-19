@@ -4353,7 +4353,13 @@ def _apply_managed_sandbox(
     sandbox factory instead of producing a curated error.
     """
     found, value = resolved
-    if not found or getattr(args, "sandbox", None) is None:
+    # `--sandbox` defaults to the string `"none"`, so an omitted flag never
+    # leaves `args.sandbox` as `None`. Checking only `None` here assigned the
+    # managed backend to every launch, which forced a sandbox onto one that
+    # asked for none and failed an unsandboxed launch outright when the managed
+    # backend was unavailable. `_resolve_and_validate_sandbox` treats both
+    # spellings as "no sandbox"; this must match it.
+    if not found or getattr(args, "sandbox", None) in {None, "none"}:
         return
     if not isinstance(value, str) or not value:
         return

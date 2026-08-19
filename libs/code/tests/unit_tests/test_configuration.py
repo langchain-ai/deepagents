@@ -1127,13 +1127,19 @@ def test_writer_reports_an_unparseable_existing_config_as_an_error(
 
 
 def _managed_policy_args() -> argparse.Namespace:
-    """Return a namespace shaped like the parsed agent-launch arguments."""
+    """Return a namespace shaped like the parsed agent-launch arguments.
+
+    `sandbox` is `"none"` rather than `None` because that is what `parse_args`
+    produces for an omitted `--sandbox` (the argument declares
+    `default="none"`). Using `None` here made the "does not force a sandbox"
+    regression tests pass against code that forced one.
+    """
     return argparse.Namespace(
         model=None,
         auto_classifier_model=None,
         interpreter=None,
         recursion_limit=None,
-        sandbox=None,
+        sandbox="none",
         interpreter_tools=None,
         shell_allow_list="all",
         auto_approve=False,
@@ -1251,7 +1257,9 @@ def test_managed_sandbox_default_does_not_force_a_sandbox(
     """`sandboxes.default` names a backend; it does not turn sandboxing on.
 
     Assigning it unconditionally forced every launch into a remote sandbox,
-    which is not what the key documents.
+    which is not what the key documents. Both spellings of "no sandbox" have to
+    be left alone: an omitted `--sandbox` arrives as `"none"` from argparse, and
+    an explicit `--sandbox none` arrives the same way.
     """
     from deepagents_code import main
     from deepagents_code.configuration import service
@@ -1260,10 +1268,39 @@ def test_managed_sandbox_default_does_not_force_a_sandbox(
     managed.write_text('[sandboxes]\ndefault = "modal"\n', encoding="utf-8")
     monkeypatch.setattr(service, "managed_config_path", lambda: managed)
     service.invalidate_config_sources()
+    try:
+        for unsandboxed in ("none", None):
+            args = _managed_policy_args()
+            args.sandbox = unsandboxed
+            main._apply_managed_runtime_policy(args)
+            assert args.sandbox == unsandboxed
+    finally:
+        service.invalidate_config_sources()
+
+
+def test_unavailable_managed_sandbox_leaves_an_unsandboxed_launch_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launch that asked for no sandbox must not die on a managed backend.
+
+    Regression: the guard checked only `None`, so a bare `dcode` reached the
+    availability check and exited 78 over a backend it was never going to use.
+    """
+    from deepagents_code import main
+    from deepagents_code.configuration import service
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text(
+        '[sandboxes]\ndefault = "not-a-real-provider"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "managed_config_path", lambda: managed)
+    service.invalidate_config_sources()
     args = _managed_policy_args()
     try:
         main._apply_managed_runtime_policy(args)
-        assert args.sandbox is None
+        assert args.sandbox == "none"
     finally:
         service.invalidate_config_sources()
 

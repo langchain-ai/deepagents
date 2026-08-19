@@ -62,6 +62,12 @@ Project-declared MCP configuration is a trust boundary: it can spawn a local com
 
 Runtime discovery uses throwaway sessions; tool wrappers use a lazy process-wide session manager with retry/invalidation for transient/dead/reauth sessions. Loading is bounded-concurrent while output ordering remains deterministic.
 
+### Cached MCP tool failure boundary
+
+`_build_cached_mcp_tool()` in `libs/code/deepagents_code/mcp_tools.py` turns each discovered tool into a LangChain `StructuredTool`. Its coroutine obtains a cached session, retries a transient session failure once after invalidation, and raises a `ToolException` for failures the model must see. `_handle_cached_mcp_tool_error()` is the sole `WARNING`/traceback logging boundary for those recoverable `ToolException`s and returns the tool-local error text. Do not add a second warning in the coroutine: one failed tool call must yield one failure warning, not duplicate diagnostics.
+
+Cleanup warnings are separate: invalidating a failed retry session or closing a session can warn independently because they describe a resource-cleanup problem rather than a duplicate tool failure. Preserve that distinction when changing retries or error handling. Re-raise cancellation, keyboard interrupt, system exit, and existing `ToolException` values unchanged; the wrapper must not turn control flow or actionable MCP errors into a generic retry result.
+
 ## Tests and safe modification sequence
 
 Run from `libs/code`:
@@ -78,6 +84,14 @@ The pytest defaults enforce a 30-second timeout and strict markers/configuration
 - `tests/unit_tests/test_approval_mode.py`: store failures/malformed state fail closed; YOLO acknowledgement behavior.
 - `tests/unit_tests/test_auto_mode.py`: provenance, annotation coherence, path/Git policies, classifier failures, replay/escalation, denials, and headless MCP guards.
 - `tests/unit_tests/test_server_graph.py`: graph cache, startup error handling, MCP discovery, off-loop construction, and no-MCP/read-only conditions.
+- `tests/unit_tests/test_mcp_tools.py::TestCachedSessionProxy::test_repeated_transient_error_surfaces_tool_message`: a second transient failure becomes a model-visible error after one retry and logs exactly one tool-failure warning with traceback.
+- `tests/unit_tests/test_mcp_tools.py::TestCachedSessionProxy::test_generic_oserror_is_not_retried`: a non-transient `OSError` is model-visible without session retry and has the same single-warning contract.
 - `tests/integration_tests/test_auto_approve_remote.py`: actual approved/rejected remote writes, including subagent behavior.
+
+For the cached MCP error seam, use the quiet focused check before broader package checks:
+
+```bash
+cd libs/code && uv run --group test pytest -q --disable-socket --allow-unix-socket tests/unit_tests/test_mcp_tools.py -k 'repeated_transient_error_surfaces_tool_message or generic_oserror_is_not_retried'
+```
 
 Before changing dcode: identify whether the behavior is client UI, persisted approval state, graph construction, middleware, backend/sandbox, or MCP session lifecycle; make the change at that boundary; then test both failure-to-manual and success paths. For repository-wide CI/release context, see [Evaluation and release](evaluation-and-release.md) and [Operations and testing](../engineering/operations-and-testing.md).

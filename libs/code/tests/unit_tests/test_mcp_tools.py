@@ -1880,11 +1880,14 @@ class TestLoadToolsFromConfigOAuth:
                     }
                 }
             }
-            tools, manager, _ = await _load_tools_from_config(config)
+            tools, manager, infos = await _load_tools_from_config(config)
 
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
+        # The TUI's re-auth affordance keys off this flag, so it must track
+        # provider attachment rather than being inferred from transport alone.
+        assert infos[0].uses_oauth is True
         await manager.cleanup()
 
     async def test_authorization_header_skips_stored_oauth_without_explicit_oauth(
@@ -1923,12 +1926,15 @@ class TestLoadToolsFromConfigOAuth:
                     }
                 }
             }
-            tools, manager, _ = await _load_tools_from_config(config)
+            tools, manager, infos = await _load_tools_from_config(config)
 
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
         assert "auth" not in recorded[0]
+        # No provider attached, so the TUI must not offer re-authentication:
+        # the static header would override anything OAuth stored.
+        assert infos[0].uses_oauth is False
         await manager.cleanup()
 
     async def test_discovery_401_challenge_marks_unauthenticated(

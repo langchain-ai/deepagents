@@ -123,6 +123,20 @@ class MCPServerInfo:
     guidance text. Only meaningful while `status == "disabled"`.
     """
 
+    uses_oauth: bool = False
+    """`True` when this server's connection carries an OAuth provider.
+
+    Mirrors the condition that governs whether OAuth is actually used for the
+    connection: the config opted in with `auth: oauth`, or a prior login stored
+    tokens and no static `Authorization` header overrides them. Lets the TUI
+    offer re-authentication only where it would mean something — a server
+    authenticated by a static header ignores stored OAuth tokens, and a public
+    server has no OAuth flow to run.
+
+    Only meaningful while `status == "ok"`; `unauthenticated` servers are
+    already covered by `needs_attention()`.
+    """
+
     def __post_init__(self) -> None:
         """Enforce the status/error/tools consistency invariant.
 
@@ -1903,6 +1917,12 @@ async def _load_tools_from_config(
     # pure, so this is a readability/DRY win over recomputing it in preflight,
     # discovery, and the final fold-in loop below.
     transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
+    # Names whose connection got an OAuth provider, recorded during preflight
+    # and folded into `MCPServerInfo.uses_oauth` at discovery. Preflight fully
+    # completes before discovery starts, so this is populated by then. Computed
+    # here rather than in `_discover_server` because the decision needs the
+    # *resolved* config — the token file stem is derived from the expanded URL.
+    oauth_servers: set[str] = set()
 
     async def _preflight_and_connect(
         server_name: str,
@@ -2001,6 +2021,7 @@ async def _load_tools_from_config(
                     # prior login (possibly triggered by 401 auto-detection)
                     # already stored tokens for this server. Static
                     # Authorization headers take precedence over stored OAuth.
+                    oauth_servers.add(server_name)
                     conn["auth"] = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],
@@ -2308,6 +2329,7 @@ async def _load_tools_from_config(
             name=server_name,
             transport=transport,
             tools=tuple(tool_infos),
+            uses_oauth=server_name in oauth_servers,
         )
 
     # Discovery also runs concurrently (bounded) across the servers that

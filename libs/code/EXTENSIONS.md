@@ -3,6 +3,9 @@
 Python extensions customize the agent server without modifying `dcode`. An
 extension is a Python file or package exposing one factory:
 
+Extensions are experimental and load only when
+`DEEPAGENTS_CODE_EXPERIMENTAL=1` is set before starting `dcode`.
+
 ```python
 from deepagents.backends import StoreBackend
 from deepagents_code.extensions import ExtensionAPI

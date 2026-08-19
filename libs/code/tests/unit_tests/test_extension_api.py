@@ -7,7 +7,9 @@ import pytest
 from deepagents.backends import FilesystemBackend
 from langchain.agents.middleware.types import AgentMiddleware
 
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.extensions import ExtensionAPI
+from deepagents_code.extensions.discovery import discover_extension_files
 from deepagents_code.extensions.models import ExtensionError, SourceInfo
 from deepagents_code.extensions.registry import ExtensionRegistry
 
@@ -71,3 +73,17 @@ def test_rejects_invalid_or_late_registrations(api: ExtensionAPI) -> None:
     api._close()
     with pytest.raises(ExtensionError, match="factory is running"):
         api.register_middleware(_Middleware())
+
+
+def test_discovery_requires_experimental_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Extension files remain invisible until explicitly enabled."""
+    path = tmp_path / "example.py"
+    path.touch()
+    monkeypatch.delenv(EXPERIMENTAL, raising=False)
+    assert not discover_extension_files(user_dir=tmp_path)
+    monkeypatch.setenv(EXPERIMENTAL, "1")
+    assert [source.path for source in discover_extension_files(user_dir=tmp_path)] == [
+        path
+    ]

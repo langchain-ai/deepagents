@@ -585,6 +585,140 @@ class TestExecuteOffload:
 
         prepared.rollback.assert_not_called()
 
+    @staticmethod
+    def _hook_request() -> object:
+        """Build a real server-owned hook invocation request."""
+        from datetime import UTC, datetime
+        from pathlib import Path
+        from uuid import uuid4
+
+        from deepagents_code.hooks.models.domain import (
+            ApprovalMode,
+            HookContext,
+            HookEvent,
+            PreToolUseEvent,
+            ToolCallData,
+        )
+        from deepagents_code.hooks.models.transport import (
+            HookInvocation,
+            HookInvocationRequest,
+        )
+
+        return HookInvocationRequest(
+            protocol_version=1,
+            invocation_id=uuid4(),
+            snapshot_id="snapshot-1",
+            run_id="run-1",
+            invocation=HookInvocation(
+                context=HookContext(
+                    thread_id="thread-1",
+                    cwd=Path("/tmp"),
+                    approval_mode=ApprovalMode.MANUAL,
+                ),
+                event=PreToolUseEvent(
+                    event=HookEvent.PRE_TOOL_USE,
+                    call=ToolCallData(
+                        id="call-1", name="compact_conversation", args={"force": True}
+                    ),
+                ),
+            ),
+            deadline=datetime(2026, 7, 23, tzinfo=UTC),
+        )
+
+    async def test_a_hook_request_becomes_an_interrupt_response(self) -> None:
+        """An unanswered hook must leave the route as a resumable interrupt.
+
+        `HookTransportInterruptError` derives from `BaseException` so the
+        compaction chain cannot swallow it -- which also means the route's own
+        `except Exception` cannot catch it. Without the dedicated handler it
+        escapes to Starlette as a raw 500 for every user with a `PreCompact` or
+        `PreToolUse` hook configured, and nothing else in the suite notices.
+        """
+        from deepagents_code import offload_api
+        from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+        from deepagents_code.hooks.server_middleware import (
+            HookTransportInterruptError,
+        )
+
+        request = self._hook_request()
+        before = _thread_state()
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=before),
+            update_state=AsyncMock(),
+        )
+        operation = SimpleNamespace(
+            execute=AsyncMock(side_effect=HookTransportInterruptError(request))  # ty: ignore[invalid-argument-type]
+        )
+        prepared = SimpleNamespace(update={}, rollback=MagicMock(), records=[])
+
+        with self._patched(offload_api, threads, operation, prepared):
+            response = await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        assert response["status"] == "interrupt"
+        assert is_hook_interrupt_payload(response["request"])
+        assert response["request"]["request"]["invocation_id"] == str(
+            request.invocation_id  # ty: ignore[unresolved-attribute]
+        )
+        # Nothing may be committed while a hook is still unanswered.
+        threads.update_state.assert_not_awaited()
+
+    async def test_accumulated_hook_responses_reach_the_operation(self) -> None:
+        """The resume round must hand the replies back to the hook transport.
+
+        `operation_hook_responses` is the single line that makes a multi-round
+        resume terminate: `_invoke_hook` replays an already-answered invocation
+        from that mapping instead of raising again. Passing an empty mapping
+        would re-raise the same invocation forever and the client would die at
+        its round limit, so assert the mapping is actually installed.
+        """
+        from deepagents_code import offload_api
+        from deepagents_code.hooks.server_middleware import operation_hook_responses
+
+        seen: list[object] = []
+
+        async def execute(  # noqa: RUF029 -- must satisfy the async execute signature
+            *_args: object, **_kwargs: object
+        ) -> OffloadExecution:
+            # Read the context var the way the hook transport does.
+            from deepagents_code.hooks import server_middleware
+
+            seen.append(server_middleware._HOOK_RESPONSES.get())
+            return OffloadExecution(
+                {"_summarization_event": {"cutoff_index": 1}},
+                _result(),  # ty: ignore[invalid-argument-type]
+            )
+
+        before = _thread_state()
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(side_effect=[before, before]),
+            update_state=AsyncMock(),
+        )
+        operation = SimpleNamespace(execute=AsyncMock(side_effect=execute))
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25}, rollback=MagicMock(), records=[]
+        )
+
+        replies: dict[str, object] = {"hook-1": {"decision": "allow"}}
+        with self._patched(offload_api, threads, operation, prepared):
+            response = await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses=replies,
+            )
+
+        assert response["status"] == "complete"
+        assert seen == [replies]
+        # Outside the operation the var is back to graph mode.
+        assert operation_hook_responses is not None
+
     async def test_pending_graph_work_is_rejected(self) -> None:
         from deepagents_code import offload_api
 

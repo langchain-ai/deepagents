@@ -2584,27 +2584,34 @@ class TestOffloadOperation:
         assert execution.update == {}
 
     async def test_hook_denial_skips_compaction(self) -> None:
-        from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY
+        """A `PreToolUse` denial must stop the compaction.
 
+        Keys the outcome on the id the node really generated and asserts the
+        dispatched call's `name`/`args`, so a re-spelled tool name or a dropped
+        `force` flag -- either of which silently exempts `/offload` from the
+        user's hook -- fails here instead of reading as "no outcome".
+        """
         middleware, compaction, hooks = self._middleware()
-        forced_id = "forced-call"
-        hooks.aafter_model = AsyncMock(
-            return_value={
-                _PRE_TOOL_STATE_KEY: {
-                    forced_id: {"behavior": "deny", "reason": "policy"}
-                }
-            }
+        hooks.aafter_model = AsyncMock(side_effect=_deny_dispatched_call("policy"))
+
+        execution = await middleware.execute(
+            {"messages": _make_dict_messages(4)}, self._runtime()
         )
-        with patch(
-            "deepagents_code.offload_middleware._forced_offload_call_id",
-            return_value=forced_id,
-        ):
-            execution = await middleware.execute(
-                {"messages": _make_dict_messages(4)}, self._runtime()
-            )
 
         assert execution.result["status"] == "denied"
         assert execution.result["error"] == "policy"
+        compaction.arun_forced_compaction_update.assert_not_awaited()
+
+    async def test_hook_denial_without_a_reason_still_stops_compaction(self) -> None:
+        """A denial carrying no reason must not read as an allow."""
+        middleware, compaction, hooks = self._middleware()
+        hooks.aafter_model = AsyncMock(side_effect=_deny_dispatched_call(None))
+
+        execution = await middleware.execute(
+            {"messages": _make_dict_messages(4)}, self._runtime()
+        )
+
+        assert execution.result["status"] == "denied"
         compaction.arun_forced_compaction_update.assert_not_awaited()
 
     async def test_failure_returns_result_without_rewriting_messages(self) -> None:

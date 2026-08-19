@@ -290,8 +290,10 @@ class _MCPStderrSink(io.TextIOBase):
             )
             self._thread.start()
         except BaseException:
-            self._writer.close()
-            os.close(self._read_fd)
+            try:
+                self._writer.close()
+            finally:
+                self._close_read_fd()
             raise
 
     def fileno(self) -> int:
@@ -302,10 +304,14 @@ class _MCPStderrSink(io.TextIOBase):
         """Close the parent's copy of the subprocess write descriptor."""
         if self.closed:
             return
+        # `getattr`: the finalizer reaches here for an instance whose
+        # `os.fdopen` failed, before `_writer` was ever assigned.
+        writer = getattr(self, "_writer", None)
         try:
             super().close()
         finally:
-            self._writer.close()
+            if writer is not None:
+                writer.close()
 
     async def wait_closed(self) -> None:
         """Wait off the event loop until the pipe reader reaches EOF.

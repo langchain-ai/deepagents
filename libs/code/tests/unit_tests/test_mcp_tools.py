@@ -1006,9 +1006,14 @@ class TestMCPStderrCapture:
                     if len(stderr_messages()) >= 2:
                         break
                     await asyncio.sleep(0.01)
+                # Exactly two: `final` has no trailing newline, so it stays
+                # buffered until the EOF flush. The child blocks on
+                # `sys.stdin.buffer.read()`, so EOF cannot arrive until the
+                # session context exits below.
                 assert len(stderr_messages()) == 2
 
         messages = stderr_messages()
+        assert len(messages) == 3
         assert messages[0] == "MCP server 'fake' stderr: partial café[31m"
         long_line = messages[1].partition(" stderr: ")[2]
         assert len(long_line) == _MCP_STDERR_LINE_LIMIT

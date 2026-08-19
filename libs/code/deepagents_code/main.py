@@ -2285,8 +2285,7 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Override the main agent's LangGraph recursion_limit (graph step "
         "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
-        "[runtime].recursion_limit, unless managed config sets it; "
-        "defaults to 2000.",
+        "[runtime].recursion_limit; defaults to 2000.",
     )
 
     parser.add_argument(

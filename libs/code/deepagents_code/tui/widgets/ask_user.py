@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 from deepagents_code._ask_user_types import (
     CHOICE_QUESTION_TYPES,
     QUESTION_TYPES,
-    decode_multi_select_answer,
+    ask_user_answer_is_empty,
     encode_multi_select_answer,
 )
 from deepagents_code.config import get_glyphs
@@ -339,8 +339,7 @@ class AskUserMenu(Container):
                 if error is not None:
                     self.app.notify(error, severity="warning", markup=False)
                     return
-                answer = qw.get_answer()
-                if answer.strip() or not qw._required:
+                if not qw.answer_is_empty() or not qw._required:
                     self.confirm_and_advance(qw._index)
                 else:
                     self.app.notify(
@@ -392,10 +391,8 @@ class AskUserMenu(Container):
         #
         # This subsumes the empty-required check for `multi_select`, and reports
         # the more specific Other-row errors in preference to the generic
-        # "answer all questions" toast. A raw `.strip()` is not enough for
-        # emptiness here: an untouched multi-select encodes as the truthy
-        # string `"[]"`, so the check goes through
-        # `_QuestionWidget.answer_is_empty`.
+        # "answer all questions" toast. Emptiness goes through
+        # `_QuestionWidget.answer_is_empty`, which knows the `[]` encoding.
         for i, qw in enumerate(self._question_widgets):
             error = qw.validate_for_submit()
             if error is None and qw._required and qw.answer_is_empty():
@@ -1019,22 +1016,15 @@ class _QuestionWidget(Vertical):
     def answer_is_empty(self) -> bool:
         """Return whether the current answer counts as "no answer".
 
-        A raw `.strip()` on `get_answer` misreads a multi-select with nothing
-        toggled: its encoding is the truthy string `"[]"`. Decoding is what
-        makes emptiness decidable for that type; any other answer is empty when
-        it is blank.
+        Defers to `ask_user_answer_is_empty` so this agrees with the
+        authorization path, which applies the same rule to the answer once it
+        is over the wire.
 
         Returns:
             `True` when the question has no substantive answer — an empty
             multi-select selection, or a blank answer of any other type.
         """
-        answer = self.get_answer()
-        if self._q_type == "multi_select":
-            # `get_answer` always produces a decodable array for this type;
-            # the `or []` only keeps a hypothetical malformed string on the
-            # fail-closed side of a required-question check.
-            return not (decode_multi_select_answer(answer) or [])
-        return not answer.strip()
+        return ask_user_answer_is_empty(self.get_answer(), self._q_type)
 
     def validate_for_submit(self) -> str | None:
         """Return a user-facing error if this question cannot be submitted yet.

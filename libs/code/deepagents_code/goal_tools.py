@@ -29,11 +29,11 @@ from pydantic import Field
 from deepagents_code.goal_state_limits import (
     GOAL_STATUS_NOTE_CHAR_LIMIT,
     GoalStateSizeError,
-    validate_goal_notice_text,
     validate_goal_status_note,
 )
 from deepagents_code.goal_state_notice import (
     build_goal_state_notice,
+    goal_notice_size_error,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
     is_goal_state_message,
@@ -41,8 +41,6 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
     log_malformed_summarization_event,
-    notice_text_sections,
-    project_goal_state,
     superseded_goal_state_placeholder,
     validated_summarization_cutoff,
 )
@@ -176,17 +174,10 @@ def _update_goal_command(
     # it or grade against it. Since the read tools were removed, `update_goal` is
     # the only goal surface the model has, so refusing here is what keeps that
     # instruction from resting on prose alone. Project exactly as the renderer
-    # does, or the check passes against text the notice does not carry.
-    notice_objective, notice_criteria, notice_status_note = notice_text_sections(
-        project_goal_state(state)
-    )
-    try:
-        validate_goal_notice_text(
-            objective=notice_objective,
-            criteria=notice_criteria,
-            status_note=notice_status_note,
-        )
-    except GoalStateSizeError as exc:
+    # does, or the check passes against text the notice does not carry, which is
+    # why this goes through the shared helper rather than projecting again here.
+    exc = goal_notice_size_error(state)
+    if exc is not None:
         return Command(
             update={
                 "messages": [
@@ -385,25 +376,16 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             update["_summarization_event"] = None
         if notice is not None:
             update["messages"] = [notice]
-        objective, criteria, status_note = notice_text_sections(
-            project_goal_state(values)
-        )
-        try:
-            validate_goal_notice_text(
-                objective=objective,
-                criteria=criteria,
-                status_note=status_note,
+        exc = goal_notice_size_error(values)
+        # Keep authoritative saved state recoverable, but clear the public
+        # per-invocation rubric so grading cannot re-inject oversized text.
+        if exc is not None and values.get("rubric") is not None:
+            logger.warning(
+                "Goal/rubric state exceeds the notice budget; clearing the "
+                "per-invocation rubric so this turn is not graded: %s",
+                exc,
             )
-        except GoalStateSizeError as exc:
-            # Keep authoritative saved state recoverable, but clear the public
-            # per-invocation rubric so grading cannot re-inject oversized text.
-            if values.get("rubric") is not None:
-                logger.warning(
-                    "Goal/rubric state exceeds the notice budget; clearing the "
-                    "per-invocation rubric so this turn is not graded: %s",
-                    exc,
-                )
-                update["rubric"] = None
+            update["rubric"] = None
         return update or None
 
     @override

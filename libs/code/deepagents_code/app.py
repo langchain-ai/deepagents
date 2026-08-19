@@ -102,6 +102,7 @@ from deepagents_code.goal_state_limits import (
 from deepagents_code.goal_state_notice import (
     build_goal_continuation,
     build_goal_state_notice,
+    goal_notice_size_error,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
     is_human_message,
@@ -109,8 +110,6 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_message_index,
     latest_goal_state_notice,
     log_malformed_summarization_event as _log_malformed_summarization_event,
-    notice_text_sections,
-    project_goal_state,
     summarization_cutoff as _summarization_cutoff,
     validated_summarization_cutoff as _validated_summarization_cutoff,
 )
@@ -13227,18 +13226,8 @@ class DeepAgentsApp(App):
         Returns:
             A user-facing validation error, or `None` when active state is safe.
         """
-        objective, criteria, status_note = notice_text_sections(
-            project_goal_state(self._goal_state_update())
-        )
-        try:
-            validate_goal_notice_text(
-                objective=objective,
-                criteria=criteria,
-                status_note=status_note,
-            )
-        except GoalStateSizeError as exc:
-            return str(exc)
-        return None
+        error = goal_notice_size_error(self._goal_state_update())
+        return str(error) if error is not None else None
 
     def _next_rubric_size_error(self, criteria: str) -> str | None:
         """Return why a one-shot rubric cannot fit the turn's notice budget.
@@ -13256,18 +13245,11 @@ class DeepAgentsApp(App):
             A user-facing validation error, or `None` when the combined notice
             text is safe.
         """
-        objective, _current_criteria, status_note = notice_text_sections(
-            project_goal_state(self._goal_state_update())
+        error = goal_notice_size_error(
+            self._goal_state_update(),
+            criteria_override=criteria,
         )
-        try:
-            validate_goal_notice_text(
-                objective=objective,
-                criteria=criteria,
-                status_note=status_note,
-            )
-        except GoalStateSizeError as exc:
-            return str(exc)
-        return None
+        return str(error) if error is not None else None
 
     async def _announce_goal_status_transition(
         self, previous_status: str | None

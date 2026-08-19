@@ -555,6 +555,41 @@ def notice_text_sections(projected: GoalStateProjection) -> NoticeTextSections:
     )
 
 
+def goal_notice_size_error(
+    state: Mapping[str, object],
+    *,
+    criteria_override: str | None = None,
+) -> GoalStateSizeError | None:
+    """Return why `state` cannot render as a safe notice, or `None` when it can.
+
+    Collapses the project-then-validate sequence its callers each performed
+    separately. Their correctness depended on all of them projecting exactly as
+    the renderer does — the fragility `notice_text_sections` warns about — so one
+    implementation is the point rather than the brevity.
+
+    Args:
+        state: Authoritative goal and rubric channels.
+        criteria_override: Candidate criteria to validate in place of the ones
+            `state` projects, for a rubric that is not committed yet. `None` uses
+            the projected criteria.
+
+    Returns:
+        The rejection, or `None` when the notice text fits.
+    """
+    sections = notice_text_sections(project_goal_state(state))
+    try:
+        validate_goal_notice_text(
+            objective=sections.objective,
+            criteria=(
+                sections.criteria if criteria_override is None else criteria_override
+            ),
+            status_note=sections.status_note,
+        )
+    except GoalStateSizeError as exc:
+        return exc
+    return None
+
+
 def build_goal_state_notice(
     state: Mapping[str, object],
     *,

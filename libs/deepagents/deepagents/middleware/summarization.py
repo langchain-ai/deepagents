@@ -1857,7 +1857,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
             msg = f"system_prompt must be str or None, got {type(system_prompt).__name__}"
             raise TypeError(msg)
         self._summarization = summarization
-        self.state_schema = summarization.state_schema
+        state_schema = getattr(summarization, "state_schema", None)
+        if isinstance(state_schema, type):
+            self.state_schema = state_schema
         self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 

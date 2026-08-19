@@ -8,10 +8,14 @@ format are defined in one place.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import sys
 from pathlib import Path
+
+if os.name == "nt":  # Windows-only ACL structures; see _set_windows_owner_only_dacl.
+    from ctypes import wintypes
 
 from deepagents_code._env_vars import (
     DEBUG,
@@ -40,10 +44,18 @@ hardcoded integers.
 
 
 def _prepare_debug_file(path: Path) -> None:
-    """Create or tighten a debug file before attaching the logging handler."""
+    """Create or tighten a debug file before attaching the logging handler.
+
+    On POSIX the file is created/tightened to mode `0o600`. On Windows, where
+    `os.open` mode bits and `chmod` do not tighten the DACL, the file's DACL is
+    replaced with one granting full control to the current user only.
+    """
     flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
     try:
+        if os.name == "nt":
+            _set_windows_owner_only_dacl(path)
+            return
         fchmod = getattr(os, "fchmod", None)
         if fchmod is None:
             path.chmod(0o600)
@@ -51,6 +63,150 @@ def _prepare_debug_file(path: Path) -> None:
             fchmod(fd, 0o600)
     finally:
         os.close(fd)
+
+
+def _set_windows_owner_only_dacl(path: Path) -> None:
+    """Restrict `path` to the current user on Windows.
+
+    This is a no-op on POSIX, where `_prepare_debug_file` uses mode `0o600`
+    instead. The Windows implementation (defined only when `os.name == "nt"`)
+    replaces the file's DACL with one granting full control to the current user
+    and no one else.
+
+    On Windows this raises `WinError` if the DACL cannot be built or applied;
+    `_prepare_debug_file` surfaces that as an `OSError` warning.
+
+    Args:
+        path: Debug log file to lock down.
+    """
+    if os.name != "nt":
+        return
+    _apply_windows_owner_only_dacl(path)
+
+
+if os.name == "nt":
+    # --- Windows user-only DACL ---------------------------------------------
+    # Structures and helpers mirroring the advapi32 API used to build and apply
+    # a DACL granting the current user full control and no one else any access.
+
+    _SE_FILE_OBJECT = 1
+    _DACL_SECURITY_INFORMATION = 0x00000004
+    _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+    _TOKEN_QUERY = 0x0008
+    _TOKEN_USER_INFORMATION_CLASS = 1
+    _FILE_GENERIC_READ = 0x120089
+    _FILE_GENERIC_WRITE = 0x120116
+
+    class _TRUSTEE_W(ctypes.Structure):  # noqa: N801  # mirrors Win32 TRUSTEE_W
+        """`TRUSTEE_W` identifying the current-user SID to `SetEntriesInAclW`."""
+
+        _fields_ = [
+            ("pMultipleTrustee", ctypes.c_void_p),
+            ("MultipleTrusteeOperation", ctypes.c_int),
+            ("TrusteeForm", ctypes.c_int),
+            ("TrusteeType", ctypes.c_int),
+            ("ptstrName", ctypes.c_void_p),
+        ]
+
+    class _EXPLICIT_ACCESS_W(ctypes.Structure):  # noqa: N801  # mirrors Win32 type
+        """`EXPLICIT_ACCESS_W` describing one access-control entry."""
+
+        _fields_ = [
+            ("grfAccessPermissions", wintypes.DWORD),
+            ("grfAccessMode", ctypes.c_int),
+            ("grfInheritance", wintypes.DWORD),
+            ("Trustee", _TRUSTEE_W),
+        ]
+
+    def _get_current_user_sid() -> ctypes.c_void_p:
+        """Return a pointer to the current user's SID.
+
+        The SID buffer is kept alive on the returned pointer's referrer so it
+        stays valid for the duration of the DACL construction.
+
+        Returns:
+            A pointer to the current user's SID.
+
+        Raises:
+            WinError: If the process token or user SID cannot be read.
+        """
+        advapi32 = ctypes.windll.advapi32
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(
+            ctypes.windll.kernel32.GetCurrentProcess(),
+            _TOKEN_QUERY,
+            ctypes.byref(token),
+        ):
+            raise ctypes.WinError()  # surface the raw OS error
+        try:
+            needed = wintypes.DWORD(0)
+            advapi32.GetTokenInformation(
+                token, _TOKEN_USER_INFORMATION_CLASS, None, 0, ctypes.byref(needed)
+            )
+            if not needed.value:
+                raise ctypes.WinError()
+            buffer = (ctypes.c_byte * needed.value)()
+            if not advapi32.GetTokenInformation(
+                token,
+                _TOKEN_USER_INFORMATION_CLASS,
+                buffer,
+                needed,
+                ctypes.byref(needed),
+            ):
+                raise ctypes.WinError()
+            # TOKEN_USER begins with a single pointer to the user's SID.
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p)).contents
+            # Keep the backing buffer alive by attaching it to the pointer object.
+            sid._buffer = buffer  # type: ignore[attr-defined]
+            return sid
+        finally:
+            ctypes.windll.kernel32.CloseHandle(token)
+
+    def _apply_windows_owner_only_dacl(path: Path) -> None:
+        """Replace `path`'s DACL with one granting the current user full control.
+
+        Args:
+            path: Debug log file to lock down.
+
+        Raises:
+            WinError: If the DACL cannot be built or applied.
+        """
+        advapi32 = ctypes.windll.advapi32
+        sid = _get_current_user_sid()
+
+        trustee = _TRUSTEE_W(
+            pMultipleTrustee=None,
+            MultipleTrusteeOperation=0,  # NO_MULTIPLE_TRUSTEE
+            TrusteeForm=2,  # TRUSTEE_IS_SID
+            TrusteeType=0,  # TRUSTEE_IS_USER
+            ptstrName=ctypes.cast(sid, ctypes.c_void_p).value,
+        )
+        explicit = _EXPLICIT_ACCESS_W(
+            grfAccessPermissions=_FILE_GENERIC_READ | _FILE_GENERIC_WRITE,
+            grfAccessMode=2,  # SET_ACCESS
+            grfInheritance=0,  # NO_INHERITANCE
+            Trustee=trustee,
+        )
+        new_acl = ctypes.c_void_p()
+        result = advapi32.SetEntriesInAclW(
+            1, ctypes.byref(explicit), None, ctypes.byref(new_acl)
+        )
+        if result != 0:  # ERROR_SUCCESS
+            raise ctypes.WinError(result)
+        try:
+            apply_result = advapi32.SetNamedSecurityInfoW(
+                str(path),
+                _SE_FILE_OBJECT,
+                _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                new_acl,
+                None,
+            )
+            if apply_result != 0:  # ERROR_SUCCESS
+                raise ctypes.WinError(apply_result)
+        finally:
+            ctypes.windll.kernel32.LocalFree(new_acl)
 
 
 def resolve_log_level(*, debug_enabled: bool | None = None) -> int:
@@ -129,6 +285,14 @@ def configure_debug_logging(target: logging.Logger) -> None:
 
     try:
         _prepare_debug_file(debug_path)
+    except OSError as exc:
+        logger.warning(
+            "could not restrict debug log file %s to the current user: %s. "
+            "Captured MCP stderr may be readable by other local users.",
+            debug_path,
+            exc,
+        )
+    try:
         handler = logging.FileHandler(str(debug_path), mode="a")
     except OSError as exc:
         message = f"could not open debug log file {debug_path}: {exc}"

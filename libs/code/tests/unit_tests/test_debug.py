@@ -6,9 +6,17 @@ import importlib
 import logging
 import os
 import stat
+import sys
 from unittest.mock import patch
 
+import pytest
+
+if sys.platform == "win32":
+    import win32api
+    import win32security
+
 import deepagents_code
+from deepagents_code import _debug
 from deepagents_code._debug import (
     configure_debug_logging,
     installed_debug_log_path,
@@ -79,6 +87,35 @@ class TestConfigureDebugLogging:
             if isinstance(h, logging.FileHandler):
                 h.close()
                 logger.removeHandler(h)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows ACL hardening")
+    def test_debug_file_dacl_grants_current_user_only(self, tmp_path) -> None:
+        """On Windows the debug file DACL is restricted to the current user."""
+        log_file = tmp_path / "debug.log"
+        log_file.touch()
+
+        _debug._prepare_debug_file(log_file)
+
+        current_user, _, _ = win32security.LookupAccountName(
+            None, win32api.GetUserName()
+        )
+        sd = win32security.GetFileSecurity(
+            str(log_file), win32security.DACL_SECURITY_INFORMATION
+        )
+        dacl = sd.GetSecurityDescriptorDacl()
+        assert dacl is not None
+        assert dacl.GetAceCount() == 1
+        ace = dacl.GetAce(0)
+        assert ace[2][0] == current_user
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows-only code path")
+    def test_prepare_debug_file_routes_to_windows_acl(self, tmp_path) -> None:
+        """`os.name == 'nt'` selects the ACL path over the POSIX chmod path."""
+        log_file = tmp_path / "debug.log"
+        with patch.object(_debug, "_set_windows_owner_only_dacl") as mock_acl:
+            _debug._prepare_debug_file(log_file)
+        mock_acl.assert_called_once_with(log_file)
+        assert log_file.exists()
 
     def test_log_level_debug_enables_debug_without_file_handler(self) -> None:
         logger = logging.getLogger("test.debug.level_only")

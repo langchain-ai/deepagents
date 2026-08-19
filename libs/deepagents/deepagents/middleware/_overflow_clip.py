@@ -11,6 +11,10 @@ ToolMessage batch in the preserved suffix. Two per-TM paths:
 - Any other tool result: full offload to `/large_tool_results/{tool_call_id}`
     via the shared eviction helper, then replace the message with a
     large-tool-result stub.
+
+Results already smaller than the slice size are left untouched -- rewriting
+them would not shrink the batch and would falsely tell the agent its output
+was truncated.
 """
 
 from __future__ import annotations
@@ -31,6 +35,9 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.summarization import ContextSize, TokenCounter
 
     from deepagents.backends.protocol import BackendProtocol
+
+_SLICE_CHARS = 4_000
+"""Head-slice size for a clipped `read_file` result."""
 
 
 def _derive_overflow_clip_threshold_tokens(keep: ContextSize, max_input_tokens: int | None) -> int:
@@ -82,15 +89,52 @@ def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
     truncation notice mirrors `READ_FILE_TRUNCATION_MSG` in shape so the
     agent encounters a consistent format whether the tool truncated itself
     or the middleware did.
+
+    Media blocks (image/audio/video) are dropped rather than carried over: this
+    path runs *because* the batch overflowed the context window, so keeping an
+    inline base64 payload would defeat the clip. They are replaced by a pointer
+    to `original_path`, which still holds the file, so the agent can re-read it.
+
+    Each notice is emitted only for what actually happened, so a result that
+    was not really truncated doesn't claim it was.
     """
     content = _extract_text_from_message(msg)
-    notice = (
-        f"\n\n[Output was truncated due to context window size limits. "
-        f"The full content is at {original_path}. "
-        f"Use read_file with offset and limit parameters to retrieve specific portions. "
-        f"For example, to read the first 100 lines, call read_file with file_path='{original_path}', offset=0, limit=100.]"
-    )
-    return msg.model_copy(update={"content": content[:4_000] + notice})
+    has_media = any(block["type"] != "text" for block in msg.content_blocks)
+    truncated = len(content) > _SLICE_CHARS
+    notice = ""
+    if truncated:
+        notice += (
+            f"\n\n[Output was truncated due to context window size limits. "
+            f"The full content is at {original_path}. "
+            f"Use read_file with offset and limit parameters to retrieve specific portions. "
+            f"For example, to read the first 100 lines, call read_file with file_path='{original_path}', offset=0, limit=100.]"
+        )
+    if has_media:
+        notice += (
+            f"\n\n[Media content was removed due to context window size limits. "
+            f"The original file is at {original_path}. "
+            f"Call read_file with file_path='{original_path}' to view it again.]"
+        )
+    return msg.model_copy(update={"content": content[:_SLICE_CHARS] + notice})
+
+
+def _is_worth_clipping(msg: ToolMessage) -> bool:
+    """Whether clipping `msg` can actually shrink the batch.
+
+    A result already smaller than the slice size has nothing to give: the
+    replacement is a fixed truncation notice (or, on the generic path, a
+    large-tool-result stub with a head+tail preview) that can easily be
+    *longer* than the result it replaces. Rewriting it only destroys a result
+    that was never the problem and tells the agent its output was truncated
+    when it wasn't.
+
+    Media blocks always count as worth clipping -- an inline base64 payload is
+    exactly the kind of bulk this path exists to shed, and its size doesn't
+    show up in the extracted text.
+    """
+    if any(block["type"] != "text" for block in msg.content_blocks):
+        return True
+    return len(_extract_text_from_message(msg)) > _SLICE_CHARS
 
 
 def _read_file_original_path(msg: ToolMessage, tc_index: dict[str, dict[str, Any]]) -> str | None:
@@ -108,7 +152,13 @@ def _clip_one_tail_message(
     backend: BackendProtocol,
     large_tool_results_prefix: str,
 ) -> ToolMessage | None:
-    """Apply the appropriate per-TM clip: read_file slice vs generic eviction."""
+    """Apply the appropriate per-TM clip: read_file slice vs generic eviction.
+
+    Returns `None` -- keep the original -- for results too small to be worth
+    clipping.
+    """
+    if not _is_worth_clipping(msg):
+        return None
     original_path = _read_file_original_path(msg, tc_index)
     if original_path is not None:
         return _slice_read_file_tm(msg, original_path)
@@ -122,6 +172,8 @@ async def _aclip_one_tail_message(
     large_tool_results_prefix: str,
 ) -> ToolMessage | None:
     """Async variant of `_clip_one_tail_message`."""
+    if not _is_worth_clipping(msg):
+        return None
     original_path = _read_file_original_path(msg, tc_index)
     if original_path is not None:
         return _slice_read_file_tm(msg, original_path)
@@ -141,8 +193,10 @@ def _clip_overflow_tail(
 
     Engages only when `preserved_messages` ends with consecutive ToolMessages
     whose combined token count reaches `_derive_overflow_clip_threshold_tokens()`.
-    Each large TM is written under `large_tool_results/{tool_call_id}` and
-    replaced in-place by an offload-pointer ToolMessage.
+    Only TMs big enough for clipping to help are rewritten, so results that
+    weren't the problem survive intact. Each clipped non-`read_file` TM is
+    written under `large_tool_results/{tool_call_id}` and replaced in-place by
+    an offload-pointer ToolMessage.
 
     Returns `(modified preserved_messages, replacement TMs to persist in
     state)`. Replacements carry the original ids so the `add_messages`
@@ -182,7 +236,7 @@ async def _aclip_overflow_tail(
     token_counter: TokenCounter,
     large_tool_results_prefix: str,
 ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-    """Async variant of `_clip_overflow_tail`. Offloads each tail TM concurrently."""
+    """Async variant of `_clip_overflow_tail`. Offloads each clipped tail TM concurrently."""
     found = _find_tail_tool_message_batch(preserved_messages)
     if found is None:
         return preserved_messages, []

@@ -92,6 +92,7 @@ from deepagents_code._session_stats import (
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
 from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.goal_state_limits import (
+    RUBRIC_CHAR_LIMIT,
     GoalStateSizeError,
     validate_goal_application,
     validate_goal_notice_text,
@@ -14926,6 +14927,7 @@ class DeepAgentsApp(App):
             "  /rubric max-iterations <N|clear>\n\n"
             "Use /rubric next for a one-turn quality gate. Use /rubric set "
             "when you want explicit acceptance criteria to persist across turns.\n"
+            f"Criteria are limited to {RUBRIC_CHAR_LIMIT:,} characters.\n"
             "Example: /rubric set tests pass; keep the diff minimal"
         )
 
@@ -14954,6 +14956,7 @@ class DeepAgentsApp(App):
         return (
             "Usage: /rubric file <path>\n\n"
             "Load acceptance criteria from a file (same as /rubric set).\n"
+            f"The file must hold at most {RUBRIC_CHAR_LIMIT:,} characters.\n"
             "Example: /rubric file ./rubric.md"
         )
 
@@ -18868,10 +18871,11 @@ class DeepAgentsApp(App):
 
         # Mounted from the `finally` block, so it survives every early return
         # and the resilient `except` below. Oversized saved state disables goal
-        # work and grading for the whole session and `_restore_goal_rubric_state`
-        # has already made it live by then, so a path that bails out silently
-        # would leave the user with a non-functional goal and no explanation.
-        # Mounting last also keeps it below the restored transcript.
+        # work and grading until the user clears or shortens it, and
+        # `_restore_goal_rubric_state` has already made it live by then, so a
+        # path that bails out silently would leave the user with a
+        # non-functional goal and no explanation. Mounting last also keeps it
+        # below the restored transcript.
         size_warning: ErrorMessage | None = None
 
         try:

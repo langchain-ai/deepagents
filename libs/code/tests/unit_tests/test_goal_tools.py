@@ -478,6 +478,64 @@ def test_wrap_model_call_removes_superseded_oversized_notice() -> None:
     assert len(messages[-1].content) < 2_000
 
 
+def test_wrap_model_call_keeps_below_cutoff_notice_so_indices_stay_aligned() -> None:
+    """Filtering must not shift the absolute indices the summarizer slices by.
+
+    This middleware wraps the summarizer, so the inner `SummarizationMiddleware`
+    applies the persisted absolute `cutoff_index` to whatever list is handed
+    inward. Dropping a superseded notice *below* that cutoff shortens the list
+    and its slice then starts too late, silently losing live turns — and
+    orphaning a `ToolMessage` whose `AIMessage` shifted out, which the provider
+    rejects. Every earlier cutoff test uses a malformed cutoff, which takes the
+    event-nulling branch and never reaches this slice.
+    """
+    state: dict[str, object] = {
+        "_goal_objective": "ship the fix",
+        "_goal_status": "active",
+    }
+    superseded = build_goal_state_notice({"rubric": "stale"}, event_id="superseded")
+    current = build_goal_state_notice(state, event_id="current")
+    tool_call = AIMessage(
+        content="calling",
+        tool_calls=[{"name": "read_file", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(content="file body", tool_call_id="call-1")
+    messages: list[object] = [
+        HumanMessage(content="m0"),
+        superseded,
+        HumanMessage(content="m2"),
+        tool_call,
+        tool_result,
+        current,
+    ]
+    cutoff = 3
+    summary = HumanMessage(content="SUMMARY")
+    state["_summarization_event"] = {
+        "cutoff_index": cutoff,
+        "summary_message": summary,
+    }
+    request = _fake_request(None, state=state, messages=messages)
+    captured: dict[str, SimpleNamespace] = {}
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    inner = captured["request"].messages
+    # What the summarizer will actually send, before and after this middleware.
+    expected = [summary, *messages[cutoff:]]
+    effective = [summary, *inner[cutoff:]]
+    assert effective == expected
+    # The below-cutoff notice is retained purely to hold the indices; it stays
+    # invisible to the model because the slice starts above it.
+    assert superseded in inner
+    assert superseded not in effective
+    # The tool-call pair must not be split by the filter.
+    assert tool_call in effective
+    assert tool_result in effective
+
+
 def test_wrap_model_call_does_not_restore_stale_state_over_unsaved_fallback() -> None:
     state: dict[str, object] = {
         "_goal_objective": "old goal",

@@ -408,9 +408,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         When checkpointed history no longer surfaces a current notice, a
         transient goal-state notice is appended to the request messages only
         (not persisted; `before_model` owns the durable write). Superseded notices
-        are removed from the transient window so a legacy oversized value cannot
-        remain model-visible beside its bounded replacement. The system prompt is
-        left unchanged.
+        at or above the summarization cutoff are removed from the transient window
+        so a legacy oversized value cannot remain model-visible beside its bounded
+        replacement; ones below the cutoff are left in place because removing them
+        would shift the absolute indices the inner summarizer slices by. The system
+        prompt is left unchanged.
 
         This middleware wraps the summarizer, so `request.messages` is the full
         persisted list rather than a trimmed window. The summarization cutoff is
@@ -448,10 +450,22 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         if notice is not None:
             messages.append(notice)
         latest_index = latest_goal_state_message_index(messages)
+        # Only drop superseded notices the model can still see. The inner
+        # summarizer slices this list by the persisted *absolute* `cutoff_index`,
+        # so removing anything below the cutoff shifts every later index down and
+        # its slice starts that many messages too late — silently dropping live
+        # turns, and orphaning a `ToolMessage` whose `AIMessage` shifted out
+        # (which the provider rejects). Below-cutoff notices are already invisible
+        # to the model, so keeping them costs nothing and preserves alignment.
+        # A malformed event is nulled above, so nothing is sliced and the whole
+        # list is fair game.
+        filter_floor = 0 if malformed_event else (cutoff or 0)
         filtered = [
             message
             for index, message in enumerate(messages)
-            if not is_goal_state_message(message) or index == latest_index
+            if index < filter_floor
+            or not is_goal_state_message(message)
+            or index == latest_index
         ]
         if notice is None and len(filtered) == len(request.messages):
             return request

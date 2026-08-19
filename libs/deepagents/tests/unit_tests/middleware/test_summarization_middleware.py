@@ -7,21 +7,16 @@ import inspect
 import re
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast, get_type_hints
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain.agents import create_agent
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
-from langchain_anthropic import ChatAnthropic
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
-from deepagents.backends.state import StateBackend
-from deepagents.backends.store import StoreBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     _token_counter_accepts_tools,
@@ -343,23 +338,6 @@ class TestSummarizationMiddlewareInit:
 
         assert middleware._backend is backend
         assert middleware._history_path_prefix == "/conversation_history"
-        assert "files" not in get_type_hints(middleware.state_schema, include_extras=True)
-
-    def test_state_backend_adds_files_state(self) -> None:
-        middleware = SummarizationMiddleware(
-            model=make_mock_model(),
-            backend=StateBackend(),
-        )
-
-        assert "files" in get_type_hints(middleware.state_schema, include_extras=True)
-
-    def test_mixed_backends_keep_files_state(self) -> None:
-        model = ChatAnthropic(model="claude-sonnet-4-6")
-        filesystem = FilesystemMiddleware(backend=StoreBackend(namespace=lambda _rt: ("filesystem",)))
-        summarization = SummarizationMiddleware(model=model, backend=StateBackend())
-        agent = create_agent(model=model, middleware=[filesystem, summarization])
-
-        assert "files" in agent.channels
 
     def test_langchain_deprecated_kwargs_are_forwarded(self) -> None:
         """LangChain-owned deprecated arguments retain their upstream behavior."""

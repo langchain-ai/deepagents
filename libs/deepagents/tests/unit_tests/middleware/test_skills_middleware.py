@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, get_type_hints
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -1612,7 +1612,6 @@ def test_skills_middleware_with_state_backend() -> None:
     # Verify the middleware was created successfully
     assert middleware is not None
     assert isinstance(middleware._backend, StateBackend)
-    assert "files" in get_type_hints(middleware.state_schema, include_extras=True)
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
 
@@ -1629,7 +1628,6 @@ def test_skills_middleware_with_store_backend_instance() -> None:
     # Verify the middleware was created successfully
     assert middleware is not None
     assert isinstance(middleware._backend, StoreBackend)
-    assert "files" not in get_type_hints(middleware.state_schema, include_extras=True)
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
 

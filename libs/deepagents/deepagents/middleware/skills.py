@@ -104,7 +104,7 @@ import json
 import logging
 import re
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated
 
 import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
@@ -130,7 +130,6 @@ from langchain.agents.middleware.types import (
 
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
-from deepagents.middleware._filesystem_state import FilesystemState, _state_schema_for_backend
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -297,10 +296,6 @@ class SkillsState(AgentState):
 
     skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
     """Skill source loading errors. Not propagated to parent agents."""
-
-
-class _StateBackendSkillsState(SkillsState, FilesystemState):
-    """Skills state with ephemeral backend files."""
 
 
 class SkillsStateUpdate(TypedDict):
@@ -802,7 +797,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         source_labels: Display labels aligned by index with `sources`.
     """
 
-    state_schema: type[SkillsState] = SkillsState
+    state_schema = SkillsState
 
     def __init__(
         self,
@@ -845,10 +840,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 msg = f"system_prompt missing required format slot(s): {', '.join(missing)}"
                 raise ValueError(msg)
         self._backend = backend
-        self.state_schema = cast(
-            "type[SkillsState]",
-            _state_schema_for_backend(backend, SkillsState, _StateBackendSkillsState),
-        )
         # `self.sources` remains paths-only (`list[str]`) to preserve
         # backwards-compat for callers that inspect it directly; label
         # information is mirrored on `self.source_labels` at the same index.

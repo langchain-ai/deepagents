@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -78,7 +78,6 @@ from langchain.agents.middleware.types import (
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
 
-from deepagents.middleware._filesystem_state import FilesystemState, _state_schema_for_backend
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -93,10 +92,6 @@ class MemoryState(AgentState):
     """
 
     memory_contents: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
-
-
-class _StateBackendMemoryState(MemoryState, FilesystemState):
-    """Memory state with ephemeral backend files."""
 
 
 class MemoryStateUpdate(TypedDict):
@@ -188,7 +183,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     constructor for the full argument list.
     """
 
-    state_schema: type[MemoryState] = MemoryState
+    state_schema = MemoryState
 
     def __init__(
         self,
@@ -238,10 +233,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                 msg = "system_prompt must contain the `{agent_memory}` format slot"
                 raise ValueError(msg)
         self._backend = backend
-        self.state_schema = cast(
-            "type[MemoryState]",
-            _state_schema_for_backend(backend, MemoryState, _StateBackendMemoryState),
-        )
         self.sources = sources
         self._add_cache_control = add_cache_control
         self.system_prompt = system_prompt

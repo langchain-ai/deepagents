@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, get_type_hints
+from typing import TYPE_CHECKING
 
 import pytest
 from langchain.agents import create_agent
@@ -627,7 +627,6 @@ def test_memory_middleware_with_state_backend() -> None:
     # Verify the middleware was created successfully
     assert middleware is not None
     assert isinstance(middleware._backend, StateBackend)
-    assert "files" in get_type_hints(middleware.state_schema, include_extras=True)
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/memory/AGENTS.md"
 
@@ -644,7 +643,6 @@ def test_memory_middleware_with_store_backend_instance() -> None:
     # Verify the middleware was created successfully
     assert middleware is not None
     assert isinstance(middleware._backend, StoreBackend)
-    assert "files" not in get_type_hints(middleware.state_schema, include_extras=True)
 
 
 def test_memory_middleware_with_store_backend_assistant_id() -> None:

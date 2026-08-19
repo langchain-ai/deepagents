@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.containers import Vertical
 from textual.notifications import Notification
 from textual.widget import Widget
 from textual.widgets import Static
@@ -51,6 +52,7 @@ def _sample_info() -> list[MCPServerInfo]:
             name="remote-api",
             transport="sse",
             tools=(MCPToolInfo(name="search", description="Search the web"),),
+            uses_oauth=True,
         ),
     ]
 
@@ -186,6 +188,49 @@ class TestMCPViewerScreen:
 
             help_widget = screen.query_one(".mcp-viewer-help", Static)
             assert "Ctrl+R reconnect" in _widget_text(help_widget)
+
+    @pytest.mark.parametrize("size", [(80, 24), (80, 14), (50, 20)])
+    async def test_footer_hints_stay_on_screen(self, size: tuple[int, int]) -> None:
+        """Every hint renders, however narrow or short the window is.
+
+        Asserts the footer's region sits inside the modal, not just that
+        its text is set: the bug being guarded here is that the string is
+        complete but laid out past the modal's bottom edge, where the
+        compositor never paints it. `_widget_text` cannot observe that.
+        `(80, 14)` and `(50, 20)` are both sizes where the footer used to
+        be pushed clean out of the modal.
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test(size=size) as pilot:
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=True,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            modal = screen.query_one(Vertical)
+            assert help_widget in app.screen._compositor.visible_widgets
+            assert modal.content_region.contains_region(help_widget.region)
+            assert "Ctrl+R reconnect" in _widget_text(help_widget)
+            assert "Esc close" in _widget_text(help_widget)
+
+    async def test_footer_wraps_rather_than_truncating(self) -> None:
+        """A footer too long for one line grows instead of losing hints."""
+        app = MCPViewerTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=True,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            # The modal caps at `width: 80`, so the full hint string never
+            # fits on one line — it must occupy two.
+            assert help_widget.size.height == 2
 
     async def test_ctrl_r_dismisses_with_reconnect_sentinel_when_pending(
         self,
@@ -1471,14 +1516,125 @@ class TestMCPViewerScreen:
             # `unauthenticated` servers are floated to the top, so github
             # is now the first row and starts selected.
             assert screen._row_widgets[0]._server.name == "github"  # ty: ignore
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter log in" in _widget_text(help_widget)
 
             await pilot.press("enter")
             await pilot.pause()
 
             assert dismissed_with == ["github"]
 
+    @pytest.mark.parametrize("transport", ["http", "sse"])
+    async def test_enter_on_oauth_remote_reauthenticates(self, transport: str) -> None:
+        """Activating a healthy OAuth-backed remote server starts OAuth again.
+
+        Both remote transports are covered because `_can_start_login` gates on
+        the normalized `transport` string, which `mcp_tools` derives two modules
+        away — `http` alone would not pin `sse`.
+        """
+        info = [
+            MCPServerInfo(
+                name="slack",
+                transport=transport,
+                tools=(MCPToolInfo(name="search", description="Search Slack"),),
+                uses_oauth=True,
+            )
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            header = screen._row_widgets[0]
+            assert isinstance(header, MCPServerHeaderItem)
+            assert "re-auth" not in _widget_text(header)
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter re-auth" in _widget_text(help_widget)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == ["slack"]
+
+    async def test_enter_on_non_oauth_remote_is_noop(self) -> None:
+        """A healthy remote server not backed by OAuth offers no re-auth.
+
+        A static `Authorization` header takes precedence over stored OAuth
+        tokens, and a public server has no flow to run, so the affordance
+        would be a lie.
+        """
+        info = [
+            MCPServerInfo(
+                name="public-api",
+                transport="http",
+                tools=(MCPToolInfo(name="search", description="Search"),),
+                uses_oauth=False,
+            )
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            header = screen._row_widgets[0]
+            assert isinstance(header, MCPServerHeaderItem)
+            assert "re-auth" not in _widget_text(header)
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter" not in _widget_text(help_widget)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == []
+
+    async def test_click_on_selected_oauth_header_reauthenticates(self) -> None:
+        """Re-clicking a selected OAuth remote header starts login.
+
+        `on_click` shares the `_can_start_login` gate with `action_toggle_expand`
+        but is a separate activation path, so it needs its own coverage.
+        """
+        info = [
+            MCPServerInfo(
+                name="slack",
+                transport="http",
+                tools=(MCPToolInfo(name="search", description="Search Slack"),),
+                uses_oauth=True,
+            )
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            header = screen._row_widgets[0]
+            assert isinstance(header, MCPServerHeaderItem)
+            assert screen._selected_index == 0
+
+            await pilot.click(header)
+            await pilot.pause()
+
+            assert dismissed_with == ["slack"]
+
     async def test_error_header_hides_error_until_enter(self) -> None:
-        """Error headers show an affordance, not the raw exception text."""
+        """Error headers show the status, not the raw exception text."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=_mixed_status_info())
@@ -1495,8 +1651,9 @@ class TestMCPViewerScreen:
             assert header.server.name == "broken"
 
             text = _widget_text(header)
-            assert "Enter for details" in text
             assert "Connection refused" not in text
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter details" in _widget_text(help_widget)
 
     async def test_enter_on_error_header_opens_detail_modal(self) -> None:
         """Activating an error-status header opens a detail modal."""
@@ -1547,27 +1704,37 @@ class TestMCPViewerScreen:
             await pilot.press("down")
             await pilot.pause()
             assert screen._row_widgets[1]._server.name == "notion"  # ty: ignore
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter" not in _widget_text(help_widget)
 
             await pilot.press("enter")
             await pilot.pause()
 
             assert dismissed_with == []
 
-    async def test_enter_on_server_header_is_noop(self) -> None:
-        """Enter on a server header does not expand or crash."""
+    async def test_enter_on_stdio_server_header_is_noop(self) -> None:
+        """Enter on a healthy stdio server does not start OAuth or expand."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
             screen = MCPViewerScreen(server_info=_sample_info())
-            app.push_screen(screen)
+            app.push_screen(screen, on_dismiss)
             await pilot.pause()
 
             assert isinstance(screen._row_widgets[0], MCPServerHeaderItem)
             assert screen._selected_index == 0
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Enter" not in _widget_text(help_widget)
 
             # Press Enter on the header — must be a no-op and must not
             # affect any tool's expansion state.
             await pilot.press("enter")
             await pilot.pause()
+            assert dismissed_with == []
             assert screen._selected_index == 0
             assert all(not tool._expanded for tool in screen._tool_widgets)
 
@@ -1728,8 +1895,8 @@ class TestMCPViewerScreen:
             # the rebuilt widget list starts collapsed again.
             assert all(not w._expanded for w in screen._tool_widgets)
 
-    async def test_help_text_lists_all_keybindings(self) -> None:
-        """Footer mentions navigate, expand, expand all, filter, and close."""
+    async def test_help_text_matches_selected_row(self) -> None:
+        """Footer describes the Enter action for the selected row."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=_sample_info())
@@ -1738,13 +1905,22 @@ class TestMCPViewerScreen:
 
             help_widgets = list(screen.query(".mcp-viewer-help"))
             assert len(help_widgets) == 1
-            text = _widget_text(help_widgets[0]).lower()
+            help_widget = help_widgets[0]
+            text = _widget_text(help_widget).lower()
             assert "navigate" in text
-            assert "enter" in text
+            assert "enter" not in text
             assert "f2" in text
             assert "ctrl+e" in text
             assert "filter" in text
             assert "esc" in text
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert "enter expand/collapse" in _widget_text(help_widget).lower()
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert "enter re-auth" in _widget_text(help_widget).lower()
 
     async def test_status_indicators_render(self) -> None:
         """Each `MCPServerStatus` produces a visually distinct header line.
@@ -1776,9 +1952,6 @@ class TestMCPViewerScreen:
 
             assert "github" in unauth_text
             assert "unauthenticated" in unauth_text
-            # The header now invites in-TUI login instead of telling the
-            # user to leave the app and run `dcode mcp login`.
-            assert "Enter to log in" in unauth_text
 
             assert "notion" in pending_text
             assert "ready to load" in pending_text
@@ -1786,7 +1959,6 @@ class TestMCPViewerScreen:
 
             assert "broken" in err_text
             assert "error" in err_text
-            assert "Enter for details" in err_text
             assert "Connection refused" not in err_text
 
             assert "paused" in disabled_text
@@ -1844,7 +2016,6 @@ class TestMCPViewerScreen:
             assert len(headers) == 1
             text = _widget_text(headers[0])
             assert "<config:bad.json>" in text
-            assert "Enter for details" in text
             assert "JSON decode failed" not in text
 
             await pilot.press("enter")
@@ -1985,6 +2156,27 @@ class TestMCPViewerScreen:
 
             body = app.screen.query_one(".mcp-error-text", Static)
             assert "No error details were reported." in _widget_text(body)
+
+    async def test_error_modal_footer_wraps_in_narrow_window(self) -> None:
+        """The error modal's footer wraps rather than truncating."""
+        server = MCPServerInfo(
+            name="broken",
+            transport="stdio",
+            status="error",
+            error="Server exited with code 1.",
+        )
+        app = MCPViewerTestApp()
+        # 30 columns leaves 25 for the hints, two short of the 27 they
+        # need — the narrowest realistic window that forces a wrap.
+        async with app.run_test(size=(30, 12)) as pilot:
+            app.push_screen(MCPServerErrorScreen(server))
+            await pilot.pause()
+
+            help_widget = app.screen.query_one(".mcp-error-help", Static)
+            modal = app.screen.query_one(Vertical)
+            assert help_widget.size.height == 2
+            assert modal.content_region.contains_region(help_widget.region)
+            assert "Esc close" in _widget_text(help_widget)
 
     async def test_click_expands_tool(self) -> None:
         """Clicking a tool selects it and toggles expand."""

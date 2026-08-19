@@ -3,6 +3,13 @@ type: Engineering Playbook
 title: Development operations, testing, integrations, and source map
 description: Practical package-local workflow for Deep Agents contributors, with validation commands, CI/release controls, integration anchors, and change navigation.
 tags: [operations, testing, ci, integrations, source-map]
+openwiki:
+  roles: [operations, testing, workflow]
+  change_kinds: [ci, generated-documentation]
+  source_paths: [.github/workflows/openwiki-update.yml, .github/workflows/ci.yml]
+  test_paths: [.github/scripts/tests/workflows/test_workflow_secret_scoping.py]
+  invariants: ["Generated OpenWiki commits do not include a modified OpenWiki workflow.", "The OpenWiki job runs in the dedicated openwiki environment."]
+  validation_commands: ["uv run --directory libs/deepagents --group test pytest -q .github/scripts/tests/workflows/test_workflow_secret_scoping.py"]
 ---
 # Development operations, testing, integrations, and source map
 
@@ -61,6 +68,40 @@ Do not read or expose `.env` files; sample `.env.example` files can explain conf
 
 Release automation is intentionally package-scoped: release-please prepares conventional package releases from main; `release.yml` builds and validates a specific package/release SHA, checks wheels, publishes via trusted publishing, and creates the GitHub release/tag. For release semantics and the important distinction between unit and live evaluations, follow [Evaluation and release](../workflows/evaluation-and-release.md).
 
+## Generated OpenWiki maintenance
+
+Consult this section when changing the scheduled documentation job, its credentials/environment, the paths it may publish, or the OpenWiki maintainer guidance in `AGENTS.md`. This is repository automation, not part of an agent runtime: it refreshes the navigational material linked from [Quickstart](../quickstart.md), while the source and tests described in [Runtime and package architecture](../architecture/overview.md) remain the evidence authority.
+
+`.github/workflows/openwiki-update.yml` defines one `update` job. It is manually dispatchable and scheduled for `08:00` UTC daily. The job runs in the dedicated `openwiki` GitHub environment, checks out the repository, sets up Node.js 26, installs `openwiki@0.3.3`, and executes `openwiki code --update --print`. Tracing is explicitly disabled so the job does not attempt unconfigured LangSmith trace uploads; credentials are supplied through GitHub configuration rather than documentation or checked-in files.
+
+The publish phase is the critical lifecycle boundary:
+
+```mermaid
+flowchart TD
+    Start["OpenWiki CLI updates the working tree"] --> Restore["Restore the OpenWiki workflow"]
+    Restore --> Stage["Stage openwiki and AGENTS.md only"]
+    Stage --> Changed{"Staged changes exist"}
+    Changed -->|No| Close["Close obsolete update PR and exit"]
+    Changed -->|Yes| Commit["Commit and force-update openwiki/update"]
+    Commit --> Pull["Create or reuse the update PR"]
+```
+
+This flow shows how the workflow constrains the generated-commit surface and handles an empty update.
+
+Restoring the workflow before staging means a generated run cannot publish a modification to the workflow that launched it. The staging allowlist limits its commit surface to generated wiki material and the bounded OpenWiki block in `AGENTS.md`; do not broaden it casually. The script uses a fixed update-branch name and force-pushes that branch, so it is intentionally a single replaceable documentation PR rather than a history-preserving collaboration branch.
+
+### Change and validation guidance
+
+- Keep the job-level `environment: openwiki`; `.github/scripts/tests/workflows/test_workflow_secret_scoping.py::test_openwiki_uses_dedicated_environment` parses the YAML and asserts that boundary.
+- If changing the update command, runtime version, staging logic, or PR lifecycle, review the entire shell step for the restore → stage → empty-diff → publish ordering. A green CLI invocation alone does not prove the generated-commit boundary.
+- The narrow source-backed check is:
+
+  ```bash
+  uv run --directory libs/deepagents --group test pytest -q .github/scripts/tests/workflows/test_workflow_secret_scoping.py
+  ```
+
+  Run broader workflow/package checks only when a change also touches their assertions or a package runtime. Do not run the scheduled workflow merely to validate documentation prose, and never place credentials in the wiki or test output.
+
 ## Source map: where to begin
 
 ```text
@@ -75,8 +116,10 @@ Approval / Auto / MCP policy             libs/code/deepagents_code/{approval_mod
 Managed deployment CLI                   libs/cli/deepagents_cli/main.py and deploy/
 ACP adapter                              libs/acp/deepagents_acp/server.py
 Evals and catalogs                       libs/evals/{README.md,EVAL_CATALOG.md,UNIFIED_EVALS.md}
-Harbor prep and aggregation              .github/scripts/{unified_prep,aggregate_unified}.py
+Harbor prep and aggregation              .github/scripts/evals/{unified_prep,aggregate_unified}.py
 CI / reusable Harbor / release           .github/workflows/{ci,_harbor_run,unified_evals,release,release-please}.yml
+Generated OpenWiki update                .github/workflows/openwiki-update.yml
+Workflow secret-scope guard              .github/scripts/tests/workflows/test_workflow_secret_scoping.py
 ```
 
 When unsure where a behavior belongs, follow the runtime relationship first: core graph assembly → package-specific adapter/consumer → tests → CI workflow. That approach avoids placing a policy in the UI when it must be enforced in middleware or sandbox/backend code.

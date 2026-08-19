@@ -470,21 +470,17 @@ def _render_server_header(
     t_label = "tool" if tool_count == 1 else "tools"
     if server.status == "ok":
         summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
-        login_hint = " — Enter to re-auth" if _can_start_login(server) else ""
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
             (server.name, "bold"),
             (summary, dim_style),
-            (login_hint, dim_style),
         )
     if server.status == "unauthenticated":
-        login_hint = " — Enter to log in"
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
             (server.name, "bold"),
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
-            (login_hint, dim_style),
         )
     if server.status == "awaiting_reconnect":
         return Content.assemble(
@@ -500,7 +496,6 @@ def _render_server_header(
             (server.name, "bold"),
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
-            (" — Enter for details", dim_style),
         )
     if server.status == "disabled":
         error_text = sanitize_control_chars(

@@ -1509,7 +1509,7 @@ class TestMCPViewerScreen:
 
             header = screen._row_widgets[0]
             assert isinstance(header, MCPServerHeaderItem)
-            assert "Enter to re-auth" in _widget_text(header)
+            assert "re-auth" not in _widget_text(header)
             help_widget = screen.query_one(".mcp-viewer-help", Static)
             assert "Enter re-auth" in _widget_text(help_widget)
 
@@ -1590,7 +1590,7 @@ class TestMCPViewerScreen:
             assert dismissed_with == ["slack"]
 
     async def test_error_header_hides_error_until_enter(self) -> None:
-        """Error headers show an affordance, not the raw exception text."""
+        """Error headers show the status, not the raw exception text."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=_mixed_status_info())
@@ -1607,7 +1607,6 @@ class TestMCPViewerScreen:
             assert header.server.name == "broken"
 
             text = _widget_text(header)
-            assert "Enter for details" in text
             assert "Connection refused" not in text
             help_widget = screen.query_one(".mcp-viewer-help", Static)
             assert "Enter details" in _widget_text(help_widget)
@@ -1909,9 +1908,6 @@ class TestMCPViewerScreen:
 
             assert "github" in unauth_text
             assert "unauthenticated" in unauth_text
-            # The header now invites in-TUI login instead of telling the
-            # user to leave the app and run `dcode mcp login`.
-            assert "Enter to log in" in unauth_text
 
             assert "notion" in pending_text
             assert "ready to load" in pending_text
@@ -1919,7 +1915,6 @@ class TestMCPViewerScreen:
 
             assert "broken" in err_text
             assert "error" in err_text
-            assert "Enter for details" in err_text
             assert "Connection refused" not in err_text
 
             assert "paused" in disabled_text
@@ -1977,7 +1972,6 @@ class TestMCPViewerScreen:
             assert len(headers) == 1
             text = _widget_text(headers[0])
             assert "<config:bad.json>" in text
-            assert "Enter for details" in text
             assert "JSON decode failed" not in text
 
             await pilot.press("enter")

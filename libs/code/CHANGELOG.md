@@ -4,28 +4,27 @@
 
 ## [0.1.58](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.57...deepagents-code==0.1.58) (2026-08-19)
 
+### Breaking Changes
+
+- `deepagents-code` now requires Python 3.12 or newer. ([#5603](https://github.com/langchain-ai/deepagents/issues/5603))
 
 ### Features
 
-* **code,talon:** require Python 3.12 or greater ([#5603](https://github.com/langchain-ai/deepagents/issues/5603)) ([04de43e](https://github.com/langchain-ai/deepagents/commit/04de43e05adcbd38f1022f1fafe93f6748c2a032))
-* **code:** add OpenRouter `z-ai/glm-5.3` to model switcher ([#5641](https://github.com/langchain-ai/deepagents/issues/5641)) ([6295924](https://github.com/langchain-ai/deepagents/commit/6295924d428fb061945cd83940c47c765091353b))
-* **code:** gate `TERM_PROGRAM` resume hints ([#5580](https://github.com/langchain-ai/deepagents/issues/5580)) ([e8035e7](https://github.com/langchain-ai/deepagents/commit/e8035e78e8be9d1edfe9a131bcc0df12349f754d))
-* **code:** open footer pickers with `ctrl+click` ([#5611](https://github.com/langchain-ai/deepagents/issues/5611)) ([ee339fb](https://github.com/langchain-ai/deepagents/commit/ee339fb8c39a1432f0cc12c181431c60b4e235f9))
-* **code:** re-auth MCP servers from viewer ([#5637](https://github.com/langchain-ai/deepagents/issues/5637)) ([d7c24d8](https://github.com/langchain-ai/deepagents/commit/d7c24d85f7b4d478116f022e1e969ddac89aeb2f))
+- Added OpenRouter `z-ai/glm-5.3` to the model switcher. ([#5641](https://github.com/langchain-ai/deepagents/issues/5641))
+- Added support for re-authenticating MCP servers from the viewer. ([#5637](https://github.com/langchain-ai/deepagents/issues/5637))
+- Footer pickers can now be opened with `ctrl+click`. ([#5611](https://github.com/langchain-ai/deepagents/issues/5611))
+- Resume hints now account for `TERM_PROGRAM` support before showing terminal-specific guidance. ([#5580](https://github.com/langchain-ai/deepagents/issues/5580))
 
+### Fixes
 
-### Bug Fixes
-
-* **code:** capture stdio MCP server stderr into the logger ([#5610](https://github.com/langchain-ai/deepagents/issues/5610)) ([a61bc6f](https://github.com/langchain-ai/deepagents/commit/a61bc6feeb6aefd780ad8435acc9ce2057fe9151))
-* **code:** collapse resized chat input on double-click ([#5578](https://github.com/langchain-ai/deepagents/issues/5578)) ([fdde617](https://github.com/langchain-ai/deepagents/commit/fdde617eb590191162a1ebbd9a5fb6c2763ee462))
-* **code:** complete the `dcode config` surface ([#5581](https://github.com/langchain-ai/deepagents/issues/5581)) ([84eb09d](https://github.com/langchain-ai/deepagents/commit/84eb09d8edaa52297ca3e2ad76a2c85a9adf4130))
-* **code:** drain hook pipes after timeout ([#5606](https://github.com/langchain-ai/deepagents/issues/5606)) ([575a8ac](https://github.com/langchain-ai/deepagents/commit/575a8acb0307bbea9e08f4f8c15d850580a55cb3))
-* **code:** group resume trace rounds ([#5593](https://github.com/langchain-ai/deepagents/issues/5593)) ([345859e](https://github.com/langchain-ai/deepagents/commit/345859e8e13d5b48348efebd0a48bfb4d3fbf132))
-* **code:** keep rapid typing visible ([#5424](https://github.com/langchain-ai/deepagents/issues/5424)) ([6a7c7d6](https://github.com/langchain-ai/deepagents/commit/6a7c7d6575915dbc4b1549133735f50666919979))
-* **code:** let MCP footer wrap on narrow windows ([#5651](https://github.com/langchain-ai/deepagents/issues/5651)) ([d00926e](https://github.com/langchain-ai/deepagents/commit/d00926e9e0278d6e74f91622b00d1375c7af19ab))
-* **code:** make `/offload` interruptible ([#5590](https://github.com/langchain-ai/deepagents/issues/5590)) ([ab82d48](https://github.com/langchain-ai/deepagents/commit/ab82d48cc012c5a991660ad53785c2e26030596e))
-* **code:** omit unavailable web-search prompt guidance ([#5602](https://github.com/langchain-ai/deepagents/issues/5602)) ([9feaf51](https://github.com/langchain-ai/deepagents/commit/9feaf51030a30203f43231b7fb9420293be9fedc))
-* **code:** resolve message pointer shapes per cell ([#5592](https://github.com/langchain-ai/deepagents/issues/5592)) ([cd4c399](https://github.com/langchain-ai/deepagents/commit/cd4c3993faf9aabfc6bb6c22bb56a57c33563106))
+- Completed the `dcode config` command surface. ([#5581](https://github.com/langchain-ai/deepagents/issues/5581))
+- Made `/offload` interruptible. ([#5590](https://github.com/langchain-ai/deepagents/issues/5590))
+- Improved chat and footer UI behavior: rapid typing stays visible, double-click collapses a resized chat input, and the MCP footer wraps on narrow windows. ([#5424](https://github.com/langchain-ai/deepagents/issues/5424), [#5578](https://github.com/langchain-ai/deepagents/issues/5578), [#5651](https://github.com/langchain-ai/deepagents/issues/5651))
+- Captured stdio MCP server stderr in the logger. ([#5610](https://github.com/langchain-ai/deepagents/issues/5610))
+- Drained hook pipes after timeout. ([#5606](https://github.com/langchain-ai/deepagents/issues/5606))
+- Grouped resume trace rounds. ([#5593](https://github.com/langchain-ai/deepagents/issues/5593))
+- Omitted web-search prompt guidance when web search is unavailable. ([#5602](https://github.com/langchain-ai/deepagents/issues/5602))
+- Resolved message pointer shapes per cell. ([#5592](https://github.com/langchain-ai/deepagents/issues/5592))
 
 ## [0.1.57](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.56...deepagents-code==0.1.57) (2026-08-18)
 

@@ -3413,6 +3413,28 @@ class TestTruncation:
         assert "results truncated" in result
         assert "try being more specific" in result
 
+    def test_truncate_list_accounts_for_rendered_size(self):
+        budget = TOOL_RESULT_TOKEN_LIMIT * 4
+        paths = [f"/{index:04x}" for index in range(10_000)]
+
+        result = truncate_if_too_long(paths)
+
+        assert len(str(result)) <= budget
+        assert result[-1] == TRUNCATION_GUIDANCE
+
+    def test_truncate_list_handles_uneven_item_lengths(self):
+        items = [
+                "a" * 100_000,
+                "small",
+                "small",
+                "small",
+            ]
+
+        result = truncate_if_too_long(items)
+
+        assert len(str(result)) <= TOOL_RESULT_TOKEN_LIMIT * 4
+        assert result[-1] == TRUNCATION_GUIDANCE
+
 
 class TestBuiltinTruncationTools:
     def test_builtin_truncation_tool_not_evicted(self):

@@ -62,7 +62,7 @@ def test_disabled_does_not_import_optional_packages(
 def test_enabled_registers_and_instruments_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Enabled tracing should batch-export LangChain spans to Phoenix once."""
+    """Enabled tracing should immediately export LangChain spans to Phoenix once."""
     register, instrument, provider = _stub_dependencies(monkeypatch)
     monkeypatch.setenv(PHOENIX_TRACING, "true")
     monkeypatch.setenv("PHOENIX_PROJECT_NAME", "dcode-debug")
@@ -73,7 +73,8 @@ def test_enabled_registers_and_instruments_once(
     register.assert_called_once_with(
         project_name="dcode-debug",
         protocol="http/protobuf",
-        batch=True,
+        batch=False,
+        auto_instrument=False,
         verbose=False,
     )
     instrument.assert_called_once_with(tracer_provider=provider)

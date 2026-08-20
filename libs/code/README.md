@@ -46,6 +46,17 @@ can include prompts, model responses, and tool arguments, so only export to a
 collector you trust. Phoenix settings may be placed in the trusted global
 `~/.deepagents/.env`, but are intentionally ignored in a project's `.env`.
 
+This integration uses OpenInference instrumentation so Phoenix can populate
+structured input/output fields and LLM Span Replay. Pointing LangSmith's generic
+OTEL exporter at Phoenix only changes the transport and does not emit equivalent
+OpenInference attributes. When validating this integration, disable
+`LANGSMITH_OTEL_ENABLED` and `LANGSMITH_OTEL_ONLY` to avoid duplicate,
+partially parsed spans in the same Phoenix instance.
+
+Completed spans are exported immediately because dcode's bundled agent server
+is short-lived. Delayed batch export can otherwise lose the final model and root
+spans when the local server shuts down.
+
 ## 🤔 What is this?
 
 The fastest way to start using Deep Agents. `deepagents-code` is a pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM that supports tool calling. One install command and you're up and running, no code required.

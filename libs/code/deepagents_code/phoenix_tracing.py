@@ -55,9 +55,19 @@ def configure_phoenix_tracing() -> bool:
     provider = register(
         project_name=project,
         protocol="http/protobuf",
-        batch=True,
+        # The bundled LangGraph server is an ephemeral child process. A batch
+        # processor's default five-second export interval can outlive server
+        # teardown, leaving only the early child spans in Phoenix while the
+        # final model and root agent spans remain queued. Export completed spans
+        # immediately so every normally completed dcode invocation is intact.
+        batch=False,
+        auto_instrument=False,
         verbose=False,
     )
+    # Generic OTLP export only controls transport. Phoenix's structured
+    # input/output views and Span Replay require OpenInference attributes, so
+    # instrument LangChain explicitly instead of relying on LangSmith's OTEL
+    # exporter or Phoenix auto-discovery.
     LangChainInstrumentor().instrument(tracer_provider=provider)
     _provider = provider
     return True

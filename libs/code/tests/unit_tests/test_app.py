@@ -230,6 +230,20 @@ async def test_context_prefers_checkpoint_total_after_offload(
     focus.assert_called_once_with()
 
 
+async def test_tokens_prompts_for_first_message_when_usage_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    mount_message = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mount_message)
+
+    await app._handle_command("/tokens")
+
+    message = mount_message.await_args_list[-1].args[0]
+    assert isinstance(message, AppMessage)
+    assert str(message._content) == "No token usage yet - send a message to get started"
+
+
 class TestWhatsNewMessage:
     """Tests for the post-upgrade banner content."""
 

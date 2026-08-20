@@ -685,20 +685,25 @@ class TestInterruptCleanup:
             set_active_message=MagicMock(),
         )
 
-        await _handle_interrupt_cleanup(
-            adapter=adapter,
-            agent=agent,
-            config={"configurable": {"thread_id": "t-1"}},
-            pending_text_by_namespace={(): "partial answer"},
-            captured_input_tokens=10,
-            captured_output_tokens=5,
-            turn_stats=SessionStats(),
-            start_time=0.0,
-        )
+        with patch(
+            "deepagents_code.tui.textual_adapter.get_glyphs",
+            return_value=UNICODE_GLYPHS,
+        ):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config={"configurable": {"thread_id": "t-1"}},
+                pending_text_by_namespace={(): "partial answer"},
+                captured_input_tokens=10,
+                captured_output_tokens=5,
+                turn_stats=SessionStats(),
+                start_time=0.0,
+            )
 
         assert any(
             isinstance(widget, AppMessage)
-            and str(widget._content) == "Interrupted by user"
+            and str(widget._content)
+            == f"{UNICODE_GLYPHS.square_filled} Interrupted by user"
             for widget in mounted
         )
         assert len(agent.aupdate_state.await_args_list) == 2

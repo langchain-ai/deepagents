@@ -1324,6 +1324,7 @@ class Glyphs:
     error: str  # ✗ vs [X]
     circle_empty: str  # ○ vs [ ]
     circle_filled: str  # ● vs [*]
+    square_filled: str  # ■ vs [#]
     checkbox_empty: str  # ☐ vs [ ]
     checkbox_checked: str  # ☑ vs [x]
     output_prefix: str  # ⎿ vs L
@@ -1359,6 +1360,7 @@ UNICODE_GLYPHS = Glyphs(
     error="✗",
     circle_empty="○",
     circle_filled="●",
+    square_filled="■",
     checkbox_empty="☐",
     checkbox_checked="☑",
     output_prefix="⎿",
@@ -1392,6 +1394,7 @@ ASCII_GLYPHS = Glyphs(
     error="[X]",
     circle_empty="[ ]",
     circle_filled="[*]",
+    square_filled="[#]",
     checkbox_empty="[ ]",
     checkbox_checked="[x]",
     output_prefix="L",

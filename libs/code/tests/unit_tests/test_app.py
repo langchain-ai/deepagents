@@ -29510,6 +29510,10 @@ class TestLiveApprovalModeWrites:
                 patch.object(app, "_force_interrupt_active_work") as force,
                 patch.object(app, "notify") as notify,
                 patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=True,
+                ),
+                patch(
                     "deepagents_code.approval_mode.save_auto_mode_notice"
                 ) as save_notice,
             ):

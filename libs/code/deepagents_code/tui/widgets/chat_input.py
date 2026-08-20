@@ -636,7 +636,7 @@ class ChatTextArea(PasteBurstTextArea):
         lines = self._highlighted_lines
         if lines is None or source != self._highlighted_source:
             self._highlighted_source = source
-            highlighted = highlight(source, language="sh")
+            highlighted = highlight(source, language="sh", tab_size=1)
             lines = list(highlighted.split("\n", allow_blank=True))
             self._highlighted_lines = lines
 

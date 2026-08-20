@@ -1606,6 +1606,26 @@ class TestShellSyntaxHighlighting:
             assert second_line.plain == 'printf "%s" "$FOO"'
             assert second_line.spans
 
+    async def test_tab_keeps_shell_highlight_spans_aligned(self) -> None:
+        """Tabs should not shift the styles applied to later shell tokens."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            command = 'echo\t"$HOME"'
+            text_area.text = command
+            chat_input.mode = "shell"
+            await pilot.pause()
+
+            line = text_area.get_line(0)
+            variable_start = command.index("$HOME")
+            assert line.plain == command
+            assert any(
+                span.start == variable_start
+                and span.end == variable_start + len("$HOME")
+                for span in line.spans
+            )
+
 
 class TestModeSwitchNoJitter:
     """Regression tests: mode glyph and completion popup update atomically.

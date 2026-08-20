@@ -1565,6 +1565,17 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     return _ToolMsgApp(tool_name, args)
 
 
+class TestToolCallMessageAppearance:
+    """Tool rows align their prefix glyph with the transcript edge."""
+
+    async def test_has_flush_left_glyph_with_right_padding(self) -> None:
+        """The tool prefix has no left inset while content keeps its right inset."""
+        app = _tool_msg_app("read_file", {"file_path": "example.py"})
+        async with app.run_test():
+            assert app.msg.styles.padding.left == 0
+            assert app.msg.styles.padding.right == 1
+
+
 class TestToolCallMessageOutputGutter:
     """The output glyph lives in a fixed gutter so wrapped lines stay aligned."""
 
@@ -5071,7 +5082,8 @@ class TestMessageWidgetsDropTextPointerOverBlankSpace:
     @pytest.mark.parametrize(
         ("widget", "text_offset", "blank_offset"),
         [
-            pytest.param(UserMessage("hi"), (2, 0), (10, 0), id="user"),
+            # `UserMessage` pads vertically, so its body sits on row 1.
+            pytest.param(UserMessage("hi"), (2, 1), (10, 1), id="user"),
             pytest.param(QueuedUserMessage("hi"), (2, 0), (10, 0), id="queued"),
             # `ErrorMessage` pads vertically, so its body sits on row 1.
             pytest.param(ErrorMessage("hi"), (2, 1), (15, 1), id="error"),
@@ -5212,6 +5224,22 @@ class TestStripFrontmatter:
         assert _strip_frontmatter(text) == ""
 
 
+class TestSkillMessageAppearance:
+    """Skill invocation rows align their slash marker with the transcript edge."""
+
+    async def test_has_flush_left_marker_with_right_padding(self) -> None:
+        """The skill slash has no left inset while content keeps its right inset."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SkillMessage(skill_name="web-research")
+
+        async with _Harness().run_test() as pilot:
+            message = pilot.app.query_one(SkillMessage)
+            assert message.styles.padding.left == 0
+            assert message.styles.padding.right == 1
+
+
 class TestSkillMessageMarkupSafety:
     """Test SkillMessage handles content with brackets safely."""
 
@@ -5315,6 +5343,67 @@ class TestStripSuccessExitLine:
         msg = ToolCallMessage("execute", {"command": "echo hi"})
         msg.set_success("hi\n[Command succeeded with exit code 0]")
         assert msg._output == "hi"
+
+
+class TestUserMessageAppearance:
+    """User prompts remain visually distinct from transcript output."""
+
+    async def test_has_distinct_padded_flush_left_surface(self) -> None:
+        """A user prompt has a padded tint with its glyph at the left edge."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield UserMessage("hello")
+
+        async with _Harness().run_test() as pilot:
+            message = pilot.app.query_one(UserMessage)
+            assert message.styles.background.a == pytest.approx(0.15)
+            assert message.styles.padding.top == 1
+            assert message.styles.padding.right == 1
+            assert message.styles.padding.bottom == 1
+            assert message.styles.padding.left == 0
+
+    @pytest.mark.parametrize(
+        ("content", "prefix", "body"),
+        [
+            (
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+                "> ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "!0123456789abcdefghijklmnopqrstuvwxyz",
+                "$ ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "/0123456789abcdefghijklmnopqrstuvwxyz",
+                "/ ",
+                "0123456789abcdefghijklmnopqrstuvwxyz",
+            ),
+        ],
+    )
+    async def test_wrapped_body_keeps_prompt_gutter(
+        self,
+        content: str,
+        prefix: str,
+        body: str,
+    ) -> None:
+        """Every continuation starts beneath the body, never beneath its glyph."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield UserMessage(content)
+
+        async with _Harness().run_test(size=(18, 12)) as pilot:
+            message = pilot.app.query_one(UserMessage)
+            lines = [
+                message.render_line(y).text for y in range(message.content_size.height)
+            ]
+            assert len(lines) > 1
+            assert lines[0].startswith(prefix)
+            assert all(line.startswith("  ") for line in lines[1:])
+            assert lines[0][2:] + "".join(line[2:] for line in lines[1:]) == body
 
 
 class TestUserMessageCancelled:
@@ -6676,14 +6765,16 @@ class TestUserMessageTruncation:
         # tail all fit on screen — `pilot.click` refuses off-screen targets.
         async with app.run_test(size=(200, 50)) as pilot:
             await pilot.pause()
-            # Locate the affordance in the wrapped output rather than computing
-            # it from the body length, which depends on terminal width.
+            # Locate the affordance in the wrapped content rather than computing
+            # it from the body length, which depends on terminal width. Pilot
+            # offsets include the widget's padding, while render_line rows do not.
             hint_row = next(
                 y
                 for y in range(msg.size.height)
                 if "show full message" in msg.render_line(y).text
             )
-            await pilot.click(UserMessage, offset=Offset(4, hint_row))
+            click_row = hint_row + msg.styles.padding.top
+            await pilot.click(UserMessage, offset=Offset(4, click_row))
             await pilot.pause()
             assert msg._expanded is True
 

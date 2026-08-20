@@ -467,9 +467,9 @@ class TestDeepAgentsCLIEndToEnd:
         """A malformed `ask_user` call must not abort the run.
 
         This is the only test that drives the composed graph. The unit tests
-        build `ToolErrorMiddleware` directly, so they cannot catch a regression
-        in how `ToolNode` surfaces the exception or where the middleware sits
-        in the wrapper chain.
+        exercise the schema and `handle_validation_error` directly, so they
+        cannot catch a regression in how `ToolNode` surfaces the
+        `ValidationError` on the real execution path.
         """
         with mock_settings(tmp_path):
             model = FixedGenericFakeChatModel(
@@ -480,8 +480,8 @@ class TestDeepAgentsCLIEndToEnd:
                             tool_calls=[
                                 {
                                     "name": "ask_user",
-                                    # No questions: `_validate_questions` raises
-                                    # `ToolArgumentError` before `interrupt()`.
+                                    # No questions: the tool schema rejects the
+                                    # arguments before `interrupt()`.
                                     "args": {"questions": []},
                                     "id": "call_1",
                                     "type": "tool_call",

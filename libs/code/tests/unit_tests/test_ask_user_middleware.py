@@ -8,11 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from langchain.agents.middleware import ToolErrorMiddleware
-from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langgraph.errors import GraphInterrupt
-from langgraph.types import Interrupt
 from pydantic import TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
@@ -21,19 +17,15 @@ from deepagents_code._ask_user_types import (
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
     QUESTION_TYPES,
     Question,
+    ValidatedQuestion,
     _requires_choices,
     decode_multi_select_answer,
     encode_multi_select_answer,
 )
-from deepagents_code._tool_errors import ToolArgumentError
-from deepagents_code.agent import (
-    _TOOL_ARG_VALIDATION_TOOLS,
-    _tool_arg_validation_on_error,
-)
 from deepagents_code.ask_user import (
     AskUserMiddleware,
+    _format_validation_error,
     _parse_answers,
-    _validate_questions,
 )
 
 if TYPE_CHECKING:
@@ -55,26 +47,42 @@ def _extract_tool_message_content(command: Command[object]) -> str:
     return str(_extract_tool_message(command).content)
 
 
-class TestValidateQuestions:
-    """Tests for `_validate_questions`."""
+_VALIDATION_ADAPTER = TypeAdapter(list[ValidatedQuestion])
+"""Parses raw tool-args payloads the way the tool schema's `questions` field does.
 
-    def test_rejects_empty_questions(self) -> None:
-        with pytest.raises(ToolArgumentError, match="at least one question"):
-            _validate_questions([])
+This adapter is the unit under test for the validation rules: it applies the
+same `Literal`/strict-bool/`AfterValidator` checks the tool's pydantic model
+applies, without needing a live `ToolNode`. The empty-list rule lives one
+level up, on the `questions` parameter itself, and is covered by
+`test_ask_user_tool_rejects_empty_questions` instead."""
+
+
+def _validate(questions: object) -> None:
+    """Parse `questions` against the validated schema, raising on any violation."""
+    _VALIDATION_ADAPTER.validate_python(questions)
+
+
+class TestValidateQuestions:
+    """Tests for the pydantic validation rules on `ValidatedQuestion`.
+
+    These rules replace the old imperative `_validate_questions` body: raising
+    `ValueError` from a validator surfaces as a pydantic `ValidationError`,
+    which `ToolNode` converts to an error `ToolMessage` the model can correct.
+    """
 
     def test_rejects_empty_question_text(self) -> None:
-        with pytest.raises(ToolArgumentError, match="non-empty 'question'"):
-            _validate_questions([{"question": "   ", "type": "text"}])
+        with pytest.raises(ValidationError, match="at least 1 character"):
+            _validate([{"question": "", "type": "text"}])
 
     def test_rejects_multiple_choice_without_choices(self) -> None:
-        with pytest.raises(ToolArgumentError, match="requires a non-empty 'choices'"):
-            _validate_questions(
+        with pytest.raises(ValidationError, match="requires a non-empty 'choices'"):
+            _validate(
                 [{"question": "Pick one", "type": "multiple_choice", "choices": []}]
             )
 
     def test_rejects_text_question_with_choices(self) -> None:
-        with pytest.raises(ToolArgumentError, match="must not define 'choices'"):
-            _validate_questions(
+        with pytest.raises(ValidationError, match="must not define 'choices'"):
+            _validate(
                 [
                     {
                         "question": "Name?",
@@ -86,16 +94,16 @@ class TestValidateQuestions:
 
     def test_rejects_multi_select_without_choices(self) -> None:
         with pytest.raises(
-            ToolArgumentError, match=r"multi_select question .* non-empty"
+            ValidationError, match=r"multi_select question .* non-empty"
         ):
-            _validate_questions(
+            _validate(
                 [{"question": "Pick some", "type": "multi_select", "choices": []}]
             )
 
     def test_rejects_blank_choice_value(self) -> None:
         """A blank label would render as a selectable option with no answer."""
-        with pytest.raises(ToolArgumentError, match="missing or blank 'value'"):
-            _validate_questions(
+        with pytest.raises(ValidationError, match="missing or blank 'value'"):
+            _validate(
                 [
                     {
                         "question": "Pick some",
@@ -106,25 +114,21 @@ class TestValidateQuestions:
             )
 
     def test_rejects_non_string_choice_value(self) -> None:
-        # Deliberately ill-typed. On the tool path pydantic rejects this shape
-        # first, so this exercises `_validate_choices`' belt-and-braces content
-        # checks directly — see the note on the loop in `_validate_choices`.
-        questions = cast(
-            "list[Question]",
-            [
-                {
-                    "question": "Color?",
-                    "type": "multiple_choice",
-                    "choices": [{"value": 1}],
-                }
-            ],
-        )
-        with pytest.raises(ToolArgumentError, match="missing or blank 'value'"):
-            _validate_questions(questions)
+        """The `Choice.value` field type rejects a non-string before the validator."""
+        with pytest.raises(ValidationError):
+            _validate(
+                [
+                    {
+                        "question": "Color?",
+                        "type": "multiple_choice",
+                        "choices": [{"value": 1}],
+                    }
+                ]
+            )
 
     def test_allows_comma_in_multi_select_choice_value(self) -> None:
         """The JSON-array answer encoding keeps a comma inside a value exact."""
-        _validate_questions(
+        _validate(
             [
                 {
                     "question": "Where?",
@@ -136,7 +140,7 @@ class TestValidateQuestions:
 
     def test_allows_comma_in_multiple_choice_value(self) -> None:
         """Choice values are returned as-is, so a comma needs no special handling."""
-        _validate_questions(
+        _validate(
             [
                 {
                     "question": "Where?",
@@ -148,26 +152,8 @@ class TestValidateQuestions:
 
     def test_rejects_unknown_question_type(self) -> None:
         """Nothing outside `QuestionType` may reach the interrupt."""
-        questions = cast("list[Question]", [{"question": "Q?", "type": "multiselect"}])
-        with pytest.raises(
-            ToolArgumentError, match="unsupported ask_user question type"
-        ):
-            _validate_questions(questions)
-
-    def test_rejects_non_boolean_required(self) -> None:
-        """Belt-and-braces for a raw, unparsed payload.
-
-        The tool path never reaches this check — `Question.required` is
-        `strict=True`, so pydantic rejects a non-boolean first (see
-        `test_tool_schema_rejects_non_boolean_required`, which pins that). This
-        covers a caller that bypasses pydantic.
-        """
-        questions = cast(
-            "list[Question]",
-            [{"question": "Q?", "type": "text", "required": "false"}],
-        )
-        with pytest.raises(ToolArgumentError, match="non-boolean 'required'"):
-            _validate_questions(questions)
+        with pytest.raises(ValidationError, match="Input should be"):
+            _validate([{"question": "Q?", "type": "multiselect"}])
 
     def test_tool_schema_rejects_non_boolean_required(self) -> None:
         """Pydantic must reject `required: "false"` rather than coercing it.
@@ -209,13 +195,13 @@ class TestValidateQuestions:
             }
             if question_type in CHOICE_QUESTION_TYPES:
                 question["choices"] = [{"value": "a"}, {"value": "b"}]
-            _validate_questions([cast("Question", question)])
+            _validate([question])
 
     def test_choice_question_types_covers_every_question_type(self) -> None:
         """`CHOICE_QUESTION_TYPES` must partition `QUESTION_TYPES`, not lag it.
 
         Non-tautological in the direction that matters: a `QuestionType` member
-        missing from `_requires_choices` would pass `_validate_questions` with no
+        missing from `_requires_choices` would pass `_validate_question` with no
         choices validation *and* make `_ask_user_question_count` return `None`
         for any payload that does carry choices.
         """
@@ -229,21 +215,18 @@ class TestValidateQuestions:
     def test_non_choice_question_types_reject_choices(self) -> None:
         """Every non-choice type must refuse a `choices` list."""
         for question_type in sorted(QUESTION_TYPES - CHOICE_QUESTION_TYPES):
-            questions = cast(
-                "list[Question]",
-                [
-                    {
-                        "question": "Q?",
-                        "type": question_type,
-                        "choices": [{"value": "a"}],
-                    }
-                ],
-            )
-            with pytest.raises(ToolArgumentError, match="must not define 'choices'"):
-                _validate_questions(questions)
+            questions = [
+                {
+                    "question": "Q?",
+                    "type": question_type,
+                    "choices": [{"value": "a"}],
+                }
+            ]
+            with pytest.raises(ValidationError, match="must not define 'choices'"):
+                _validate(questions)
 
     def test_accepts_valid_question_set(self) -> None:
-        _validate_questions(
+        _validate(
             [
                 {"question": "Name?", "type": "text"},
                 {
@@ -839,161 +822,119 @@ class TestWrapModelCall:
         assert result == "ok"
 
 
-def _make_request(tool_name: str, args: dict[str, Any]) -> ToolCallRequest:
-    """Build a `ToolCallRequest` carrying `tool_name` and `args`."""
-    return ToolCallRequest(
-        tool_call={"name": tool_name, "args": args, "id": f"{tool_name}-1"},
-        tool=None,
-        state={},
-        runtime=cast("Any", None),
+def _invoke_ask_user(args: dict[str, Any]) -> ToolMessage:
+    """Invoke the middleware's `ask_user` tool on raw model-authored args.
+
+    Exercises the same parse-and-validate path `ToolNode` drives: a rejection
+    surfaces as an error `ToolMessage` (via `handle_validation_error`), not a
+    raised exception.
+    """
+    tool = AskUserMiddleware().tools[0]
+    result = tool.invoke(
+        {"args": args, "name": "ask_user", "id": "c1", "type": "tool_call"}
     )
+    assert isinstance(result, ToolMessage)
+    return result
 
 
-class TestToolArgValidationRecovery:
-    """`ToolErrorMiddleware` converts `ToolArgumentError` to error messages."""
+class TestToolArgumentValidation:
+    """Bad `ask_user` arguments come back as error `ToolMessage`s, not crashes.
 
-    def _middleware(self) -> ToolErrorMiddleware:
-        return ToolErrorMiddleware(
-            _tool_arg_validation_on_error,
-            tools=list(_TOOL_ARG_VALIDATION_TOOLS),
-        )
+    Validation lives on the tool schema, so `ToolNode`'s built-in
+    `ValidationError` handling — not a `ToolErrorMiddleware` — is what makes a
+    malformed call recoverable.
+    """
 
-    def test_value_error_becomes_error_tool_message(self) -> None:
-        """A model-authored `ToolArgumentError` is recoverable, not fatal."""
-        middleware = self._middleware()
-        request = _make_request("ask_user", {"questions": []})
+    def test_empty_questions_becomes_error_tool_message(self) -> None:
+        result = _invoke_ask_user({"questions": []})
 
-        def handler(_: ToolCallRequest) -> ToolMessage:
-            _validate_questions([])
-            msg = "unreachable"
-            raise AssertionError(msg)
-
-        result = middleware.wrap_tool_call(request, handler)
-
-        assert isinstance(result, ToolMessage)
         assert result.status == "error"
-        assert result.tool_call_id == "ask_user-1"
+        assert result.tool_call_id == "c1"
         assert "`ask_user` failed" in str(result.content)
         assert "at least one question" in str(result.content)
 
-    def test_rejection_is_logged_once_by_the_handler(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The model retries against the error, so the loop must be visible.
-
-        The tool body deliberately does not log this itself — the handler is the
-        single record, and a second one would say strictly less.
-        """
-        middleware = self._middleware()
-        request = _make_request("ask_user", {"questions": []})
-
-        def handler(_: ToolCallRequest) -> ToolMessage:
-            _validate_questions([])
-            msg = "unreachable"
-            raise AssertionError(msg)
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.agent"):
-            middleware.wrap_tool_call(request, handler)
-
-        assert "at least one question" in caplog.text
-        assert "ask_user" in caplog.text
-        # One record, not two: the tool body must not log this again.
-        assert len(caplog.records) == 1
-        assert caplog.records[0].exc_info is not None
-
-    def test_blank_choice_value_becomes_error_tool_message(self) -> None:
-        """A blank choice value names the offending field."""
-        middleware = self._middleware()
-        questions = [
+    def test_blank_choice_value_names_the_field(self) -> None:
+        result = _invoke_ask_user(
             {
-                "question": "Pick some",
-                "type": "multi_select",
-                "choices": [{"value": "logs"}, {"value": "  "}],
+                "questions": [
+                    {
+                        "question": "Pick some",
+                        "type": "multi_select",
+                        "choices": [{"value": "logs"}, {"value": "  "}],
+                    }
+                ]
             }
-        ]
-        request = _make_request("ask_user", {"questions": questions})
+        )
 
-        def handler(_: ToolCallRequest) -> ToolMessage:
-            _validate_questions(cast("list[Question]", questions))
-            msg = "unreachable"
-            raise AssertionError(msg)
-
-        result = middleware.wrap_tool_call(request, handler)
-
-        assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "missing or blank 'value'" in str(result.content)
 
-    def test_plain_value_error_propagates(self) -> None:
-        """Recovery keys off the exception type, not the tool name.
+    def test_unknown_question_type_is_rejected(self) -> None:
+        result = _invoke_ask_user(
+            {"questions": [{"question": "Q?", "type": "multiselect"}]}
+        )
 
-        A bare `ValueError` raised while a scoped tool runs is an internal
-        fault, not model-authored input. It must stay fatal. Middleware inside
-        this one raises that way on purpose.
-        """
-        middleware = self._middleware()
-        request = _make_request("ask_user", {"questions": []})
-
-        def handler(_: ToolCallRequest) -> ToolMessage:
-            msg = "client answered a different request"
-            raise ValueError(msg)
-
-        with pytest.raises(ValueError, match="client answered a different request"):
-            middleware.wrap_tool_call(request, handler)
-
-    def test_non_value_error_propagates(self) -> None:
-        """Unexpected errors still halt the run rather than reaching the model."""
-        middleware = self._middleware()
-        request = _make_request("ask_user", {"questions": []})
-
-        def handler(_: ToolCallRequest) -> ToolMessage:
-            msg = "unexpected internal failure"
-            raise RuntimeError(msg)
-
-        with pytest.raises(RuntimeError, match="unexpected internal failure"):
-            middleware.wrap_tool_call(request, handler)
-
-    def test_interrupt_propagates_unchanged(self) -> None:
-        """`ask_user`'s `interrupt()` control-flow signal must not be converted."""
-        middleware = self._middleware()
-        request = _make_request("ask_user", {"questions": []})
-
-        def handler(_: ToolCallRequest) -> ToolMessage:
-            raise GraphInterrupt((Interrupt(value={"kind": "ask_user"}, id="i-1"),))
-
-        with pytest.raises(GraphInterrupt):
-            middleware.wrap_tool_call(request, handler)
-
-    def test_out_of_scope_tool_is_not_converted(self) -> None:
-        """A `ToolArgumentError` outside the scope list still propagates."""
-        middleware = self._middleware()
-        request = _make_request("some_other_tool", {})
-
-        def handler(_: ToolCallRequest) -> ToolMessage:
-            msg = "validation detail"
-            raise ToolArgumentError(msg)
-
-        with pytest.raises(ToolArgumentError, match="validation detail"):
-            middleware.wrap_tool_call(request, handler)
-
-    async def test_async_value_error_becomes_error_tool_message(self) -> None:
-        """Production runs the async path, so it needs the same recovery.
-
-        `read_file` and friends register coroutines, so `awrap_tool_call` is
-        the wrapper that actually runs. It has no `aon_error`, so it falls back
-        to the sync handler; this pins that fallback.
-        """
-        middleware = self._middleware()
-        request = _make_request("ask_user", {"questions": []})
-
-        # Must be async: `awrap_tool_call` awaits the handler it is given.
-        async def handler(_: ToolCallRequest) -> ToolMessage:  # noqa: RUF029
-            _validate_questions([])
-            msg = "unreachable"
-            raise AssertionError(msg)
-
-        result = await middleware.awrap_tool_call(request, handler)
-
-        assert isinstance(result, ToolMessage)
         assert result.status == "error"
-        assert "at least one question" in str(result.content)
+        assert "Input should be" in str(result.content)
+
+    def test_handle_validation_error_only_covers_validation(self) -> None:
+        """`handle_validation_error` fires only for `ValidationError`.
+
+        The tool body still raises for real faults (`interrupt()` signals, a
+        bad resume payload); `BaseTool.run` routes those to `handle_tool_error`
+        (unset here) rather than the validation handler, so they stay fatal.
+        This pins that the registered handler is the validation one only.
+        """
+        tool = AskUserMiddleware().tools[0]
+
+        assert tool.handle_validation_error is _format_validation_error
+        assert not tool.handle_tool_error
+
+
+class TestFormatValidationError:
+    """`_format_validation_error` locates the failing field for the model."""
+
+    def test_names_loc_and_detail(self) -> None:
+        # Errors arrive from the tool's pydantic model with the parameter name
+        # leading `loc`; `from_exception_data` reproduces that shape.
+        exc = ValidationError.from_exception_data(
+            "ask_user",
+            [
+                {
+                    "type": "literal_error",
+                    "loc": ("questions", 0, "type"),
+                    "input": "bogus",
+                    "ctx": {"expected": "'text', 'multiple_choice' or 'multi_select'"},
+                }
+            ],
+        )
+
+        message = _format_validation_error(exc)
+
+        assert message.startswith("`ask_user` failed: questions.0.type: ")
+        assert "Input should be 'text', 'multiple_choice' or 'multi_select'" in message
+        assert message.endswith("Fix the input and retry.")
+
+    def test_empty_questions_list(self) -> None:
+        # The empty-list rule lives on the `questions` parameter, one level
+        # above `list[ValidatedQuestion]`, so its error is shaped by hand here.
+        exc = ValidationError.from_exception_data(
+            "ask_user",
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("questions",),
+                    "input": [],
+                    "ctx": {
+                        "error": ValueError("ask_user requires at least one question")
+                    },
+                }
+            ],
+        )
+
+        message = _format_validation_error(exc)
+
+        assert message == (
+            "`ask_user` failed: questions: Value error, "
+            "ask_user requires at least one question. Fix the input and retry."
+        )

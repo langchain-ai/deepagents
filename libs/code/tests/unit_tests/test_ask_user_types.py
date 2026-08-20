@@ -72,7 +72,7 @@ class TestFormatAskUserTranscript:
         assert "blue" not in result
 
     def test_missing_question_text_does_not_raise(self) -> None:
-        """`_validate_questions` blocks this upstream; degrade rather than raise."""
+        """The tool schema blocks this upstream; degrade rather than raise."""
         result = format_ask_user_transcript([{}], ["Alice"])  # ty: ignore
 
         assert result == "Q: \nA: Alice"

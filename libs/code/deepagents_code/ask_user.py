@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from pydantic.v1 import ValidationError as ValidationErrorV1
 
 
 from langchain.agents.middleware.types import (
@@ -21,22 +23,20 @@ from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
-from pydantic import Field
+from pydantic import AfterValidator, Field, ValidationError
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     ASK_USER_CANCELLED_ANSWER,
-    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
-    QUESTION_TYPES,
     AskUserAuthorizationReceipt,
     AskUserRequest,
     Question,
-    QuestionType,
+    ValidatedQuestion,
+    _validate_questions,
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
-from deepagents_code._tool_errors import ToolArgumentError
 
 logger = logging.getLogger(__name__)
 
@@ -79,99 +79,28 @@ When using `ask_user`:
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
 
 
-def _validate_choices(
-    choices: Sequence[object], *, question_text: str, question_type: QuestionType
-) -> None:
-    """Validate the choice list of a choice-type question.
+def _format_validation_error(exc: ValidationError | ValidationErrorV1) -> str:
+    """Format a tool-call `ValidationError` for the model to correct.
 
-    Rejects blank values, which would otherwise render as an unlabelled option
-    the user can select but whose answer reads as "no answer".
+    Registered as the tool's `handle_validation_error`, so the message below —
+    not the multi-error pydantic dump — is what lands in the error
+    `ToolMessage`. Only the first error is named: the model fixes one thing and
+    retries, and the rejected arguments are already visible on its own tool
+    call, so echoing `input_value` here would duplicate them.
 
-    Args:
-        choices: Candidate `choices` value from a question definition.
-        question_text: Question text, for error messages.
-        question_type: Question type. Names the type in error messages.
-
-    Raises:
-        ToolArgumentError: If any choice is malformed or blank.
-    """
-    # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
-    # so the shape checks below are redundant there. They are kept — and the
-    # parameter typed as a plain sequence — so this stays safe if it is ever
-    # called on a raw, unparsed payload.
-    for choice in choices:
-        value = choice.get("value") if isinstance(choice, Mapping) else None
-        if not isinstance(value, str) or not value.strip():
-            msg = (
-                f"{question_type} question {question_text!r} has a choice with a "
-                f"missing or blank 'value': {choice!r}"
-            )
-            raise ToolArgumentError(msg)
-
-
-def _validate_questions(questions: list[Question]) -> None:
-    """Validate ask_user question structure before interrupting.
+    The v1 arm of the union exists only to satisfy the `handle_validation_error`
+    signature; the schema here is pydantic v2, so a v1 error never arrives.
 
     Args:
-        questions: Question definitions provided to the `ask_user` tool.
+        exc: The validation failure, with one entry per violated rule.
 
-    Raises:
-        ToolArgumentError: If the questions list or an individual question is
-            invalid.
+    Returns:
+        A message locating the failing field and naming the validation detail.
     """
-    if not questions:
-        msg = "ask_user requires at least one question"
-        raise ToolArgumentError(msg)
-
-    for q in questions:
-        question_text = q.get("question")
-        if not isinstance(question_text, str) or not question_text.strip():
-            msg = "ask_user questions must have non-empty 'question' text"
-            raise ToolArgumentError(msg)
-
-        question_type = q.get("type")
-        if question_type not in QUESTION_TYPES:
-            msg = f"unsupported ask_user question type: {question_type!r}"
-            raise ToolArgumentError(msg)
-
-        # Belt-and-braces: on the tool path `Question.required` is `strict=True`,
-        # so pydantic has already rejected a non-boolean before this runs. This
-        # only covers a caller that reaches here with a raw, unparsed payload.
-        # It matters because `_ask_user_question_count` reads the raw tool args
-        # and also requires a real bool: a coerced `"false"` would render the
-        # prompt and then silently drop every answer in the call as same-turn
-        # authorization.
-        required = q.get("required")
-        if required is not None and not isinstance(required, bool):
-            msg = (
-                f"ask_user question {question_text!r} has a non-boolean "
-                f"'required': {required!r}"
-            )
-            raise ToolArgumentError(msg)
-
-        if question_type in CHOICE_QUESTION_TYPES:
-            choices = q.get("choices")
-            if not choices:
-                msg = (
-                    f"{question_type} question "
-                    f"{q.get('question')!r} requires a "
-                    f"non-empty 'choices' list"
-                )
-                raise ToolArgumentError(msg)
-            _validate_choices(
-                choices,
-                question_text=question_text,
-                question_type=question_type,
-            )
-
-        # Derived from `CHOICE_QUESTION_TYPES` rather than spelled `== "text"`, so
-        # a future non-choice `QuestionType` member keeps this check instead of
-        # silently letting stray `choices` through.
-        if question_type not in CHOICE_QUESTION_TYPES and q.get("choices"):
-            msg = (
-                f"{question_type} question {question_text!r} must not define 'choices'"
-            )
-            raise ToolArgumentError(msg)
+    error = exc.errors()[0]
+    loc = ".".join(str(part) for part in error["loc"])
+    detail = f"{loc}: {error['msg']}" if loc else error["msg"]
+    return f"`ask_user` failed: {detail}. Fix the input and retry."
 
 
 def _context_string(context: object, name: str) -> str | None:
@@ -441,7 +370,8 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         @tool(description=self.tool_description)
         def _ask_user(
             questions: Annotated[
-                list[Question],
+                list[ValidatedQuestion],
+                AfterValidator(_validate_questions),
                 Field(description="Questions to present to the user."),
             ],
             tool_call_id: Annotated[str, InjectedToolCallId],
@@ -452,13 +382,12 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
             """
-            # A malformed payload raises `ToolArgumentError` out of
-            # `_validate_questions`. `ToolErrorMiddleware` (wired in
-            # `create_cli_agent`) turns it into a recoverable error
-            # `ToolMessage` the model retries against, so the turn survives it,
-            # and `_tool_arg_validation_on_error` logs the rejection with
-            # `exc_info`. Do not add a second log here.
-            _validate_questions(questions)
+            # Malformed arguments never reach here: the schema rejects them with
+            # a pydantic `ValidationError` (an unknown `type`, a non-boolean
+            # `required`, blank choice values, an empty list, and the
+            # cross-field rules on `ValidatedQuestion`), which `ToolNode`
+            # converts to an error `ToolMessage` the model can correct and
+            # retry from.
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,
@@ -491,6 +420,7 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             )
 
         _ask_user.name = "ask_user"
+        _ask_user.handle_validation_error = _format_validation_error
         self.tools = [_ask_user]
 
     def wrap_model_call(

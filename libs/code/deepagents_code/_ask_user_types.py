@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal, NotRequired, assert_never, get_args
 
-from pydantic import Field
+from pydantic import AfterValidator, Field
 from typing_extensions import TypedDict
 
 QuestionType = Literal["text", "multiple_choice", "multi_select"]
@@ -155,6 +155,29 @@ def ask_user_answer_is_empty(answer: str, question_type: object) -> bool:
     return not answer.strip()
 
 
+def _validate_choice(choice: Choice) -> Choice:
+    """Reject a choice whose `value` is blank.
+
+    A blank value would render as an unlabelled option the user can select but
+    whose answer reads as "no answer".
+
+    Args:
+        choice: The parsed `Choice` to check.
+
+    Returns:
+        The same `choice`, unchanged.
+
+    Raises:
+        ValueError: If `value` is missing or blank. Pydantic wraps this into
+            the tool-call `ValidationError`, which `ToolNode` converts to an
+            error `ToolMessage` the model can correct.
+    """
+    if not choice["value"].strip():
+        msg = f"choice has a missing or blank 'value': {choice!r}"
+        raise ValueError(msg)
+    return choice
+
+
 class Choice(TypedDict):
     """A single choice option for a multiple choice or multi-select question."""
 
@@ -173,10 +196,49 @@ class Choice(TypedDict):
     ]
 
 
+def _validate_question(question: Question) -> Question:
+    """Apply the cross-field rules of a single question.
+
+    These are the rules no single field type can express: choice questions need
+    a non-empty `choices` list, and non-choice questions must not define one.
+
+    `Literal` already rejects an unknown `type` and `strict=True` a non-boolean
+    `required` before this runs, so they are not re-checked here.
+
+    Args:
+        question: The parsed `Question` to check.
+
+    Returns:
+        The same `question`, unchanged.
+
+    Raises:
+        ValueError: If the question violates one of the rules above. Pydantic
+            wraps this into the tool-call `ValidationError`, which `ToolNode`
+            converts to an error `ToolMessage` the model can correct.
+    """
+    question_type = question["type"]
+    question_text = question["question"]
+    choices = question.get("choices")
+    if question_type in CHOICE_QUESTION_TYPES:
+        if not choices:
+            msg = (
+                f"{question_type} question {question_text!r} requires a "
+                f"non-empty 'choices' list"
+            )
+            raise ValueError(msg)
+    elif choices:
+        msg = f"{question_type} question {question_text!r} must not define 'choices'"
+        raise ValueError(msg)
+    return question
+
+
 class Question(TypedDict):
     """A question to ask the user."""
 
-    question: Annotated[str, Field(description="The question text to display.")]
+    question: Annotated[
+        str,
+        Field(description="The question text to display.", min_length=1),
+    ]
 
     type: Annotated[
         QuestionType,
@@ -196,7 +258,7 @@ class Question(TypedDict):
 
     choices: NotRequired[
         Annotated[
-            list[Choice],
+            list[Annotated[Choice, AfterValidator(_validate_choice)]],
             Field(
                 description=(
                     "Options for 'multiple_choice' and 'multi_select' questions. "
@@ -229,6 +291,37 @@ class Question(TypedDict):
             ),
         ]
     ]
+
+
+ValidatedQuestion = Annotated[Question, AfterValidator(_validate_question)]
+"""A `Question` with its cross-field rules applied during pydantic parsing.
+
+Kept as a named alias because `Question` is shared with consumers that parse
+interrupt payloads rather than tool arguments; the alias lets the tool schema
+opt into validation without forcing it on every `Question` use."""
+
+
+def _validate_questions(questions: list[ValidatedQuestion]) -> list[ValidatedQuestion]:
+    """Reject an empty `questions` list.
+
+    Per-question rules live on `ValidatedQuestion`; this covers the one rule
+    about the list itself, which only the tool's `questions` parameter can see.
+
+    Args:
+        questions: The parsed `questions` argument to check.
+
+    Returns:
+        The same `questions`, unchanged.
+
+    Raises:
+        ValueError: If the list is empty. Pydantic wraps this into the
+            tool-call `ValidationError`, which `ToolNode` converts to an error
+            `ToolMessage` the model can correct.
+    """
+    if not questions:
+        msg = "ask_user requires at least one question"
+        raise ValueError(msg)
+    return questions
 
 
 class AskUserRequest(TypedDict):
@@ -446,9 +539,10 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
 
     Args:
         questions: Questions that were asked. Callers must pass questions whose
-            `question` text is a non-empty string; `ask_user._validate_questions`
-            enforces that before interrupting. The empty default below only
-            keeps a caller that skips validation from raising `KeyError`.
+            `question` text is a non-empty string; the tool schema enforces that
+            (`Question.question` is `min_length=1`) before interrupting. The
+            empty default below only keeps a caller that skips validation from
+            raising `KeyError`.
         answers: Answers, positionally matched to `questions`. A missing entry
             falls back to `ASK_USER_NO_ANSWER`; extra entries are dropped.
 

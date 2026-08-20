@@ -232,7 +232,7 @@ jobs:
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add "$code_pyproject" "$lockfile"
-          git commit -m "chore(deps): bump deepagents pin in deepagents-code to $SDK_VERSION"
+          git commit -m "chore(deps): bump `deepagents` pin in `deepagents-code` to $SDK_VERSION"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
@@ -244,7 +244,7 @@ jobs:
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): bump deepagents pin in deepagents-code to $SDK_VERSION" \
+            --title "chore(deps): bump `deepagents` pin in `deepagents-code` to $SDK_VERSION" \
             --body-file "$body_file")
           echo "Opened SDK pin bump PR: $pr_url"
           echo "::notice::Opened SDK pin bump PR: $pr_url"

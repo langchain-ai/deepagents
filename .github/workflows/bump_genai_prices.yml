@@ -340,7 +340,7 @@ jobs:
             git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git checkout -b "$BRANCH"
             git add "$lockfile" "$manifest"
-            git commit -m "chore(deps): bump genai-prices in deepagents-code to $LATEST"
+            git commit -m "chore(deps): bump "'`genai-prices`'" in "'`deepagents-code`'" to $LATEST"
 
             # The bump branch is rebuilt on top of `main` every run, so there
             # is no shared history worth preserving and the push must be
@@ -360,7 +360,7 @@ jobs:
           body_file="$(mktemp)"
           printf 'Bumps `genai-prices` from `%s` to `%s`.\n\nOpened automatically by `bump_genai_prices.yml`.\n' "$LOCKED" "$LATEST" > "$body_file"
 
-          title="chore(deps): bump genai-prices in deepagents-code to $LATEST"
+          title="chore(deps): bump `genai-prices` in `deepagents-code` to $LATEST"
 
           if [ -n "$pr_number" ]; then
             # Retitle and rewrite the body: the branch just moved to a newer

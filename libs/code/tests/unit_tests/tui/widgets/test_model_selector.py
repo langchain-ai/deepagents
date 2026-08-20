@@ -2938,7 +2938,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-sonnet-4-5", "anthropic"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2948,7 +2948,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -3418,7 +3418,6 @@ class TestGetModelDisplayName:
         ("spec", "name"),
         [
             ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
-            ("meta:muse-spark-1.1", "Muse Spark 1.1"),
             ("meta:muse-spark-1.2", "Muse Spark 1.2"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),

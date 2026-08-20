@@ -13673,6 +13673,10 @@ class TestAutoClassifierModelCommand:
 
         screen = push.call_args.args[0]
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
+        assert screen._recommended_models["google_genai:gemini-3.7-flash"] == (
+            "Gemini 3.7 Flash"
+        )
+        assert "google_genai:gemini-3.6-flash" not in screen._recommended_models
         assert screen._include_recent_models is False
 
     async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:

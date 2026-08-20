@@ -1,12 +1,16 @@
 """Golden behavior net for the managed-config resolver migration.
 
-The ranked resolver is intentionally being introduced behind the existing
-engine.  This module records the existing engine's complete observable result
-for every manifest option across synthetic provider stacks.  The observable
-result includes warning text and the managed-health diagnostic, not just the
-resolved value and source, because coercion is moving across a module boundary
-and silently changing a rejection message would make the migration look safer
-than it is.
+The checked-in JSON was recorded from the pre-ranked engine and committed
+before any consumer migrated.  It is a parity baseline, not a statement of
+correct behavior: the ranked resolver is now authoritative, so this module
+compares today's engine against that frozen baseline.  The recorded result
+includes warning text and the managed-health diagnostic, not just the resolved
+value and source, because coercion moved across a module boundary and silently
+changing a rejection message would make the migration look safer than it is.
+
+A record that must change for a deliberate fix needs a named test asserting
+the new behavior.  The snapshot is hash-keyed and unreadable as a diff, so an
+edited record cannot otherwise be told apart from an absorbed regression.
 """
 
 from __future__ import annotations
@@ -399,10 +403,12 @@ def _resolve_record(option: ConfigOption, scenario: _Scenario) -> dict[str, obje
 
 
 def build_legacy_golden() -> dict[str, dict[str, dict[str, object]]]:
-    """Return every legacy-engine snapshot record.
+    """Return every snapshot record for the engine as it stands today.
 
-    Kept public within the test module so the checked-in JSON can be regenerated
-    deliberately while the old engine is still authoritative.
+    Kept public within the test module so the checked-in JSON can be
+    regenerated deliberately. Nothing calls this during a test run: the
+    baseline is a pre-refactor artifact, so regenerating it from the current
+    engine would assert only that the engine agrees with itself.
     """
     return {
         option.key: {

@@ -25,6 +25,15 @@ from deepagents_code.configuration.types import (
     Unset,
 )
 
+SHADOWED_TABLE_SUFFIX = "— every option under it falls back to its next source"
+"""Tail of the rejection raised when a scalar shadows a whole TOML table.
+
+`config_manifest._emit_ranked_diagnostics` matches this text to deduplicate the
+warning across a full-manifest pass. Both sides must share one constant: a
+reworded message that no longer matches would silently restore roughly one
+duplicated line per option for a single typo.
+"""
+
 
 def coerce_environment_value(
     option: ConfigOption, raw: str, name: str
@@ -245,8 +254,7 @@ def ranked_toml_value(
                 path = option.toml_keys[:index]
                 result = Invalid(
                     f"Ignoring {status.name} [{'.'.join(path)}]; expected a "
-                    f"table, got {type(node).__name__} — every option under it "
-                    "falls back to its next source"
+                    f"table, got {type(node).__name__} {SHADOWED_TABLE_SUFFIX}"
                 )
                 break
             if key not in node:

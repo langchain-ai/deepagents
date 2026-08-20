@@ -370,22 +370,6 @@ def resolve_managed_option(
     )
 
 
-def managed_scalar(key: str, managed_data: Mapping[str, Any]) -> tuple[bool, object]:
-    """Resolve one manifest key against managed policy alone.
-
-    Returns:
-        Whether managed policy decided the value, and the value.
-    """
-    from deepagents_code.configuration.resolver import MANAGED_RANK
-    from deepagents_code.configuration.types import Found
-
-    resolved = resolve_managed_option(key, managed_data)
-    if resolved is None:
-        return False, None
-    result = resolved.tier_health.get(MANAGED_RANK)
-    return (True, result.value) if isinstance(result, Found) else (False, None)
-
-
 def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
     """Return manifest keys managed policy declares whose value was dropped.
 

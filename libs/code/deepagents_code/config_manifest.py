@@ -515,42 +515,6 @@ def load_managed_config_toml(*, refresh: bool = False) -> Mapping[str, Any]:
 _warned_non_table_paths: set[tuple[str, ...]] = set()
 
 
-def toml_lookup(
-    data: Mapping[str, Any], keys: tuple[str, ...], *, source: str = "config.toml"
-) -> tuple[bool, Any]:
-    """Navigate nested `keys` in one TOML source.
-
-    A traversal that stops because an intermediate node is not a table (say
-    `ui = "dark"` shadowing the whole `[ui]` table) is logged, because it
-    silently defaults *every* option under that table and the value the user
-    edited is nowhere in the output. The warning is emitted once per path per
-    process: `config` resolves the full manifest in one pass, so logging per
-    option would print the same line ~100 times for a single typo.
-
-    Returns:
-        `(found, value)`, where `found` is `False` if any key was missing.
-    """
-    node: Any = data
-    for index, key in enumerate(keys):
-        if not isinstance(node, dict):
-            path = keys[:index]
-            warning_key = (source, *path)
-            if warning_key not in _warned_non_table_paths:
-                _warned_non_table_paths.add(warning_key)
-                logger.warning(
-                    "Ignoring %s [%s]; expected a table, got %s — every option "
-                    "under it falls back to its next source",
-                    source,
-                    ".".join(path),
-                    type(node).__name__,
-                )
-            return False, None
-        if key not in node:
-            return False, None
-        node = node[key]
-    return True, node
-
-
 def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
     """Delegate environment coercion to the provider boundary.
 
@@ -745,10 +709,16 @@ def _emit_ranked_diagnostics(
     This compatibility boundary preserves `resolve_scalar`'s fall-through
     messages for callers that expect the historical logging behavior.
 
+    A scalar that shadows a whole table defaults *every* option beneath it, so
+    that rejection is emitted once per process. `config` resolves the full
+    manifest in one pass, and logging per option would print the same line
+    roughly a hundred times for a single typo.
+
     Args:
         option: Manifest option being resolved.
         resolved: Rank-keyed provider results and selected value.
     """
+    from deepagents_code.configuration.providers import SHADOWED_TABLE_SUFFIX
     from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
     from deepagents_code.configuration.types import Found, Invalid
 
@@ -758,7 +728,7 @@ def _emit_ranked_diagnostics(
         if isinstance(result, Invalid):
             reasons = resolved.tier_diagnostics.get(rank) or (result.reason,)
             for reason in reasons:
-                if "— every option under it falls back to its next source" in reason:
+                if SHADOWED_TABLE_SUFFIX in reason:
                     warning_key = ("ranked provider", reason)
                     if warning_key in _warned_non_table_paths:
                         continue

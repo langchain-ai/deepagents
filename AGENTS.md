@@ -135,7 +135,6 @@ Pin GitHub Actions to full-length commit SHAs; a tag reference is rejected. Veri
 ## Additional resources
 
 - [Deep Agents documentation](https://docs.langchain.com/oss/python/deepagents/overview) — source lives in the `langchain-ai/docs` repo; a local checkout supports file search, and the docs MCP server is configured in `.mcp.json`
-- [Contributing guide](https://docs.langchain.com/oss/python/contributing/overview)
 
 <!-- OPENWIKI:START -->
 

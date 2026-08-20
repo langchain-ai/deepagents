@@ -27,7 +27,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from deepagents_code.output import write_json
 
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.service import ManagedHealth
     from deepagents_code.output import OutputFormat
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,21 @@ def setup_config_parser(
 
 
 # --- Resolution -------------------------------------------------------------
+
+
+def _load_managed_generation() -> tuple[Mapping[str, Any], ManagedHealth]:
+    """Load managed data and diagnostics from one provider snapshot.
+
+    Returns:
+        Parsed managed data and health evaluated from that exact generation.
+    """
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_snapshot_health,
+    )
+
+    snapshot = get_managed_snapshot(refresh=True)
+    return snapshot.data, managed_snapshot_health(snapshot)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,7 +458,7 @@ def _option_provenance(
     Returns:
         Effective or dotted leaf-to-source mapping.
     """
-    from deepagents_code.config_manifest import OptionKind, toml_lookup
+    from deepagents_code.config_manifest import OptionKind, resolve_ranked_scalar
 
     if (
         option.redacted
@@ -450,35 +466,43 @@ def _option_provenance(
         or option.toml_keys is None
     ):
         return {"effective": source}
-    user_found, user_value = toml_lookup(toml_data or {}, option.toml_keys)
-    managed_found, managed_value = toml_lookup(
-        managed_toml_data or {}, option.toml_keys, source="managed config"
+    resolved = resolve_ranked_scalar(
+        option,
+        toml_data=toml_data or {},
+        managed_toml_data=managed_toml_data or {},
     )
-    if managed_found and isinstance(managed_value, dict):
-        from deepagents_code.configuration.service import merge_managed_over_user
-
-        lower = (
-            cast("dict[str, Any]", user_value)
-            if user_found and isinstance(user_value, dict)
-            else {}
+    ranks_by_path: dict[tuple[str, ...], list[int]] = {}
+    for rank, paths in resolved.provenance.items():
+        for path in paths:
+            ranks_by_path.setdefault(path, []).append(rank)
+    if not ranks_by_path:
+        return {"effective": source}
+    return {
+        _provenance_path(path) if path else "effective": " + ".join(
+            resolved.provider_status[rank].name for rank in sorted(ranks)
         )
-        # Shares `ConfigSources.merged`'s helper rather than restating its
-        # arguments: this is the output an administrator uses to audit what is
-        # enforced, so a merge that drifted from the runtime one would credit
-        # the wrong tier for a leaf.
-        _, provenance = merge_managed_over_user(
-            lower,
-            cast("dict[str, Any]", managed_value),
-            prefix=option.toml_keys or (),
-        )
-        return provenance or {"effective": source}
-    if user_found and isinstance(user_value, dict):
-        from deepagents_code.configuration.resolver import leaf_provenance
+        for path, ranks in sorted(ranks_by_path.items())
+    }
 
-        # Nothing to merge: managed policy declares nothing at this path, so
-        # every leaf is the user's.
-        return leaf_provenance(user_value, "config.toml") or {"effective": source}
-    return {"effective": source}
+
+def _provenance_path(path: tuple[str, ...]) -> str:
+    """Render a tuple path without aliasing quoted dotted TOML keys.
+
+    Args:
+        path: Structured-option leaf path.
+
+    Returns:
+        TOML-style dotted path with non-bare segments quoted.
+    """
+    import json
+
+    rendered: list[str] = []
+    for part in path:
+        bare = bool(part) and all(
+            char.isascii() and (char.isalnum() or char in "_-") for char in part
+        )
+        rendered.append(part if bare else json.dumps(part, ensure_ascii=False))
+    return ".".join(rendered)
 
 
 def _config_json_row(
@@ -542,14 +566,13 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
     from deepagents_code.config_manifest import (
         get_config_options,
         load_config_toml,
-        load_managed_config_toml,
     )
 
     # Load `.env` files into the environment so resolution reflects what the
     # app actually reads, not just shell exports.
     _ensure_bootstrap()
     toml_data = load_config_toml()
-    managed_toml_data = load_managed_config_toml(refresh=True)
+    managed_toml_data, health = _load_managed_generation()
     # Read the credential store once; `_resolve` reuses this snapshot rather than
     # re-parsing `auth.json` per credential option.
     stored = _load_stored_credentials()
@@ -590,13 +613,21 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
         return 0
 
     if verbose:
-        _print_config_verbose(resolved, store_error=stored.error)
+        _print_config_verbose(
+            resolved,
+            store_error=stored.error,
+            health=health,
+        )
     else:
-        _print_config_table(resolved, store_error=stored.error)
+        _print_config_table(
+            resolved,
+            store_error=stored.error,
+            health=health,
+        )
     return 0
 
 
-def _managed_health_warning() -> str | None:
+def _managed_health_warning(health: ManagedHealth | None = None) -> str | None:
     """Return a notice when managed policy exists but cannot be applied.
 
     `load_managed_config_toml` yields an empty mapping for a broken file, so
@@ -610,12 +641,12 @@ def _managed_health_warning() -> str | None:
     Returns:
         A user-facing notice, or `None` when managed policy is enforceable.
     """
-    from deepagents_code.configuration.service import managed_health
+    if health is None:
+        # Standalone callers still refresh. Command flows pass the generation
+        # they already used for values so status and violations cannot diverge.
+        from deepagents_code.configuration.service import managed_health
 
-    # Refresh, like the path row in the same command: this warning exists to
-    # explain a policy problem, and the cache can still hold the last snapshot
-    # that was enforceable while the file on disk is not.
-    health = managed_health(refresh=True)
+        health = managed_health(refresh=True)
     status = health.status
     if not status.usable:
         detail = f": {status.detail}" if status.detail else ""
@@ -642,13 +673,15 @@ def _managed_health_warning() -> str | None:
     return None
 
 
-def _print_store_warning(store_error: str | None) -> None:
+def _print_store_warning(
+    store_error: str | None, *, health: ManagedHealth | None = None
+) -> None:
     """Print warnings for an unreadable credential store or managed config."""
     from rich.markup import escape
 
     from deepagents_code.config import console
 
-    warnings = [text for text in (_managed_health_warning(), store_error) if text]
+    warnings = [text for text in (_managed_health_warning(health), store_error) if text]
     for text in warnings:
         console.print(f"[yellow]Warning:[/yellow] {escape(text)}", highlight=False)
     if warnings:
@@ -659,6 +692,7 @@ def _print_config_table(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
+    health: ManagedHealth | None = None,
 ) -> None:
     """Render the compact effective-value table, grouped by section."""
     from rich.table import Table
@@ -668,7 +702,7 @@ def _print_config_table(
     from deepagents_code.config_manifest import iter_groups
 
     console.print()
-    _print_store_warning(store_error)
+    _print_store_warning(store_error, health=health)
     groups = list(iter_groups(row.option for row in resolved))
     for index, group in enumerate(groups):
         if index:
@@ -698,6 +732,7 @@ def _print_config_verbose(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
+    health: ManagedHealth | None = None,
 ) -> None:
     """Render the effective value plus description and how-to-set per option."""
     from rich.markup import escape
@@ -706,7 +741,7 @@ def _print_config_verbose(
     from deepagents_code.config_manifest import iter_groups
 
     console.print()
-    _print_store_warning(store_error)
+    _print_store_warning(store_error, health=health)
     groups = list(iter_groups(row.option for row in resolved))
     for index, group in enumerate(groups):
         if index:
@@ -847,12 +882,11 @@ def _run_get_section(
     from deepagents_code.config import _ensure_bootstrap
     from deepagents_code.config_manifest import (
         load_config_toml,
-        load_managed_config_toml,
     )
 
     _ensure_bootstrap()
     toml_data = load_config_toml()
-    managed_toml_data = load_managed_config_toml(refresh=True)
+    managed_toml_data, health = _load_managed_generation()
     # Only credential options consult the store, so skip the read (and its
     # warning) when the section holds none.
     stored = (
@@ -894,9 +928,9 @@ def _run_get_section(
         return 0
 
     if verbose:
-        _print_config_verbose(resolved, store_error=store_error)
+        _print_config_verbose(resolved, store_error=store_error, health=health)
     else:
-        _print_config_table(resolved, store_error=store_error)
+        _print_config_table(resolved, store_error=store_error, health=health)
     return 0
 
 
@@ -931,12 +965,11 @@ def _run_get(
     from deepagents_code.config import _ensure_bootstrap
     from deepagents_code.config_manifest import (
         load_config_toml,
-        load_managed_config_toml,
     )
 
     _ensure_bootstrap()
     toml_data = load_config_toml()
-    managed_toml_data = load_managed_config_toml(refresh=True)
+    managed_toml_data, health = _load_managed_generation()
     # Only credential options consult the store, so skip the read (and its
     # warning) for everything else.
     stored = _load_stored_credentials() if option.group == "Credentials" else None
@@ -968,7 +1001,7 @@ def _run_get(
             )
         if store_error:
             payload["store_error"] = store_error
-        managed_warning = _managed_health_warning()
+        managed_warning = _managed_health_warning(health)
         if managed_warning:
             payload["managed_config_error"] = managed_warning
         write_json("config get", payload)
@@ -989,7 +1022,7 @@ def _run_get(
         # detail lines `_print_config_verbose` emits.
         console.print(f"  {option.summary}", highlight=False, style="dim")
         console.print(f"  {_sources_line(option)}", highlight=False, style="dim")
-    for text in (_managed_health_warning(), store_error):
+    for text in (_managed_health_warning(health), store_error):
         if text:
             console.print(f"[yellow]Warning:[/yellow] {escape(text)}", highlight=False)
     return 0
@@ -999,7 +1032,12 @@ _MANAGED_PATH_LABEL = "managed config"
 """Row label for the managed file, matched by `_config_path_status`."""
 
 
-def _config_path_status(label: str, *, exists: bool) -> str:
+def _config_path_status(
+    label: str,
+    *,
+    exists: bool,
+    health: ManagedHealth | None = None,
+) -> str:
     """Return a diagnostic status for one config-path row.
 
     The managed row reports parse health rather than mere existence, so a
@@ -1011,9 +1049,10 @@ def _config_path_status(label: str, *, exists: bool) -> str:
         A short status word for the row.
     """
     if label == _MANAGED_PATH_LABEL:
-        from deepagents_code.configuration.service import managed_health
+        if health is None:
+            from deepagents_code.configuration.service import managed_health
 
-        health = managed_health(refresh=True)
+            health = managed_health(refresh=True)
         if health.status.usable and health.violations:
             return "rejected"
         return health.status.health.value.lower()
@@ -1027,6 +1066,7 @@ def _run_path(output_format: OutputFormat) -> int:
         Process exit code (`0` on success).
     """
     paths = _config_paths()
+    _, health = _load_managed_generation()
 
     if output_format == "json":
         write_json(
@@ -1036,7 +1076,11 @@ def _run_path(output_format: OutputFormat) -> int:
                     "label": label,
                     "path": str(path),
                     "exists": exists,
-                    "status": _config_path_status(label, exists=exists),
+                    "status": _config_path_status(
+                        label,
+                        exists=exists,
+                        health=health,
+                    ),
                 }
                 for label, path, exists in paths
             ],
@@ -1048,7 +1092,7 @@ def _run_path(output_format: OutputFormat) -> int:
     console.print()
     console.print("[bold]Config locations[/bold]")
     for label, path, exists in paths:
-        status = _config_path_status(label, exists=exists)
+        status = _config_path_status(label, exists=exists, health=health)
         if status in {"ok", "missing"}:
             marker = "[green]ok[/green]" if status == "ok" else "[dim]missing[/dim]"
         else:

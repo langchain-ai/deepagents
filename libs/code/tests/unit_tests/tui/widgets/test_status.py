@@ -1045,6 +1045,30 @@ class TestModelLabelClickTargets:
         msg = f"No painted cell at x={x}"
         raise AssertionError(msg)
 
+    @classmethod
+    def _app_mouse_event(
+        cls,
+        event_type: type[events.MouseDown | events.MouseUp],
+        label: ModelLabel,
+        offset: Offset,
+    ) -> events.MouseDown | events.MouseUp:
+        """Build an app-level mouse event that follows Textual's real input path."""
+        target = label.content_region.offset + offset
+        return event_type(
+            None,
+            x=target.x,
+            y=target.y,
+            delta_x=0,
+            delta_y=0,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+            screen_x=target.x,
+            screen_y=target.y,
+            style=cls._style_at(label, offset.x),
+        )
+
     @staticmethod
     def _rendered_targets(label: ModelLabel) -> dict[str, tuple[str, bool]]:
         """Collect picker targets from painted output, not from `render`.
@@ -1119,8 +1143,8 @@ class TestModelLabelClickTargets:
             assert app.unhandled_clicks == 0
             assert app.opened_pickers == ["model"]
 
-    async def test_click_that_refocuses_app_is_inert(self) -> None:
-        """The focus-restoring click is consumed; the next click opens the picker."""
+    async def test_slow_click_that_refocuses_app_is_inert(self) -> None:
+        """A focus-restoring press stays inert even when its release is delayed."""
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
@@ -1132,8 +1156,9 @@ class TestModelLabelClickTargets:
             app.post_message(events.AppBlur())
             await pilot.pause()
             app.post_message(events.AppFocus())
-            await pilot.pause()
-            await pilot.click(label, offset=offset)
+            app.post_message(self._app_mouse_event(events.MouseDown, label, offset))
+            await pilot.pause(0.25)
+            app.post_message(self._app_mouse_event(events.MouseUp, label, offset))
             await pilot.pause()
 
             assert app.opened_pickers == []
@@ -1143,18 +1168,22 @@ class TestModelLabelClickTargets:
             await pilot.pause()
             assert app.opened_pickers == ["model"]
 
-    async def test_old_refocus_does_not_block_click(self) -> None:
-        """A keyboard refocus must not leave a later target click inert."""
+    async def test_keyboard_refocus_does_not_block_click(self) -> None:
+        """A refocus without an adjacent mouse press must not consume a later click."""
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "openai"
             label.model = "gpt-5.5"
             await pilot.pause()
-            label._last_app_focus_time = 0.0
 
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            app.post_message(events.AppFocus())
+            await pilot.pause()
             await pilot.click(label, offset=self._offset_for_target(label, "model"))
             await pilot.pause()
+
             assert app.opened_pickers == ["model"]
 
     async def test_click_ignores_non_left_buttons(self) -> None:

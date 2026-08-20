@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from pathlib import Path
-from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
+from textual import events
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
@@ -26,9 +26,9 @@ from deepagents_code.tui.widgets.loading import Spinner
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from textual import events
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
+    from textual.message import Message
     from textual.timer import Timer
 
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
@@ -85,9 +85,6 @@ _PICKER_HOVER_STYLE = Style(underline=True)
 
 Carries no metadata of its own, so merging it keeps the target resolvable."""
 
-_APP_REFOCUS_CLICK_GUARD_SECONDS = 0.2
-"""Maximum delay between app refocus and the click that caused it."""
-
 _LEFT_BUTTON = 1
 """Textual `MouseEvent.button` value for the left mouse button."""
 
@@ -134,8 +131,8 @@ class ModelLabel(Widget):
     _hovered_target: reactive[PickerTarget | None] = reactive(None)
     """Target under the pointer, or `None` when there is none."""
 
-    _last_app_focus_time: float | None = None
-    """Monotonic time when the app most recently regained focus."""
+    _refocus_press_pending = False
+    """Whether an app refocus is awaiting its adjacent input event."""
 
     def _clean_model(self) -> str:
         """Strip the provider's registered prefix so the status bar stays compact.
@@ -225,29 +222,41 @@ class ModelLabel(Widget):
         )
 
     def on_mount(self) -> None:
-        """Track app refocuses so their initiating click stays inert."""
-        self.watch(self.app, "app_focus", self._on_app_focus_changed, init=False)
+        """Track app input so a focus-restoring press stays inert."""
+        self.app.message_signal.subscribe(self, self._on_app_message, immediate=True)
 
-    def _on_app_focus_changed(self, focused: bool) -> None:
-        """Record when the app regains focus.
+    def on_unmount(self) -> None:
+        """Stop tracking app input after the label is detached."""
+        self.app.message_signal.unsubscribe(self)
+
+    def _clear_refocus_press(self) -> None:
+        """Expire a refocus that had no adjacent input event."""
+        self._refocus_press_pending = False
+
+    def _on_app_message(self, message: Message) -> None:
+        """Associate an app refocus with its immediately queued mouse press.
 
         Args:
-            focused: Whether the app now has focus.
+            message: App-level message that just finished processing.
         """
-        self._last_app_focus_time = monotonic() if focused else None
-
-    def _is_refocus_click(self) -> bool:
-        """Consume and identify a click that immediately follows app refocus.
-
-        Returns:
-            Whether the click should be suppressed as part of app refocus.
-        """
-        focused_at = self._last_app_focus_time
-        self._last_app_focus_time = None
-        return (
-            focused_at is not None
-            and monotonic() - focused_at <= _APP_REFOCUS_CLICK_GUARD_SECONDS
-        )
+        if isinstance(message, events.AppFocus):
+            self._refocus_press_pending = True
+            self.app.call_later(self._clear_refocus_press)
+            return
+        if isinstance(message, events.AppBlur):
+            self._refocus_press_pending = False
+            return
+        if not self._refocus_press_pending or not isinstance(
+            message, events.InputEvent
+        ):
+            return
+        self._refocus_press_pending = False
+        if (
+            isinstance(message, events.MouseDown)
+            and message.button == _LEFT_BUTTON
+            and self._picker_target(message) is not None
+        ):
+            self.suppress_click()
 
     async def on_click(self, event: events.Click) -> None:
         """Open a picker for a left-click on a target span in the status bar.
@@ -263,7 +272,7 @@ class ModelLabel(Widget):
         # Stop every target click so it cannot bubble to the app handler that
         # refocuses the chat input behind a picker.
         event.stop()
-        if event.chain > _SINGLE_CLICK_CHAIN or self._is_refocus_click():
+        if event.chain > _SINGLE_CLICK_CHAIN:
             return
         await self.run_action(_PICKER_ACTIONS[target])
 

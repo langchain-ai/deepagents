@@ -113,6 +113,7 @@ from deepagents_code.update_check import (
     upgrade_command,
     upgrade_install_command,
 )
+from unit_tests.conftest import redirect_managed_config
 
 
 @pytest.fixture
@@ -5695,6 +5696,39 @@ class TestIsAutoUpdateEnabled:
         ):
             assert is_auto_update_enabled() is False
         assert "disabling auto-update" in caplog.text
+
+    @pytest.mark.parametrize(
+        "user_toml",
+        ["not [ valid toml", "update = false\n"],
+        ids=["corrupt-file", "non-table-update"],
+    )
+    @pytest.mark.parametrize("higher_source", ["managed", "environment"])
+    def test_higher_priority_enablement_survives_unreadable_user_config(
+        self,
+        config_path,
+        tmp_path,
+        monkeypatch,
+        user_toml,
+        higher_source,
+    ) -> None:
+        """A broken user layer cannot override a higher-priority opt-in."""
+        from deepagents_code.configuration import service
+
+        config_path.write_text(user_toml, encoding="utf-8")
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+        if higher_source == "managed":
+            managed = tmp_path / "managed.toml"
+            managed.write_text(
+                "[update]\nauto_update = true\n",
+                encoding="utf-8",
+            )
+            redirect_managed_config(monkeypatch, managed)
+            service.invalidate_config_sources()
+        else:
+            monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "1")
+
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is True
 
 
 class TestAutoUpdateDefaultMigration:

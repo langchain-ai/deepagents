@@ -3836,6 +3836,7 @@ def is_auto_update_enabled() -> bool:
     permissive default. A genuinely absent config falls through to `True`.
     """
     from deepagents_code.config import _is_editable_install
+    from deepagents_code.configuration.resolver import USER_RANK
 
     if _is_editable_install():
         return False
@@ -3843,7 +3844,9 @@ def is_auto_update_enabled() -> bool:
     if _managed_update_failure("auto_update", sources, resolved):
         return False
     _warn_invalid_update_environment(resolved)
-    if _user_update_unreadable(sources):
+    if _user_update_unreadable(sources) and not any(
+        rank < USER_RANK for rank in resolved.ranks
+    ):
         logger.warning(
             "Could not read [update] config; disabling auto-update until it is readable"
         )

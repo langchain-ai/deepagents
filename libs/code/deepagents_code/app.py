@@ -9524,35 +9524,46 @@ class DeepAgentsApp(App):
             )
             return False
 
-        if not has_auto_mode_notice() and not getattr(
-            self, "_auto_mode_notice_pending", False
-        ):
-            # Pre-confirmation: show modal before activating Auto
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future[bool] = loop.create_future()
+        if not has_auto_mode_notice():
+            pending: asyncio.Future[bool] | None = getattr(
+                self, "_auto_mode_confirmation_future", None
+            )
+            if pending is not None and not pending.done():
+                # Another entry point already pushed the modal — await its result
+                # rather than bypassing the confirmation.
+                confirmed = await pending
+                if not confirmed:
+                    return False
+            else:
+                # Pre-confirmation: show modal before activating Auto
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[bool] = loop.create_future()
+                self._auto_mode_confirmation_future = future
 
-            def handle_result(accepted: bool | None) -> None:
-                self._auto_mode_notice_pending = False
-                if not future.done():
-                    future.set_result(accepted is True)
+                def handle_result(accepted: bool | None) -> None:
+                    self._auto_mode_notice_pending = False
+                    if not future.done():
+                        future.set_result(accepted is True)
 
-            try:
-                self.push_screen(
-                    AutoModeNoticeScreen(
-                        model_label=self._auto_classifier_review_model_spec(),
-                        distinct_from_main_model=self._auto_classifier_is_distinct(),
-                    ),
-                    handle_result,
-                )
-            except Exception:
-                logger.warning("Could not show Auto confirmation", exc_info=True)
-                return False
-            self._auto_mode_notice_pending = True
+                try:
+                    self.push_screen(
+                        AutoModeNoticeScreen(
+                            model_label=self._auto_classifier_review_model_spec(),
+                            distinct_from_main_model=self._auto_classifier_is_distinct(),
+                        ),
+                        handle_result,
+                    )
+                except Exception:
+                    logger.warning("Could not show Auto confirmation", exc_info=True)
+                    self._auto_mode_confirmation_future = None
+                    return False
+                self._auto_mode_notice_pending = True
 
-            confirmed = await future
-            if not confirmed:
-                return False
-            save_auto_mode_notice()
+                confirmed = await future
+                self._auto_mode_confirmation_future = None
+                if not confirmed:
+                    return False
+                save_auto_mode_notice()
 
         if not await self._write_live_approval_mode(ApprovalMode.AUTO):
             self._warn_live_approval_mode_unavailable(
@@ -21403,8 +21414,14 @@ class DeepAgentsApp(App):
         if getattr(self, "_auto_mode_notice_pending", False):
             return
 
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+        self._auto_mode_confirmation_future = future
+
         def handle_result(accepted: bool | None) -> None:
             self._auto_mode_notice_pending = False
+            if not future.done():
+                future.set_result(accepted is True)
             if accepted is not True:
                 return
             if not save_auto_mode_notice():
@@ -21425,6 +21442,7 @@ class DeepAgentsApp(App):
             )
         except Exception:
             logger.warning("Could not show Auto confirmation", exc_info=True)
+            self._auto_mode_confirmation_future = None
             self._warn_live_approval_mode_unavailable(
                 "Could not open the Auto confirmation; approval mode unchanged."
             )

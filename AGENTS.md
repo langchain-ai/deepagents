@@ -9,7 +9,7 @@ This file contains repository-wide rules for agents and contributors. Use these 
 
 ## Development workflow
 
-Work inside the package you are changing. Use `uv` for environments and dependencies; do not invoke `pip`, `poetry`, or `conda` directly. Let each package's `pyproject.toml` select Python, and use its `Makefile` as the command source of truth.
+Work inside the package you are changing; [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) covers environment setup (`uv`, `make`) and the edit-test-lint loop.
 
 Do not add dependencies unless required. When adding one, justify its maintenance, adoption, and release activity.
 

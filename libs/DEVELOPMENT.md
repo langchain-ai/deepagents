@@ -223,21 +223,17 @@ Results land on the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepag
 
 ## Contributing conventions
 
-The full conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root. The points most likely to trip up a first PR:
+Conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root: Conventional Commits with a mandatory scope, branch naming, test requirements, and public-interface stability. Well-formed titles look like:
 
-- **Conventional Commits with a mandatory scope.** Titles look like `type(scope): description`. Allowed types and scopes are defined in `.github/workflows/pr_lint.yml`. Keep the title short and descriptive; save detail for the body.
+```txt
+feat(sdk): add new chat completion feature
+fix(cli): resolve type hinting issue
+chore(evals): update infrastructure dependencies
+test(cli): missing unit tests for `_git`
+feat(cli): `--startup-cmd` flag
+style(cli): strip trailing annotations from `ask_user` questions
+```
 
-  ```txt
-  feat(sdk): add new chat completion feature
-  fix(cli): resolve type hinting issue
-  chore(evals): update infrastructure dependencies
-  test(cli): missing unit tests for `_git`
-  feat(cli): `--startup-cmd` flag
-  style(cli): strip trailing annotations from `ask_user` questions
-  ```
-- **Branch naming:** `<github-username>/<scope>/<short-description>` (e.g. `mdrxy/docs/architecture-guide`).
-- **Tests required.** Every feature or bugfix needs unit tests under `tests/unit_tests/` (no network); integration tests go in `tests/integration_tests/`.
-- **Stable public interfaces.** Avoid breaking exported signatures; add new parameters as keyword-only with defaults.
-- **PRs from external contributors must link an approved issue/discussion** (see the contributing guide linked above), and the PR description fills in the repository template.
+External PRs must link an approved issue/discussion (see the contributing guide linked above), and the PR description fills in the repository template.
 
 CI runs a number of gates beyond tests — Conventional Commit linting, lockfile freshness, version/extras consistency, and SDK-pin checks among them. Running `make format lint` in the package you changed and `make lock-check` from `libs/` clears the most common ones.

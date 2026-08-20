@@ -4741,6 +4741,18 @@ class TestAppMessageMarkdownSelectable:
     `Content` so `/version` tables and incognito shell output stay copyable.
     """
 
+    def test_rejects_negative_table_row_spacing(self) -> None:
+        with pytest.raises(ValueError, match="must be non-negative"):
+            AppMessage("| A |\n| --- |\n| value |", markdown=True, table_row_spacing=-1)
+
+    async def test_default_markdown_table_rows_remain_compact(self) -> None:
+        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
+            lines = pilot.app.query_one("#md", AppMessage).render().plain.splitlines()
+
+        langchain_row = next(i for i, line in enumerate(lines) if "langchain" in line)
+        langgraph_row = next(i for i, line in enumerate(lines) if "langgraph" in line)
+        assert langgraph_row == langchain_row + 1
+
     async def test_markdown_renders_content_visual(self) -> None:
         from textual.content import Content
 

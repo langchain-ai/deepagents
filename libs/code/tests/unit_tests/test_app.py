@@ -19312,10 +19312,13 @@ class TestToolsSlashCommand:
         assert "search_docs" in rendered
         assert "docs" in rendered
 
-    async def test_mounted_catalog_renders_markdown_table(self) -> None:
-        """The mounted message renders through the widget's own markdown path."""
+    async def test_mounted_catalog_renders_spaced_markdown_table(self) -> None:
+        """The mounted message renders a blank line between tool table rows."""
         tool_node = SimpleNamespace(
-            tools_by_name={"read_file": SimpleNamespace(description="Read a file")}
+            tools_by_name={
+                "read_file": SimpleNamespace(description="Read a file"),
+                "write_file": SimpleNamespace(description="Write a file"),
+            }
         )
         agent = MagicMock()
         agent.nodes = {"tools": SimpleNamespace(bound=tool_node)}
@@ -19331,7 +19334,7 @@ class TestToolsSlashCommand:
             assert catalog
             rendered = catalog[-1].render().plain
 
-        assert "1 tool available" in rendered
+        assert "2 tools available" in rendered
         # The column headings and rule prove the source became a real table
         # rather than degenerating into paragraphs or a list.
         assert "Tool" in rendered
@@ -19340,6 +19343,11 @@ class TestToolsSlashCommand:
         # Present unescaped, so the markdown source's `read\_file` resolved.
         assert "read_file" in rendered
         assert "Read a file" in rendered
+        assert "write_file" in rendered
+        lines = rendered.splitlines()
+        read_row = next(i for i, line in enumerate(lines) if "read_file" in line)
+        write_row = next(i for i, line in enumerate(lines) if "write_file" in line)
+        assert lines[read_row + 1 : write_row] == [""]
 
     async def test_built_in_failure_still_shows_mcp(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo

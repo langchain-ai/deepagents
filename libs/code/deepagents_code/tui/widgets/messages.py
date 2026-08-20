@@ -5548,13 +5548,17 @@ class _MutedRichMarkdown:
         "markdown.table.border": "",
     }
 
-    def __init__(self, markup: str) -> None:
+    def __init__(self, markup: str, *, table_row_spacing: int = 0) -> None:
         from rich.markdown import (
             Markdown as RichMarkdown,
             MarkdownElement,
             TableElement,
         )
         from rich.table import Table
+
+        if table_row_spacing < 0:
+            msg = "table_row_spacing must be non-negative"
+            raise ValueError(msg)
 
         class _FoldingTableElement(TableElement):
             """Render long Markdown table cells by folding instead of eliding."""
@@ -5564,6 +5568,7 @@ class _MutedRichMarkdown:
             ) -> RenderResult:
                 for renderable in super().__rich_console__(console, options):
                     if isinstance(renderable, Table):
+                        renderable.leading = table_row_spacing
                         for column in renderable.columns:
                             column.overflow = "fold"
                     yield renderable
@@ -5615,7 +5620,11 @@ _markdown_style_conversion_warned = [False]
 
 
 def _markdown_to_content(
-    markup: str, width: int, console: RichConsole | None = None
+    markup: str,
+    width: int,
+    console: RichConsole | None = None,
+    *,
+    table_row_spacing: int = 0,
 ) -> Content:
     """Render muted markdown to selectable `Content` at a fixed width.
 
@@ -5632,6 +5641,7 @@ def _markdown_to_content(
         width: Target render width in cells; the markdown is laid out to fit.
         console: Console used to render segments; a default is created when
             `None`.
+        table_row_spacing: Blank lines inserted between markdown table rows.
 
     Returns:
         `Content` visually equivalent to the rendered markdown, with trailing
@@ -5646,7 +5656,8 @@ def _markdown_to_content(
     if console is None:
         console = Console(width=render_width)
     segments = console.render(
-        _MutedRichMarkdown(markup), console.options.update_width(render_width)
+        _MutedRichMarkdown(markup, table_row_spacing=table_row_spacing),
+        console.options.update_width(render_width),
     )
     content_lines: list[Content] = []
     for line in Segment.split_lines(segments):
@@ -5708,6 +5719,7 @@ class AppMessage(Static):
         message: str | Content,
         *,
         markdown: bool = False,
+        table_row_spacing: int = 0,
         **kwargs: Any,
     ) -> None:
         """Initialize a system message.
@@ -5719,14 +5731,20 @@ class AppMessage(Static):
 
                 Requires a string message — `Content` objects already carry
                 their own structure.
+            table_row_spacing: Blank lines inserted between markdown table rows.
             **kwargs: Additional arguments passed to parent.
 
         Raises:
             TypeError: If `markdown=True` is combined with a non-string
                 `message`.
+            ValueError: If `table_row_spacing` is negative.
         """
+        if table_row_spacing < 0:
+            msg = "table_row_spacing must be non-negative"
+            raise ValueError(msg)
         self._content = message
         self._is_markdown = markdown
+        self._table_row_spacing = table_row_spacing
         # Markdown is rendered lazily in `render()` so it can be laid out to the
         # widget's current width and rebuilt as selectable `Content`.
         self._markdown_cache: tuple[int, Content] | None = None
@@ -5761,7 +5779,12 @@ class AppMessage(Static):
                 console = self.app.console
             except NoActiveAppError:
                 console = None
-            content = _markdown_to_content(str(self._content), width, console)
+            content = _markdown_to_content(
+                str(self._content),
+                width,
+                console,
+                table_row_spacing=self._table_row_spacing,
+            )
             self._markdown_cache = (width, content)
         return self._markdown_cache[1]
 

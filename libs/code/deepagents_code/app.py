@@ -12422,7 +12422,11 @@ class DeepAgentsApp(App):
             )
 
         await self._mount_message(
-            AppMessage(self._render_tool_catalog(catalog), markdown=True)
+            AppMessage(
+                self._render_tool_catalog(catalog),
+                markdown=True,
+                table_row_spacing=1,
+            )
         )
 
     def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:

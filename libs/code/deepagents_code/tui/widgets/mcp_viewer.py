@@ -1294,7 +1294,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """
         help_parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-            "Tab/Shift+Tab jump servers",
+            "Tab/Shift+Tab servers",
         ]
         enter_hint = self._selected_enter_hint()
         if enter_hint is not None:

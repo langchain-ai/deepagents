@@ -113,11 +113,9 @@ def test_manifest_covers_every_provider_credential() -> None:
 
 _UI_READER_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # Theme resolution predates the manifest and keeps bespoke semantics
-        # (terminal-program mapping, unknown-name fallback), so these read
-        # `[ui]` directly rather than through `resolve_scalar`.
+        # Terminal-default inspection and manifest theme resolution retain
+        # bespoke terminal-program mapping semantics.
         "app.py:_load_terminal_default",
-        "app.py:_load_theme_preference",
         "config_manifest.py:_resolve_theme",
         # Reads `[ui]` only to repair and rewrite it; not a value reader.
         "app.py:_replace_malformed_ui",
@@ -2967,6 +2965,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     provider must produce a `credentials.<name>` option after the cache resets.
     """
     from deepagents_code import config_manifest, model_config
+    from deepagents_code.configuration import service
 
     patched = {
         **model_config.PROVIDER_API_KEY_ENV,
@@ -2974,7 +2973,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     }
     monkeypatch.setattr(model_config, "PROVIDER_API_KEY_ENV", patched)
     config_manifest.get_config_options.cache_clear()
+    service._managed_table_paths.cache_clear()
     config_manifest._options_by_key.cache_clear()
+    config_manifest._options_by_toml_path.cache_clear()
     try:
         opt = config_manifest.get_option("credentials.synthetic_xyz")
         assert opt is not None
@@ -2984,7 +2985,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     finally:
         # Restore the cache so later tests rebuild against the real registry.
         config_manifest.get_config_options.cache_clear()
+        service._managed_table_paths.cache_clear()
         config_manifest._options_by_key.cache_clear()
+        config_manifest._options_by_toml_path.cache_clear()
 
 
 def test_provider_dependency_metadata_is_exhaustive() -> None:

@@ -8,8 +8,11 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from langchain.agents.middleware import ToolErrorMiddleware
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import ToolException
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Interrupt
 from pydantic import TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
@@ -21,6 +24,11 @@ from deepagents_code._ask_user_types import (
     _requires_choices,
     decode_multi_select_answer,
     encode_multi_select_answer,
+)
+from deepagents_code._tool_errors import ToolArgumentError
+from deepagents_code.agent import (
+    _TOOL_ARG_VALIDATION_TOOLS,
+    _tool_arg_validation_on_error,
 )
 from deepagents_code.ask_user import (
     AskUserMiddleware,
@@ -51,21 +59,21 @@ class TestValidateQuestions:
     """Tests for `_validate_questions`."""
 
     def test_rejects_empty_questions(self) -> None:
-        with pytest.raises(ToolException, match="at least one question"):
+        with pytest.raises(ToolArgumentError, match="at least one question"):
             _validate_questions([])
 
     def test_rejects_empty_question_text(self) -> None:
-        with pytest.raises(ToolException, match="non-empty 'question'"):
+        with pytest.raises(ToolArgumentError, match="non-empty 'question'"):
             _validate_questions([{"question": "   ", "type": "text"}])
 
     def test_rejects_multiple_choice_without_choices(self) -> None:
-        with pytest.raises(ToolException, match="requires a non-empty 'choices'"):
+        with pytest.raises(ToolArgumentError, match="requires a non-empty 'choices'"):
             _validate_questions(
                 [{"question": "Pick one", "type": "multiple_choice", "choices": []}]
             )
 
     def test_rejects_text_question_with_choices(self) -> None:
-        with pytest.raises(ToolException, match="must not define 'choices'"):
+        with pytest.raises(ToolArgumentError, match="must not define 'choices'"):
             _validate_questions(
                 [
                     {
@@ -77,14 +85,16 @@ class TestValidateQuestions:
             )
 
     def test_rejects_multi_select_without_choices(self) -> None:
-        with pytest.raises(ToolException, match=r"multi_select question .* non-empty"):
+        with pytest.raises(
+            ToolArgumentError, match=r"multi_select question .* non-empty"
+        ):
             _validate_questions(
                 [{"question": "Pick some", "type": "multi_select", "choices": []}]
             )
 
     def test_rejects_blank_choice_value(self) -> None:
         """A blank label would render as a selectable option with no answer."""
-        with pytest.raises(ToolException, match="missing or blank 'value'"):
+        with pytest.raises(ToolArgumentError, match="missing or blank 'value'"):
             _validate_questions(
                 [
                     {
@@ -109,7 +119,7 @@ class TestValidateQuestions:
                 }
             ],
         )
-        with pytest.raises(ToolException, match="missing or blank 'value'"):
+        with pytest.raises(ToolArgumentError, match="missing or blank 'value'"):
             _validate_questions(questions)
 
     def test_allows_comma_in_multi_select_choice_value(self) -> None:
@@ -123,23 +133,6 @@ class TestValidateQuestions:
                 }
             ]
         )
-
-    def test_validation_errors_are_tool_exceptions(self) -> None:
-        """A `ValueError` would escape `ToolNode` and kill the turn.
-
-        `BaseTool.run` converts a `ToolException` into an error `ToolMessage`
-        the model can read and correct, because the tool sets
-        `handle_tool_error = True`. Anything else is re-raised: langgraph's
-        default handler converts only `ToolInvocationError`. Every rejection
-        above must therefore be a `ToolException`; this pins the exception type
-        on a representative failure rather than relying on each test's
-        `pytest.raises` to notice a drift back.
-
-        `test_invalid_questions_reach_the_model_as_an_error_tool_message` pins
-        the other half — that the conversion actually happens.
-        """
-        with pytest.raises(ToolException):
-            _validate_questions([])
 
     def test_allows_comma_in_multiple_choice_value(self) -> None:
         """Choice values are returned as-is, so a comma needs no special handling."""
@@ -156,7 +149,9 @@ class TestValidateQuestions:
     def test_rejects_unknown_question_type(self) -> None:
         """Nothing outside `QuestionType` may reach the interrupt."""
         questions = cast("list[Question]", [{"question": "Q?", "type": "multiselect"}])
-        with pytest.raises(ToolException, match="unsupported ask_user question type"):
+        with pytest.raises(
+            ToolArgumentError, match="unsupported ask_user question type"
+        ):
             _validate_questions(questions)
 
     def test_rejects_non_boolean_required(self) -> None:
@@ -171,7 +166,7 @@ class TestValidateQuestions:
             "list[Question]",
             [{"question": "Q?", "type": "text", "required": "false"}],
         )
-        with pytest.raises(ToolException, match="non-boolean 'required'"):
+        with pytest.raises(ToolArgumentError, match="non-boolean 'required'"):
             _validate_questions(questions)
 
     def test_tool_schema_rejects_non_boolean_required(self) -> None:
@@ -244,7 +239,7 @@ class TestValidateQuestions:
                     }
                 ],
             )
-            with pytest.raises(ToolException, match="must not define 'choices'"):
+            with pytest.raises(ToolArgumentError, match="must not define 'choices'"):
                 _validate_questions(questions)
 
     def test_accepts_valid_question_set(self) -> None:
@@ -769,62 +764,11 @@ class TestAskUserTool:
 
         with (
             caplog.at_level(logging.WARNING, logger="deepagents_code.ask_user"),
-            pytest.raises(ToolException),
+            pytest.raises(ToolArgumentError),
         ):
             ask_tool.func(questions=[], tool_call_id="ask-1", runtime=runtime)
 
         assert "at least one question" in caplog.text
-
-    def test_tool_sets_handle_tool_error(self) -> None:
-        """Without this the `ToolException` conversion below cannot happen."""
-        assert AskUserMiddleware().tools[0].handle_tool_error is True
-
-    async def test_invalid_questions_reach_the_model_as_an_error_tool_message(
-        self,
-    ) -> None:
-        """A rejected `ask_user` call must not kill the turn.
-
-        The other tests here call `ask_tool.func` directly, which bypasses
-        `BaseTool.run` and therefore the error handling entirely. This drives a
-        real `ToolNode` so the `handle_tool_error = True` path is exercised: the
-        model gets an error `ToolMessage` it can read and retry against, rather
-        than the exception escaping `ToolNode`.
-        """
-        from langchain_core.messages import AIMessage
-        from langgraph.graph import END, START, StateGraph
-        from langgraph.prebuilt import ToolNode
-        from typing_extensions import TypedDict
-
-        class ToolState(TypedDict):
-            messages: list[object]
-
-        # LangGraph accepts this state schema, but its generic bound is not
-        # recognized by ty on Python 3.14.
-        builder = StateGraph(ToolState)  # ty: ignore[invalid-argument-type]
-        builder.add_node("tools", ToolNode(AskUserMiddleware().tools))
-        builder.add_edge(START, "tools")
-        builder.add_edge("tools", END)
-        graph = builder.compile()
-
-        seed = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "ask_user",
-                    "args": {"questions": []},
-                    "id": "ask-1",
-                    "type": "tool_call",
-                }
-            ],
-        )
-        result = await graph.ainvoke(
-            ToolState(messages=[seed])  # ty: ignore[invalid-argument-type]
-        )
-
-        message = result["messages"][-1]
-        assert isinstance(message, ToolMessage)
-        assert message.status == "error"
-        assert "at least one question" in str(message.content)
 
 
 class TestWrapModelCall:
@@ -886,3 +830,138 @@ class TestWrapModelCall:
         assert system_message.content_blocks[-1]["text"] == "\n\nASK_USER_PROMPT"
         handler.assert_awaited_once_with(overridden_request)
         assert result == "ok"
+
+
+def _make_request(tool_name: str, args: dict[str, Any]) -> ToolCallRequest:
+    """Build a `ToolCallRequest` carrying `tool_name` and `args`."""
+    return ToolCallRequest(
+        tool_call={"name": tool_name, "args": args, "id": f"{tool_name}-1"},
+        tool=None,
+        state={},
+        runtime=cast("Any", None),
+    )
+
+
+class TestToolArgValidationRecovery:
+    """`ToolErrorMiddleware` converts `ToolArgumentError` to error messages."""
+
+    def _middleware(self) -> ToolErrorMiddleware:
+        return ToolErrorMiddleware(
+            _tool_arg_validation_on_error,
+            tools=list(_TOOL_ARG_VALIDATION_TOOLS),
+        )
+
+    def test_value_error_becomes_error_tool_message(self) -> None:
+        """A model-authored `ToolArgumentError` is recoverable, not fatal."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "ask_user-1"
+        assert "`ask_user` failed" in str(result.content)
+        assert "at least one question" in str(result.content)
+
+    def test_blank_choice_value_becomes_error_tool_message(self) -> None:
+        """A blank choice value names the offending field."""
+        middleware = self._middleware()
+        questions = [
+            {
+                "question": "Pick some",
+                "type": "multi_select",
+                "choices": [{"value": "logs"}, {"value": "  "}],
+            }
+        ]
+        request = _make_request("ask_user", {"questions": questions})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions(cast("list[Question]", questions))
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "missing or blank 'value'" in str(result.content)
+
+    def test_plain_value_error_propagates(self) -> None:
+        """Recovery keys off the exception type, not the tool name.
+
+        A bare `ValueError` raised while a scoped tool runs is an internal
+        fault, not model-authored input. It must stay fatal. Middleware inside
+        this one raises that way on purpose.
+        """
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "client answered a different request"
+            raise ValueError(msg)
+
+        with pytest.raises(ValueError, match="client answered a different request"):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_non_value_error_propagates(self) -> None:
+        """Unexpected errors still halt the run rather than reaching the model."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "unexpected internal failure"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match="unexpected internal failure"):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_interrupt_propagates_unchanged(self) -> None:
+        """`ask_user`'s `interrupt()` control-flow signal must not be converted."""
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            raise GraphInterrupt((Interrupt(value={"kind": "ask_user"}, id="i-1"),))
+
+        with pytest.raises(GraphInterrupt):
+            middleware.wrap_tool_call(request, handler)
+
+    def test_out_of_scope_tool_is_not_converted(self) -> None:
+        """A `ToolArgumentError` outside the scope list still propagates."""
+        middleware = self._middleware()
+        request = _make_request("some_other_tool", {})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            msg = "validation detail"
+            raise ToolArgumentError(msg)
+
+        with pytest.raises(ToolArgumentError, match="validation detail"):
+            middleware.wrap_tool_call(request, handler)
+
+    async def test_async_value_error_becomes_error_tool_message(self) -> None:
+        """Production runs the async path, so it needs the same recovery.
+
+        `read_file` and friends register coroutines, so `awrap_tool_call` is
+        the wrapper that actually runs. It has no `aon_error`, so it falls back
+        to the sync handler; this pins that fallback.
+        """
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        # Must be async: `awrap_tool_call` awaits the handler it is given.
+        async def handler(_: ToolCallRequest) -> ToolMessage:  # noqa: RUF029
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        result = await middleware.awrap_tool_call(request, handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "at least one question" in str(result.content)

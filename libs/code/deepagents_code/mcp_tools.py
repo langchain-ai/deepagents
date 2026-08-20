@@ -3112,9 +3112,19 @@ async def resolve_and_load_mcp_tools(
     if not merged.get("mcpServers"):
         return [], None, _bad_config_infos()
 
+    from deepagents_code.configuration.service import ManagedConfigError
     from deepagents_code.mcp_disabled import get_disabled_servers
 
-    disabled_names = get_disabled_servers()
+    try:
+        disabled_names = get_disabled_servers()
+    except ManagedConfigError:
+        # The managed deny list is unreadable, so no server can be shown to be
+        # permitted. Deny every one rather than start the servers an
+        # administrator may have blocked.
+        logger.error(  # noqa: TRY400
+            "Managed MCP policy is unreadable; disabling all MCP servers."
+        )
+        disabled_names = set(merged["mcpServers"])
     disabled_infos: list[MCPServerInfo] = []
     if disabled_names:
         active: dict[str, Any] = {}

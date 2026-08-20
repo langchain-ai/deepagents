@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import ToolException, tool
+from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 from pydantic import Field
 
@@ -36,6 +36,7 @@ from deepagents_code._ask_user_types import (
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
+from deepagents_code._tool_errors import ToolArgumentError
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def _validate_choices(
         question_type: Question type. Names the type in error messages.
 
     Raises:
-        ToolException: If any choice is malformed or blank.
+        ToolArgumentError: If any choice is malformed or blank.
     """
     # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
     # so the shape checks below are redundant there. They are kept — and the
@@ -105,7 +106,7 @@ def _validate_choices(
                 f"{question_type} question {question_text!r} has a choice with a "
                 f"missing or blank 'value': {choice!r}"
             )
-            raise ToolException(msg)
+            raise ToolArgumentError(msg)
 
 
 def _validate_questions(questions: list[Question]) -> None:
@@ -115,26 +116,23 @@ def _validate_questions(questions: list[Question]) -> None:
         questions: Question definitions provided to the `ask_user` tool.
 
     Raises:
-        ToolException: If the questions list or an individual question is
-            invalid. `ToolException` (not `ValueError`) pairs with
-            `handle_tool_error=True` on the tool below, so the failure reaches
-            the model as an error `ToolMessage` it can read and retry against
-            instead of re-raising up the graph as a fatal turn error.
+        ToolArgumentError: If the questions list or an individual question is
+            invalid.
     """
     if not questions:
         msg = "ask_user requires at least one question"
-        raise ToolException(msg)
+        raise ToolArgumentError(msg)
 
     for q in questions:
         question_text = q.get("question")
         if not isinstance(question_text, str) or not question_text.strip():
             msg = "ask_user questions must have non-empty 'question' text"
-            raise ToolException(msg)
+            raise ToolArgumentError(msg)
 
         question_type = q.get("type")
         if question_type not in QUESTION_TYPES:
             msg = f"unsupported ask_user question type: {question_type!r}"
-            raise ToolException(msg)
+            raise ToolArgumentError(msg)
 
         # Belt-and-braces: on the tool path `Question.required` is `strict=True`,
         # so pydantic has already rejected a non-boolean before this runs. This
@@ -149,7 +147,7 @@ def _validate_questions(questions: list[Question]) -> None:
                 f"ask_user question {question_text!r} has a non-boolean "
                 f"'required': {required!r}"
             )
-            raise ToolException(msg)
+            raise ToolArgumentError(msg)
 
         if question_type in CHOICE_QUESTION_TYPES:
             choices = q.get("choices")
@@ -159,7 +157,7 @@ def _validate_questions(questions: list[Question]) -> None:
                     f"{q.get('question')!r} requires a "
                     f"non-empty 'choices' list"
                 )
-                raise ToolException(msg)
+                raise ToolArgumentError(msg)
             _validate_choices(
                 choices,
                 question_text=question_text,
@@ -173,7 +171,7 @@ def _validate_questions(questions: list[Question]) -> None:
             msg = (
                 f"{question_type} question {question_text!r} must not define 'choices'"
             )
-            raise ToolException(msg)
+            raise ToolArgumentError(msg)
 
 
 def _context_string(context: object, name: str) -> str | None:
@@ -455,15 +453,17 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 `Command` containing the parsed user answers as a `ToolMessage`.
 
             Raises:
-                ToolException: If `questions` is malformed. `handle_tool_error`
-                    turns this into an error `ToolMessage` the model retries
-                    against, so log it on the way past: a model looping on the
-                    same bad payload would otherwise burn the recursion limit
-                    silently, leaving an error that names none of the causes.
+                ToolArgumentError: If `questions` is malformed.
+                    `ToolErrorMiddleware` (wired in `create_cli_agent`)
+                    converts it into a recoverable error `ToolMessage` the
+                    model retries against, so log it on the way past: a model
+                    looping on the same bad payload would otherwise burn the
+                    recursion limit silently, leaving an error that names none
+                    of the causes.
             """
             try:
                 _validate_questions(questions)
-            except ToolException as exc:
+            except ToolArgumentError as exc:
                 logger.warning("ask_user rejected a call: %s", exc)
                 raise
             ask_request = AskUserRequest(
@@ -498,12 +498,6 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             )
 
         _ask_user.name = "ask_user"
-        # Convert `ToolException` (from `_validate_questions`) into an error
-        # `ToolMessage` the model can read and retry against. `BaseTool.run`
-        # otherwise re-raises it, and since langgraph's default
-        # `handle_tool_errors` only converts `ToolInvocationError`, the
-        # exception would escape `ToolNode` and kill the whole agent turn.
-        _ask_user.handle_tool_error = True
         self.tools = [_ask_user]
 
     def wrap_model_call(

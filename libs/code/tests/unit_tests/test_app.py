@@ -2137,6 +2137,7 @@ class TestStartupSequence:
         assert prompt._allow_empty_submit is True
         assert prompt._input_placeholder == "Tavily API key (optional)"
         assert prompt._submit_label == "Enter save/skip"
+        assert prompt._show_cancel_hint is False
         assert "Web search is optional" in (prompt._reason or "")
         apply_credentials.assert_called_once_with()
 

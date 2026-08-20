@@ -1105,7 +1105,6 @@ class TestUsageTableEnabled:
 
         captured = capsys.readouterr()
         assert "show_usage_stats" in captured.err
-        assert "showing the session usage table" in captured.err
         # The warning is the entire point; it must not go to stdout, which a
         # headless caller may be piping as the agent's answer.
         assert captured.out == ""
@@ -1135,7 +1134,37 @@ class TestUsageTableEnabled:
         assert usage_table_enabled() is True
         assert usage_table_enabled() is True
 
-        assert capsys.readouterr().err.count("showing the session usage table") == 1
+        assert capsys.readouterr().err.count("Warning: ") == 1
+
+    def test_shadowed_rejection_prints_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A rejection at a tier that lost stays silent.
+
+        With `DEEPAGENTS_CODE_SHOW_USAGE_STATS=0` winning over a user config
+        holding the quoted `"false"` typo, the table is off and a warning
+        announcing it would contradict what the user sees. The rejection is
+        still logged through `_emit_ranked_diagnostics`; it just does not
+        reach stderr.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[ui]\nshow_usage_stats = "false"\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "0")
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is False
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
 
     def test_valid_value_prints_nothing(
         self,

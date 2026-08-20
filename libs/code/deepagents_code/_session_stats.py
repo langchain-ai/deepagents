@@ -979,8 +979,8 @@ def _warn_rejected_usage_stats_value(reason: str) -> None:
     """Report a rejected `show_usage_stats` value on stderr.
 
     Every other rejection in this codebase is logged and left there, which is
-    right for an option that falls through to a cosmetic default. This one
-    falls through to *showing the table* — the single outcome the user was
+    right for an option that falls through to a cosmetic default. This one can
+    fall through to *showing the table* — the single outcome the user was
     trying to prevent — and the log has no reader outside the TUI Debug
     Console, so a quoted `"false"` or a bare `no` would otherwise look exactly
     like never having set the option. `dcode config set` does not exist, so
@@ -988,6 +988,10 @@ def _warn_rejected_usage_stats_value(reason: str) -> None:
 
     Both call sites are at teardown, where stderr is a plain stream rather than
     a live interface, so this cannot land on top of the TUI.
+
+    The line states only the rejection, not the outcome: the resolver reports
+    rejections at or above the winning tier, so when a stronger source cleanly
+    disables the table the outcome half would contradict what the user sees.
 
     Deduped per reason rather than per process: resolving once per session is
     the norm, but `dcode config` walks the whole manifest, and a line repeated
@@ -1001,10 +1005,7 @@ def _warn_rejected_usage_stats_value(reason: str) -> None:
     if reason in _warned_usage_stats_rejections:
         return
     _warned_usage_stats_rejections.add(reason)
-    print(  # noqa: T201
-        f"Warning: {reason}; showing the session usage table",
-        file=sys.stderr,
-    )
+    print(f"Warning: {reason}", file=sys.stderr)  # noqa: T201
     logger.warning("%s", reason)
 
 

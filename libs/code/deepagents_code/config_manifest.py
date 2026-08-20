@@ -815,8 +815,11 @@ def load_bool_display_preference(
             not a `BOOL` option — both mean a caller and the manifest disagree.
             Pinned against each option's declared default by
             `test_bool_display_preference_fallbacks_match_the_manifest`.
-        on_rejected: Called once per rejection reason when a tier supplied a
-            value that failed to parse. Only worth passing for an option whose
+        on_rejected: Called once per rejection reason when a tier at or above
+            the winning tier supplied a value that failed to parse — a
+            rejection a weaker tier could not have influenced, and one at a
+            stronger tier the stronger tier's own value already settled. Only
+            worth passing for an option whose
             purpose is to *suppress* something: falling through to the default
             then produces the exact output the user asked to hide, which is
             indistinguishable from the option never having been set. Callers
@@ -855,7 +858,12 @@ def load_bool_display_preference(
     # without it.
     logger.debug("Resolved %s to %r from %s", key, resolved, _ranked_source(ranked))
     if on_rejected is not None:
+        # The env tier is the only non-durable one, so a stronger durable tier
+        # cannot mask it; every tier at or below the winner genuinely lost.
+        winner_rank = ranked.ranks[0]
         for rank in sorted(ranked.tier_health):
+            if rank > winner_rank:
+                break
             result = ranked.tier_health[rank]
             if isinstance(result, Invalid):
                 for reason in ranked.tier_diagnostics.get(rank) or (result.reason,):

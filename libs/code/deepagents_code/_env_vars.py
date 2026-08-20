@@ -216,6 +216,12 @@ real PyPI release.
 Any non-empty value enables the flag (including `"0"` or `"false"`).
 """
 
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading installed-plugin and trusted-project Python extensions."""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default project extension trust policy: `ask`, `always`, or `never`."""
+
 DISABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"
 """Comma-separated project MCP server names to always reject by name.
 

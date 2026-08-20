@@ -141,7 +141,7 @@ class OptionKind(Enum):
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_MODE_DEFAULT`, `BOOL_PRESENCE`, `INT`, `NON_NEGATIVE_INT`, `FLOAT`,
     `STR`, and `NON_EMPTY_STR`) are coerced inline by `_coerce_env`/`_coerce_toml`.
-    `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
+    `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`, `EXTENSION_TRUST_DELEGATE`,
     `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
     bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
     resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
@@ -174,6 +174,9 @@ class OptionKind(Enum):
 
     NON_EMPTY_STR = "non_empty_str"
     """A string stripped of surrounding whitespace; blank values are unset."""
+
+    EXTENSION_TRUST_DELEGATE = "extension_trust"
+    """Validates the `ask`, `always`, and `never` extension trust policies."""
 
     LOG_LEVEL_DELEGATE = "log_level"
     """Validates log levels and resolves the default from debug mode."""
@@ -209,6 +212,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
+    OptionKind.EXTENSION_TRUST_DELEGATE: "str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
@@ -558,6 +562,14 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
             return value
         logger.warning("Ignoring %s=%r (expected non-empty string)", name, raw)
         return _INVALID
+    if kind is OptionKind.EXTENSION_TRUST_DELEGATE:
+        from deepagents_code.extensions.settings import parse_trust_policy
+
+        policy = parse_trust_policy(raw)
+        if policy is not None:
+            return policy.value
+        logger.warning("Ignoring %s=%r (expected ask, always, or never)", name, raw)
+        return _INVALID
     if kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._debug import LOG_LEVELS
 
@@ -676,6 +688,12 @@ def _coerce_toml(
     elif kind is OptionKind.NON_EMPTY_STR:
         if isinstance(raw, str) and (value := raw.strip()):
             return value
+    elif kind is OptionKind.EXTENSION_TRUST_DELEGATE:
+        from deepagents_code.extensions.settings import parse_trust_policy
+
+        policy = parse_trust_policy(raw)
+        if policy is not None:
+            return policy.value
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
         if isinstance(raw, list):
             from deepagents_code.config import _parse_extra_skills_dirs
@@ -1991,6 +2009,25 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Override the default Unix-socket path for the event listener.",
         kind=OptionKind.STR,
         env_var=_env_vars.EXTERNAL_EVENT_SOCKET_PATH,
+    ),
+    # --- Extensions -----------------------------------------------------
+    ConfigOption(
+        key="extensions.enabled",
+        group="Extensions",
+        summary="Enable loading Python extensions from plugins and projects.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.EXTENSIONS,
+        toml_keys=("extensions", "enabled"),
+    ),
+    ConfigOption(
+        key="extensions.trust",
+        group="Extensions",
+        summary="Default project extension trust policy.",
+        kind=OptionKind.EXTENSION_TRUST_DELEGATE,
+        default="ask",
+        env_var=_env_vars.EXTENSIONS_TRUST,
+        toml_keys=("extensions", "trust"),
     ),
     # --- Goals ----------------------------------------------------------
     ConfigOption(

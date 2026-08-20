@@ -254,6 +254,30 @@ class TestToolCallBufferParseArgs:
         buffer = ToolCallBuffer(args_parts=['{"command": "uv run'])
         assert buffer.parse_args() is None
 
+    def test_incomplete_fragments_are_materialized_only_when_complete(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Incremental parsing avoids rejoining the growing prefix per chunk."""
+        buffer = ToolCallBuffer(args_parts=['{"content": "'])
+        original_materialize = buffer._materialize_args
+        materializations = 0
+
+        def count_materialization() -> str:
+            nonlocal materializations
+            materializations += 1
+            return original_materialize()
+
+        monkeypatch.setattr(buffer, "_materialize_args", count_materialization)
+        for _ in range(1_000):
+            buffer.ingest(name=None, tool_id=None, args="x")
+            assert buffer.parse_args() is None
+
+        assert materializations == 0
+        buffer.ingest(name=None, tool_id=None, args='"}')
+        assert buffer.parse_args() == {"content": "x" * 1_000}
+        assert buffer.parse_args() == {"content": "x" * 1_000}
+        assert materializations == 1
+
     def test_non_object_json_wrapped(self) -> None:
         buffer = ToolCallBuffer(args_parts=["[1, 2, 3]"])
         assert buffer.parse_args() == {"value": [1, 2, 3]}

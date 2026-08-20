@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.7...deepagents==0.7.8) (2026-08-20)
+
+### Bug Fixes
+
+- Add `files` state only for state backends ([#5643](https://github.com/langchain-ai/deepagents/issues/5643))
+
 ## [0.7.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.6...deepagents==0.7.7) (2026-08-18)
 
 ### Bug fixes

@@ -3390,6 +3390,7 @@ class TestResumeThread:
         )
         _app_test_double(app)._load_thread_history = AsyncMock()
         _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._thread_links_configured = MagicMock(return_value=True)
         _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
         return app
 
@@ -4685,6 +4686,26 @@ class TestEffectiveModelSpec:
             patch.object(settings, "model_name", ""),
         ):
             assert app._effective_model_spec() is None
+
+
+class TestThreadLinksConfigured:
+    """Tests for DeepAgentsApp._thread_links_configured."""
+
+    def test_false_without_langsmith_project(self) -> None:
+        """Tracing without a project cannot produce thread links."""
+        app = DeepAgentsApp()
+        with patch(
+            "deepagents_code.config.get_langsmith_project_name", return_value=None
+        ):
+            assert app._thread_links_configured() is False
+
+    def test_true_with_langsmith_project(self) -> None:
+        """An active LangSmith project enables thread links."""
+        app = DeepAgentsApp()
+        with patch(
+            "deepagents_code.config.get_langsmith_project_name", return_value="project"
+        ):
+            assert app._thread_links_configured() is True
 
 
 class TestUpgradeThreadMessageLink:

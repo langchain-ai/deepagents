@@ -2008,6 +2008,20 @@ class TestGetLangsmithProjectName:
         with patch.dict("os.environ", env, clear=False):
             assert get_langsmith_project_name() is None
 
+    @pytest.mark.parametrize(
+        "flag",
+        ["LANGSMITH_TRACING", "DEEPAGENTS_CODE_LANGSMITH_TRACING"],
+    )
+    def test_returns_none_when_tracing_explicitly_disabled(self, flag: str) -> None:
+        """Recognized tracing opt-outs should disable project resolution."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_PROJECT": "configured-project",
+            flag: "false",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            assert get_langsmith_project_name() is None
+
     def test_returns_project_from_settings(self) -> None:
         """Should prefer settings.deepagents_langchain_project."""
         env = {

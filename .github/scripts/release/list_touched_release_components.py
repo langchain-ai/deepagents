@@ -6,7 +6,7 @@ the component list without running the full fan-out gate.
 Stdout JSON:
 
 ```json
-{"components": ["deepagents-cli"], "bump_worthy": true}
+{"components": ["deepagents-code"], "bump_worthy": true}
 ```
 """
 

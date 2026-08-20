@@ -48,13 +48,11 @@
   "scopeToLabel": {
     "acp": "acp",
     "ci": "infra",
-    "cli": "cli",
     "cli-gha": "github_actions",
     "code": "dcode",
     "daytona": "daytona",
     "deepagents": "deepagents",
     "deepagents-acp": "acp",
-    "deepagents-cli": "cli",
     "deepagents-code": "dcode",
     "deepagents-talon": "talon",
     "deps": "dependencies",
@@ -86,11 +84,6 @@
     {
       "label": "deepagents",
       "prefix": "libs/deepagents/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "cli",
-      "prefix": "libs/cli/",
       "skipExcludedFiles": true
     },
     {

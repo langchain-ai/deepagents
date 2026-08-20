@@ -21,9 +21,9 @@ def _paths(packages: list[Path]) -> list[str]:
 def test_unrelated_paths_skip_talon() -> None:
     """Unrelated multi-package changes select only those packages, never Talon."""
     packages = _paths(
-        _packages_for_paths(["libs/deepagents/deepagents/graph.py", "libs/cli/uv.lock"])
+        _packages_for_paths(["libs/deepagents/deepagents/graph.py", "libs/code/uv.lock"])
     )
-    assert packages == ["libs/cli", "libs/deepagents"]
+    assert packages == ["libs/code", "libs/deepagents"]
     assert "libs/talon" not in packages
 
 

@@ -1721,7 +1721,7 @@ class TestLazyBootstrap:
 
     The bootstrap runs on first registry access rather than at
     `deepagents.profiles` import to keep cold-importing
-    `deepagents._models` (and therefore `deepagents_cli` startup) cheap
+    `deepagents._models` (and therefore `deepagents_code` startup) cheap
     when the caller never reads the registry. Each test here spawns a
     subprocess to get a clean interpreter — once the in-process bootstrap
     has run for any earlier test, `_loaded` cannot be observed as `False`

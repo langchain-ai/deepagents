@@ -4,7 +4,7 @@
 # - Linting for changed packages
 # - Unit Tests for changed packages
 #
-# Only packages with changes are tested. SDK changes also trigger CLI and ACP tests.
+# Only packages with changes are tested. SDK changes also trigger dependent package tests.
 # Pushes to main and workflow changes run full CI.
 
 name: "🔧 CI"
@@ -39,7 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
-      cli: ${{ steps.filter.outputs.cli }}
       code: ${{ steps.filter.outputs.code }}
       talon: ${{ steps.filter.outputs.talon }}
       evals: ${{ steps.filter.outputs.evals }}
@@ -74,13 +73,6 @@ jobs:
           # on main, where every job runs unconditionally.
           filters: |
             deepagents:
-              - 'libs/deepagents/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/_lint.yml'
-              - '.github/workflows/_test.yml'
-              - '.github/actions/**'
-            cli:
-              - 'libs/cli/**'
               - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
@@ -169,15 +161,6 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/deepagents"
-      python-version: "3.11"
-
-  lint-cli:
-    name: "🧹 Lint cli"
-    needs: changes
-    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_lint.yml
-    with:
-      working-directory: "libs/cli"
       python-version: "3.11"
 
   lint-code:
@@ -271,16 +254,6 @@ jobs:
       working-directory: "libs/deepagents"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
-      coverage-python-version: "3.12"
-
-  test-cli:
-    name: "🧪 Test cli"
-    needs: changes
-    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_test.yml
-    with:
-      working-directory: "libs/cli"
-      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
   test-code:

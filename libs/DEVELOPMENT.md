@@ -35,7 +35,6 @@ This is a monorepo of independently versioned packages under `libs/`:
 libs/
 ├── deepagents/     # Core SDK — create_deep_agent, middleware, backends
 ├── acp/            # Agent Client Protocol integration
-├── cli/            # Deployment CLI (init / dev / deploy)
 ├── evals/          # Evaluation suite and Harbor integration
 ├── code/           # Prebuilt coding agent for interactive and headless use
 ├── talon/          # Local runtime host for long-running agents
@@ -106,7 +105,7 @@ The hooks run `make format lint` for changed packages and validate commit messag
 
 ### Branch-name pre-push hook
 
-The `pre-push` stage also runs a branch-name check (`.githooks/pre-push`, registered in `.pre-commit-config.yaml`) that rejects pushes of branches that don't follow the `<github-username>/<scope>/<short-description>` convention (e.g. `mdrxy/cli/startup-cmd-flag`). Because it runs through pre-commit, `pre-commit install --install-hooks` enables it — no separate `core.hooksPath` wiring, which would shadow the other installed hooks.
+The `pre-push` stage also runs a branch-name check (`.githooks/pre-push`, registered in `.pre-commit-config.yaml`) that rejects pushes of branches that don't follow the `<github-username>/<scope>/<short-description>` convention (e.g. `mdrxy/repo/update-maintenance-config`). Because it runs through pre-commit, `pre-commit install --install-hooks` enables it — no separate `core.hooksPath` wiring, which would shadow the other installed hooks.
 
 **If you installed the hooks before this check was added, re-run the install command.** `pre-commit` writes one hook file per type at install time, so an existing checkout has no `.git/hooks/pre-push` and gets no enforcement until you re-run:
 
@@ -128,7 +127,7 @@ The hook is a local convenience and can be skipped with `git push --no-verify` o
 
 The full conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root. The points most likely to trip up a first PR:
 
-- **Conventional Commits with a mandatory scope.** Titles look like `type(scope): description` — e.g. `fix(cli): resolve type hinting issue`. Allowed types and scopes are defined in `.github/workflows/pr_lint.yml`.
+- **Conventional Commits with a mandatory scope.** Titles look like `type(scope): description` — e.g. `fix(code): resolve type hinting issue`. Allowed types and scopes are defined in `.github/workflows/pr_lint.yml`.
 - **Branch naming:** `<github-username>/<scope>/<short-description>` (e.g. `mdrxy/docs/architecture-guide`).
 - **Tests required.** Every feature or bugfix needs unit tests under `tests/unit_tests/` (no network); integration tests go in `tests/integration_tests/`.
 - **Stable public interfaces.** Avoid breaking exported signatures; add new parameters as keyword-only with defaults.

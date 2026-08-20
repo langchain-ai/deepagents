@@ -14,7 +14,6 @@ This is a Python monorepo with multiple independently versioned packages:
 deepagents/
 ├── libs/
 │   ├── deepagents/  # SDK
-│   ├── cli/         # CLI tool
 │   ├── acp/         # Agent Context Protocol support
 │   ├── evals/       # Evaluation suite and Harbor integration
 │   └── partners/    # Integration packages
@@ -70,7 +69,7 @@ Reserve `per-file-ignores` for **categorical policy** that applies to a whole cl
 "tests/**" = ["D1", "S101"]
 
 # BAD – single-line exception buried in pyproject.toml
-"deepagents_cli/agent.py" = ["PLR2004"]
+"deepagents_code/app.py" = ["PLR2004"]
 ```
 
 ```python
@@ -93,11 +92,11 @@ Examples:
 
 ```txt
 feat(sdk): add new chat completion feature
-fix(cli): resolve type hinting issue
+fix(code): resolve type hinting issue
 chore(evals): update infrastructure dependencies
-test(cli): missing unit tests for `_git`
-feat(cli): `--startup-cmd` flag
-style(cli): strip trailing annotations from `ask_user` questions
+test(code): missing unit tests for `_git`
+feat(code): `--startup-cmd` flag
+style(code): strip trailing annotations from `ask_user` questions
 ```
 
 See [PR labeling and linting](#pr-labeling-and-linting) for more info.
@@ -107,7 +106,7 @@ See [PR labeling and linting](#pr-labeling-and-linting) for more info.
 Branches should be prefixed `<github-username>/<scope>/<short-description>`:
 
 - `<github-username>` — the author's GitHub login (e.g. `mdrxy`).
-- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `cli`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
+- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
 - `<short-description>` — kebab-case, brief, no trailing slash.
 
 Examples:
@@ -115,7 +114,7 @@ Examples:
 ```txt
 mdrxy/sdk/concrete-toolruntime-middleware-tools
 mdrxy/code/help-screen-drift-test
-mdrxy/cli/startup-cmd-flag
+mdrxy/repo/update-maintenance-config
 ```
 
 #### PR descriptions
@@ -316,7 +315,6 @@ Prefer targeted paths:
 - SDK source: `libs/deepagents/deepagents`
 - SDK tests: `libs/deepagents/tests`
 - Deep Agents Code/TUI package: `libs/code` (terminal coding agent)
-- CLI deploy package: `libs/cli`
 - ACP package: `libs/acp`
 
 Avoid searching these unless explicitly needed:
@@ -335,26 +333,6 @@ The `deepagents-code` package ships the interactive terminal coding agent, launc
 
 See `libs/code/AGENTS.md` for package-specific guidance — Textual, startup performance, slash commands, model providers, SDK pin, help-screen drift.
 
-### Deep Agents CLI (`libs/cli/`)
-
-As of `deepagents-cli==0.1.0` this package contains only the deployment subcommands — `init`, `dev`, and `deploy`. The interactive Textual REPL moved to `libs/code/` (`deepagents-code`); see [Deep Agents Code](#deep-agents-code-libscode) above for Textual/widget/slash-command guidance.
-
-#### Surface
-
-- Entry points: `deepagents` and `deepagents-cli` console scripts → `deepagents_cli.cli_main`.
-- Subcommands: `init` (scaffold project), `dev` (`langgraph dev` against a bundled project), `deploy` (`langgraph deploy` to LangGraph Platform).
-- Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero.
-
-#### Layout
-
-- `deepagents_cli/main.py` — argparse wiring + `cli_main` dispatch.
-- `deepagents_cli/deploy/` — the entire deploy/dev/init pipeline (`commands.py`, `bundler.py`, `config.py`, `templates.py`, `context_hub.py`, `frontend_dist/`).
-- `deepagents_cli/config.py` — slim `_load_dotenv` helper used by deploy/dev.
-- `deepagents_cli/model_config.py` — slim `resolve_env_var` helper for the `DEEPAGENTS_CLI_` env-var prefix.
-- `deepagents_cli/_version.py` — `__version__` (managed by release-please).
-
-Everything else (REPL widgets, Textual app, MCP, skills, sandbox bootstrap, agent picker, slash commands, splash tips, help-screen drift test, model-provider drift test, SDK-pin check) lived under `libs/cli/` before 0.1.0 and now lives under `libs/code/`.
-
 ### Evals (`libs/evals/`)
 
 **Vendored data files:**
@@ -370,7 +348,6 @@ Each package's `Makefile` defines `bench` (walltime) and `bench-memory` (heap) t
 ```bash
 # Single package (same target CI invokes):
 make -C libs/deepagents bench
-make -C libs/cli bench
 
 # All benched packages in one go:
 make -C libs bench-all

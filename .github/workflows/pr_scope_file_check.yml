@@ -2,7 +2,7 @@
 #
 # Why this exists:
 #   PR titles use Conventional Commit scopes, and those scopes drive release notes,
-#   package labels, and reviewer expectations. A title like `fix(cli): ...` should
+#   package labels, and reviewer expectations. A title like `fix(code): ...` should
 #   not describe a PR whose only package edits live under `libs/code/`. This check
 #   compares package scopes from the PR title with package directories from the
 #   changed-file list, posts a sticky warning when they disagree, and FAILS the

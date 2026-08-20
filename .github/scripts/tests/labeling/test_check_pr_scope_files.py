@@ -147,8 +147,8 @@ def test_breaking_change_title_still_detects_offender() -> None:
 def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
     """Release PRs can touch generated/version files across package dirs.
 
-    `libs/cli/` is touched and the `deepagents-code` title scope does not cover
-    it, so absent the bypass `cli` is a genuine offender. The assertion can
+    `libs/deepagents/` is touched and the `deepagents-code` title scope does not
+    cover it, so absent the bypass `sdk` is a genuine offender. The assertion can
     therefore only pass via the release bypass, not ordinary scope coverage —
     deleting the early-return in `find_offenders` makes this test fail.
     """
@@ -158,7 +158,7 @@ def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
             "release(deepagents-code): 0.1.22",
             [
                 "libs/code/deepagents_code/_version.py",
-                "libs/cli/deepagents_cli/_version.py",
+                "libs/deepagents/deepagents/_version.py",
             ],
             CONFIG,
         )
@@ -391,7 +391,7 @@ def test_partner_package_dir_detected_with_real_config() -> None:
     """Partner packages under `libs/partners/` are package dirs too."""
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
     assert find_offenders(
-        "fix(cli): repair startup",
+        "fix(code): repair startup",
         ["libs/partners/daytona/langchain_daytona/sandbox.py"],
         config,
     ) == [{"package": "daytona", "dirs": ["libs/partners/daytona/"]}]
@@ -570,11 +570,11 @@ def test_main_missing_scope_map_returns_2(capsys, tmp_path) -> None:
 def test_real_config_has_package_scope_and_dir_mappings() -> None:
     """The committed PR labeler config exposes the maps this check reads."""
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
-    assert declared_packages("fix(cli): x", config) == {"cli"}
     assert declared_packages("fix(code): x", config) == {"dcode"}
-    assert changed_packages(["libs/cli/deepagents_cli/main.py"], config) == {
-        "cli": ["libs/cli/"]
-    }
+    assert declared_packages("fix(sdk): x", config) == {"deepagents"}
     assert changed_packages(["libs/code/deepagents_code/app.py"], config) == {
         "dcode": ["libs/code/"]
+    }
+    assert changed_packages(["libs/deepagents/deepagents/graph.py"], config) == {
+        "deepagents": ["libs/deepagents/"]
     }

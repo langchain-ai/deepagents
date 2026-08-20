@@ -188,7 +188,7 @@ jobs:
             const SPLIT_RECIPE = [
               'Split into:',
               '',
-              '1. One feature/fix PR scoped to the **single** package that owns the user-facing change (`feat(code): ...` / `fix(cli): ...`).',
+              '1. One feature/fix PR scoped to the **single** package that owns the user-facing change (`feat(code): ...` / `fix(sdk): ...`).',
               '2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does **not** open release PRs).',
             ].join('\n');
             const RELEASING_LOCKFILE = '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)';

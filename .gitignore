@@ -15,7 +15,6 @@ downloads/
 eggs/
 .eggs/
 lib/
-!libs/cli/frontend/src/lib/
 lib64/
 parts/
 sdist/
@@ -248,7 +247,6 @@ harbor-jobs/
 
 .idea
 TEXTUAL_REFACTOR_PLAN.md
-libs/cli/TEXTUAL_PROGRESS.md
 
 /tmp/
 
@@ -259,9 +257,6 @@ libs/cli/TEXTUAL_PROGRESS.md
 CLAUDE.md
 .worktrees/
 
-# Frontend build artifacts (source tree; package data under libs/cli/deepagents_cli/deploy/frontend_dist/ is tracked)
-libs/cli/frontend/node_modules/
-libs/cli/frontend/dist/
 node_modules/
 
 # Generated at build time by libs/code/hatch_build.py (stamps the release commit)

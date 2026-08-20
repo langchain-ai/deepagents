@@ -1,6 +1,6 @@
 """Check that pyproject.toml and _version.py versions stay in sync.
 
-Prevents releases with mismatched version numbers across the SDK and CLI
+Prevents releases with mismatched version numbers across the SDK and Code
 packages. Used by the CI workflow in .github/workflows/check_versions.yml
 and as a pre-commit hook.
 """
@@ -12,7 +12,6 @@ from pathlib import Path
 
 PACKAGES = [
     ("libs/deepagents/pyproject.toml", "libs/deepagents/deepagents/_version.py"),
-    ("libs/cli/pyproject.toml", "libs/cli/deepagents_cli/_version.py"),
     ("libs/code/pyproject.toml", "libs/code/deepagents_code/_version.py"),
 ]
 

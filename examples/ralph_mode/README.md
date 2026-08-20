@@ -24,8 +24,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv
 source .venv/bin/activate
 
-# Install the CLI
-uv pip install deepagents-cli
+# Install Deep Agents Code
+uv pip install deepagents-code
 
 # Download the script (or copy from examples/ralph_mode/ if you have the repo)
 curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/ralph_mode/ralph_mode.py
@@ -72,7 +72,7 @@ python ralph_mode.py "Build an app" --no-stream
 Ralph supports running agent code in isolated remote environments via the
 `--sandbox` flag. The agent runs locally but executes all code operations in the
 remote sandbox. See the
-[sandbox documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview)
+[Deep Agents Code documentation](https://docs.langchain.com/oss/python/deepagents/code)
 for provider setup (API keys, etc.) and the
 [sandboxes concept guide](https://docs.langchain.com/oss/python/deepagents/sandboxes)
 for architecture details.

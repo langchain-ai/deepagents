@@ -5,7 +5,6 @@
 
 /.github/ @mdrxy
 /libs/sdk/ @hwchase17 @sydney-runkle @ccurme
-/libs/cli/ @mdrxy
 /libs/evals/ @mdrxy
 /libs/talon/ @jkennedyvz
 /libs/partners/ @eyurtsev

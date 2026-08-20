@@ -4,14 +4,14 @@ Ralph is an autonomous looping pattern created by Geoff Huntley
 (https://ghuntley.com/ralph/). Each loop starts with fresh context.
 The filesystem and git serve as the agent's memory across iterations.
 
-Each iteration delegates to `run_non_interactive` from `deepagents-cli`,
+Each iteration delegates to `run_non_interactive` from `deepagents-code`,
 which handles model resolution, tool registration, checkpointing, streaming,
 and HITL approval. This script only orchestrates the outer loop.
 
 Setup:
     uv venv
     source .venv/bin/activate
-    uv pip install deepagents-cli
+    uv pip install deepagents-code
 
 Usage:
     python ralph_mode.py "Build a Python course. Use git."
@@ -37,8 +37,9 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from deepagents_cli.non_interactive import run_non_interactive
 from rich.console import Console
+
+from deepagents_code.client.non_interactive import run_non_interactive
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ async def ralph(
 ) -> None:
     """Run agent in an autonomous Ralph loop.
 
-    Each iteration invokes the Deep Agents CLI's `run_non_interactive` with a
+    Each iteration invokes Deep Agents Code's `run_non_interactive` with a
     fresh thread (the default behavior) while the filesystem persists across
     iterations. This is the core Ralph pattern: fresh context, persistent
     filesystem.
@@ -70,7 +71,7 @@ async def ralph(
         model_name: Model spec in `provider:model` format (e.g.
             `'anthropic:claude-sonnet-4-6'`).
 
-            When `None`, `deepagents-cli` resolves a default via its config
+            When `None`, `deepagents-code` resolves a default via its config
             file (`[models].default`, then `[models].recent`) and falls back
             to auto-detection from environment API keys
             (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`).
@@ -220,7 +221,7 @@ Examples:
         os.chdir(resolved)
 
     if args.shell_allow_list:
-        from deepagents_cli.config import parse_shell_allow_list, settings
+        from deepagents_code.config import parse_shell_allow_list, settings
 
         settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 

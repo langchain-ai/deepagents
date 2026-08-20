@@ -35,7 +35,6 @@ jobs:
             // Mapping table for package names to labels
             const mapping = {
               "deepagents (SDK)": "deepagents",
-              "cli": "cli",
               "acp": "acp",
               "code": "dcode",
               "dcode": "dcode",

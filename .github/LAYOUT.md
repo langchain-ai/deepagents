@@ -34,7 +34,7 @@ Credential placement rules are in [`SECRETS.md`](./SECRETS.md). Release wiring i
 - `auto-label-by-package.yml` — labels issues by the package they name.
 - `tag-external-issues.yml` — classifies issues as external or internal and applies the contributor tier.
 
-The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails-around-releases) because their labels feed the release guards. The two issue labelers are not release-gated.
+The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails-around-releases) because the release guardrails section lists every check a PR may hit; the labelers' output does not drive release gating. The two issue labelers are not release-gated either.
 
 ## Local composite actions (`actions/`)
 

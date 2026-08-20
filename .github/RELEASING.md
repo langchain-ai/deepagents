@@ -321,7 +321,7 @@ These workflows guard releases. Each one explains a failed check you may see on 
   - `pr_scope_file_check.yml` — checks the PR scope against the files touched. Bypass label: `allow-scope-mismatch`.
   - `release_fanout_bypass_warn.yml` — posts a loud sticky when either bypass label is applied.
   - `release_please_fanout_watch.yml` — post-merge safety net; comments on open release PRs whose package delta is lockfile-only.
-- **Auto-labeling** — `pr_labeler.yml` (unified PR labeler: size, file, title, external/internal, contributor tier) and `pr_labeler_backfill.yml` (manual backfill on open PRs). Issue labeling is not release-gated; see [`LAYOUT.md`](./LAYOUT.md).
+- **Auto-labeling** — `pr_labeler.yml` (unified PR labeler: size, file, title, external/internal, contributor tier) and `pr_labeler_backfill.yml` (manual backfill on open PRs). These apply labels for triage only; they do not gate releases (the guard workflows above honor their own bypass labels). Issue labeling is not release-gated; see [`LAYOUT.md`](./LAYOUT.md).
 
 ## Manual Release
 

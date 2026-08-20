@@ -113,12 +113,10 @@ def test_manifest_covers_every_provider_credential() -> None:
 
 _UI_READER_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # Theme resolution predates the manifest and keeps bespoke semantics
-        # (terminal-program mapping, unknown-name fallback), so these read
-        # `[ui]` directly rather than through `resolve_scalar`.
+        # Terminal-default inspection and the theme provider retain bespoke
+        # terminal-program mapping semantics.
         "app.py:_load_terminal_default",
-        "app.py:_load_theme_preference",
-        "config_manifest.py:_resolve_theme",
+        "providers.py:ranked_theme_toml_value",
         # Reads `[ui]` only to repair and rewrite it; not a value reader.
         "app.py:_replace_malformed_ui",
     }
@@ -1205,6 +1203,35 @@ def test_run_get_json_non_credential_omits_store_error(stored_auth_dir, capsys):
     assert "store_error" not in payload
 
 
+def test_run_get_pairs_values_and_health_from_one_managed_snapshot(
+    monkeypatch, capsys
+) -> None:
+    """A config invocation refreshes managed provider state exactly once."""
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.types import (
+        ProviderHealth,
+        ProviderStatus,
+        TomlSnapshot,
+    )
+
+    snapshot = TomlSnapshot(
+        {},
+        ProviderStatus("managed config", None, ProviderHealth.MISSING),
+    )
+    calls: list[bool] = []
+
+    def get_snapshot(*, refresh: bool = False, path: object = None) -> TomlSnapshot:
+        assert path is None
+        calls.append(refresh)
+        return snapshot
+
+    monkeypatch.setattr(service, "get_managed_snapshot", get_snapshot)
+
+    assert _run_get("display.show_header", "json") == 0
+    assert calls == [True]
+    capsys.readouterr()
+
+
 def test_run_config_json_flags_unreadable_store(stored_auth_dir, capsys):
     """`config --json` marks credential rows when the store is unreadable."""
     import json
@@ -2060,6 +2087,35 @@ def test_resolve_structured_passes_value_through() -> None:
         table,
         "config.toml",
     )
+
+
+def test_structured_fallback_preserves_invalid_tier(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A defaultless table fallback retains the rejected provider metadata."""
+    from deepagents_code.config_manifest import resolve_ranked_scalar
+    from deepagents_code.configuration.resolver import USER_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    option = get_option("display.terminal_themes")
+    assert option is not None
+    toml_data = {"ui": "dark"}
+
+    resolved = resolve_ranked_scalar(
+        option,
+        toml_data=toml_data,
+        managed_toml_data={},
+    )
+    assert resolved.value is None
+    assert isinstance(resolved.tier_health[USER_RANK], Invalid)
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(
+            option,
+            toml_data=toml_data,
+            managed_toml_data={},
+        ) == (None, "default")
+    assert any("expected a table" in record.message for record in caplog.records)
 
 
 def test_resolve_malformed_skills_dir_env_falls_back(monkeypatch, caplog) -> None:
@@ -2967,6 +3023,7 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     provider must produce a `credentials.<name>` option after the cache resets.
     """
     from deepagents_code import config_manifest, model_config
+    from deepagents_code.configuration import service
 
     patched = {
         **model_config.PROVIDER_API_KEY_ENV,
@@ -2974,7 +3031,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     }
     monkeypatch.setattr(model_config, "PROVIDER_API_KEY_ENV", patched)
     config_manifest.get_config_options.cache_clear()
+    service._managed_table_paths.cache_clear()
     config_manifest._options_by_key.cache_clear()
+    config_manifest._options_by_toml_path.cache_clear()
     try:
         opt = config_manifest.get_option("credentials.synthetic_xyz")
         assert opt is not None
@@ -2984,7 +3043,9 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
     finally:
         # Restore the cache so later tests rebuild against the real registry.
         config_manifest.get_config_options.cache_clear()
+        service._managed_table_paths.cache_clear()
         config_manifest._options_by_key.cache_clear()
+        config_manifest._options_by_toml_path.cache_clear()
 
 
 def test_provider_dependency_metadata_is_exhaustive() -> None:
@@ -3469,6 +3530,26 @@ def test_whitespace_env_opts_out_when_empty_means_false(monkeypatch) -> None:
     )
 
 
+def test_invalid_primary_env_warns_before_valid_fallback(monkeypatch, caplog) -> None:
+    """Alias fall-through retains diagnostics from earlier env candidates."""
+    option = get_option("tracing.langsmith_project")
+    assert option is not None
+    assert option.env_var is not None
+    fallback = option.fallback_env_vars[0]
+    monkeypatch.setenv(option.env_var, "  ")
+    monkeypatch.setenv(fallback, "fallback-project")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(option, toml_data={})
+
+    assert (value, source) == ("fallback-project", f"env ({fallback})")
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "whitespace-only" in record.getMessage()
+    ] == [f"Ignoring {option.env_var}='  ' (whitespace-only; treated as unset)"]
+
+
 def test_non_table_toml_section_is_reported_once(caplog) -> None:
     """A scalar shadowing a whole table is logged, not silently defaulted.
 
@@ -3493,6 +3574,25 @@ def test_non_table_toml_section_is_reported_once(caplog) -> None:
     assert len(warnings) == 1
     assert "[ui]" in warnings[0].getMessage()
     config_manifest._warned_non_table_paths.clear()
+
+
+def test_verbose_provenance_distinguishes_quoted_dotted_keys() -> None:
+    """Display labels retain the resolver's tuple-path distinction."""
+    from deepagents_code.client.commands.config import _option_provenance
+
+    option = get_option("display.themes")
+    assert option is not None
+
+    assert _option_provenance(
+        option,
+        source="managed config + config.toml",
+        toml_data={"themes": {"a": {"b": "user"}, "sibling": 1}},
+        managed_toml_data={"themes": {"a.b": "managed"}},
+    ) == {
+        '"a.b"': "managed config",
+        "a.b": "config.toml",
+        "sibling": "config.toml",
+    }
 
 
 def test_blank_env_auto_classifier_reports_a_problem(monkeypatch) -> None:

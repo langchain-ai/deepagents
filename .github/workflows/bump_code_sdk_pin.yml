@@ -232,19 +232,19 @@ jobs:
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add "$code_pyproject" "$lockfile"
-          git commit -m "chore(deps): bump deepagents pin in deepagents-code to $SDK_VERSION"
+          git commit -m "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
           {
-            printf 'Bumps the exact `deepagents` pin in `libs/code/pyproject.toml` from `%s` to `%s` (current workspace SDK version) and regenerates `libs/code/uv.lock`.\n\n' "$CODE_PIN" "$SDK_VERSION"
-            printf 'Opened automatically by `bump_code_sdk_pin.yml` after a commit on `main` changed the SDK version. Merge this before the next `deepagents-code` release so the SDK pin check goes green.\n'
+            printf 'Bumps the exact %s pin in %s from `%s` to `%s` (current workspace SDK version) and regenerates %s.\n\n' '`deepagents`' '`libs/code/pyproject.toml`' "$CODE_PIN" "$SDK_VERSION" '`libs/code/uv.lock`'
+            printf 'Opened automatically by %s after a commit on `main` changed the SDK version. Merge this before the next %s release so the SDK pin check goes green.\n' '`bump_code_sdk_pin.yml`' '`deepagents-code`'
           } > "$body_file"
 
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): bump deepagents pin in deepagents-code to $SDK_VERSION" \
+            --title "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION" \
             --body-file "$body_file")
           echo "Opened SDK pin bump PR: $pr_url"
           echo "::notice::Opened SDK pin bump PR: $pr_url"

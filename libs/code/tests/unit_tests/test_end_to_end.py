@@ -462,3 +462,55 @@ class TestDeepAgentsCLIEndToEnd:
 
             assert isinstance(backend, CompositeBackend)
             assert isinstance(backend.default, FilesystemBackend)
+
+    async def test_ask_user_argument_error_is_recoverable(self, tmp_path: Path) -> None:
+        """A malformed `ask_user` call must not abort the run.
+
+        This is the only test that drives the composed graph. The unit tests
+        build `ToolErrorMiddleware` directly, so they cannot catch a regression
+        in how `ToolNode` surfaces the exception or where the middleware sits
+        in the wrapper chain.
+        """
+        with mock_settings(tmp_path):
+            model = FixedGenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="Let me ask.",
+                            tool_calls=[
+                                {
+                                    "name": "ask_user",
+                                    # No questions: `_validate_questions` raises
+                                    # `ToolArgumentError` before `interrupt()`.
+                                    "args": {"questions": []},
+                                    "id": "call_1",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="Recovered."),
+                    ]
+                )
+            )
+
+            agent, _ = create_cli_agent(
+                model=model,
+                assistant_id="test-agent",
+                tools=[],
+                checkpointer=InMemorySaver(),
+                enable_ask_user=True,
+            )
+
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content="Ask me something")]},
+                {"configurable": {"thread_id": str(uuid.uuid4())}},
+            )
+
+            tool_messages = [m for m in result["messages"] if m.type == "tool"]
+            assert len(tool_messages) == 1
+            assert tool_messages[0].status == "error"
+            assert "`ask_user` failed" in str(tool_messages[0].content)
+            assert "at least one question" in str(tool_messages[0].content)
+
+            # The run continued instead of halting.
+            assert result["messages"][-1].content == "Recovered."

@@ -954,6 +954,44 @@ def resolve_scalar(
     return option.default, "default"
 
 
+def load_bool_display_preference(key: str, *, fallback: bool) -> bool:
+    """Resolve a boolean `Display` option through the config manifest.
+
+    Precedence follows `resolve_scalar`: the option's `DEEPAGENTS_CODE_*` env
+    var wins, then its `[ui]` key in `~/.deepagents/config.toml`, then the
+    option's declared default. Resolution is intentionally forgiving — an
+    unreadable config, a non-table `[ui]`, or a wrong-typed value is logged by
+    the resolver and falls through, so a typo in a cosmetic setting never
+    breaks startup.
+
+    Args:
+        key: Manifest key of the option, e.g. `"display.cursor_blink"`.
+        fallback: Value to use when `key` is not in the manifest at all, or is
+            not a `BOOL` option — both mean a caller and the manifest disagree.
+            `test_bool_display_preference_keys_match_the_manifest` pins it to
+            each option's declared default so the two cannot drift.
+
+    Returns:
+        The resolved value.
+    """
+    option = get_option(key)
+    if option is None:
+        logger.warning("Unknown config option %r; falling back to %r", key, fallback)
+        return fallback
+    if option.kind is not OptionKind.BOOL:
+        # Without this, a mistyped key naming a STR option would return
+        # `bool("block")` — silently `True` forever, with no warning at all.
+        logger.warning(
+            "Config option %r is %s, not a bool; falling back to %r",
+            key,
+            option.kind.value,
+            fallback,
+        )
+        return fallback
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def resolve_interpreter_kwargs(
     *,
     toml_data: Mapping[str, Any] | None = None,
@@ -1585,7 +1623,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="display.show_usage_stats",
         group="Display",
-        summary="Show session usage statistics when the TUI exits.",
+        summary="Show session usage statistics when a session ends.",
         kind=OptionKind.BOOL,
         default=True,
         toml_keys=("ui", "show_usage_stats"),

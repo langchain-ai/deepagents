@@ -1871,59 +1871,121 @@ class TestResumeHintLogic:
 
 
 class TestPrintSessionStats:
-    """Test configurable usage statistics at TUI teardown."""
+    """Test configurable usage statistics at session teardown."""
+
+    @staticmethod
+    def _render(
+        config_toml: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> str:
+        """Render the teardown table against a real `config.toml`.
+
+        Args:
+            config_toml: Contents to write to the user config file.
+            tmp_path: Directory to hold the config file.
+            monkeypatch: Fixture used to redirect the config path.
+
+        Returns:
+            Everything the teardown printed to the console.
+        """
+        from deepagents_code._session_stats import SessionStats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(config_toml, encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+        _print_session_stats(stats, Console(file=buffer, width=200))
+        return buffer.getvalue()
 
     @pytest.mark.parametrize(
-        ("toml_data", "expected_visible"),
+        ("config_toml", "expected_visible"),
         [
-            ({}, True),
-            ({"ui": {"show_usage_stats": True}}, True),
-            ({"ui": {"show_usage_stats": False}}, False),
+            ("", True),
+            ("[ui]\nshow_usage_stats = true\n", True),
+            ("[ui]\nshow_usage_stats = false\n", False),
         ],
     )
     def test_respects_show_usage_stats(
         self,
-        toml_data: dict[str, object],
+        config_toml: str,
         expected_visible: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """`[ui].show_usage_stats` controls teardown table rendering."""
-        from deepagents_code._session_stats import SessionStats
+        output = self._render(config_toml, tmp_path, monkeypatch)
 
-        stats = SessionStats(wall_time_seconds=2.0)
-        stats.record_request("test-model", 100, 50)
-        buffer = StringIO()
-        console = Console(file=buffer, width=200)
+        if expected_visible:
+            assert "test-model" in output
+        else:
+            # Nothing at all, not merely a missing model row: a suppressed
+            # table must not leave a header or a stray blank line behind.
+            assert output == ""
 
-        with patch(
-            "deepagents_code.config_manifest.load_config_toml",
-            return_value=toml_data,
-        ):
-            _print_session_stats(stats, console)
-
-        assert ("test-model" in buffer.getvalue()) is expected_visible
-
-    def test_config_failure_preserves_stats(
-        self, caplog: pytest.LogCaptureFixture
+    def test_malformed_value_keeps_stats(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Unexpected config failures must not suppress stats or break teardown."""
-        from deepagents_code._session_stats import SessionStats
+        """A non-bool value falls through to the default instead of hiding stats.
 
-        stats = SessionStats(wall_time_seconds=2.0)
-        stats.record_request("test-model", 100, 50)
+        TOML has no truthy strings, so `show_usage_stats = "no"` is the likeliest
+        way to get this wrong -- and reading it as `bool("no")` would suppress
+        the table for a user who meant to keep it.
+        """
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            output = self._render(
+                '[ui]\nshow_usage_stats = "no"\n', tmp_path, monkeypatch
+            )
+
+        assert "test-model" in output
+        assert "show_usage_stats" in caplog.text
+
+    def test_managed_config_overrides_user_preference(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Managed policy outranks the user's `config.toml`.
+
+        The resolver reads the managed tier by default. A refactor that passed
+        an isolated user source would drop admin policy with every other test
+        in this class still green.
+        """
+        from unit_tests.conftest import redirect_managed_config
+
+        managed = tmp_path / "managed_config.toml"
+        managed.write_text("[ui]\nshow_usage_stats = false\n", encoding="utf-8")
+        redirect_managed_config(monkeypatch, managed)
+
+        output = self._render("[ui]\nshow_usage_stats = true\n", tmp_path, monkeypatch)
+
+        assert output == ""
+
+    def test_non_stats_payload_never_reads_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-`SessionStats` payload short-circuits before config resolution.
+
+        `main` passes `result.session_stats`, which can be `None`, so the type
+        guard must come first.
+        """
+
+        def _fail() -> bool:
+            msg = "config must not be read for a non-stats payload"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", _fail)
         buffer = StringIO()
-        console = Console(file=buffer, width=200)
 
-        with (
-            patch(
-                "deepagents_code.config_manifest.load_config_toml",
-                side_effect=RuntimeError("boom"),
-            ),
-            caplog.at_level(logging.DEBUG, logger="deepagents_code.main"),
-        ):
-            _print_session_stats(stats, console)
+        _print_session_stats(None, Console(file=buffer, width=200))
 
-        assert "test-model" in buffer.getvalue()
-        assert "Could not resolve usage stats preference on teardown" in caplog.text
+        assert buffer.getvalue() == ""
 
 
 class TestTeardownThreadCheckpointLookup:

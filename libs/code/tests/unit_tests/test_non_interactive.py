@@ -4054,3 +4054,80 @@ class TestDrainWiring:
 
         assert result == 124
         mock_drain.assert_awaited_once()
+
+
+class TestHeadlessUsageStats:
+    """Test `[ui].show_usage_stats` gating in headless runs."""
+
+    @staticmethod
+    async def _run_and_count_tables(
+        config_toml: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> int:
+        """Run a headless session and count usage-table renders.
+
+        Args:
+            config_toml: Contents to write to the user config file.
+            tmp_path: Directory to hold the config file.
+            monkeypatch: Fixture used to redirect the config path.
+
+        Returns:
+            How many times the teardown rendered the usage table.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(config_toml, encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.Console",
+                return_value=MagicMock(spec=Console),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.print_usage_table"
+            ) as mock_table,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, MagicMock(), None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="test", quiet=False)
+
+        return mock_table.call_count
+
+    async def test_shown_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absent preference keeps the headless usage table."""
+        assert await self._run_and_count_tables("", tmp_path, monkeypatch) == 1
+
+    async def test_suppressed_when_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`show_usage_stats = false` suppresses the headless table too.
+
+        The key names the preference, not the surface, so a user who turns it
+        off must not still get the table after every `dcode -x` run.
+        """
+        count = await self._run_and_count_tables(
+            "[ui]\nshow_usage_stats = false\n", tmp_path, monkeypatch
+        )
+        assert count == 0

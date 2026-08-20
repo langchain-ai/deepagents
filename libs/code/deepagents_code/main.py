@@ -3288,32 +3288,16 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
 
 def _should_print_session_stats() -> bool:
-    """Resolve whether TUI teardown should print session usage statistics.
+    """Resolve whether teardown should print session usage statistics.
+
+    Preset with `[ui].show_usage_stats`; there is no env var for this option.
 
     Returns:
         Whether the teardown usage table should be rendered.
     """
-    from deepagents_code.config_manifest import (
-        OptionKind,
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import load_bool_display_preference
 
-    key = "display.show_usage_stats"
-    option = get_option(key)
-    if option is None or option.kind is not OptionKind.BOOL:
-        logger.warning("Invalid boolean config option %r; showing usage stats", key)
-        return True
-    try:
-        enabled, _ = resolve_scalar(option, toml_data=load_config_toml())
-    except Exception:
-        logger.debug(
-            "Could not resolve usage stats preference on teardown",
-            exc_info=True,
-        )
-        return True
-    return bool(enabled)
+    return load_bool_display_preference("display.show_usage_stats", fallback=True)
 
 
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401

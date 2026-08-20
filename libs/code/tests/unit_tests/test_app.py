@@ -16316,6 +16316,7 @@ class TestDebugConsoleClickToCopyPreference:
         ("display.show_scrollbar", False),
         ("display.debug_console_click_to_copy", False),
         ("display.show_diff_line_numbers", True),
+        ("display.show_usage_stats", True),
     ],
 )
 def test_bool_display_preference_keys_match_the_manifest(

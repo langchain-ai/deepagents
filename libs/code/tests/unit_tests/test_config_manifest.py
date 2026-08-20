@@ -175,6 +175,12 @@ def test_no_hand_rolled_ui_config_readers() -> None:
     )
 
 
+# Six `app.py` display toggles plus `display.show_usage_stats` in
+# `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
+# so it is deliberately not counted.
+_EXPECTED_LITERAL_CALL_SITES = 7
+
+
 def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
     """Every `load_bool_display_preference` call site must agree with the manifest.
 
@@ -186,6 +192,11 @@ def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
     is exactly how the drift gets in: the key can be added to the list while a
     second call site with a different fallback goes unnoticed, or a new caller
     can skip the list entirely.
+
+    The walk only sees literal arguments, so a refactor that passed keys or
+    fallbacks as variables would quietly shrink coverage while still passing on
+    whatever literal sites remained. `_EXPECTED_LITERAL_CALL_SITES` is the
+    floor that makes that shrink loud; raise it when a caller is added.
     """
     import ast
     from pathlib import Path
@@ -216,6 +227,12 @@ def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
                 arg.value
                 for arg in node.args
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ] + [
+                kw.value.value
+                for kw in node.keywords
+                if kw.arg == "key"
+                and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
             ]
             fallbacks = [
                 kw.value.value
@@ -227,7 +244,12 @@ def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
             if keys and fallbacks:
                 call_sites.append((source.name, keys[0], fallbacks[0]))
 
-    assert call_sites, "found no literal call sites; did the helper get renamed?"
+    assert len(call_sites) >= _EXPECTED_LITERAL_CALL_SITES, (
+        f"found {len(call_sites)} literal call sites, expected at least "
+        f"{_EXPECTED_LITERAL_CALL_SITES}; a caller that stopped passing "
+        "literals is no longer checked here, so lower the floor only "
+        "deliberately"
+    )
     for filename, key, fallback in call_sites:
         option = get_option(key)
         assert option is not None, f"{filename}: {key} is not in the manifest"
@@ -266,14 +288,33 @@ def test_bool_display_preference_non_bool_key_falls_back(
 ) -> None:
     """A key naming a non-bool option returns the fallback rather than coercing.
 
-    Without the kind check, `display.charset` (a `STR` option) would resolve to
-    `bool("unicode")` — permanently `True`, with no warning at all.
+    Without the kind check, `display.charset` (a `STR` option defaulting to
+    `"auto"`) would resolve to `bool("auto")` — permanently `True`, with no
+    warning at all.
     """
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
         assert load_bool_display_preference("display.charset", fallback=False) is False
 
     assert "display.charset" in caplog.text
     assert "not a bool" in caplog.text
+
+
+def test_toml_only_bool_display_options_declare_no_env_var() -> None:
+    """These two `Display` toggles are `config.toml`-only, deliberately.
+
+    Both `load_bool_display_preference` and `usage_table_enabled` document the
+    absence in their docstrings, and the env-var tier of `resolve_scalar` is
+    therefore dead for them. Adding an `env_var` here is a legitimate product
+    change, but it should be a decision rather than a drive-by, so it has to
+    come through this test.
+    """
+    for key in ("display.show_usage_stats", "display.show_diff_line_numbers"):
+        option = get_option(key)
+        assert option is not None
+        assert option.env_var is None, (
+            f"{key} gained an env var; update the docstrings that promise it has none"
+        )
+        assert not option.fallback_env_vars
 
 
 @pytest.mark.parametrize(

@@ -4061,7 +4061,11 @@ class TestHeadlessUsageStats:
 
     @staticmethod
     async def _run_and_count_tables(
-        config_toml: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        config_toml: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        quiet: bool = False,
     ) -> int:
         """Run a headless session and count usage-table renders.
 
@@ -4069,6 +4073,7 @@ class TestHeadlessUsageStats:
             config_toml: Contents to write to the user config file.
             tmp_path: Directory to hold the config file.
             monkeypatch: Fixture used to redirect the config path.
+            quiet: Whether to run as `dcode -x --quiet`.
 
         Returns:
             How many times the teardown rendered the usage table.
@@ -4113,7 +4118,7 @@ class TestHeadlessUsageStats:
             mock_settings.has_tavily = False
             mock_settings.model_name = None
 
-            return_code = await run_non_interactive(message="test", quiet=False)
+            return_code = await run_non_interactive(message="test", quiet=quiet)
 
         assert return_code == 0, (
             "run must reach teardown for the count to mean anything"
@@ -4136,5 +4141,20 @@ class TestHeadlessUsageStats:
         """
         count = await self._run_and_count_tables(
             "[ui]\nshow_usage_stats = false\n", tmp_path, monkeypatch
+        )
+        assert count == 0
+
+    async def test_quiet_suppresses_the_table_even_when_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--quiet` wins over an explicit opt-in.
+
+        The gate is nested inside the `if not quiet:` block that also holds the
+        completion line and the trace link. Hoisting it out would print a table
+        in the middle of output a caller asked to keep clean, with every other
+        test in this class still green.
+        """
+        count = await self._run_and_count_tables(
+            "[ui]\nshow_usage_stats = true\n", tmp_path, monkeypatch, quiet=True
         )
         assert count == 0

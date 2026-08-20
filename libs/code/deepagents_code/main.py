@@ -3288,12 +3288,18 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
 
 def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
-    """Print a session-level usage stats table to the console on TUI exit.
+    """Print the session usage stats table on TUI exit, unless it is disabled.
 
-    Gated by `[ui].show_usage_stats`. The payload type guard must stay ahead of
-    that lookup: `stats` is typed `Any`, and a caller passing something other
-    than `SessionStats` should not trigger config I/O to decide to print
-    nothing.
+    Gated by `[ui].show_usage_stats`, so this may print nothing. The payload
+    type guard stays ahead of that lookup: `stats` is typed `Any`, and a caller
+    passing something other than `SessionStats` should not trigger config I/O
+    to decide to print nothing.
+
+    That guard is unreachable today — `AppResult.session_stats` is declared
+    `SessionStats` with a `default_factory`, and the sole caller passes it — so
+    if it ever fires, something upstream is broken rather than merely disabled.
+    It warns instead of returning silently, to keep the two indistinguishable
+    empty outputs apart.
 
     Args:
         stats: The cumulative session stats from the Textual app.
@@ -3305,7 +3311,13 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
         usage_table_enabled,
     )
 
-    if not isinstance(stats, SessionStats) or not usage_table_enabled():
+    if not isinstance(stats, SessionStats):
+        logger.warning(
+            "Skipping session stats table: expected SessionStats, got %s",
+            type(stats).__name__,
+        )
+        return
+    if not usage_table_enabled():
         return
     print_usage_table(stats, stats.wall_time_seconds, console)
 

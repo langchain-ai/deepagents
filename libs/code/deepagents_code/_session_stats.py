@@ -1,11 +1,13 @@
 """Lightweight session statistics, token formatting, and usage-table rendering.
 
-Holds `SessionStats`/`ModelStats`, the `format_token_count` formatter, and
-`print_usage_table` (which imports `rich.table` lazily). The module is
-intentionally kept free of heavy top-level dependencies (no pydantic, no
-config, no widget imports) so that `app.py` can import `SessionStats` and
-`format_token_count` at module level without pulling in the full
-`textual_adapter` dependency tree.
+Holds `SessionStats`/`ModelStats`, the `format_token_count` formatter,
+`print_usage_table` (which imports `rich.table` lazily), and
+`usage_table_enabled`, which decides whether that table is rendered at all.
+The module is intentionally kept free of heavy top-level dependencies (no
+pydantic, no config, no widget imports) so that `app.py` can import
+`SessionStats` and `format_token_count` at module level without pulling in the
+full `textual_adapter` dependency tree — hence the deferred `config_manifest`
+import inside `usage_table_enabled` rather than at the top.
 """
 
 from __future__ import annotations
@@ -974,16 +976,29 @@ def usage_table_enabled() -> bool:
 
     Controlled by `[ui].show_usage_stats`; the option declares no env var. Both
     the TUI teardown and the headless run call this rather than resolving the
-    option themselves, so the key and its fallback exist in exactly one place —
-    a second copy is invisible to tests, because the fallback only fires when
-    the manifest key is missing or not a bool.
+    option themselves, so the key and its fallback pair are written once and
+    the two surfaces cannot disagree about the default.
+
+    Both callers are at teardown, where an exception would cost far more than
+    the table is worth: in the TUI it is caught by the top-level handler that
+    rewrites a clean exit into `1` plus a traceback, and in the headless run it
+    would skip the `AGENT_COMPLETED` notification and the `session.end` hooks.
+    A broad catch is warranted for a leaf, cosmetic, teardown-time decision
+    with a safe default, provided it is logged rather than swallowed.
 
     Returns:
         Whether to render the table.
     """
     from deepagents_code.config_manifest import load_bool_display_preference
 
-    return load_bool_display_preference("display.show_usage_stats", fallback=True)
+    try:
+        return load_bool_display_preference("display.show_usage_stats", fallback=True)
+    except Exception:
+        logger.warning(
+            "Could not resolve [ui].show_usage_stats; showing the table",
+            exc_info=True,
+        )
+        return True
 
 
 def print_usage_table(

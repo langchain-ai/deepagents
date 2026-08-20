@@ -1376,18 +1376,12 @@ def _load_theme_preference() -> str:
 
 
 def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
-    """Resolve a boolean `Display` option, deferring the manifest import.
+    """Deferred-import wrapper around `config_manifest`.
 
-    The resolution itself lives in `config_manifest` so that non-TUI callers
-    share it. This wrapper exists only to keep `config_manifest` off `app.py`'s
-    import path, matching every other `config_manifest` use in this module —
-    all of which are function-local. Its six callers are the reason the
-    deferral is written once here rather than inlined at each one.
-
-    Args:
-        key: Manifest key of the option, e.g. `"display.cursor_blink"`.
-        fallback: Value to use when `key` is not in the manifest at all, or is
-            not a `BOOL` option.
+    Written once here rather than inlined at each caller, so that
+    `config_manifest` stays off `app.py`'s import path — matching every other
+    `config_manifest` use in this module, all of which are function-local. See
+    `load_bool_display_preference` for the resolution rules and arguments.
 
     Returns:
         The resolved value.

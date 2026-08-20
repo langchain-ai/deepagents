@@ -958,20 +958,28 @@ def load_bool_display_preference(key: str, *, fallback: bool) -> bool:
     """Resolve a boolean `Display` option through the config manifest.
 
     Precedence follows `resolve_scalar`: managed config wins, then the option's
-    `DEEPAGENTS_CODE_*` env var if it declares one — several `Display` options
-    deliberately do not — then its `[ui]` key in `~/.deepagents/config.toml`,
-    then the declared default. Resolution is intentionally forgiving — an
-    unreadable config, a non-table `[ui]`, or a wrong-typed value is logged by
-    the resolver and falls through, so a typo in a cosmetic setting never
-    breaks startup. Those log records reach the debug buffer, not the terminal.
+    `DEEPAGENTS_CODE_*` env var if it declares one (not all do), then its
+    `[ui]` key in `~/.deepagents/config.toml`, then the declared default.
+    Resolution is intentionally forgiving — an unreadable config, a non-table
+    `[ui]`, or a wrong-typed value is logged by the resolver and falls through,
+    so a typo in a cosmetic setting never breaks startup.
+
+    Nothing about that is visible to the user by default. The package logger is
+    wired to an in-memory buffer in `deepagents_code/__init__.py`, whose only
+    reader is the TUI Debug Console; the file handler attaches only under
+    `DEEPAGENTS_CODE_DEBUG`. So a warning logged here after the TUI has exited,
+    or during a headless run, has no reader at all unless that env var is set.
+    `dcode config get <key>` is the self-service diagnosis: a rejected value
+    shows up there as source `default` rather than `config.toml`.
 
     Args:
         key: Manifest key of the option, e.g. `"display.cursor_blink"`.
         fallback: Value to use when `key` is not in the manifest at all, or is
             not a `BOOL` option — both mean a caller and the manifest disagree.
-            `test_bool_display_preference_fallbacks_match_the_manifest` pins
-            every key it knows of to that option's declared default, so add new
-            keys there.
+            `test_bool_display_preference_fallbacks_match_the_manifest`
+            discovers every literal call site by AST walk and checks its key
+            and fallback against the manifest, so a new caller needs no test
+            change — but it only sees literal arguments.
 
     Returns:
         The resolved value.
@@ -982,7 +990,8 @@ def load_bool_display_preference(key: str, *, fallback: bool) -> bool:
         return fallback
     if option.kind is not OptionKind.BOOL:
         # Without this, a mistyped key naming a STR option would return
-        # `bool("block")` — silently `True` forever, with no warning at all.
+        # `bool("auto")` (`display.charset`) — silently `True` forever, with no
+        # warning at all.
         logger.warning(
             "Config option %r is %s, not a bool; falling back to %r",
             key,
@@ -990,8 +999,12 @@ def load_bool_display_preference(key: str, *, fallback: bool) -> bool:
             fallback,
         )
         return fallback
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    value, source = resolve_scalar(option, toml_data=load_config_toml())
+    resolved = bool(value)
+    # Keep the source: a display option turned off by managed policy is
+    # otherwise indistinguishable from one the user turned off themselves.
+    logger.debug("Resolved %s to %r from %s", key, resolved, source)
+    return resolved
 
 
 def resolve_interpreter_kwargs(

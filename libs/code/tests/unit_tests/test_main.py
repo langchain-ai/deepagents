@@ -1926,19 +1926,46 @@ class TestPrintSessionStats:
             # table must not leave a header or a stray blank line behind.
             assert output == ""
 
+    def test_absent_config_file_keeps_stats(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user with no `config.toml` at all still gets the table.
+
+        The other cases write an empty-but-present file, which exercises a
+        different branch of `load_config_toml` than a missing path does.
+        """
+        from deepagents_code._session_stats import SessionStats
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "does_not_exist.toml",
+        )
+        stats = SessionStats(wall_time_seconds=2.0)
+        stats.record_request("test-model", 100, 50)
+        buffer = StringIO()
+
+        _print_session_stats(stats, Console(file=buffer, width=200))
+
+        assert "test-model" in buffer.getvalue()
+
     def test_malformed_value_keeps_stats(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A wrong-typed TOML value falls through to the default, not to `False`.
+        """A wrong-typed TOML value is rejected rather than coerced.
 
-        TOML has no truthy strings, so `show_usage_stats = "no"` is the likeliest
-        way to get this wrong -- and reading it as `bool("no")` would suppress
-        the table for a user who meant to keep it. The rejection happens in
-        `_coerce_toml`, one layer below the `OptionKind` guard; that guard is
-        covered directly in `test_config_manifest.py`.
+        TOML has no truthy strings, so `show_usage_stats = "no"` is the
+        likeliest way to get this wrong, and `bool("no")` is `True` — naive
+        coercion would show the table to a user who meant to hide it.
+
+        The default is also `True`, so "rejected, fell through to the default"
+        and "coerced to `True`" render identically; `"test-model" in output`
+        cannot tell them apart. The log assertion is the one carrying the
+        weight here. The rejection happens in `_coerce_toml`, one layer below
+        the `OptionKind` guard; that guard is covered directly in
+        `test_config_manifest.py`.
         """
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
             output = self._render(
@@ -1947,6 +1974,7 @@ class TestPrintSessionStats:
 
         assert "test-model" in output
         assert "show_usage_stats" in caplog.text
+        assert "expected bool" in caplog.text
 
     def test_managed_config_overrides_user_preference(
         self,
@@ -1969,27 +1997,38 @@ class TestPrintSessionStats:
 
         assert output == ""
 
-    def test_non_stats_payload_never_reads_config(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_non_stats_payload_warns_and_skips_config(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A non-`SessionStats` payload short-circuits before config resolution.
+        """A non-`SessionStats` payload warns and never resolves the option.
 
         `stats` is typed `Any`, so nothing stops a caller from passing something
-        else; deciding to print nothing must not cost a config read. `main`
-        itself always passes a real `SessionStats` (`AppResult.session_stats`
-        has a `default_factory`), which is why only the type guard enforces this.
+        else. `main` itself always passes a real `SessionStats`
+        (`AppResult.session_stats` has a `default_factory`), so if this branch
+        ever fires something upstream is broken — hence the warning, which is
+        what keeps "the payload was wrong" apart from "the user disabled it".
+
+        The spy records rather than raises: `usage_table_enabled` catches
+        exceptions and returns `True`, so a raising stub would make a regressed
+        guard order pass vacuously. `load_config_toml` is the read being
+        trapped; it is evaluated as an argument before `resolve_scalar` runs, so
+        no lookup can slip past it.
         """
+        calls: list[object] = []
 
-        def _fail() -> bool:
-            msg = "config must not be read for a non-stats payload"
-            raise AssertionError(msg)
+        def _spy() -> dict[str, object]:
+            calls.append(None)
+            return {}
 
-        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", _fail)
+        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", _spy)
         buffer = StringIO()
 
-        _print_session_stats(None, Console(file=buffer, width=200))
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.main"):
+            _print_session_stats(None, Console(file=buffer, width=200))
 
         assert buffer.getvalue() == ""
+        assert not calls, "config must not be read for a non-stats payload"
+        assert "expected SessionStats" in caplog.text
 
 
 class TestTeardownThreadCheckpointLookup:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from io import StringIO
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from deepagents_code._session_stats import (
     format_token_count,
     print_usage_table,
     record_message_usage,
+    usage_table_enabled,
 )
 
 
@@ -977,3 +979,38 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+class TestUsageTableEnabled:
+    """Test the gate that decides whether the usage table renders."""
+
+    def test_enabled_by_default(self) -> None:
+        """With no configuration in play the table renders."""
+        assert usage_table_enabled() is True
+
+    def test_resolution_failure_keeps_the_table(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising resolver logs and returns `True` instead of propagating.
+
+        Both callers run at teardown: in the TUI an escaping exception is caught
+        by the handler that rewrites a clean exit into `1` plus a traceback, and
+        in the headless run it would skip the `AGENT_COMPLETED` notification and
+        the `session.end` hooks. Failing open on a cosmetic table is the cheap
+        outcome; failing shut on session teardown is not.
+        """
+
+        def _boom(_key: str, *, fallback: bool) -> bool:  # noqa: ARG001
+            msg = "managed policy refresh exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_bool_display_preference", _boom
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code._session_stats"):
+            assert usage_table_enabled() is True
+
+        assert "show_usage_stats" in caplog.text
+        # `exc_info=True`, so the cause is diagnosable rather than swallowed.
+        assert "managed policy refresh exploded" in caplog.text

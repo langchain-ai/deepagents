@@ -101,7 +101,7 @@ def decode_multi_select_answer(raw: str) -> list[str] | None:
     """
     try:
         decoded = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
     if not isinstance(decoded, list) or not all(
         isinstance(value, str) for value in decoded

@@ -130,6 +130,13 @@ class TestMultiSelectAnswerEncoding:
     def test_decode_rejects_non_json(self) -> None:
         assert decode_multi_select_answer("a, b") is None
 
+    def test_decode_rejects_json_nested_beyond_the_recursion_limit(self) -> None:
+        """Untrusted answer text must not abort transcript rendering."""
+        depth = 10_000
+        deeply_nested = "[" * depth + "]" * depth
+
+        assert decode_multi_select_answer(deeply_nested) is None
+
     def test_decode_rejects_a_json_object(self) -> None:
         assert decode_multi_select_answer('{"a": 1}') is None
 

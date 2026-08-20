@@ -5082,7 +5082,8 @@ class TestMessageWidgetsDropTextPointerOverBlankSpace:
     @pytest.mark.parametrize(
         ("widget", "text_offset", "blank_offset"),
         [
-            pytest.param(UserMessage("hi"), (2, 0), (10, 0), id="user"),
+            # `UserMessage` pads vertically, so its body sits on row 1.
+            pytest.param(UserMessage("hi"), (2, 1), (10, 1), id="user"),
             pytest.param(QueuedUserMessage("hi"), (2, 0), (10, 0), id="queued"),
             # `ErrorMessage` pads vertically, so its body sits on row 1.
             pytest.param(ErrorMessage("hi"), (2, 1), (15, 1), id="error"),

@@ -130,7 +130,7 @@ class SandboxConfig:
 
         from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
         from deepagents_code.configuration.service import get_config_sources
-        from deepagents_code.configuration.types import ProviderHealth
+        from deepagents_code.configuration.types import Invalid, ProviderHealth
 
         # `None` on the default path: that is what includes managed policy.
         sources = get_config_sources(user_path=None if is_default else config_path)
@@ -178,14 +178,24 @@ class SandboxConfig:
             managed_status=sources.managed.status,
             user_status=sources.user.status,
         ).value
-        providers = resolve_ranked_scalar(
+        providers_resolved = resolve_ranked_scalar(
             providers_option,
             toml_data=sources.user.data,
             managed_toml_data=sources.managed.data,
             managed_status=sources.managed.status,
             user_status=sources.user.status,
-        ).value
-        if not isinstance(providers, dict):
+        )
+        providers = providers_resolved.value
+        if providers is None:
+            if any(
+                isinstance(result, Invalid)
+                for result in providers_resolved.tier_health.values()
+            ):
+                logger.warning(
+                    "[sandboxes.providers] is not a table; ignoring sandbox providers"
+                )
+            providers = {}
+        elif not isinstance(providers, dict):
             logger.warning(
                 "[sandboxes.providers] is not a table; ignoring sandbox providers"
             )

@@ -15,6 +15,7 @@ import asyncio
 import atexit
 import logging
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents_code._server_config import ServerConfig
@@ -26,6 +27,8 @@ from deepagents_code.project_utils import ProjectContext, get_server_project_con
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from deepagents_code.extensions.registry import ExtensionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +322,9 @@ async def _make_graph() -> Any:  # noqa: ANN401
             )
             sys.exit(1)
 
-    def _create_cli_agent_sync() -> Any:  # noqa: ANN401
+    def _create_cli_agent_sync(
+        extension_registry: ExtensionRegistry,
+    ) -> Any:  # noqa: ANN401
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
 
@@ -362,10 +367,47 @@ async def _make_graph() -> Any:  # noqa: ANN401
             async_subagents=async_subagents,
             goal_criteria_tools=read_only_context_tools,
             rubric_grader_tools=read_only_context_tools,
+            extension_registry=extension_registry,
         )
         return agent
 
-    return await asyncio.to_thread(_create_cli_agent_sync)
+    from deepagents_code.extensions import load_extensions
+    from deepagents_code.extensions.runtime import (
+        HEADLESS_MODE,
+        INTERACTIVE_MODE,
+        bind_server_extensions,
+        shutdown_server_extensions,
+    )
+
+    extension_cwd = (
+        project_context.user_cwd
+        if project_context is not None
+        else Path(config.cwd)
+        if config.cwd is not None
+        else None
+    )
+    extension_project_root = (
+        project_context.project_root or project_context.user_cwd
+        if project_context is not None
+        else None
+    )
+    extension_result = await load_extensions(
+        cwd=extension_cwd,
+        mode=INTERACTIVE_MODE if config.interactive else HEADLESS_MODE,
+        project_root=extension_project_root,
+        project_trust_granted=config.trust_project_extensions,
+    )
+    for message in extension_result.errors:
+        logger.warning("Extension not loaded: %s", message)
+    bind_server_extensions(extension_result.registry)
+    try:
+        return await asyncio.to_thread(
+            _create_cli_agent_sync,
+            extension_result.registry,
+        )
+    except BaseException:
+        await shutdown_server_extensions()
+        raise
 
 
 def _build_graph_factory(

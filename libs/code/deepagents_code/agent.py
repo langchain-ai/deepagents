@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
+    from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -2285,6 +2286,7 @@ def create_cli_agent(
     async_subagents: list[AsyncSubAgent] | None = None,
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+    extension_registry: ExtensionRegistry | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2433,6 +2435,7 @@ def create_cli_agent(
         rubric_grader_tools: External read-only context tools available to rubric
             grading for verifying work completed in MCP-backed or web-accessible
             systems.
+        extension_registry: Server-owned Python extension registrations.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -2447,7 +2450,11 @@ def create_cli_agent(
             unknown tool names, or when `interpreter_ptc="all"` is used
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
     """
-    tools = tools or []
+    tools = list(tools or [])
+    if extension_registry is None:
+        from deepagents_code.extensions.registry import ExtensionRegistry
+
+        extension_registry = ExtensionRegistry()
     mcp_tools = tuple(mcp_tools or ())
     if auto_mode_enabled and sandbox is not None:
         logger.warning(
@@ -2459,7 +2466,6 @@ def create_cli_agent(
         if cwd is not None
         else (project_context.user_cwd if project_context is not None else None)
     )
-
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
         agent_dir = settings.ensure_agent_dir(assistant_id)
@@ -2762,6 +2768,8 @@ def create_cli_agent(
         )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
+    artifact_routes: dict[str, BackendProtocol] = {}
+    artifacts_root: str | None = None
     if sandbox is None:
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
@@ -2902,7 +2910,7 @@ def create_cli_agent(
         fallback_history_root = (
             f"{_FALLBACK_ARTIFACTS_ROOT}/{CONVERSATION_HISTORY_DIRNAME}/"
         )
-        artifact_routes: dict[str, BackendProtocol] = {
+        artifact_routes = {
             f"{artifacts_root}/{CONVERSATION_HISTORY_DIRNAME}/": (
                 conversation_history_backend
             ),
@@ -2915,16 +2923,29 @@ def create_cli_agent(
                     virtual_mode=True,
                 )
             )
+    extension_routes: dict[str, BackendProtocol] = {}
+    for route in extension_registry.backend_routes:
+        if any(
+            route.name.startswith(prefix) or prefix.startswith(route.name)
+            for prefix in artifact_routes
+        ):
+            logger.warning(
+                "Ignoring extension route %r from %s: internal route overlap",
+                route.name,
+                route.source.label,
+            )
+        else:
+            extension_routes[route.name] = route.unit
+    if artifacts_root is None:
         composite_backend = CompositeBackend(
             default=backend,
-            routes=artifact_routes,
-            artifacts_root=artifacts_root,
+            routes=extension_routes,
         )
     else:
-        # Sandbox mode: No special routing needed
         composite_backend = CompositeBackend(
             default=backend,
-            routes={},
+            routes={**extension_routes, **artifact_routes},
+            artifacts_root=artifacts_root,
         )
 
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
@@ -3154,6 +3175,23 @@ def create_cli_agent(
 
     effective_recursion_limit = (
         recursion_limit if recursion_limit is not None else resolve_recursion_limit()
+    )
+    tool_names = {
+        name
+        for item in tools
+        if (name := getattr(item, "name", None) or getattr(item, "__name__", None))
+    }
+    for registered in extension_registry.tools:
+        if registered.name not in tool_names:
+            tools.append(registered.unit)
+            tool_names.add(registered.name)
+    middleware_names = {
+        getattr(item, "name", type(item).__name__) for item in agent_middleware
+    }
+    agent_middleware.extend(
+        registered.unit
+        for registered in extension_registry.middleware
+        if registered.name not in middleware_names
     )
     agent = create_deep_agent(
         model=model,

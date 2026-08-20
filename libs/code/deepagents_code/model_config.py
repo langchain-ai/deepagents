@@ -4755,6 +4755,195 @@ def _toml_project_server_approvals(
     return approvals, dropped
 
 
+def _ranked_mcp_section(
+    data: Mapping[str, Any],
+    *,
+    rank: int,
+    status: ProviderStatus,
+    path: Path,
+    managed: bool,
+) -> RankedProviderValue[Mapping[str, Any]]:
+    """Coerce one provider's `[mcp]` root without losing its health.
+
+    Returns:
+        A ranked table, `Unset`, or `Invalid` for a shadowing scalar root.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    if not status.usable or "mcp" not in data:
+        result = Unset()
+    else:
+        raw = data["mcp"]
+        if isinstance(raw, dict):
+            result = Found(cast("Mapping[str, Any]", raw))
+        else:
+            context = f"managed config {path}" if managed else str(path)
+            result = Invalid(
+                f"[mcp] in {context} must be a table, got {type(raw).__name__}"
+            )
+            logger.warning(
+                "[mcp] in %s should be a table, got %s; treating project "
+                "configs as untrusted",
+                "managed config" if managed else path,
+                type(raw).__name__,
+            )
+    return RankedProviderValue(rank, True, status, result)
+
+
+def _ranked_mcp_approvals(
+    section: RankedProviderValue[Mapping[str, Any]],
+    *,
+    path: Path,
+    managed: bool,
+) -> tuple[RankedProviderValue[dict[str, Any]], int]:
+    """Coerce one file tier's scoped approvals into composite grant leaves.
+
+    Returns:
+        The typed provider plus its malformed-row diagnostic count.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    section_result = section.result
+    if isinstance(section_result, Invalid):
+        result = Invalid(section_result.reason)
+        return (
+            RankedProviderValue(section.rank, section.durable, section.status, result),
+            0,
+        )
+    if not isinstance(section_result, Found):
+        return (
+            RankedProviderValue(section.rank, section.durable, section.status, Unset()),
+            0,
+        )
+    key = "enabled_project_server_approvals"
+    table = cast("Mapping[str, Any]", section_result.value)
+    if key not in table:
+        return (
+            RankedProviderValue(section.rank, section.durable, section.status, Unset()),
+            0,
+        )
+    raw = table[key]
+    approvals, dropped = _toml_project_server_approvals(raw, config_path=path)
+    if managed and not isinstance(raw, list):
+        reason = (
+            f"[mcp].{key} in {path} must be a list of approval entries; "
+            "refusing to proceed with an unenforced managed allow list"
+        )
+        logger.warning(
+            "Malformed [mcp].%s in managed config %s; treating project "
+            "configs as untrusted",
+            key,
+            path,
+        )
+        return (
+            RankedProviderValue(
+                section.rank,
+                section.durable,
+                section.status,
+                Invalid(reason),
+            ),
+            dropped,
+        )
+    value = {
+        "approvals": approvals,
+        **({"enabled": []} if managed else {}),
+    }
+    return (
+        RankedProviderValue(
+            section.rank,
+            section.durable,
+            section.status,
+            Found(value),
+        ),
+        dropped,
+    )
+
+
+def _ranked_mcp_names(
+    section: RankedProviderValue[Mapping[str, Any]],
+    *,
+    key: str,
+    path: Path,
+    managed: bool,
+    fail_closed: bool,
+) -> RankedProviderValue[list[str]]:
+    """Coerce one file tier's comma/list server names.
+
+    Returns:
+        A typed name-list provider. Wrong-typed deny lists are `Invalid`;
+        permissive legacy names instead become an empty `Found` value.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    section_result = section.result
+    if isinstance(section_result, Invalid):
+        result = Invalid(section_result.reason)
+    elif not isinstance(section_result, Found):
+        result = Unset()
+    else:
+        table = cast("Mapping[str, Any]", section_result.value)
+        if key not in table:
+            return RankedProviderValue(
+                section.rank, section.durable, section.status, Unset()
+            )
+        names, malformed = _toml_str_list(
+            table[key],
+            key=key,
+            config_path=path,
+        )
+        if malformed and fail_closed:
+            qualifier = "managed " if managed else ""
+            reason = (
+                f"[mcp].{key} in {path} must be a list of strings; refusing "
+                f"to proceed with an unenforced {qualifier}deny list"
+            )
+            if managed:
+                logger.warning(
+                    "Malformed [mcp].%s in managed config %s; treating "
+                    "project configs as untrusted",
+                    key,
+                    path,
+                )
+            result = Invalid(reason)
+        else:
+            result = Found(names)
+    return RankedProviderValue(section.rank, section.durable, section.status, result)
+
+
+def _ranked_mcp_env_names(
+    name: str,
+    *,
+    rank: int,
+    composite: bool,
+) -> RankedProviderValue[Any]:
+    """Coerce one MCP comma-list environment provider.
+
+    Returns:
+        A ranked list, or a composite enabled-name leaf for approval resolution.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import (
+        Found,
+        ProviderHealth,
+        ProviderStatus,
+        Unset,
+    )
+
+    names = _parse_csv_env(name)
+    status = ProviderStatus(
+        f"env ({name})" if names is not None else "environment",
+        None,
+        ProviderHealth.OK,
+    )
+    result = (
+        Unset() if names is None else Found({"enabled": names} if composite else names)
+    )
+    return RankedProviderValue(rank, False, status, result)
+
+
 def load_mcp_server_trust_lists(
     config_path: Path | None = None,
 ) -> McpServerTrustLists:
@@ -4812,21 +5001,113 @@ def load_mcp_server_trust_lists(
             be read as a deny list; env-sourced names still apply in that case.
             The same three conditions in the managed file set it too, because a
             deny list an administrator set must never fail open.
+
+    Raises:
+        RuntimeError: If required MCP options are missing from the manifest.
     """
     is_default = config_path is None
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import (
+        ENVIRONMENT_RANK,
+        MANAGED_RANK,
+        USER_RANK,
+        resolve_ranked,
+    )
     from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import Found, Invalid
 
     # `None` on the default path: that is what includes managed policy.
     sources = get_config_sources(user_path=None if is_default else config_path)
-    toml_approvals: list[McpProjectServerApproval] = []
-    malformed_approvals = 0
-    toml_disabled: list[str] = []
-    managed_disabled: list[str] = []
-    managed_approvals_explicit = False
-    legacy_ignored: list[str] = []
+    managed_path = sources.managed.status.path or config_path
+    managed_section = _ranked_mcp_section(
+        sources.managed.data,
+        rank=MANAGED_RANK,
+        status=sources.managed.status,
+        path=managed_path,
+        managed=True,
+    )
+    user_section = _ranked_mcp_section(
+        sources.user.data,
+        rank=USER_RANK,
+        status=sources.user.status,
+        path=config_path,
+        managed=False,
+    )
+
+    approvals_option = get_option("mcp.enabled_project_server_approvals")
+    disabled_option = get_option("mcp.disabled_project_servers")
+    legacy_option = get_option("mcp.enabled_project_servers")
+    if approvals_option is None or disabled_option is None or legacy_option is None:
+        msg = "MCP trust options are missing from the config manifest"
+        raise RuntimeError(msg)
+
+    managed_approvals, managed_malformed = _ranked_mcp_approvals(
+        managed_section,
+        path=managed_path,
+        managed=True,
+    )
+    user_approvals, user_malformed = _ranked_mcp_approvals(
+        user_section,
+        path=config_path,
+        managed=False,
+    )
+    env_approvals = _ranked_mcp_env_names(
+        _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+        rank=ENVIRONMENT_RANK,
+        composite=True,
+    )
+    resolved_approvals = resolve_ranked(
+        (managed_approvals, env_approvals, user_approvals),
+        strategy=approvals_option.merge_strategy.value,
+    )
+
+    managed_disabled = _ranked_mcp_names(
+        managed_section,
+        key="disabled_project_servers",
+        path=managed_path,
+        managed=True,
+        fail_closed=True,
+    )
+    user_disabled = _ranked_mcp_names(
+        user_section,
+        key="disabled_project_servers",
+        path=config_path,
+        managed=False,
+        fail_closed=True,
+    )
+    env_disabled = _ranked_mcp_env_names(
+        _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        rank=ENVIRONMENT_RANK,
+        composite=False,
+    )
+    resolved_disabled = resolve_ranked(
+        (managed_disabled, env_disabled, user_disabled),
+        strategy=disabled_option.merge_strategy.value,
+    )
+
+    legacy_provider = _ranked_mcp_names(
+        user_section,
+        key="enabled_project_servers",
+        path=config_path,
+        managed=False,
+        fail_closed=False,
+    )
+    resolved_legacy = resolve_ranked(
+        (legacy_provider,),
+        strategy=legacy_option.merge_strategy.value,
+    )
+    legacy_ignored = resolved_legacy.value if resolved_legacy is not None else []
+    if legacy_ignored:
+        logger.warning(
+            "[mcp].enabled_project_servers in %s is ignored; run "
+            "the project MCP approval prompt again to save "
+            "project-scoped approvals",
+            config_path,
+        )
+
     # Accumulated, not overwritten: both layers can fail, and both errors must
     # reach the user.
     read_errors: list[str] = []
@@ -4842,52 +5123,10 @@ def load_mcp_server_trust_lists(
             "configs as untrusted",
             config_path,
         )
-    else:
-        mcp_section = sources.user.data.get("mcp", {})
-        if isinstance(mcp_section, dict):
-            toml_approvals, malformed_approvals = _toml_project_server_approvals(
-                mcp_section.get("enabled_project_server_approvals"),
-                config_path=config_path,
-            )
-            legacy_enabled, _ = _toml_str_list(
-                mcp_section.get("enabled_project_servers"),
-                key="enabled_project_servers",
-                config_path=config_path,
-            )
-            if legacy_enabled:
-                legacy_ignored = legacy_enabled
-                logger.warning(
-                    "[mcp].enabled_project_servers in %s is ignored; run "
-                    "the project MCP approval prompt again to save "
-                    "project-scoped approvals",
-                    config_path,
-                )
-            toml_disabled, disabled_malformed = _toml_str_list(
-                mcp_section.get("disabled_project_servers"),
-                key="disabled_project_servers",
-                config_path=config_path,
-            )
-            if disabled_malformed:
-                # A wrong-typed deny list cannot be read, so proceeding as if
-                # nothing were denied would be a fail-open.
-                read_errors.append(
-                    f"[mcp].disabled_project_servers in {config_path} must be "
-                    "a list of strings; refusing to proceed with an "
-                    "unenforced deny list"
-                )
-        else:
-            # An `[mcp]` value that is not a table means the deny list is
-            # unreadable too; fail closed rather than leave it unenforced.
-            read_errors.append(
-                f"[mcp] in {config_path} must be a table, got "
-                f"{type(mcp_section).__name__}"
-            )
-            logger.warning(
-                "[mcp] in %s should be a table, got %s; treating project "
-                "configs as untrusted",
-                config_path,
-                type(mcp_section).__name__,
-            )
+    elif isinstance(user_section.result, Invalid):
+        read_errors.append(user_section.result.reason)
+    elif isinstance(user_disabled.result, Invalid):
+        read_errors.append(user_disabled.result.reason)
 
     managed_status = sources.managed.status
     if not managed_status.usable:
@@ -4900,76 +5139,13 @@ def load_mcp_server_trust_lists(
         # this false let `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` grants return,
         # so corrupting the file converted a managed suppression into a permit.
         # A deny list that cannot be read denies everything.
-        managed_approvals_explicit = True
+    elif isinstance(managed_section.result, Invalid):
+        read_errors.append(managed_section.result.reason)
     else:
-        managed_mcp = sources.managed.data.get("mcp", {})
-        if isinstance(managed_mcp, dict):
-            approvals_key = "enabled_project_server_approvals"
-            if approvals_key in managed_mcp:
-                raw_managed_approvals = managed_mcp.get(approvals_key)
-                parsed_approvals, dropped = _toml_project_server_approvals(
-                    raw_managed_approvals,
-                    config_path=managed_status.path or config_path,
-                )
-                malformed_approvals += dropped
-                if isinstance(raw_managed_approvals, list):
-                    managed_approvals_explicit = True
-                    toml_approvals = parsed_approvals
-                else:
-                    # The key is present, so policy means to replace the user's
-                    # remembered approvals and drop the env bypass. Leaving
-                    # `managed_approvals_explicit` false kept both in force, so
-                    # a wrong-typed allow list silently widened access instead
-                    # of narrowing it. Fail closed as the deny list below does.
-                    managed_approvals_explicit = True
-                    toml_approvals = []
-                    read_errors.append(
-                        f"[mcp].{approvals_key} in "
-                        f"{managed_status.path or config_path} must be a list "
-                        "of approval entries; refusing to proceed with an "
-                        "unenforced managed allow list"
-                    )
-                    logger.warning(
-                        "Malformed [mcp].%s in managed config %s; treating "
-                        "project configs as untrusted",
-                        approvals_key,
-                        managed_status.path or config_path,
-                    )
-            managed_disabled, managed_malformed = _toml_str_list(
-                managed_mcp.get("disabled_project_servers"),
-                key="disabled_project_servers",
-                config_path=managed_status.path or config_path,
-            )
-            if managed_malformed:
-                # A wrong-typed deny list cannot be read, so proceeding as if
-                # nothing were denied would be a fail-open. Administrator
-                # policy must fail closed at least as hard as user config.
-                read_errors.append(
-                    "[mcp].disabled_project_servers in "
-                    f"{managed_status.path or config_path} must be a list of "
-                    "strings; refusing to proceed with an unenforced managed "
-                    "deny list"
-                )
-                logger.warning(
-                    "Malformed [mcp].disabled_project_servers in managed config "
-                    "%s; treating project configs as untrusted",
-                    managed_status.path or config_path,
-                )
-        elif managed_mcp is not None:
-            # An `[mcp]` value that is not a table means the managed deny list
-            # is unreadable too; fail closed rather than leave it unenforced.
-            read_errors.append(
-                f"[mcp] in managed config {managed_status.path or config_path} "
-                f"must be a table, got {type(managed_mcp).__name__}"
-            )
-            logger.warning(
-                "[mcp] in managed config should be a table, got %s; treating "
-                "project configs as untrusted",
-                type(managed_mcp).__name__,
-            )
-
-    env_enabled = _parse_csv_env(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS)
-    env_disabled = _parse_csv_env(_env_vars.DISABLED_PROJECT_MCP_SERVERS)
+        if isinstance(managed_approvals.result, Invalid):
+            read_errors.append(managed_approvals.result.reason)
+        if isinstance(managed_disabled.result, Invalid):
+            read_errors.append(managed_disabled.result.reason)
     # The old name was renamed to the `DANGEROUSLY_`-prefixed var and is no
     # longer read; flag it set-but-ignored so callers can explain the rename
     # instead of the names silently ceasing to pre-approve.
@@ -4984,16 +5160,32 @@ def load_mcp_server_trust_lists(
     # Process-wide env names and scoped TOML approvals are independent grants.
     # Keep both active so the escape hatch cannot make the interactive prompt's
     # successfully persisted choices ineffective on the next launch.
-    enabled = frozenset(() if managed_approvals_explicit else (env_enabled or ()))
+    approval_value = (
+        cast("dict[str, Any]", resolved_approvals.value)
+        if resolved_approvals is not None
+        else {}
+    )
+    resolved_enabled = cast("list[str]", approval_value.get("enabled", []))
+    resolved_approval_rows = cast(
+        "list[McpProjectServerApproval]", approval_value.get("approvals", [])
+    )
+    managed_approval_invalid = isinstance(managed_section.result, Found) and isinstance(
+        managed_approvals.result, Invalid
+    )
+    enabled = frozenset(
+        ()
+        if not managed_status.usable or managed_approval_invalid
+        else resolved_enabled
+    )
     read_error = "; ".join(read_errors) if read_errors else None
-    approvals = frozenset(() if read_errors else toml_approvals)
-    disabled = (
-        frozenset(toml_disabled)
-        | frozenset(managed_disabled)
-        | frozenset(env_disabled or ())
+    approvals = frozenset(() if read_errors else resolved_approval_rows)
+    disabled = frozenset(
+        cast("list[str]", resolved_disabled.value)
+        if resolved_disabled is not None
+        else ()
     )
     # Corner: when `read_error` is set because `config.toml` was unreadable,
-    # `toml_disabled` is lost, so a name that is both TOML-`disabled` *and*
+    # the user-file deny list is lost, so a name that is both TOML-`disabled` and
     # exported in `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` would survive here —
     # "reject wins" does not hold in that one corner. It requires a
     # self-contradicting config plus the explicit `DANGEROUSLY_` opt-in, and the
@@ -5008,7 +5200,7 @@ def load_mcp_server_trust_lists(
         read_error=read_error,
         legacy_ignored=frozenset(legacy_ignored),
         legacy_env_ignored=legacy_env_ignored,
-        malformed_approvals=malformed_approvals,
+        malformed_approvals=user_malformed + managed_malformed,
     )
 
 

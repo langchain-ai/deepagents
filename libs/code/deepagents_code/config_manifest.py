@@ -2264,6 +2264,11 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_server_approvals"),
+        # The trust reader normalizes heterogeneous env-name and scoped TOML
+        # grants into distinct mapping leaves. Deep merge keeps both when
+        # managed policy is absent; an explicit managed value supplies both
+        # leaves and therefore replaces both lower grant forms.
+        merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     ConfigOption(
         key="mcp.enabled_project_servers",

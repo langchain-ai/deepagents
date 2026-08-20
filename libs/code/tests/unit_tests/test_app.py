@@ -25014,13 +25014,15 @@ class TestRestartServerForAgentSwap:
                     "deepagents_code.sessions.get_thread_agent",
                     AsyncMock(return_value="coder"),
                 ),
+                patch.object(app, "_thread_links_configured", return_value=False),
                 patch.object(app, "_mount_message", side_effect=mounted.append),
                 patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
             ):
                 await app._restart_server_for_agent_swap("researcher")
 
         plain = [str(getattr(m, "_content", m)) for m in mounted]
-        assert any("Previous thread: old-thread" in s for s in plain)
+        assert "Resume previous thread with /threads -r" in plain
+        assert not any("old-thread" in s for s in plain)
         assert not any("Relaunch with" in s for s in plain)
 
     async def test_resume_hint_echoes_launch_command(

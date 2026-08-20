@@ -16372,38 +16372,6 @@ class TestDebugConsoleClickToCopyPreference:
         assert result.message is not None
 
 
-@pytest.mark.parametrize(
-    ("key", "fallback"),
-    [
-        ("display.cursor_blink", True),
-        ("display.terminal_progress", True),
-        ("display.show_message_timestamps", False),
-        ("display.show_scrollbar", False),
-        ("display.debug_console_click_to_copy", False),
-        ("display.show_diff_line_numbers", True),
-    ],
-)
-def test_bool_display_preference_keys_match_the_manifest(
-    key: str, fallback: bool
-) -> None:
-    """Every `_load_bool_display_preference` key must exist and be a bool option.
-
-    The `fallback` argument duplicates the manifest default, and a mistyped key
-    silently resolves to it — with both in agreement that produces no symptom at
-    all until someone actually sets the option. Pinning existence, kind, and
-    default here is what makes the duplication safe.
-    """
-    from deepagents_code.config_manifest import OptionKind, get_option
-
-    option = get_option(key)
-    assert option is not None, f"{key} is not in the manifest"
-    assert option.kind is OptionKind.BOOL
-    assert option.default is fallback, (
-        f"{key} default {option.default!r} disagrees with the loader fallback "
-        f"{fallback!r}; they must match or the fallback path changes behavior"
-    )
-
-
 class TestAppBlurPausesCursorBlink:
     """Test the chat input cursor stops drawing when the terminal is blurred."""
 
@@ -20063,6 +20031,15 @@ class TestRemoteAgent:
 class TestTerminalBackgroundSync:
     """Tests for syncing Textual theme background to terminal background."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_terminal_program(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drop the inherited `TERM_PROGRAM`.
+
+        Without this, the Apple Terminal guard short-circuits the other tests
+        in this class when the suite runs inside Terminal.app.
+        """
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+
     def test_initial_theme_sync_sets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -20208,6 +20185,69 @@ class TestTerminalBackgroundSync:
         app.sync_terminal_background()
 
         assert calls == []
+
+    def test_sync_terminal_background_skips_apple_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-ANSI theme, so an empty `calls` proves the guard fired."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        # `calls` is not cleared after construction, so this also covers the
+        # implicit sync in `DeepAgentsApp.__init__`.
+        app = DeepAgentsApp()
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_skips_padded_apple_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A padded `TERM_PROGRAM` groups with its unpadded form."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", " Apple_Terminal ")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_runs_on_other_terminals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only Apple Terminal is skipped; other terminals still sync."""
+        from deepagents_code import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+        app = DeepAgentsApp()
+        calls.clear()
+
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
+
+        assert calls == [theme.get_registry()[theme.DEFAULT_THEME].colors.background]
 
     def test_exit_resets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch

@@ -1376,48 +1376,21 @@ def _load_theme_preference() -> str:
 
 
 def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
-    """Resolve a boolean `Display` option through the config manifest.
+    """Deferred-import wrapper around `config_manifest`.
 
-    Precedence follows `resolve_scalar`: the option's `DEEPAGENTS_CODE_*` env
-    var wins, then its `[ui]` key in `~/.deepagents/config.toml`, then the
-    option's declared default. Resolution is intentionally forgiving — an
-    unreadable config, a non-table `[ui]`, or a wrong-typed value is logged by
-    the resolver and falls through, so a typo in a cosmetic setting never
-    breaks startup.
+    Written once here rather than inlined at each caller, so that
+    `config_manifest` stays off `app.py`'s import path. See
+    `load_bool_display_preference` for the resolution rules and arguments.
 
-    Args:
-        key: Manifest key of the option, e.g. `"display.cursor_blink"`.
-        fallback: Value to use when `key` is not in the manifest at all, or is
-            not a `BOOL` option — both mean a caller and the manifest disagree.
-            `test_bool_display_preference_keys_match_the_manifest` pins it to
-            each option's declared default so the two cannot drift.
+    Deliberately does not forward `on_rejected`: these are startup reads, and
+    the TUI owns the screen by the time they run.
 
     Returns:
         The resolved value.
     """
-    from deepagents_code.config_manifest import (
-        OptionKind,
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import load_bool_display_preference
 
-    option = get_option(key)
-    if option is None:
-        logger.warning("Unknown config option %r; falling back to %r", key, fallback)
-        return fallback
-    if option.kind is not OptionKind.BOOL:
-        # Without this, a mistyped key naming a STR option would return
-        # `bool("block")` — silently `True` forever, with no warning at all.
-        logger.warning(
-            "Config option %r is %s, not a bool; falling back to %r",
-            key,
-            option.kind.value,
-            fallback,
-        )
-        return fallback
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
+    return load_bool_display_preference(key, fallback=fallback)
 
 
 def _load_message_timestamps_visible() -> bool:
@@ -9072,9 +9045,15 @@ class DeepAgentsApp(App):
         logged and swallowed because the OSC background sync is cosmetic.
 
         ANSI themes intentionally skip this step so the terminal's native
-        background is preserved.
+        background is preserved. This method also skips Apple Terminal, which
+        sets `TERM_PROGRAM` to `Apple_Terminal`. Apple Terminal applies the
+        `OSC 11` background but does not restore the original background on
+        `OSC 111`.
         """
         if self.theme in {"ansi-dark", "ansi-light"}:
+            return
+        # Apple Terminal applies OSC 11 but will not restore it with OSC 111.
+        if os.environ.get("TERM_PROGRAM", "").strip() == "Apple_Terminal":
             return
 
         from deepagents_code.terminal_escape import set_terminal_background

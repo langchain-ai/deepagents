@@ -4054,3 +4054,140 @@ class TestDrainWiring:
 
         assert result == 124
         mock_drain.assert_awaited_once()
+
+
+class TestHeadlessUsageStats:
+    """Test `[ui].show_usage_stats` gating in headless runs."""
+
+    @staticmethod
+    async def _run_headless(
+        config_toml: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        quiet: bool = False,
+    ) -> tuple[int, str]:
+        """Run a headless session and report what teardown printed.
+
+        Args:
+            config_toml: Contents to write to the user config file.
+            tmp_path: Directory to hold the config file.
+            monkeypatch: Fixture used to redirect the config path.
+            quiet: Whether to run as `dcode -x --quiet`.
+
+        Returns:
+            How many times the teardown rendered the usage table, and
+            everything it passed to `console.print`. The second half is what
+            distinguishes "the table was suppressed" from "teardown stopped
+            early", which a count alone cannot.
+
+        Raises:
+            AssertionError: If the run did not reach teardown, which would let a
+                zero count mean "never got there" rather than "suppressed".
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(config_toml, encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_console = MagicMock(spec=Console)
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.Console",
+                return_value=mock_console,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.print_usage_table"
+            ) as mock_table,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, MagicMock(), None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            return_code = await run_non_interactive(message="test", quiet=quiet)
+
+        assert return_code == 0, (
+            "run must reach teardown for the count to mean anything"
+        )
+        printed = "".join(
+            str(call.args[0]) for call in mock_console.print.call_args_list if call.args
+        )
+        return mock_table.call_count, printed
+
+    async def test_shown_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absent preference keeps the headless usage table."""
+        count, printed = await self._run_headless("", tmp_path, monkeypatch)
+        assert count == 1
+        assert "Task completed" in printed
+
+    async def test_suppressed_when_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`show_usage_stats = false` suppresses the headless table too.
+
+        The key names the preference, not the surface, so a user who turns it
+        off must not still get the table after every `dcode -x` run.
+        """
+        count, printed = await self._run_headless(
+            "[ui]\nshow_usage_stats = false\n", tmp_path, monkeypatch
+        )
+        assert count == 0
+        # The rest of teardown must survive the suppression. A gate written as
+        # an early `return` instead of an `if` would keep the return code at 0
+        # and the count at 0 while silently dropping the completion line, the
+        # `AGENT_COMPLETED` notification, and the `session.end` hooks below it.
+        assert "Task completed" in printed
+
+    async def test_quiet_suppresses_the_table_even_when_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--quiet` wins over an explicit opt-in.
+
+        The gate is nested inside the `if not quiet:` block that also holds the
+        completion line and the trace link. Hoisting it out would print a table
+        in the middle of output a caller asked to keep clean, with every other
+        test in this class still green.
+        """
+        count, printed = await self._run_headless(
+            "[ui]\nshow_usage_stats = true\n", tmp_path, monkeypatch, quiet=True
+        )
+        assert count == 0
+        # `--quiet` drops the completion line too, so its absence here is the
+        # expected outcome rather than a broken teardown.
+        assert "Task completed" not in printed
+
+    async def test_env_var_suppresses_the_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CODE_SHOW_USAGE_STATS` outranks an opt-in config file.
+
+        This is the headless case the env var exists for: a CI runner can set
+        one but usually has no `~/.deepagents/config.toml` to edit.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "0")
+
+        count, printed = await self._run_headless(
+            "[ui]\nshow_usage_stats = true\n", tmp_path, monkeypatch
+        )
+        assert count == 0
+        assert "Task completed" in printed

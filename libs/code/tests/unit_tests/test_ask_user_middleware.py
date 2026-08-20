@@ -70,9 +70,16 @@ class TestValidateQuestions:
     which `ToolNode` converts to an error `ToolMessage` the model can correct.
     """
 
-    def test_rejects_empty_question_text(self) -> None:
-        with pytest.raises(ValidationError, match="at least 1 character"):
-            _validate([{"question": "", "type": "text"}])
+    def test_rejects_blank_question_text(self) -> None:
+        """Empty or whitespace-only text would render as a blank prompt.
+
+        The `AfterValidator` runs before `min_length=1` is consulted, so the
+        empty string lands on the same "blank" rejection as whitespace-only
+        text.
+        """
+        for text in ("", "   ", "\t\n ", "   "):
+            with pytest.raises(ValidationError, match="must not be blank"):
+                _validate([{"question": text, "type": "text"}])
 
     def test_rejects_multiple_choice_without_choices(self) -> None:
         with pytest.raises(ValidationError, match="requires a non-empty 'choices'"):

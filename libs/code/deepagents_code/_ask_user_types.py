@@ -155,6 +155,30 @@ def ask_user_answer_is_empty(answer: str, question_type: object) -> bool:
     return not answer.strip()
 
 
+def _validate_question_text(text: str) -> str:
+    """Reject a `question` that is empty or all whitespace.
+
+    `min_length=1` on the field already rejects the empty string; this catches
+    what that cannot — a string like `"   "`, which would render as a visually
+    blank prompt.
+
+    Args:
+        text: The parsed `question` text to check.
+
+    Returns:
+        The same `text`, unchanged.
+
+    Raises:
+        ValueError: If `text` has no non-whitespace character. Pydantic wraps
+            this into the tool-call `ValidationError`, which `ToolNode`
+            converts to an error `ToolMessage` the model can correct.
+    """
+    if not text.strip():
+        msg = "question text must not be blank"
+        raise ValueError(msg)
+    return text
+
+
 def _validate_choice(choice: Choice) -> Choice:
     """Reject a choice whose `value` is blank.
 
@@ -237,6 +261,7 @@ class Question(TypedDict):
 
     question: Annotated[
         str,
+        AfterValidator(_validate_question_text),
         Field(description="The question text to display.", min_length=1),
     ]
 

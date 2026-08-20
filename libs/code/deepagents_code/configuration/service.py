@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -10,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
+
+    from deepagents_code.configuration.resolver import ResolvedValue
 
 from deepagents_code.configuration.paths import (
     managed_config_path,
@@ -22,6 +25,8 @@ from deepagents_code.configuration.types import (
     ProviderStatus,
     TomlSnapshot,
 )
+
+logger = logging.getLogger(__name__)
 
 UNION_PATHS = frozenset(
     {
@@ -280,6 +285,8 @@ def managed_declaration(
 
 def managed_policy_violations(
     managed_data: Mapping[str, Any],
+    *,
+    status: ProviderStatus | None = None,
 ) -> tuple[str, ...]:
     """Return managed settings whose declaration cannot be safely applied.
 
@@ -297,43 +304,70 @@ def managed_policy_violations(
         managed_data: Managed table to inspect. Must come from a snapshot whose
             status is `usable`, since an unhealthy snapshot carries `{}` and
             would report no violations.
+        status: Health and display metadata for the same managed snapshot.
 
     Returns:
         The violating keys, sorted, empty when policy is enforceable.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        is_valid_recursion_limit,
-        resolve_scalar,
-    )
+    from deepagents_code.config_manifest import get_option, is_valid_recursion_limit
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.types import Found, Invalid
 
     if not managed_data:
         return ()
 
     violations = list(managed_section_shape_violations(managed_data))
     for key in ENFORCED_MANAGED_KEYS:
-        option = get_option(key)
-        if option is None or not option.toml_keys:
+        resolved = resolve_managed_option(key, managed_data, status=status)
+        if resolved is None:
             continue
-        declaration = managed_declaration(managed_data, option.toml_keys)
-        if declaration is None:
-            continue
-        if declaration == "shadowed":
+        result = resolved.tier_health.get(MANAGED_RANK)
+        if isinstance(result, Invalid):
+            option = get_option(key)
+            if (
+                option is not None
+                and option.toml_keys is not None
+                and managed_declaration(managed_data, option.toml_keys) == "declared"
+            ):
+                # Preserve the existing health-check diagnostic in addition to
+                # exposing the same reason structurally through `tier_health`.
+                logger.warning("%s", result.reason)
             violations.append(key)
             continue
-        value, source = resolve_scalar(
-            option,
-            toml_data={},
-            managed_toml_data=managed_data,
-        )
-        if not managed_decided(source):
-            violations.append(key)
-        elif key == "runtime.recursion_limit" and not is_valid_recursion_limit(value):
-            # `resolve_scalar` applies no range check, and the flag outranks
+        if not isinstance(result, Found):
+            continue
+        if key == "runtime.recursion_limit" and not is_valid_recursion_limit(
+            result.value
+        ):
+            # Provider coercion applies no range ceiling, and the flag outranks
             # the bounded resolver when the agent is built, so an out-of-range
             # managed value would otherwise be assigned verbatim.
             violations.append(key)
     return tuple(sorted(set(violations)))
+
+
+def resolve_managed_option(
+    key: str,
+    managed_data: Mapping[str, Any],
+    *,
+    status: ProviderStatus | None = None,
+) -> ResolvedValue[object] | None:
+    """Resolve one manifest option and retain its rank-keyed managed result.
+
+    Returns:
+        The ranked resolution, or `None` when `key` is not manifest-backed.
+    """
+    from deepagents_code.config_manifest import get_option, resolve_ranked_scalar
+
+    option = get_option(key)
+    if option is None:
+        return None
+    return resolve_ranked_scalar(
+        option,
+        toml_data={},
+        managed_toml_data=managed_data,
+        managed_status=status,
+    )
 
 
 def managed_scalar(key: str, managed_data: Mapping[str, Any]) -> tuple[bool, object]:
@@ -342,17 +376,14 @@ def managed_scalar(key: str, managed_data: Mapping[str, Any]) -> tuple[bool, obj
     Returns:
         Whether managed policy decided the value, and the value.
     """
-    from deepagents_code.config_manifest import get_option, resolve_scalar
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.types import Found
 
-    option = get_option(key)
-    if option is None:
+    resolved = resolve_managed_option(key, managed_data)
+    if resolved is None:
         return False, None
-    value, source = resolve_scalar(
-        option,
-        toml_data={},
-        managed_toml_data=managed_data,
-    )
-    return managed_decided(source), value
+    result = resolved.tier_health.get(MANAGED_RANK)
+    return (True, result.value) if isinstance(result, Found) else (False, None)
 
 
 def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
@@ -373,12 +404,10 @@ def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
     Returns:
         The rejected keys, sorted, empty when every declared value is readable.
     """
-    from deepagents_code.config_manifest import (
-        OptionKind,
-        get_config_options,
-        option_accepts_toml,
-        toml_lookup,
-    )
+    from deepagents_code.config_manifest import OptionKind, get_config_options
+    from deepagents_code.configuration.providers import ranked_toml_value
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.types import Invalid
 
     if not managed_data:
         return ()
@@ -390,8 +419,17 @@ def managed_rejections(managed_data: Mapping[str, Any]) -> tuple[str, ...]:
             continue
         if managed_declaration(managed_data, option.toml_keys) != "declared":
             continue
-        found, raw = toml_lookup(managed_data, option.toml_keys, source=MANAGED_SOURCE)
-        if found and not option_accepts_toml(option, raw, source=MANAGED_SOURCE):
+        provider = ranked_toml_value(
+            option,
+            managed_data,
+            rank=MANAGED_RANK,
+            durable=True,
+            status=ProviderStatus(MANAGED_SOURCE, None, ProviderHealth.OK),
+        )
+        if isinstance(provider.result, Invalid):
+            # Preserve the diagnostics contract: this inspection historically
+            # announced the raw declaration that policy rejected.
+            logger.warning("%s", provider.result.reason)
             rejected.append(option.key)
     return tuple(sorted(rejected))
 
@@ -565,7 +603,9 @@ def get_managed_snapshot(
         # Cache only a snapshot whose declared policy can actually be enforced.
         # `usable` admits a parseable-but-unenforceable file, so gate on the
         # policy check too, not just provider health.
-        if candidate.status.usable and not managed_policy_violations(candidate.data):
+        if candidate.status.usable and not managed_policy_violations(
+            candidate.data, status=candidate.status
+        ):
             _snapshot_state.managed = candidate
         return candidate
 
@@ -646,7 +686,7 @@ def require_healthy_managed_config(*, refresh: bool = False) -> None:
     status = snapshot.status
     if not status.usable:
         raise ManagedConfigError(status)
-    violations = managed_policy_violations(snapshot.data)
+    violations = managed_policy_violations(snapshot.data, status=status)
     if violations:
         raise ManagedPolicyError(status, violations)
 
@@ -689,10 +729,21 @@ def managed_health(*, refresh: bool = False) -> ManagedHealth:
     Returns:
         Health, violations, and ignored rejections that cannot disagree.
     """
-    snapshot = get_managed_snapshot(refresh=refresh)
+    return managed_snapshot_health(get_managed_snapshot(refresh=refresh))
+
+
+def managed_snapshot_health(snapshot: TomlSnapshot) -> ManagedHealth:
+    """Evaluate provider health and policy diagnostics for one snapshot.
+
+    Args:
+        snapshot: Managed provider generation to inspect.
+
+    Returns:
+        Health, violations, and ignored rejections from exactly `snapshot`.
+    """
     if not snapshot.status.usable:
         return ManagedHealth(snapshot.status, (), ())
-    violations = managed_policy_violations(snapshot.data)
+    violations = managed_policy_violations(snapshot.data, status=snapshot.status)
     # A key that stops the launch is not also "ignored": reporting it in both
     # lists made `doctor` print "rejects startup.mode - ignores startup.mode".
     rejections = tuple(

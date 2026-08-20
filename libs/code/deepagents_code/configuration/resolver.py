@@ -10,7 +10,7 @@ numeric ranks.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -47,6 +47,8 @@ class RankedProviderValue[T]:
     durable: bool
     status: ProviderStatus
     result: ProviderResult[T]
+    diagnostics: tuple[str, ...] = ()
+    """Ordered warnings encountered while trying aliases inside this tier."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,9 @@ class ResolvedValue[T]:
     provider_status: Mapping[int, ProviderStatus]
     masked_ranks: frozenset[int] = frozenset()
     selected_ranks: tuple[int, ...] = ()
+    tier_diagnostics: Mapping[int, tuple[str, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def ranks(self) -> tuple[int, ...]:
@@ -108,13 +113,26 @@ def resolve_ranked[T](
     provider_status = MappingProxyType(
         {provider.rank: provider.status for provider in ordered}
     )
+    tier_diagnostics = MappingProxyType(
+        {provider.rank: provider.diagnostics for provider in ordered}
+    )
     found = [provider for provider in ordered if isinstance(provider.result, Found)]
     if not found:
         return None
     if strategy == "union":
-        return _resolve_ranked_union(found, tier_health, provider_status)
+        return _resolve_ranked_union(
+            found,
+            tier_health,
+            provider_status,
+            tier_diagnostics,
+        )
     if strategy == "deep_merge":
-        return _resolve_ranked_deep_merge(found, tier_health, provider_status)
+        return _resolve_ranked_deep_merge(
+            found,
+            tier_health,
+            provider_status,
+            tier_diagnostics,
+        )
 
     durable_ranks = tuple(provider.rank for provider in found if provider.durable)
     masked = frozenset(
@@ -131,6 +149,7 @@ def resolve_ranked[T](
         provider_status,
         masked,
         (winner.rank,),
+        tier_diagnostics,
     )
 
 
@@ -138,6 +157,7 @@ def _resolve_ranked_union[T](
     found: Sequence[RankedProviderValue[T]],
     tier_health: Mapping[int, ProviderResult[T]],
     provider_status: Mapping[int, ProviderStatus],
+    tier_diagnostics: Mapping[int, tuple[str, ...]],
 ) -> ResolvedValue[T]:
     """Accumulate list-like providers from weakest to strongest rank.
 
@@ -153,6 +173,7 @@ def _resolve_ranked_union[T](
             tier_health,
             provider_status,
             selected_ranks=(winner.rank,),
+            tier_diagnostics=tier_diagnostics,
         )
     union: list[Any] = []
     for value in reversed(entries):
@@ -166,6 +187,7 @@ def _resolve_ranked_union[T](
         tier_health,
         provider_status,
         selected_ranks=tuple(provider.rank for provider in found),
+        tier_diagnostics=tier_diagnostics,
     )
 
 
@@ -173,6 +195,7 @@ def _resolve_ranked_deep_merge[T](
     found: Sequence[RankedProviderValue[T]],
     tier_health: Mapping[int, ProviderResult[T]],
     provider_status: Mapping[int, ProviderStatus],
+    tier_diagnostics: Mapping[int, tuple[str, ...]],
 ) -> ResolvedValue[T]:
     """Deep-merge mapping providers from weakest to strongest rank.
 
@@ -189,6 +212,7 @@ def _resolve_ranked_deep_merge[T](
             tier_health,
             provider_status,
             selected_ranks=(winner.rank,),
+            tier_diagnostics=tier_diagnostics,
         )
     merged = deepcopy(cast("dict[str, Any]", value))
     leaves = _ranked_leaf_provenance(merged, weakest.rank)
@@ -201,6 +225,7 @@ def _resolve_ranked_deep_merge[T](
                 tier_health,
                 provider_status,
                 selected_ranks=(provider.rank,),
+                tier_diagnostics=tier_diagnostics,
             )
         merged, leaves = _merge_ranked_tables(
             merged,
@@ -220,6 +245,7 @@ def _resolve_ranked_deep_merge[T](
         tier_health,
         provider_status,
         selected_ranks=tuple(provider.rank for provider in found),
+        tier_diagnostics=tier_diagnostics,
     )
 
 

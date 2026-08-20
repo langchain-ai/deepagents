@@ -31,9 +31,9 @@ def coerce_environment_value(
 ) -> ProviderResult[object]:
     """Coerce one present environment value within the env provider domain.
 
-    The returned reason is the complete legacy diagnostic. Resolution decides
-    when to emit it, which lets the current and shadow engines share one
-    provider read without logging the same rejection twice.
+    The returned reason preserves the established diagnostic text. Resolution
+    decides when to emit it so health inspection does not log a rejection as a
+    side effect of merely reading provider state.
 
     Args:
         option: Manifest declaration that defines the output type.
@@ -129,7 +129,7 @@ def coerce_toml_value(
     Args:
         option: Manifest declaration that defines the output type.
         raw: Parsed TOML value.
-        source: Legacy source label used only to preserve diagnostic text.
+        source: Human-readable provider name used in diagnostic text.
 
     Returns:
         `Found` with the typed value or `Invalid` with the rejection reason.
@@ -233,16 +233,27 @@ def ranked_toml_value(
     Returns:
         Ranked `Found`, `Unset`, or `Invalid` provider result.
     """
-    from deepagents_code.config_manifest import toml_lookup
     from deepagents_code.configuration.resolver import RankedProviderValue
 
     if not status.usable or not option.toml_keys:
         result: ProviderResult[object] = Unset()
     else:
-        found, raw = toml_lookup(data, option.toml_keys, source=status.name)
-        result = (
-            coerce_toml_value(option, raw, source=status.name) if found else Unset()
-        )
+        node: object = data
+        result = Unset()
+        for index, key in enumerate(option.toml_keys):
+            if not isinstance(node, dict):
+                path = option.toml_keys[:index]
+                result = Invalid(
+                    f"Ignoring {status.name} [{'.'.join(path)}]; expected a "
+                    f"table, got {type(node).__name__} — every option under it "
+                    "falls back to its next source"
+                )
+                break
+            if key not in node:
+                break
+            node = node[key]
+        else:
+            result = coerce_toml_value(option, node, source=status.name)
     return RankedProviderValue(rank, durable, status, result)
 
 
@@ -277,6 +288,7 @@ def ranked_environment_value(
 
     status = ProviderStatus("environment", None, ProviderHealth.OK)
     last_invalid: Invalid | None = None
+    diagnostics: list[str] = []
     for name in names:
         raw = environ.get(name)
         if raw is None:
@@ -285,13 +297,122 @@ def ranked_environment_value(
         if not raw.strip():
             if option.empty_env_is_false:
                 return RankedProviderValue(rank, False, status, Found(False))
+            if raw:
+                last_invalid = Invalid(
+                    f"Ignoring {name}={raw!r} (whitespace-only; treated as unset)"
+                )
+                diagnostics.append(last_invalid.reason)
             continue
         result = coerce_environment_value(option, raw, name)
         if isinstance(result, Found):
-            return RankedProviderValue(rank, False, status, result)
+            return RankedProviderValue(
+                rank,
+                False,
+                status,
+                result,
+                tuple(diagnostics),
+            )
         if isinstance(result, Invalid):
             last_invalid = result
-    return RankedProviderValue(rank, False, status, last_invalid or Unset())
+            diagnostics.append(result.reason)
+    return RankedProviderValue(
+        rank,
+        False,
+        status,
+        last_invalid or Unset(),
+        tuple(diagnostics),
+    )
+
+
+def ranked_theme_toml_value(
+    data: Mapping[str, Any],
+    *,
+    rank: int,
+    durable: bool,
+    status: ProviderStatus,
+) -> RankedProviderValue[object]:
+    """Resolve one file provider's terminal-aware theme preference.
+
+    The terminal mapping and `[ui].theme` fallback are one provider domain:
+    they share a durability boundary and source rank. Their internal ordering
+    stays inside this provider while precedence between managed, environment,
+    user, and default remains the ranked resolver's responsibility.
+
+    Args:
+        data: Parsed TOML provider table.
+        rank: Numeric provider rank.
+        durable: Whether this file tier masks lower ephemeral tiers.
+        status: Provider health and display metadata.
+
+    Returns:
+        Ranked theme result with the selected TOML path in its display status.
+    """
+    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
+    from deepagents_code.configuration.resolver import RankedProviderValue
+
+    if not status.usable:
+        return RankedProviderValue(rank, durable, status, Unset())
+    ui = data.get("ui")
+    if ui is None:
+        return RankedProviderValue(rank, durable, status, Unset())
+    if not isinstance(ui, dict):
+        result: ProviderResult[object] = Invalid(
+            f"[ui] in {status.name} should be a table; got "
+            f"{type(ui).__name__} while resolving theme"
+        )
+        return RankedProviderValue(rank, durable, status, result)
+
+    resolved = _resolve_terminal_mapping(ui)
+    if resolved is not None:
+        import os
+
+        term_program = os.environ.get("TERM_PROGRAM", "").strip()
+        selected = replace(
+            status,
+            name=f"{status.name} [ui.terminal_themes.{term_program}]",
+        )
+        return RankedProviderValue(rank, durable, selected, Found(resolved))
+
+    saved = ui.get("theme")
+    resolved = _resolve_theme_name(saved)
+    if resolved is not None:
+        selected = replace(status, name=f"{status.name} [ui.theme]")
+        return RankedProviderValue(rank, durable, selected, Found(resolved))
+    if isinstance(saved, str):
+        result = Invalid(f"Unknown theme '{saved}' in {status.name}; ignoring it")
+        return RankedProviderValue(rank, durable, status, result)
+    return RankedProviderValue(rank, durable, status, Unset())
+
+
+def ranked_theme_environment_value(
+    environ: Mapping[str, str], *, rank: int
+) -> RankedProviderValue[object]:
+    """Resolve the theme environment provider.
+
+    Args:
+        environ: Environment mapping, normally `os.environ`.
+        rank: Numeric environment rank.
+
+    Returns:
+        Ranked theme result with the concrete variable name in its status.
+    """
+    from deepagents_code._env_vars import THEME
+    from deepagents_code.app import _resolve_theme_name
+    from deepagents_code.configuration.resolver import RankedProviderValue
+
+    status = ProviderStatus(f"env ({THEME})", None, ProviderHealth.OK)
+    raw = environ.get(THEME)
+    if raw is None:
+        return RankedProviderValue(rank, False, status, Unset())
+    resolved = _resolve_theme_name(raw)
+    if resolved is not None:
+        return RankedProviderValue(rank, False, status, Found(resolved))
+    return RankedProviderValue(
+        rank,
+        False,
+        status,
+        Invalid(f"Unknown theme '{raw}' in {THEME}; falling through"),
+    )
 
 
 def ranked_default_value(

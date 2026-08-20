@@ -34,10 +34,10 @@ from __future__ import annotations
 import logging
 import math
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum, StrEnum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from deepagents_code import _env_vars
 
@@ -595,258 +595,25 @@ def _resolve_theme(
     Returns:
         Theme and source, or `None` when unset or invalid.
     """
-    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
-
-    ui = toml_data.get("ui")
-    if ui is None:
-        return None
-    if not isinstance(ui, dict):
-        logger.warning(
-            "[ui] in %s should be a table; got %s while resolving theme",
-            source,
-            type(ui).__name__,
-        )
-        return None
-    resolved = _resolve_terminal_mapping(ui)
-    if resolved is not None:
-        term_program = os.environ.get("TERM_PROGRAM", "").strip()
-        return resolved, f"{source} [ui.terminal_themes.{term_program}]"
-    saved = ui.get("theme")
-    resolved = _resolve_theme_name(saved)
-    if resolved is not None:
-        return resolved, f"{source} [ui.theme]"
-    if isinstance(saved, str):
-        logger.warning("Unknown theme '%s' in %s; ignoring it", saved, source)
-    return None
-
-
-def _resolve_effective_theme(
-    toml_data: Mapping[str, Any], managed_toml_data: Mapping[str, Any]
-) -> tuple[str, str]:
-    """Resolve managed, environment, and user theme preferences.
-
-    Returns:
-        Effective theme name and source.
-    """
-    from deepagents_code import theme
-    from deepagents_code._env_vars import THEME
-    from deepagents_code.app import _resolve_theme_name
-
-    managed = _resolve_theme(managed_toml_data, source="managed config")
-    if managed is not None:
-        return managed
-    env_name = os.environ.get(THEME)
-    if env_name is not None:
-        resolved = _resolve_theme_name(env_name)
-        if resolved is not None:
-            return resolved, f"env ({THEME})"
-        logger.warning("Unknown theme '%s' in %s; falling through", env_name, THEME)
-    user = _resolve_theme(toml_data, source="config.toml")
-    return user if user is not None else (theme.DEFAULT_THEME, "default")
-
-
-def _resolve_scalar_legacy(
-    option: ConfigOption,
-    *,
-    toml_data: Mapping[str, Any],
-    managed_toml_data: Mapping[str, Any] | None = None,
-) -> tuple[Any, str]:
-    """Resolve through the pre-ranked engine retained for shadow comparison.
-
-    Resolution order is managed config, then the environment, then user
-    `config.toml`, then the typed default. An invalid value at one tier falls
-    through to the next tier, never straight to the default. An environment
-    variable that is empty or holds only whitespace counts as unset, except
-    when the option sets `empty_env_is_false`.
-
-    Args:
-        option: The option to resolve.
-        toml_data: Parsed user `config.toml` mapping.
-        managed_toml_data: Parsed managed TOML mapping. The process snapshot is
-            used when omitted; pass an empty mapping for an isolated user source.
-
-    Returns:
-        `(value, source)` for the first valid scalar or merged structured value.
-            `source` is one of `"managed config"`, `"env (<VAR>)"`,
-            `"config.toml"`, `"default"`, or — when a structured table or a
-            union deny list draws on both layers — `"managed config +
-            config.toml"`. A `THEME_DELEGATE` option reports the richer
-            `[ui.*]` sources its own resolver produces. Callers that ask "did
-            managed policy win?" must use `service.managed_decided(source)`
-            rather than `==`, which answers `False` for every combined label.
-    """
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
-    if option.kind is OptionKind.THEME_DELEGATE:
-        return _resolve_effective_theme(toml_data, managed_data)
-
-    managed_found = False
-    managed_raw: object = None
-    if option.toml_keys:
-        managed_found, managed_raw = toml_lookup(
-            managed_data,
-            option.toml_keys,
-            source="managed config",
-        )
-        if managed_found and option.kind is not OptionKind.STRUCTURED:
-            managed_value = _coerce_toml(
-                option,
-                managed_raw,
-                source="managed config",
-            )
-            if managed_value is not _INVALID:
-                return managed_value, "managed config"
-
-    if option.env_var or option.fallback_env_vars:
-        from deepagents_code.model_config import resolved_env_var_name
-
-        names: list[str] = []
-        if option.env_var:
-            names.append(resolved_env_var_name(option.env_var))
-        names.extend(option.fallback_env_vars)
-        # A blank (empty or whitespace-only) value normally counts as unset, so
-        # it is skipped and the loop continues to the next name. This is
-        # stricter than `resolve_env_var`, which keeps a whitespace-only value.
-        # Options with an explicitly documented empty-value opt-out declare
-        # `empty_env_is_false`. Names are tried in order, so the primary
-        # `env_var` wins over any fallback.
-        for name in names:
-            raw = os.environ.get(name)
-            if raw is None:
-                continue
-            if not raw.strip():
-                if option.empty_env_is_false:
-                    # Documented opt-out: an empty value means "off". Logged
-                    # because a whitespace-only value reads as unset to the user
-                    # while it actively forces `False` over their config.toml.
-                    logger.debug(
-                        "%s is blank (%r); resolving %s to False",
-                        name,
-                        raw,
-                        option.key,
-                    )
-                    return False, f"env ({name})"
-                if raw:
-                    # Empty is a normal "unset" idiom, but whitespace-only is
-                    # almost always an accident (`export X="$UNSET "`), and
-                    # discarding it silently was the one unlogged rejection path
-                    # in this resolver.
-                    logger.warning(
-                        "Ignoring %s=%r (whitespace-only; treated as unset)",
-                        name,
-                        raw,
-                    )
-                continue
-            value = _coerce_env(option, raw, name)
-            if value is not _INVALID:
-                return value, f"env ({name})"
-
-    if option.toml_keys:
-        found, raw = toml_lookup(toml_data, option.toml_keys)
-        if option.kind is OptionKind.STRUCTURED and managed_found:
-            from deepagents_code.configuration.resolver import (
-                union_entries,
-                union_lists,
-            )
-            from deepagents_code.configuration.service import (
-                UNION_PATHS,
-                merge_managed_over_user,
-            )
-
-            if found and isinstance(raw, dict) and isinstance(managed_raw, dict):
-                merged, _ = merge_managed_over_user(
-                    raw, managed_raw, prefix=option.toml_keys
-                )
-                return merged, "managed config + config.toml"
-            if found and option.toml_keys in UNION_PATHS:
-                # Both spellings of a deny list union here, exactly as the
-                # merge and the runtime readers do; a managed string layer that
-                # fell through to the replace below dropped the user's denials.
-                user_entries = union_entries(raw)
-                managed_entries = union_entries(managed_raw)
-                if user_entries is not None and managed_entries is not None:
-                    return (
-                        union_lists(user_entries, managed_entries),
-                        "managed config + config.toml",
-                    )
-            return managed_raw, "managed config"
-        if found:
-            value = _coerce_toml(option, raw)
-            if value is not _INVALID:
-                return value, "config.toml"
-
-    if option.kind is OptionKind.BOOL_MODE_DEFAULT:
-        from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
-
-        return is_env_truthy(DEBUG) or is_env_truthy(EXPERIMENTAL), "default"
-
-    if option.kind is OptionKind.LOG_LEVEL_DELEGATE:
-        from deepagents_code._env_vars import DEBUG, is_env_truthy
-
-        return ("DEBUG" if is_env_truthy(DEBUG) else "INFO"), "default"
-
-    return option.default, "default"
-
-
-def _ranked_theme_result(value: object, source: str) -> ResolvedValue[object]:
-    """Attach ranked metadata to one already-parsed theme result.
-
-    The parser cannot run twice in shadow mode because its warnings are part of
-    the public behavior net. This helper still exercises rank selection and
-    source rendering independently from the legacy precedence branches.
-
-    Returns:
-        A rank-keyed theme result.
-
-    Raises:
-        RuntimeError: If the selected theme tier is unexpectedly unset.
-    """
-    from deepagents_code.configuration.resolver import (
-        DEFAULT_RANK,
-        ENVIRONMENT_RANK,
-        MANAGED_RANK,
-        USER_RANK,
-        RankedProviderValue,
-        resolve_ranked,
-    )
+    from deepagents_code.configuration.providers import ranked_theme_toml_value
     from deepagents_code.configuration.types import (
         Found,
+        Invalid,
         ProviderHealth,
         ProviderStatus,
-        Unset,
     )
 
-    if source.startswith("managed config"):
-        rank = MANAGED_RANK
-    elif source.startswith("env ("):
-        rank = ENVIRONMENT_RANK
-    elif source.startswith("config.toml"):
-        rank = USER_RANK
-    else:
-        rank = DEFAULT_RANK
-    statuses = {
-        MANAGED_RANK: ProviderStatus("managed config", None, ProviderHealth.OK),
-        ENVIRONMENT_RANK: ProviderStatus("environment", None, ProviderHealth.OK),
-        USER_RANK: ProviderStatus("config.toml", None, ProviderHealth.OK),
-        DEFAULT_RANK: ProviderStatus("default", None, ProviderHealth.OK),
-    }
-    providers = [
-        RankedProviderValue(
-            candidate,
-            candidate != ENVIRONMENT_RANK,
-            replace(statuses[candidate], name=source)
-            if candidate == rank
-            else statuses[candidate],
-            Found(value) if candidate == rank else Unset(),
-        )
-        for candidate in statuses
-    ]
-    resolved = resolve_ranked(providers)
-    if resolved is None:
-        msg = "selected theme provider was unset"
-        raise RuntimeError(msg)
-    return resolved
+    provider = ranked_theme_toml_value(
+        toml_data,
+        rank=0,
+        durable=True,
+        status=ProviderStatus(source, None, ProviderHealth.OK),
+    )
+    if isinstance(provider.result, Found) and isinstance(provider.result.value, str):
+        return provider.result.value, provider.status.name
+    if isinstance(provider.result, Invalid):
+        logger.warning("%s", provider.result.reason)
+    return None
 
 
 def resolve_ranked_scalar(
@@ -859,9 +626,9 @@ def resolve_ranked_scalar(
 ) -> ResolvedValue[object]:
     """Resolve one option through the ranked durable-mask engine.
 
-    This is the typed migration seam for consumers. Until the final engine
-    flip, `resolve_scalar` still returns the legacy engine's result and asserts
-    this result matches it.
+    Consumers that need health or per-leaf provenance use this typed form;
+    `resolve_scalar` preserves the established `(value, source)` compatibility
+    surface by rendering from the same result.
 
     Args:
         option: Manifest option to resolve.
@@ -880,6 +647,8 @@ def resolve_ranked_scalar(
     from deepagents_code.configuration.providers import (
         ranked_default_value,
         ranked_environment_value,
+        ranked_theme_environment_value,
+        ranked_theme_toml_value,
         ranked_toml_value,
     )
     from deepagents_code.configuration.resolver import (
@@ -896,38 +665,49 @@ def resolve_ranked_scalar(
         ProviderStatus,
     )
 
-    managed_data = (
-        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
-    )
-    if option.kind is OptionKind.THEME_DELEGATE:
-        # Theme resolution includes registry aliases and terminal mappings. It
-        # becomes a first-class provider read in the dedicated theme migration;
-        # for shadow mode, retain that exact parser and attach rank metadata.
-        value, source = _resolve_effective_theme(toml_data, managed_data)
-        return _ranked_theme_result(value, source)
-
     managed_status = managed_status or ProviderStatus(
         "managed config", None, ProviderHealth.OK
     )
     user_status = user_status or ProviderStatus("config.toml", None, ProviderHealth.OK)
-    providers = (
-        ranked_toml_value(
-            option,
-            managed_data,
-            rank=MANAGED_RANK,
-            durable=True,
-            status=managed_status,
-        ),
-        ranked_environment_value(option, os.environ, rank=ENVIRONMENT_RANK),
-        ranked_toml_value(
-            option,
-            toml_data,
-            rank=USER_RANK,
-            durable=True,
-            status=user_status,
-        ),
-        ranked_default_value(option, rank=DEFAULT_RANK),
+    managed_data = (
+        load_managed_config_toml() if managed_toml_data is None else managed_toml_data
     )
+    if option.kind is OptionKind.THEME_DELEGATE:
+        providers = (
+            ranked_theme_toml_value(
+                managed_data,
+                rank=MANAGED_RANK,
+                durable=True,
+                status=managed_status,
+            ),
+            ranked_theme_environment_value(os.environ, rank=ENVIRONMENT_RANK),
+            ranked_theme_toml_value(
+                toml_data,
+                rank=USER_RANK,
+                durable=True,
+                status=user_status,
+            ),
+            ranked_default_value(option, rank=DEFAULT_RANK),
+        )
+    else:
+        providers = (
+            ranked_toml_value(
+                option,
+                managed_data,
+                rank=MANAGED_RANK,
+                durable=True,
+                status=managed_status,
+            ),
+            ranked_environment_value(option, os.environ, rank=ENVIRONMENT_RANK),
+            ranked_toml_value(
+                option,
+                toml_data,
+                rank=USER_RANK,
+                durable=True,
+                status=user_status,
+            ),
+            ranked_default_value(option, rank=DEFAULT_RANK),
+        )
     resolved = resolve_ranked(providers, strategy=option.merge_strategy.value)
     if resolved is None:
         fallback = RankedProviderValue(
@@ -952,29 +732,56 @@ def _ranked_source(resolved: ResolvedValue[object]) -> str:
     return " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
 
 
-def _shadow_values_equal(legacy: object, ranked: object) -> bool:
-    """Compare shadow values while treating IEEE NaN as stable.
+def _emit_ranked_diagnostics(
+    option: ConfigOption, resolved: ResolvedValue[object]
+) -> None:
+    """Emit provider rejections encountered before the effective value.
 
-    Returns:
-        Whether both engines produced observably equal values.
+    Providers retain rejection reasons without logging so resolution can be
+    inspected by diagnostics and startup policy without duplicating warnings.
+    This compatibility boundary preserves `resolve_scalar`'s fall-through
+    messages for callers that expect the historical logging behavior.
+
+    Args:
+        option: Manifest option being resolved.
+        resolved: Rank-keyed provider results and selected value.
     """
-    if isinstance(legacy, float) and isinstance(ranked, float):
-        return legacy == ranked or (math.isnan(legacy) and math.isnan(ranked))
-    if isinstance(legacy, dict) and isinstance(ranked, dict):
-        legacy_dict = cast("dict[object, object]", legacy)
-        ranked_dict = cast("dict[object, object]", ranked)
-        return legacy_dict.keys() == ranked_dict.keys() and all(
-            _shadow_values_equal(legacy_dict[key], ranked_dict[key])
-            for key in legacy_dict
-        )
-    if isinstance(legacy, (list, tuple)) and isinstance(ranked, (list, tuple)):
-        if len(legacy) != len(ranked):
-            return False
-        for left, right in zip(legacy, ranked, strict=True):
-            if not _shadow_values_equal(left, right):
-                return False
-        return True
-    return legacy == ranked
+    from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
+    from deepagents_code.configuration.types import Found, Invalid
+
+    accumulating = option.merge_strategy is not MergeStrategy.REPLACE
+    for rank in sorted(resolved.tier_health):
+        result = resolved.tier_health[rank]
+        if isinstance(result, Invalid):
+            reasons = resolved.tier_diagnostics.get(rank) or (result.reason,)
+            for reason in reasons:
+                if "— every option under it falls back to its next source" in reason:
+                    warning_key = ("ranked provider", reason)
+                    if warning_key in _warned_non_table_paths:
+                        continue
+                    _warned_non_table_paths.add(warning_key)
+                logger.warning("%s", reason)
+            continue
+        if isinstance(result, Found):
+            for reason in resolved.tier_diagnostics.get(rank, ()):
+                logger.warning("%s", reason)
+        if not isinstance(result, Found):
+            continue
+        if rank == ENVIRONMENT_RANK and option.empty_env_is_false:
+            source = resolved.provider_status[rank].name
+            prefix = "env ("
+            if source.startswith(prefix) and source.endswith(")"):
+                name = source[len(prefix) : -1]
+                raw = os.environ.get(name)
+                if raw is not None and not raw.strip():
+                    logger.debug(
+                        "%s is blank (%r); resolving %s to False",
+                        name,
+                        raw,
+                        option.key,
+                    )
+        if not accumulating:
+            break
 
 
 def resolve_scalar(
@@ -983,11 +790,11 @@ def resolve_scalar(
     toml_data: Mapping[str, Any],
     managed_toml_data: Mapping[str, Any] | None = None,
 ) -> tuple[Any, str]:
-    """Resolve an option while asserting parity with the ranked shadow engine.
+    """Resolve an option through ranked providers with a stable return shape.
 
-    The public-ish signature and legacy return shape stay stable during the RFC
-    migration. Provider reads in the shadow engine do not emit diagnostics, so
-    callers observe warnings from the authoritative legacy path exactly once.
+    The public-ish signature remains unchanged for embedders. Coercion happens
+    at provider boundaries, precedence is numeric, and durable providers mask
+    lower-priority ephemeral tiers structurally.
 
     Args:
         option: Manifest option to resolve.
@@ -996,42 +803,16 @@ def resolve_scalar(
             used when omitted; pass an empty mapping for an isolated user source.
 
     Returns:
-        `(value, source)` from the legacy engine after a ranked parity assertion.
-
-    Raises:
-        AssertionError: If the shadow engine changes the value or source.
+        `(value, source)` from the ranked engine. Human-readable source labels
+            are rendered from rank-keyed `ProviderStatus` metadata.
     """
-    legacy = _resolve_scalar_legacy(
+    resolved = resolve_ranked_scalar(
         option,
         toml_data=toml_data,
         managed_toml_data=managed_toml_data,
     )
-    if option.kind is OptionKind.THEME_DELEGATE:
-        # Running the theme parser twice would duplicate its user-visible
-        # warnings. The theme callsite commit moves that parser into a provider;
-        # until then, shadow its already-parsed result with independent rank
-        # selection rather than re-coercing the same input.
-        ranked_theme = _ranked_theme_result(*legacy)
-        if not _shadow_values_equal(legacy[0], ranked_theme.value):
-            msg = f"ranked config value mismatch for {option.key}"
-            raise AssertionError(msg)
-        if legacy[1] != _ranked_source(ranked_theme):
-            msg = f"ranked config source mismatch for {option.key}"
-            raise AssertionError(msg)
-        return legacy
-
-    ranked = resolve_ranked_scalar(
-        option,
-        toml_data=toml_data,
-        managed_toml_data=managed_toml_data,
-    )
-    if not _shadow_values_equal(legacy[0], ranked.value):
-        msg = f"ranked config value mismatch for {option.key}"
-        raise AssertionError(msg)
-    if legacy[1] != _ranked_source(ranked):
-        msg = f"ranked config source mismatch for {option.key}"
-        raise AssertionError(msg)
-    return legacy
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)
 
 
 def resolve_interpreter_kwargs(

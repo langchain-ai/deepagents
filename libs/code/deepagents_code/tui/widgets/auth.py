@@ -61,7 +61,6 @@ from deepagents_code.model_config import (
     ProviderAuthState,
     ProviderAuthStatus,
     clear_caches,
-    get_available_models,
     get_base_url_env_var,
     get_base_url_env_vars,
     get_credential_env_var,
@@ -1887,19 +1886,28 @@ class AuthManagerScreen(ModalScreen[None]):
             name for name, cfg in config.providers.items() if cfg.get("api_key_env")
         }
 
-        # Only show well-known providers whose LangChain package is actually
-        # installed. `get_available_models` returns providers it could
-        # successfully import profiles for, so it doubles as an install
-        # gate. Stored and config-defined providers are always shown — even
-        # if the package was later uninstalled — so a stale credential can
-        # still be cleaned up and an explicitly-declared provider stays
-        # visible.
-        installed = set(get_available_models().keys())
-        well_known_installed = set(PROVIDER_API_KEY_ENV) & installed
+        # Show well-known providers whenever their LangChain package is
+        # installed, even if none of the package's model profiles pass dcode's
+        # tool-calling filter. Stored and config-defined providers are always
+        # shown too, so stale credentials can still be cleaned up and an
+        # explicitly-declared provider stays visible.
+        from deepagents_code.config_manifest import is_provider_package_installed
+
+        well_known_installed = {
+            provider
+            for provider in PROVIDER_API_KEY_ENV
+            if config.is_provider_enabled(provider)
+            and is_provider_package_installed(provider)
+        }
         # `openai_codex` is gated on `langchain-openai` being installed (we
-        # surface it whenever `openai` was discovered) rather than on
+        # surface it whenever `openai` is available) rather than on
         # `PROVIDER_API_KEY_ENV`, since it has no env var of its own.
-        codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
+        codex_installed = (
+            {CODEX_PROVIDER}
+            if "openai" in well_known_installed
+            and config.is_provider_enabled(CODEX_PROVIDER)
+            else set()
+        )
 
         shown = well_known_installed | codex_installed | stored | config_providers
         # Surface well-known providers whose package isn't installed yet as

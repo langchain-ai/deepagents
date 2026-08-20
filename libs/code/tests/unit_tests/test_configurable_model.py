@@ -8,6 +8,8 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fireworks import BadRequestError
+from httpx import Request, Response
 from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
@@ -108,6 +110,14 @@ _PATCH_CREATE = "deepagents_code.config.create_model"
 # developer's env/config.toml. Tests that exercise flag *resolution* construct
 # their own instances after patching the config lookup.
 _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+
+
+def _fireworks_bad_request(message: str) -> BadRequestError:
+    return BadRequestError(
+        message,
+        response=Response(400, request=Request("POST", "https://example.com")),
+        body=None,
+    )
 
 
 class TestCheckpointPersistence:
@@ -1792,3 +1802,84 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class TestSchemaRejectionRetry:
+    def _request_with_tool(self) -> tuple[ModelRequest, SimpleNamespace]:
+        tool = SimpleNamespace(
+            name="bad_tool",
+            args_schema={
+                "type": "object",
+                "properties": {"action": {"required": ["action"]}},
+            },
+            metadata={"_deepagents_code_mcp_server": "test-server"},
+        )
+        request = _make_request(_make_model("gpt-5.5"))
+        return request.override(tools=[tool]), tool
+
+    async def test_drops_offending_tool_and_retries(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        request, tool = self._request_with_tool()
+        calls: list[list[object]] = []
+
+        async def handler(current: ModelRequest) -> ModelResponse[Any]:
+            calls.append(current.tools)
+            if len(calls) == 1:
+                msg = (
+                    "Error code: 400 - {'error': {'type': 'invalid_request_error', "
+                    "'message': \"JSON Schema not supported: could not understand "
+                    "the instance `{'required': ['action']}`.\"}}}"
+                )
+                raise _fireworks_bad_request(msg)
+            await asyncio.sleep(0)
+            return _make_response()
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.configurable_model"
+        ):
+            result = await ConfigurableModelMiddleware(
+                persist_model_state=False, openai_prompt_cache_key=True
+            ).awrap_model_call(request, handler)
+
+        assert result.result[0].content == "response"
+        assert calls == [[tool], []]
+        assert "bad_tool" in caplog.text
+        assert "test-server" in caplog.text
+
+    async def test_retry_failure_surfaces_provider_error(self) -> None:
+        request, _ = self._request_with_tool()
+        error = _fireworks_bad_request(
+            "JSON Schema not supported: could not understand the instance "
+            "`{'required': ['action']}`."
+        )
+        calls = 0
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            raise error
+
+        with pytest.raises(BadRequestError, match="JSON Schema not supported"):
+            await ConfigurableModelMiddleware(
+                persist_model_state=False, openai_prompt_cache_key=True
+            ).awrap_model_call(request, handler)
+        assert calls == 2
+
+    async def test_unrelated_bad_request_is_not_swallowed(self) -> None:
+        request, _ = self._request_with_tool()
+        error = _fireworks_bad_request("context length exceeded")
+        calls = 0
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            raise error
+
+        with pytest.raises(BadRequestError, match="context length exceeded"):
+            await ConfigurableModelMiddleware(
+                persist_model_state=False, openai_prompt_cache_key=True
+            ).awrap_model_call(request, handler)
+        assert calls == 1

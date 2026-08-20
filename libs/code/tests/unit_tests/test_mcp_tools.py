@@ -42,6 +42,7 @@ from deepagents_code.mcp_tools import (
     _load_tools_from_config,
     _MCPStderrSink,
     _normalize_mcp_arguments,
+    _sanitize_tool_json_schema,
     _warm_mcp_adapter_imports,
     classify_discovered_configs,
     discover_mcp_configs,
@@ -4620,6 +4621,39 @@ class TestToolFilterEndToEnd:
         assert names == ["api_search", "fs_read_file"]
         assert manager is not None
         await manager.cleanup()
+
+
+class TestSanitizeToolJSONSchema:
+    def test_normalizes_nested_untyped_required_fragments_without_mutating(
+        self,
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"nested": {"required": ["action"]}},
+            "items": {"required": ["item"]},
+            "anyOf": [{"required": ["branch"]}],
+        }
+
+        sanitized = _sanitize_tool_json_schema(schema)
+
+        assert sanitized["properties"]["nested"] == {
+            "required": ["action"],
+            "type": "object",
+            "properties": {"action": {}},
+        }
+        assert sanitized["items"] == {
+            "required": ["item"],
+            "type": "object",
+            "properties": {"item": {}},
+        }
+        assert sanitized["anyOf"][0] == {
+            "required": ["branch"],
+            "type": "object",
+            "properties": {"branch": {}},
+        }
+        assert schema["properties"]["nested"] == {"required": ["action"]}
+        assert schema["items"] == {"required": ["item"]}
+        assert schema["anyOf"][0] == {"required": ["branch"]}
 
 
 class TestNormalizeMCPArguments:

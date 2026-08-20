@@ -40,6 +40,89 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_schema_rejection(exc: BaseException) -> bool:
+    """Return whether an exception is a provider JSON Schema rejection."""
+    try:
+        from fireworks import BadRequestError
+    except ImportError:
+        return False
+    if not isinstance(exc, BadRequestError):
+        return False
+    text = str(exc).lower()
+    return "json schema not supported" in text or (
+        "invalid_request_error" in text
+        and "schema" in text
+        and "could not understand" in text
+    )
+
+
+def _tool_schema(tool: Any) -> Any:  # noqa: ANN401
+    """Return a tool's JSON Schema when available."""
+    if isinstance(tool, dict):
+        return tool.get("args") or tool.get("parameters") or tool
+    schema = getattr(tool, "args_schema", None)
+    if isinstance(schema, dict):
+        return schema
+    if schema is not None and hasattr(schema, "model_json_schema"):
+        return schema.model_json_schema()
+    return None
+
+
+def _schema_has_fragment(schema: Any, fragment: str) -> bool:  # noqa: ANN401
+    """Return whether a schema representation contains the provider fragment."""
+    if isinstance(schema, dict):
+        if fragment in repr(schema):
+            return True
+        return any(_schema_has_fragment(value, fragment) for value in schema.values())
+    if isinstance(schema, list):
+        return any(_schema_has_fragment(value, fragment) for value in schema)
+    return False
+
+
+def _has_untyped_object_fragment(schema: Any) -> bool:  # noqa: ANN401
+    """Return whether a schema contains an untyped object-like fragment."""
+    if isinstance(schema, dict):
+        if (
+            "type" not in schema
+            and "properties" not in schema
+            and any(
+                key in schema
+                for key in (
+                    "additionalProperties",
+                    "dependencies",
+                    "maxProperties",
+                    "minProperties",
+                    "patternProperties",
+                    "propertyNames",
+                    "required",
+                )
+            )
+        ):
+            return True
+        return any(_has_untyped_object_fragment(value) for value in schema.values())
+    if isinstance(schema, list):
+        return any(_has_untyped_object_fragment(value) for value in schema)
+    return False
+
+
+def _tools_after_schema_rejection(
+    tools: list[Any], error_text: str
+) -> list[Any]:
+    """Drop tools implicated by a provider schema rejection."""  # noqa: DOC201 - private helper has a self-documenting return annotation
+    fragment = error_text.partition("`")[2].partition("`")[0]
+    matching = [
+        tool
+        for tool in tools
+        if fragment and _schema_has_fragment(_tool_schema(tool), fragment)
+    ]
+    if matching:
+        return [tool for tool in tools if tool not in matching]
+    unsafe = [
+        tool for tool in tools if _has_untyped_object_fragment(_tool_schema(tool))
+    ]
+    return [tool for tool in tools if tool not in unsafe]
+
+
 @dataclass(frozen=True)
 class _ResolvedModelRequest:
     """Model request plus the checkpoint metadata it should persist."""
@@ -886,7 +969,27 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             request, openai_prompt_cache_key=self._openai_prompt_cache_key
         )
         request_started_at = _utc_now_iso()
-        response = await handler(resolved.request)
+        try:
+            response = await handler(resolved.request)
+        except Exception as exc:
+            if not _is_schema_rejection(exc) or not resolved.request.tools:
+                raise
+            reduced_tools = _tools_after_schema_rejection(
+                resolved.request.tools, str(exc)
+            )
+            dropped_tools = [
+                tool for tool in resolved.request.tools if tool not in reduced_tools
+            ]
+            for tool in dropped_tools:
+                metadata = getattr(tool, "metadata", {}) or {}
+                server_name = metadata.get("_deepagents_code_mcp_server", "unknown")
+                logger.warning(
+                    "Dropping tool %r from MCP server %r after provider JSON Schema "
+                    "rejection",
+                    getattr(tool, "name", "unknown"),
+                    server_name,
+                )
+            response = await handler(resolved.request.override(tools=reduced_tools))
         if not self._persist_model_state:
             return response
         # Offloaded: `_cache_endpoint_identity` and `_effective_cache_params`

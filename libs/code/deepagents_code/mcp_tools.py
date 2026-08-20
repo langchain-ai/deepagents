@@ -1840,6 +1840,44 @@ def _normalize_mcp_arguments(
     return cleaned
 
 
+def _sanitize_tool_json_schema(schema: Any) -> Any:  # noqa: ANN401
+    """Return a provider-compatible copy of an MCP JSON Schema."""
+    if isinstance(schema, list):
+        return [_sanitize_tool_json_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    sanitized = {
+        key: _sanitize_tool_json_schema(value) for key, value in schema.items()
+    }
+    required = sanitized.get("required")
+    has_object_shape = "type" in sanitized or "properties" in sanitized
+    object_keywords = {
+        "additionalProperties",
+        "dependencies",
+        "maxProperties",
+        "minProperties",
+        "patternProperties",
+        "propertyNames",
+        "required",
+    }
+    if not has_object_shape and (object_keywords & sanitized.keys()):
+        if isinstance(required, list) and all(
+            isinstance(name, str) for name in required
+        ):
+            sanitized["type"] = "object"
+            properties = sanitized.setdefault("properties", {})
+            if isinstance(properties, dict):
+                for name in required:
+                    properties.setdefault(name, {})
+        else:
+            sanitized.pop("required", None)
+            if object_keywords - {"required"} & sanitized.keys():
+                sanitized["type"] = "object"
+                sanitized.setdefault("properties", {})
+    return sanitized
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -1993,7 +2031,7 @@ def _build_cached_mcp_tool(
     return StructuredTool(
         name=lc_tool_name,
         description=mcp_tool.description or "",
-        args_schema=mcp_tool.inputSchema,
+        args_schema=_sanitize_tool_json_schema(mcp_tool.inputSchema),
         coroutine=coroutine,
         response_format="content_and_artifact",
         metadata=metadata,

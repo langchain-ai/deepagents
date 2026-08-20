@@ -4592,7 +4592,6 @@ class DeepAgentsApp(App):
 
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
-            self._notify_auto_mode_enabled_once()
             self._notify_auto_classifier_active()
         elif self._approval_mode.value == "yolo":
             self._warn_yolo_active(timeout=10)
@@ -9502,112 +9501,70 @@ class DeepAgentsApp(App):
             markup=False,
         )
 
-    def _notify_auto_mode_enabled_once(self) -> None:
-        """Show the Auto first-enable modal at most once per install.
-
-        Auto is already active when this runs. Enter keeps Auto and records the
-        notice; Esc (or a non-true dismiss) reverts to Manual without saving so
-        the notice can appear again. Save is best-effort on accept so a failed
-        write only re-shows on a later successful enable path.
-        """
-        from deepagents_code.approval_mode import (
-            has_auto_mode_notice,
-            save_auto_mode_notice,
-        )
-        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
-
-        if has_auto_mode_notice() or getattr(self, "_auto_mode_notice_pending", False):
-            return
-
-        def handle_result(accepted: bool | None) -> None:
-            self._auto_mode_notice_pending = False
-            # Only an explicit continue persists "do not show again". Esc/None
-            # invert Auto back to Manual without recording the notice.
-            if accepted is True:
-                save_auto_mode_notice()
-                return
-            # `push_screen` callbacks are sync; schedule the Manual revert.
-            task = asyncio.create_task(self._revert_auto_mode_after_notice_cancel())
-            task.add_done_callback(_log_task_exception)
-
-        try:
-            self.push_screen(
-                AutoModeNoticeScreen(
-                    model_label=self._auto_classifier_review_model_spec(),
-                    distinct_from_main_model=self._auto_classifier_is_distinct(),
-                ),
-                handle_result,
-            )
-        except Exception:
-            # Cosmetic notice must never break an already-applied Auto enable.
-            logger.warning("Could not show Auto first-enable notice", exc_info=True)
-            return
-
-        # Mark pending only after the push succeeds so a failed push can't
-        # strand the guard True and suppress the notice for the whole session.
-        self._auto_mode_notice_pending = True
-
-    async def _revert_auto_mode_after_notice_cancel(self) -> None:
-        """Leave Auto after the first-enable modal is cancelled with Esc.
-
-        Best-effort live Store write mirrors the Manual toggle path: local TUI
-        state always returns to Manual; a failed live write warns and blocks new
-        runs when a live session was already writing approval mode.
-        """
-        from deepagents_code.approval_mode import ApprovalMode
-
-        # Already left Auto (e.g. a concurrent toggle) — nothing to undo.
-        if self._approval_mode is not ApprovalMode.AUTO:
-            return
-
-        should_persist_live = (
-            self._agent is not None and self._session_state is not None
-        )
-        if should_persist_live and not await self._write_live_approval_mode(
-            ApprovalMode.MANUAL
-        ):
-            self._approval_mode_blocked = True
-            self._warn_live_approval_mode_unavailable(
-                "Manual could not be persisted after declining Auto; active work "
-                "was cancelled and new runs are blocked."
-            )
-            if self._agent_running:
-                self._force_interrupt_active_work()
-            # Still flip the UI so the user is not left trusting a declined Auto.
-            self._approval_mode = ApprovalMode.MANUAL
-            self._auto_approve = False
-            if self._session_state:
-                self._session_state.approval_mode = ApprovalMode.MANUAL
-            if self._status_bar:
-                self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
-            return
-
-        self._approval_mode_blocked = False
-        self._approval_mode = ApprovalMode.MANUAL
-        self._auto_approve = False
-        if self._session_state:
-            self._session_state.approval_mode = ApprovalMode.MANUAL
-        if self._status_bar:
-            self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
-        self.notify(
-            "Returned to Manual approval.",
-            severity="information",
-            markup=False,
-        )
-
     async def _on_auto_approve_enabled(self) -> bool:
         """Enable Auto only after the live Store acknowledges it.
+
+        Shows the first-enable confirmation modal before activating Auto when
+        the notice has not been shown yet. If the user cancels (Esc), returns
+        `False` so the inline approval loop continues asking.
 
         Returns:
             `True` when Auto is active for subsequent actions.
         """
-        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            has_auto_mode_notice,
+            save_auto_mode_notice,
+        )
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         if not self._auto_mode_eligible:
             self._warn_live_approval_mode_unavailable(
                 "Auto is unavailable with a sandbox."
             )
             return False
+
+        if not has_auto_mode_notice():
+            pending: asyncio.Future[bool] | None = getattr(
+                self, "_auto_mode_confirmation_future", None
+            )
+            if pending is not None and not pending.done():
+                # Another entry point already pushed the modal — await its result
+                # rather than bypassing the confirmation.
+                confirmed = await pending
+                if not confirmed:
+                    return False
+            else:
+                # Pre-confirmation: show modal before activating Auto
+                loop = asyncio.get_running_loop()
+                future: asyncio.Future[bool] = loop.create_future()
+                self._auto_mode_confirmation_future = future
+
+                def handle_result(accepted: bool | None) -> None:
+                    self._auto_mode_notice_pending = False
+                    if not future.done():
+                        future.set_result(accepted is True)
+
+                try:
+                    self.push_screen(
+                        AutoModeNoticeScreen(
+                            model_label=self._auto_classifier_review_model_spec(),
+                            distinct_from_main_model=self._auto_classifier_is_distinct(),
+                        ),
+                        handle_result,
+                    )
+                except Exception:
+                    logger.warning("Could not show Auto confirmation", exc_info=True)
+                    self._auto_mode_confirmation_future = None
+                    return False
+                self._auto_mode_notice_pending = True
+
+                confirmed = await future
+                self._auto_mode_confirmation_future = None
+                if not confirmed:
+                    return False
+                save_auto_mode_notice()
+
         if not await self._write_live_approval_mode(ApprovalMode.AUTO):
             self._warn_live_approval_mode_unavailable(
                 "Auto could not be persisted; this approval remains pending in Manual."
@@ -9619,7 +9576,6 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(ApprovalMode.AUTO.value)
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
-        self._notify_auto_mode_enabled_once()
         self._notify_auto_classifier_active()
         await self._auto_accept_pending_goal_rubric()
         return True
@@ -20861,6 +20817,7 @@ class DeepAgentsApp(App):
             return
         from deepagents_code.approval_mode import (
             ApprovalMode,
+            has_auto_mode_notice,
             has_yolo_acknowledgement,
             next_approval_mode,
         )
@@ -20880,6 +20837,11 @@ class DeepAgentsApp(App):
                 "Auto is unavailable with a sandbox, and YOLO is disabled "
                 "in the approval switcher."
             )
+            return
+
+        # Gate the first Auto switch on the education confirmation.
+        if target is ApprovalMode.AUTO and not has_auto_mode_notice():
+            self._prompt_auto_mode_confirmation()
             return
 
         # Gate the first YOLO switcher entry on the same policy acknowledgement
@@ -20936,7 +20898,6 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
-            self._notify_auto_mode_enabled_once()
             self._notify_auto_classifier_active()
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
@@ -21349,6 +21310,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.approval_mode import (
             ApprovalMode,
+            has_auto_mode_notice,
             has_yolo_acknowledgement,
         )
         from deepagents_code.config import is_yolo_switcher_enabled
@@ -21368,6 +21330,11 @@ class DeepAgentsApp(App):
             self._warn_live_approval_mode_unavailable(
                 "Auto is unavailable with a sandbox."
             )
+            return
+
+        # Gate the first Auto switch on the education confirmation.
+        if target is ApprovalMode.AUTO and not has_auto_mode_notice():
+            self._prompt_auto_mode_confirmation()
             return
 
         if target is ApprovalMode.YOLO:
@@ -21447,6 +21414,58 @@ class DeepAgentsApp(App):
         # Mark pending only after the push succeeds so a failed push cannot
         # suppress a later try for the whole session.
         self._yolo_mode_notice_pending = True
+
+    def _prompt_auto_mode_confirmation(self) -> None:
+        """Show the first-enable Auto confirmation before switching.
+
+        Auto stays inactive until Enter persists the notice and the follow-up
+        mode write succeeds. Esc leaves the current mode untouched and does
+        not store the notice.
+        """
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            save_auto_mode_notice,
+        )
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+
+        if getattr(self, "_auto_mode_notice_pending", False):
+            return
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+        self._auto_mode_confirmation_future = future
+
+        def handle_result(accepted: bool | None) -> None:
+            self._auto_mode_notice_pending = False
+            if not future.done():
+                future.set_result(accepted is True)
+            if accepted is not True:
+                return
+            if not save_auto_mode_notice():
+                self._warn_live_approval_mode_unavailable(
+                    "Auto notice could not be saved; staying in the current mode."
+                )
+                return
+            task = asyncio.create_task(self._set_approval_mode(ApprovalMode.AUTO))
+            task.add_done_callback(_log_task_exception)
+
+        try:
+            self.push_screen(
+                AutoModeNoticeScreen(
+                    model_label=self._auto_classifier_review_model_spec(),
+                    distinct_from_main_model=self._auto_classifier_is_distinct(),
+                ),
+                handle_result,
+            )
+        except Exception:
+            logger.warning("Could not show Auto confirmation", exc_info=True)
+            self._auto_mode_confirmation_future = None
+            self._warn_live_approval_mode_unavailable(
+                "Could not open the Auto confirmation; approval mode unchanged."
+            )
+            return
+
+        self._auto_mode_notice_pending = True
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""

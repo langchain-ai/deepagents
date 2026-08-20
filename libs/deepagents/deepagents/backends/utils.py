@@ -572,19 +572,17 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
         if len(str(result)) <= budget:
             return result
 
-        available_budget = budget - len(TRUNCATION_GUIDANCE)
-
         truncated: list[str] = []
 
         for item in result:
-            candidate = truncated + [item, TRUNCATION_GUIDANCE]
+            candidate = [*truncated, item, TRUNCATION_GUIDANCE]
 
             if len(str(candidate)) > budget:
                 break
 
             truncated.append(item)
 
-        return truncated + [TRUNCATION_GUIDANCE]
+        return [*truncated, TRUNCATION_GUIDANCE]
 
     if len(result) > budget:
         return result[:budget] + "\n" + TRUNCATION_GUIDANCE

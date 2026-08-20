@@ -3424,11 +3424,11 @@ class TestTruncation:
 
     def test_truncate_list_handles_uneven_item_lengths(self):
         items = [
-                "a" * 100_000,
-                "small",
-                "small",
-                "small",
-            ]
+            "a" * 100_000,
+            "small",
+            "small",
+            "small",
+        ]
 
         result = truncate_if_too_long(items)
 

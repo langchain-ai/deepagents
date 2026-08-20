@@ -18,7 +18,7 @@ def _client(monkeypatch: pytest.MonkeyPatch, handler) -> ApiClient:
     return ApiClient.from_env(transport=httpx.MockTransport(handler))
 
 
-def test_url_normalization_strips_trailing_slash_and_lowercases() -> None:
+def test_url_normalization_strips_trailing_slash_and_normalizes_origin() -> None:
     from deepagents_cli.deploy.mcp_resolver import _normalize_url
 
     assert (
@@ -26,6 +26,15 @@ def test_url_normalization_strips_trailing_slash_and_lowercases() -> None:
     )
     assert (
         _normalize_url("HTTPS://Tools.LangChain.com") == "https://tools.langchain.com"
+    )
+
+
+def test_url_normalization_preserves_case_sensitive_components() -> None:
+    from deepagents_cli.deploy.mcp_resolver import _normalize_url
+
+    assert (
+        _normalize_url("https://tools.example/Mcp?Token=AbC")
+        == "https://tools.example/Mcp?Token=AbC"
     )
 
 
@@ -68,6 +77,26 @@ def test_unresolved_server_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(UnresolvedServersError) as excinfo:
         resolve_referenced_servers(client, payload, cache={})
     assert excinfo.value.urls == ("https://missing.example",)
+
+
+def test_case_sensitive_path_does_not_match_different_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[{"id": "s1", "url": "https://tools.example/mcp"}],
+        )
+
+    client = _client(monkeypatch, handler)
+    payload = {
+        "tools": {
+            "tools": [{"name": "x", "mcp_server_url": "https://tools.example/Mcp"}]
+        }
+    }
+    with pytest.raises(UnresolvedServersError) as excinfo:
+        resolve_referenced_servers(client, payload, cache={})
+    assert excinfo.value.urls == ("https://tools.example/Mcp",)
 
 
 def test_uninvokable_server_raises(monkeypatch: pytest.MonkeyPatch) -> None:

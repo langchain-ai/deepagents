@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from deepagents_cli.deploy.api_client import ApiClient
@@ -31,7 +32,21 @@ class UninvokableServersError(_ServerResolutionError):
 
 
 def _normalize_url(url: str) -> str:
-    return url.strip().rstrip("/").lower()
+    parsed = urlsplit(url.strip().rstrip("/"))
+    host_start = parsed.netloc.rfind("@") + 1
+    if parsed.netloc.startswith("[", host_start):
+        host_end = parsed.netloc.find("]", host_start) + 1
+    else:
+        port_start = parsed.netloc.find(":", host_start)
+        host_end = port_start if port_start >= 0 else len(parsed.netloc)
+    netloc = (
+        parsed.netloc[:host_start]
+        + parsed.netloc[host_start:host_end].lower()
+        + parsed.netloc[host_end:]
+    )
+    return urlunsplit(
+        (parsed.scheme.lower(), netloc, parsed.path, parsed.query, parsed.fragment)
+    )
 
 
 def _collect_referenced_urls(payload: dict[str, Any]) -> set[str]:

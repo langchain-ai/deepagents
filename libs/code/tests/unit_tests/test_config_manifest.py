@@ -2089,6 +2089,35 @@ def test_resolve_structured_passes_value_through() -> None:
     )
 
 
+def test_structured_fallback_preserves_invalid_tier(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A defaultless table fallback retains the rejected provider metadata."""
+    from deepagents_code.config_manifest import resolve_ranked_scalar
+    from deepagents_code.configuration.resolver import USER_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    option = get_option("display.terminal_themes")
+    assert option is not None
+    toml_data = {"ui": "dark"}
+
+    resolved = resolve_ranked_scalar(
+        option,
+        toml_data=toml_data,
+        managed_toml_data={},
+    )
+    assert resolved.value is None
+    assert isinstance(resolved.tier_health[USER_RANK], Invalid)
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(
+            option,
+            toml_data=toml_data,
+            managed_toml_data={},
+        ) == (None, "default")
+    assert any("expected a table" in record.message for record in caplog.records)
+
+
 def test_resolve_malformed_skills_dir_env_falls_back(monkeypatch, caplog) -> None:
     """An unresolvable skills-dir env path logs and falls back, never raising."""
     import logging

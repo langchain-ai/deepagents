@@ -716,7 +716,10 @@ def resolve_ranked_scalar(
             ProviderStatus("default", None, ProviderHealth.OK),
             Found(option.default),
         )
-        resolved = resolve_ranked((fallback,))
+        resolved = resolve_ranked(
+            (*providers[:-1], fallback),
+            strategy=option.merge_strategy.value,
+        )
     if resolved is None:
         msg = f"fallback provider was unset for {option.key}"
         raise RuntimeError(msg)

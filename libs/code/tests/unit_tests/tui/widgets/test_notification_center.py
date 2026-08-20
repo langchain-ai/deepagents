@@ -12,6 +12,7 @@ from deepagents_code.notifications import (
     PendingNotification,
     UpdateAvailablePayload,
 )
+from deepagents_code.tui.widgets import notification_center
 from deepagents_code.tui.widgets.notification_center import (
     NotificationActionRequested,
     NotificationActionResult,
@@ -121,6 +122,28 @@ class TestNotificationCenterScreen:
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_enter_preloads_api_key_screen_before_detail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """API-key UI loads while the center still covers the base screen."""
+        imports: list[tuple[str, object]] = []
+        app = App()
+        screen = NotificationCenterScreen([_service_entry()])
+
+        def capture_import(name: str) -> None:
+            imports.append((name, app.screen))
+
+        monkeypatch.setattr(notification_center, "import_module", capture_import)
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, NotificationDetailScreen)
+
+        assert imports == [("deepagents_code.tui.widgets.auth", screen)]
 
     async def test_detail_action_dismisses_center_with_result(self) -> None:
         """Selecting an action in the detail dismisses the center with it."""

@@ -1671,6 +1671,9 @@ class ToolCallMessage(Vertical):
         # One-shot guard so `_format_ask_user_output` reports unusable `questions`
         # args once per widget rather than on every re-render.
         self._ask_user_args_warned: bool = False
+        # One-shot guard so `_format_ask_user_output` reports a transcript it
+        # could not unpack once per widget rather than on every re-render.
+        self._ask_user_display_warned: bool = False
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -3456,7 +3459,9 @@ class ToolCallMessage(Vertical):
         The inline question widget is unmounted once answered, so this row is the
         only place the answers stay visible in the live session — the thread's
         own `ToolMessage` is what a reload re-renders from. Collapsed, the row
-        keeps a one-line summary; expanded, it shows what was sent back.
+        keeps a one-line summary; expanded, it shows what was sent back, except
+        that `multi_select` answers are unpacked from their JSON encoding for
+        legibility.
 
         The summary is derived from the recorded status, never from the answer
         text (the question count only labels the expand affordance). The
@@ -3468,9 +3473,12 @@ class ToolCallMessage(Vertical):
 
         Returns:
             FormattedOutput with the status-derived summary when `is_preview`, or
-                the output rendered literally when expanded. A row holding only a
-                fallback summary advertises no expansion. Falls back to generic
-                formatting when the structured question args are unavailable.
+                the output when expanded — rendered literally unless
+                `render_ask_user_transcript_for_display` can unpack a
+                `multi_select` answer, which rewrites nothing else. A row holding
+                only a fallback summary advertises no expansion. Falls back to
+                generic formatting when the structured question args are
+                unavailable.
         """
         question_count = self._ask_user_question_count()
         if question_count == 0:
@@ -3498,15 +3506,36 @@ class ToolCallMessage(Vertical):
 
         if not is_preview:
             # Unpack `multi_select` JSON arrays for the reader. Anything that
-            # does not parse as exactly these questions renders literally, so
-            # the authoritative text is still what reaches the row.
+            # does not parse as exactly these questions falls back to the
+            # authoritative text, so the row is never worse than literal.
+            #
+            # Gating on an actual `multi_select` is what makes the log below
+            # worth emitting: without it every text-only transcript would report
+            # a `None` that means nothing. It still covers two cases — a
+            # transcript that did not parse, and one that parsed but held no
+            # decodable array (a cancelled prompt puts placeholders in every
+            # slot) — so this is debug, not a warning.
+            # `_ask_user_question_count` already proved `questions` is a list of
+            # dicts.
             questions = self._args.get("questions")
-            if isinstance(questions, list):
+            if isinstance(questions, list) and any(
+                isinstance(question, dict) and question.get("type") == "multi_select"
+                for question in questions
+            ):
                 display = render_ask_user_transcript_for_display(
                     cast("list[Question]", questions), output
                 )
                 if display is not None:
                     return FormattedOutput(content=Content(display))
+                if not self._ask_user_display_warned:
+                    # Once per widget: this runs on every re-render, and the
+                    # condition cannot change without a new `_args` or output.
+                    self._ask_user_display_warned = True
+                    logger.debug(
+                        "ask_user transcript over %d question(s) had no "
+                        "multi_select answer to unpack; rendering it literally",
+                        len(questions),
+                    )
             return FormattedOutput(content=Content(output))
 
         if self._status == "error":

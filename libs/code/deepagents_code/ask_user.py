@@ -50,7 +50,7 @@ Each question can be one of:
 
 For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options and may also add one or more custom free-form Other values among the selected values.
 
-A "multi_select" answer is returned as a JSON array of the selected values, e.g. ["a", "b"] (an optional question the user leaves untouched returns "[]"). "multi_select" choice values and custom Other text may themselves contain commas, quotes, and newlines.
+A "multi_select" answer is returned as a JSON array of the selected values, e.g. ["a", "b"] (an optional question the user leaves untouched returns []). "multi_select" choice values and custom Other text may themselves contain commas, quotes, and newlines. A "multiple_choice" value is returned on its own with no escaping, so keep that one to a single line.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
@@ -451,21 +451,14 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
-
-            Raises:
-                ToolArgumentError: If `questions` is malformed.
-                    `ToolErrorMiddleware` (wired in `create_cli_agent`)
-                    converts it into a recoverable error `ToolMessage` the
-                    model retries against, so log it on the way past: a model
-                    looping on the same bad payload would otherwise burn the
-                    recursion limit silently, leaving an error that names none
-                    of the causes.
             """
-            try:
-                _validate_questions(questions)
-            except ToolArgumentError as exc:
-                logger.warning("ask_user rejected a call: %s", exc)
-                raise
+            # A malformed payload raises `ToolArgumentError` out of
+            # `_validate_questions`. `ToolErrorMiddleware` (wired in
+            # `create_cli_agent`) turns it into a recoverable error
+            # `ToolMessage` the model retries against, so the turn survives it,
+            # and `_tool_arg_validation_on_error` logs the rejection with
+            # `exc_info`. Do not add a second log here.
+            _validate_questions(questions)
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,

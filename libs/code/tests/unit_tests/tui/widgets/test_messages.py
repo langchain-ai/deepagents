@@ -2376,6 +2376,26 @@ class TestToolCallMessageAskUserOutput:
 
         assert result.content.plain == "Q: Where?\nA: Boston, MA\nAustin"
 
+    def test_preview_stays_a_summary_for_multi_select_args(self) -> None:
+        """The unpacking is expanded-only: collapsed rows keep the summary.
+
+        Unpacking above the preview branch would put the whole transcript in the
+        one-line row.
+        """
+        args = {
+            "questions": [
+                {"question": "Where?", "type": "multi_select", "choices": []},
+            ]
+        }
+        msg = ToolCallMessage("ask_user", args)
+
+        result = msg._format_ask_user_output(
+            'Q: Where?\nA: ["Austin"]', is_preview=True
+        )
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "1 answer"
+
     def test_expanded_keeps_an_undecodable_multi_select_answer_verbatim(self) -> None:
         """A cancelled prompt has placeholders, not JSON, in every slot."""
         args = {

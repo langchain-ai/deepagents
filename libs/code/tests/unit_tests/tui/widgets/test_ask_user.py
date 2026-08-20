@@ -758,6 +758,27 @@ class TestAskUserMenu:
             assert question.answer_is_empty()
             assert question.validate_for_submit() == MISSING_ANSWER_TOAST
 
+    async def test_a_text_answer_of_literal_brackets_is_not_empty(self) -> None:
+        """Emptiness is routed by question type, not by matching the encoding.
+
+        `[]` is only the empty marker for `multi_select`. Typed into a text
+        question it is a real answer, so a required question must accept it.
+        """
+        app = _AskUserTestApp(
+            [{"question": "Paste it", "type": "text", "required": True}]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            question = menu.query_one(_QuestionWidget)
+            await pilot.pause()
+            await pilot.press("[", "]")
+            await pilot.pause()
+
+            assert question.get_answer() == "[]"
+            assert not question.answer_is_empty()
+            assert question.validate_for_submit() is None
+
     async def test_multi_select_untoggle_clears_choice(self) -> None:
         """Space is a toggle: pressing it twice deselects the choice again."""
         app = _AskUserTestApp(

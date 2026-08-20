@@ -382,6 +382,31 @@ class TestParseAnswers:
             not in _extract_tool_message(cmd).additional_kwargs
         )
 
+    def test_json_escaping_can_push_an_answer_over_the_receipt_cap(self) -> None:
+        """The per-answer budget is measured on the encoded string.
+
+        Escaping inflates the wire form, so a selection whose decoded content
+        fits can still lose its receipt. Fail-closed, but worth pinning: the
+        units changed when the encoding did.
+        """
+        values = ["\n" * ((MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS // 2) - 1)]
+        answer = encode_multi_select_answer(values)
+        assert len(values[0]) < MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS
+        assert len(answer) > MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS
+
+        cmd = _parse_answers(
+            {"answers": [answer]},
+            [{"question": "Which?", "type": "multi_select", "choices": []}],
+            "ask-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+
+        assert (
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+            not in _extract_tool_message(cmd).additional_kwargs
+        )
+
     def test_cancelled_status_uses_cancelled_placeholder(self) -> None:
         cmd = _parse_answers(
             {"status": "cancelled", "answers": ["ignored"]},
@@ -752,24 +777,6 @@ class TestAskUserTool:
             not in _extract_tool_message(command).additional_kwargs
         )
 
-    def test_rejected_call_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
-        """The model retries against the error, so the loop must be visible."""
-        ask_tool = cast("Any", AskUserMiddleware().tools[0])
-        runtime = SimpleNamespace(
-            context={"thread_id": "thread-1", "turn_id": "turn-1"},
-            execution_info=SimpleNamespace(thread_id="thread-1"),
-            tool_call_id="ask-1",
-            state=_turn_state("turn-1"),
-        )
-
-        with (
-            caplog.at_level(logging.WARNING, logger="deepagents_code.ask_user"),
-            pytest.raises(ToolArgumentError),
-        ):
-            ask_tool.func(questions=[], tool_call_id="ask-1", runtime=runtime)
-
-        assert "at least one question" in caplog.text
-
 
 class TestWrapModelCall:
     """Tests for ask_user prompt injection wrappers."""
@@ -868,6 +875,31 @@ class TestToolArgValidationRecovery:
         assert result.tool_call_id == "ask_user-1"
         assert "`ask_user` failed" in str(result.content)
         assert "at least one question" in str(result.content)
+
+    def test_rejection_is_logged_once_by_the_handler(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The model retries against the error, so the loop must be visible.
+
+        The tool body deliberately does not log this itself — the handler is the
+        single record, and a second one would say strictly less.
+        """
+        middleware = self._middleware()
+        request = _make_request("ask_user", {"questions": []})
+
+        def handler(_: ToolCallRequest) -> ToolMessage:
+            _validate_questions([])
+            msg = "unreachable"
+            raise AssertionError(msg)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.agent"):
+            middleware.wrap_tool_call(request, handler)
+
+        assert "at least one question" in caplog.text
+        assert "ask_user" in caplog.text
+        # One record, not two: the tool body must not log this again.
+        assert len(caplog.records) == 1
+        assert caplog.records[0].exc_info is not None
 
     def test_blank_choice_value_becomes_error_tool_message(self) -> None:
         """A blank choice value names the offending field."""

@@ -16,6 +16,7 @@ from deepagents_code._ask_user_types import (
     ASK_USER_ERROR_ANSWER_PREFIX,
     ASK_USER_FAILED_SUMMARY,
     ASK_USER_NO_ANSWER,
+    ASK_USER_NOTHING_SELECTED,
     AskUserRowSummary,
     ask_user_answer_is_empty,
     decode_multi_select_answer,
@@ -228,7 +229,12 @@ class TestRenderAskUserTranscriptForDisplay:
             == "Q: Notes?\nA: line one\nline two"
         )
 
-    def test_empty_selection_reads_as_no_answer(self) -> None:
+    def test_empty_selection_reads_as_nothing_selected(self) -> None:
+        """An answered-but-unselected question is not a missing answer.
+
+        `ASK_USER_NO_ANSWER` keeps its single meaning — no positionally matching
+        answer — so the display path uses its own placeholder.
+        """
         questions: list[Question] = [
             {"question": "Where?", "type": "multi_select", "choices": []}
         ]
@@ -237,8 +243,9 @@ class TestRenderAskUserTranscriptForDisplay:
         )
 
         assert render_ask_user_transcript_for_display(questions, transcript) == (
-            f"Q: Where?\nA: {ASK_USER_NO_ANSWER}"
+            f"Q: Where?\nA: {ASK_USER_NOTHING_SELECTED}"
         )
+        assert ASK_USER_NOTHING_SELECTED != ASK_USER_NO_ANSWER
 
     def test_other_answers_survive_a_multi_select_neighbour(self) -> None:
         questions: list[Question] = [
@@ -281,7 +288,8 @@ class TestRenderAskUserTranscriptForDisplay:
 
         assert render_ask_user_transcript_for_display(questions, transcript) is None
 
-    def test_returns_none_when_the_transcript_has_trailing_content(self) -> None:
+    def test_trailing_content_after_a_single_question_blocks_unpacking(self) -> None:
+        """The junk lands inside the only answer, so it stops decoding."""
         questions: list[Question] = [
             {"question": "Where?", "type": "multi_select", "choices": []}
         ]
@@ -292,6 +300,76 @@ class TestRenderAskUserTranscriptForDisplay:
         assert (
             render_ask_user_transcript_for_display(questions, transcript + "\n\nQ: x")
             is None
+        )
+
+    def test_trailing_content_is_re_emitted_rather_than_rejected(self) -> None:
+        """The final answer runs to the end, so junk cannot be told apart.
+
+        There is no guard against this and there cannot be one: appended text is
+        indistinguishable from text the user typed at the end of the last
+        answer. It is display-only, so it is carried through verbatim.
+        """
+        questions: list[Question] = [
+            {"question": "Where?", "type": "multi_select", "choices": []},
+            {"question": "Why?", "type": "text"},
+        ]
+        transcript = format_ask_user_transcript(
+            questions, [encode_multi_select_answer(["Austin"]), "because"]
+        )
+
+        assert render_ask_user_transcript_for_display(
+            questions, transcript + "\n\nQ: junk\nA: x"
+        ) == ("Q: Where?\nA: Austin\n\nQ: Why?\nA: because\n\nQ: junk\nA: x")
+
+    def test_returns_none_for_three_identically_worded_questions(self) -> None:
+        """Their shared anchor makes every separator ambiguous.
+
+        A legitimate transcript, refused: the uniqueness rule cannot tell this
+        apart from a crafted answer, and guessing is what it exists to prevent.
+        """
+        questions: list[Question] = [
+            {"question": "Which?", "type": "multi_select", "choices": []},
+            {"question": "Which?", "type": "multi_select", "choices": []},
+            {"question": "Which?", "type": "multi_select", "choices": []},
+        ]
+        transcript = format_ask_user_transcript(
+            questions, [encode_multi_select_answer(["a"])] * 3
+        )
+
+        assert render_ask_user_transcript_for_display(questions, transcript) is None
+
+    def test_a_benign_quoted_block_still_unpacks_its_neighbour(self) -> None:
+        """Over-rejecting is a real cost: pasting a transcript is legitimate.
+
+        The quoted block does not duplicate any separator, so the parse holds
+        and the multi-select beside it is still unpacked.
+        """
+        questions: list[Question] = [
+            {"question": "Paste it?", "type": "text"},
+            {"question": "Where?", "type": "multi_select", "choices": []},
+        ]
+        quoted = "here it is\n\nQ: Unrelated?\nA: something else"
+        transcript = format_ask_user_transcript(
+            questions, [quoted, encode_multi_select_answer(["Austin"])]
+        )
+
+        assert render_ask_user_transcript_for_display(questions, transcript) == (
+            f"Q: Paste it?\nA: {quoted}\n\nQ: Where?\nA: Austin"
+        )
+
+    def test_a_selected_value_may_itself_look_like_a_transcript(self) -> None:
+        """JSON escapes the newlines, so the value survives the round trip."""
+        forged = "Q: fake\nA: fake"
+        questions: list[Question] = [
+            {"question": "Where?", "type": "multi_select", "choices": []}
+        ]
+        transcript = format_ask_user_transcript(
+            questions, [encode_multi_select_answer([forged])]
+        )
+
+        assert "\\n" in transcript
+        assert render_ask_user_transcript_for_display(questions, transcript) == (
+            f"Q: Where?\nA: {forged}"
         )
 
     def test_returns_none_when_an_answer_quotes_a_later_block(self) -> None:

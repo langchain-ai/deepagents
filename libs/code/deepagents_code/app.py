@@ -15312,7 +15312,7 @@ class DeepAgentsApp(App):
             await self._toggle_diff_line_numbers()
             label = "shown" if self._show_diff_line_numbers else "hidden"
             self.notify(
-                f"Diff line numbers {label} for new diffs.",
+                f"Line numbers {label} for new diffs.",
                 severity="information",
                 timeout=5,
                 markup=False,

@@ -17,7 +17,7 @@ Quick map of CI/automation files in this folder.
 | `SECRETS.md` | Non-`GITHUB_TOKEN` CI credential inventory (names and scopes only) |
 | `images/` | Static assets referenced by workflows or docs |
 
-Package-level CI conventions and partner onboarding checklists live in root [`AGENTS.md`](../AGENTS.md).
+Repository-wide CI conventions live in root [`AGENTS.md`](../AGENTS.md). The partner onboarding checklist lives in [`libs/partners/AGENTS.md`](../libs/partners/AGENTS.md).
 
 ## Workflows (`workflows/`)
 
@@ -73,4 +73,5 @@ Special cases:
 
 - [`RELEASING.md`](./RELEASING.md) — version branches, release-please, fan-out guards, publishing
 - [`SECRETS.md`](./SECRETS.md) — secret/variable names and environment scopes
-- [`../AGENTS.md`](../AGENTS.md) — monorepo conventions, PR title scopes, "adding a new partner to CI"
+- [`../AGENTS.md`](../AGENTS.md) — monorepo conventions and PR title scopes
+- [`../libs/partners/AGENTS.md`](../libs/partners/AGENTS.md) — adding a new partner to CI

@@ -31,7 +31,7 @@ Follow Conventional Commits and include a scope. Allowed types and scopes are de
 
 ### Branches
 
-Name branches `<github-username>/<scope>/<short-description>`, where the description is brief kebab-case. Use the same scope as the PR title.
+Name branches `<github-username>/<scope>/<short-description>`, where the description is brief kebab-case. Use the same scope as the PR title, except documentation-only branches may use the branch-only `docs` scope.
 
 ### PR bodies
 
@@ -72,7 +72,7 @@ Every feature or bugfix needs unit coverage.
 - Do not add `@pytest.mark.asyncio`; packages use `asyncio_mode = "auto"`.
 - Test behavior rather than duplicating implementation logic. Cover edge cases and keep tests deterministic.
 
-#### Warning filters
+#### Warnings are errors
 
 All packages treat unaccepted pytest warnings as errors. Fix actionable warnings before adding filters.
 

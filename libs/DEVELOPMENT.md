@@ -130,7 +130,7 @@ Test files mirror the source layout: tests for `deepagents/middleware/foo.py` li
 
 ### Warnings fail the suite
 
-Every package puts `"error"` first in its pytest `filterwarnings`, so any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist; fix actionable warnings first and treat an allowlist entry as the last resort. The filter mechanics live in the root [`AGENTS.md`](../AGENTS.md#warning-filters); the operational notes below live here.
+Every package puts `"error"` first in its pytest `filterwarnings`, so any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist; fix actionable warnings first and treat an allowlist entry as the last resort. The filter mechanics live in the root [`AGENTS.md`](../AGENTS.md#warnings-are-errors); the operational notes below live here.
 
 How a stray warning surfaces depends on when it is raised:
 
@@ -147,7 +147,7 @@ Maintainers can apply the `bypass-warnings-check` PR label and re-run failed job
 
 ## Benchmarks
 
-Each package's `Makefile` defines `bench` (walltime) and `bench-memory` (heap) targets that are the single source of truth for the benchmark invocation — both local runs and the reusable CI workflow (`../../.github/workflows/_benchmark.yml`) call these targets. To change how benchmarks run, edit the Makefile; CI inherits the change.
+Each package's `Makefile` defines `bench` (walltime) and `bench-memory` (heap) targets that are the single source of truth for the benchmark invocation — both local runs and the reusable CI workflow (`.github/workflows/_benchmark.yml`) call these targets. To change how benchmarks run, edit the Makefile; CI inherits the change.
 
 ```bash
 # Single package (same target CI invokes):

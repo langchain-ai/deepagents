@@ -175,7 +175,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "mistralai": "Mistral AI",
     "nvidia": "NVIDIA",
     "openai": "OpenAI",
-    "openai_codex": "OpenAI Codex (ChatGPT login)",
+    "openai_codex": "OpenAI (Subscription login)",
     "openrouter": "OpenRouter",
     "perplexity": "Perplexity",
     "together": "Together AI",
@@ -193,7 +193,7 @@ PROVIDER_SHORT_NAMES: dict[str, str] = {
 
 Sparse companion to `PROVIDER_DISPLAY_NAMES`: an entry exists only when the full
 display name carries a parenthetical qualifier that reads badly inside a tag
-(e.g. `"OpenAI Codex (ChatGPT login)"`). Resolved via `provider_short_name`.
+(e.g. `"OpenAI (Subscription login)"`). Resolved via `provider_short_name`.
 """
 
 

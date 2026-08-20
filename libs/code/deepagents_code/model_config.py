@@ -462,7 +462,7 @@ class ProviderConfig(TypedDict, total=False):
     short_name: str
     """Compact brand label for space-constrained UI (e.g. the `/model` Recent
     tag), where the full `display_name` — which may carry a parenthetical
-    qualifier like `"OpenAI Codex (ChatGPT login)"` — is too long. Optional;
+    qualifier like `"OpenAI (Subscription login)"` — is too long. Optional;
     when unset, callers fall back to `display_name`.
     """
 

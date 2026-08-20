@@ -1977,7 +1977,7 @@ class TestAuthManagerScreen:
                 for i in range(options.option_count)
                 if options.get_option_at_index(i).id == "openai_codex"
             )
-            assert "OpenAI Codex (ChatGPT login)" in label
+            assert "OpenAI (Subscription login)" in label
 
     async def test_configured_provider_uses_display_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

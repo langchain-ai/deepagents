@@ -16,7 +16,6 @@ import sys
 import tempfile
 import threading
 import tomllib
-from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -33,6 +32,10 @@ from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.service import ConfigSources
+    from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.json_types import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -2696,6 +2699,108 @@ def warn_on_split_credential_source(provider: str) -> None:
         )
 
 
+def _ranked_models_section(
+    data: Mapping[str, Any],
+    *,
+    rank: int,
+    status: ProviderStatus,
+) -> RankedProviderValue[object]:
+    """Read the raw `[models]` root for callsite structural validation.
+
+    Returns:
+        A durable ranked provider containing the raw section when declared.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Unset
+
+    result = Found(data["models"]) if status.usable and "models" in data else Unset()
+    return RankedProviderValue(rank, True, status, result)
+
+
+def _resolve_models_section(
+    sources: ConfigSources,
+    *,
+    user_data: Mapping[str, Any],
+) -> object:
+    """Resolve the model namespace before model-specific validation.
+
+    Returns:
+        The deep-merged raw section, or an empty table when neither tier sets it.
+    """
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        USER_RANK,
+        resolve_ranked,
+    )
+
+    resolved = resolve_ranked(
+        (
+            _ranked_models_section(
+                sources.managed.data,
+                rank=MANAGED_RANK,
+                status=sources.managed.status,
+            ),
+            _ranked_models_section(
+                user_data,
+                rank=USER_RANK,
+                status=sources.user.status,
+            ),
+        ),
+        strategy="deep_merge",
+    )
+    return {} if resolved is None else resolved.value
+
+
+def _resolve_model_file_option(
+    option: ConfigOption,
+    sources: ConfigSources,
+    *,
+    user_data: Mapping[str, Any],
+) -> object | None:
+    """Resolve one stored model option without admitting the env tier.
+
+    `ModelConfig` describes persisted choices. In particular its
+    `auto_classifier_model` field intentionally does not reflect the runtime
+    environment override, so this reader constructs only the two file tiers.
+
+    Returns:
+        The ranked file value, or `None` when both tiers abstain.
+    """
+    from deepagents_code.configuration.providers import ranked_toml_value
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        USER_RANK,
+        resolve_ranked,
+    )
+
+    managed_section = sources.managed.data.get("models")
+    managed_data = (
+        {"models": managed_section} if isinstance(managed_section, dict) else {}
+    )
+    user_section = user_data.get("models")
+    typed_user_data = {"models": user_section} if isinstance(user_section, dict) else {}
+    resolved = resolve_ranked(
+        (
+            ranked_toml_value(
+                option,
+                managed_data,
+                rank=MANAGED_RANK,
+                durable=True,
+                status=sources.managed.status,
+            ),
+            ranked_toml_value(
+                option,
+                typed_user_data,
+                rank=USER_RANK,
+                durable=True,
+                status=sources.user.status,
+            ),
+        ),
+        strategy=option.merge_strategy.value,
+    )
+    return None if resolved is None else resolved.value
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """Parsed model configuration from `config.toml`.
@@ -2756,6 +2861,9 @@ class ModelConfig:
                 apply on the default path. The result is empty only when
                 neither layer supplies values. An explicit `config_path` reads
                 that file alone, with no managed layer.
+
+        Raises:
+            RuntimeError: If required model options are missing from the manifest.
         """
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
@@ -2765,6 +2873,7 @@ class ModelConfig:
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
+        from deepagents_code.config_manifest import get_option
         from deepagents_code.configuration.service import get_config_sources
         from deepagents_code.configuration.types import ProviderHealth
 
@@ -2809,46 +2918,84 @@ class ModelConfig:
                 sources.managed.status.path,
                 dropped,
             )
-        if user_unreadable:
-            # Do not let a privileged process read a config the owning user has
-            # made unavailable, but preserve administrator-managed policy.
-            # Copy: `providers` below is retained in the cached `ModelConfig`,
-            # and the managed snapshot is shared process-wide. Handing out a
-            # live sub-dict would let a consumer mutate administrator policy
-            # for the rest of the session. The `merged()` path already copies.
-            data = deepcopy(sources.managed.data)
-        else:
-            data, _ = sources.merged()
-        # `data` is merged, so a warning below must not assert that the value
-        # sits in the user's file.
-        source_label = _effective_source_label(config_path)
+        # Do not let a privileged process read a config the owning user has
+        # made unavailable, but preserve administrator-managed policy.
+        user_data = {} if user_unreadable else sources.user.data
+        # A warning below describes the effective ranked value, so it must not
+        # assert that the value sits in the user's file.
+        source_label = (
+            f"{config_path} or managed config"
+            if sources.managed.data
+            else str(config_path)
+        )
         try:
-            models_section = data.get("models", {})
-            stored_classifier = models_section.get("auto_classifier")
-            # Coerce each field to the shape the readers below assume. A
-            # wrong-typed leaf must degrade to the built-in default for that
-            # one field, not crash the load: `_validate` is documented as
-            # warn-only, and it runs outside this guard, so a non-mapping
-            # `providers` reached `providers.items()` and raised
-            # `AttributeError` out of a loader every caller treats as total.
+            models_section = cast(
+                "Any", _resolve_models_section(sources, user_data=user_data)
+            )
+            # Preserve the structural diagnostic before resolving children.
+            # Calling `.get` intentionally raises for an effective scalar root,
+            # exactly as the tolerant legacy reader did.
+            models_section.get("default")
+
+            option_keys = (
+                "models.default",
+                "models.recent",
+                "models.auto_classifier",
+                "models.providers",
+            )
+            options = {key: get_option(key) for key in option_keys}
+            if any(option is None for option in options.values()):
+                msg = "model options are missing from the config manifest"
+                raise RuntimeError(msg)
+            resolved = {
+                key: _resolve_model_file_option(
+                    cast("ConfigOption", option),
+                    sources,
+                    user_data=user_data,
+                )
+                for key, option in options.items()
+            }
+
+            user_models = user_data.get("models")
+            if isinstance(user_models, dict):
+                for key in ("default", "recent"):
+                    option_key = f"models.{key}"
+                    if resolved[option_key] is None and key in user_models:
+                        # Provider coercion already rejected this tier. Replay
+                        # the existing callsite diagnostic without making the
+                        # raw value authoritative again.
+                        _toml_model_spec(
+                            user_models[key],
+                            key=key,
+                            path=config_path,
+                            source_label=source_label,
+                        )
+
+            # Coerce each resolved field to the shape the readers below assume.
+            # Callsite validation remains separate from provider coercion where
+            # it needs model-specific context and warning text.
             config = cls(
                 default_model=_toml_model_spec(
-                    models_section.get("default"),
+                    resolved["models.default"],
                     key="default",
                     path=config_path,
                     source_label=source_label,
                 ),
                 recent_model=_toml_model_spec(
-                    models_section.get("recent"),
+                    resolved["models.recent"],
                     key="recent",
                     path=config_path,
                     source_label=source_label,
                 ),
                 auto_classifier_model=(
-                    stored_classifier if isinstance(stored_classifier, str) else None
+                    resolved["models.auto_classifier"]
+                    if isinstance(resolved["models.auto_classifier"], str)
+                    else None
                 ),
                 providers=_toml_providers_table(
-                    models_section.get("providers", {}),
+                    resolved["models.providers"]
+                    if resolved["models.providers"] is not None
+                    else {},
                     path=config_path,
                     source_label=source_label,
                 ),

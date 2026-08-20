@@ -11,12 +11,14 @@ from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from rich.text import Text
 from textual.app import NoScreen
 from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Size
+from textual.highlight import highlight
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
@@ -606,6 +608,47 @@ class ChatTextArea(PasteBurstTextArea):
         # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
         self._app_blurred = False
         self._refocus_time: float | None = None
+        self._shell_highlighting = False
+        self._highlighted_source = ""
+        self._highlighted_lines: list[Content] | None = None
+
+    def set_shell_highlighting(self, *, enabled: bool) -> None:
+        """Enable shell syntax highlighting for this text area."""
+        if self._shell_highlighting == enabled:
+            return
+        self._shell_highlighting = enabled
+        self._highlighted_source = ""
+        self._highlighted_lines = None
+        self._line_cache.clear()
+        self.refresh()
+
+    def notify_style_update(self) -> None:
+        """Clear resolved shell styles when the app theme changes."""
+        self._highlighted_lines = None
+        super().notify_style_update()
+
+    def get_line(self, line_index: int) -> Text:
+        """Return one input line with shell syntax styles when enabled."""
+        if not self._shell_highlighting:
+            return super().get_line(line_index)
+
+        source = self.text
+        lines = self._highlighted_lines
+        if lines is None or source != self._highlighted_source:
+            self._highlighted_source = source
+            highlighted = highlight(source, language="sh")
+            lines = list(highlighted.split("\n", allow_blank=True))
+            self._highlighted_lines = lines
+
+        try:
+            content = lines[line_index]
+        except IndexError:
+            return Text("", end="", no_wrap=True)
+
+        line = Text(end="", no_wrap=True)
+        for segment in content.render_segments(self.visual_style):
+            line.append(segment.text, segment.style)
+        return line
 
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
@@ -2234,6 +2277,9 @@ class ChatInput(Vertical):
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
         self._text_area._chat_input_owner = self
+        self._text_area.set_shell_highlighting(
+            enabled=self.mode in {"shell", "shell_incognito"}
+        )
 
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
@@ -3390,6 +3436,10 @@ class ChatInput(Vertical):
         # Keep inline argument hints in sync for mode-only transitions
         # (for example, exiting command mode via Escape or backspace).
         self._update_argument_hint()
+        if self._text_area is not None:
+            self._text_area.set_shell_highlighting(
+                enabled=mode in {"shell", "shell_incognito"}
+            )
 
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
         if not glyph and mode != "normal":

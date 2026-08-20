@@ -1549,6 +1549,64 @@ class TestPromptIndicator:
             assert any(m.mode == "shell" for m in messages)
 
 
+class TestShellSyntaxHighlighting:
+    """Shell command modes should render Bash syntax styles in the chat input."""
+
+    @pytest.mark.parametrize("mode", ["shell", "shell_incognito"])
+    async def test_shell_modes_highlight_command(self, mode: str) -> None:
+        """Shell and incognito shell modes should style command tokens."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            command = 'FOO="bar" echo "$FOO"'
+            text_area.text = command
+
+            chat_input.mode = mode
+            await pilot.pause()
+
+            line = text_area.get_line(0)
+            assert line.plain == command
+            assert len({span.style for span in line.spans}) > 1
+
+    async def test_leaving_shell_mode_removes_highlighting(self) -> None:
+        """Returning to normal input should clear cached shell styles."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            text_area.text = 'echo "$HOME"'
+
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert text_area.get_line(0).spans
+
+            chat_input.mode = "normal"
+            await pilot.pause()
+            line = text_area.get_line(0)
+            assert line.plain == 'echo "$HOME"'
+            assert not line.spans
+
+    async def test_shell_highlighting_tracks_multiline_edits(self) -> None:
+        """Editing a shell draft should invalidate all cached highlighted lines."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = app.query_one(ChatTextArea)
+            chat_input.mode = "shell"
+            text_area.text = 'echo "first"'
+            await pilot.pause()
+            assert text_area.get_line(0).plain == 'echo "first"'
+
+            text_area.text = 'FOO="bar"\nprintf "%s" "$FOO"'
+            await pilot.pause()
+
+            assert text_area.get_line(0).plain == 'FOO="bar"'
+            second_line = text_area.get_line(1)
+            assert second_line.plain == 'printf "%s" "$FOO"'
+            assert second_line.spans
+
+
 class TestModeSwitchNoJitter:
     """Regression tests: mode glyph and completion popup update atomically.
 

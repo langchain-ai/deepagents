@@ -7533,6 +7533,7 @@ class TestClearCommand:
 
             with (
                 patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch.object(app, "_thread_links_configured", return_value=True),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")
@@ -7585,6 +7586,7 @@ class TestClearCommand:
                     "deepagents_code.sessions.get_thread_agent",
                     AsyncMock(return_value="agent"),
                 ),
+                patch.object(app, "_thread_links_configured", return_value=True),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")
@@ -7608,6 +7610,43 @@ class TestClearCommand:
                 "suffix": " (Resume with /threads -r)",
             }
 
+    async def test_clear_hides_thread_ids_without_tracing(self) -> None:
+        """Unlinked thread notices should stay concise."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+            app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="existing response")
+            )
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="agent"),
+                ),
+                patch.object(app, "_thread_links_configured", return_value=False),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert "Started new thread" in contents
+            assert "Resume previous thread with /threads -r" in contents
+            assert not any(
+                "old-thread" in text or "new-thread" in text for text in contents
+            )
+            schedule.assert_not_called()
+
     async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
         """/clear should not advertise a thread that cannot be resumed."""
         app = DeepAgentsApp(thread_id="old-thread")
@@ -7622,6 +7661,7 @@ class TestClearCommand:
                     "deepagents_code.sessions.thread_exists",
                     AsyncMock(return_value=False),
                 ),
+                patch.object(app, "_thread_links_configured", return_value=True),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")

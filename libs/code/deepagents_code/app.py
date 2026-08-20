@@ -12079,6 +12079,20 @@ class DeepAgentsApp(App):
         await self._mount_message(AppMessage(link))
 
     @staticmethod
+    def _thread_links_configured() -> bool:
+        """Return whether LangSmith thread links can be resolved."""
+        from deepagents_code.config import get_langsmith_project_name
+
+        try:
+            return get_langsmith_project_name() is not None
+        except Exception:
+            logger.debug(
+                "Could not determine whether LangSmith thread links are configured",
+                exc_info=True,
+            )
+            return False
+
+    @staticmethod
     async def _build_thread_message(
         prefix: str, thread_id: str, *, suffix: str = ""
     ) -> str | Content:
@@ -15210,13 +15224,20 @@ class DeepAgentsApp(App):
                     logger.debug(
                         "Screen stack empty during thread reset", exc_info=True
                     )
-                thread_msg_widget = AppMessage(f"Started new thread: {new_thread_id}")
-                await self._mount_message(thread_msg_widget)
-                self._schedule_thread_message_link(
-                    thread_msg_widget,
-                    prefix="Started new thread",
-                    thread_id=new_thread_id,
+                thread_links_configured = self._thread_links_configured()
+                started_message = (
+                    f"Started new thread: {new_thread_id}"
+                    if thread_links_configured
+                    else "Started new thread"
                 )
+                thread_msg_widget = AppMessage(started_message)
+                await self._mount_message(thread_msg_widget)
+                if thread_links_configured:
+                    self._schedule_thread_message_link(
+                        thread_msg_widget,
+                        prefix="Started new thread",
+                        thread_id=new_thread_id,
+                    )
                 await self._mount_previous_thread_hint(
                     self._session_state.previous_thread_id,
                     had_agent_output=outgoing_had_agent_output,
@@ -18505,10 +18526,14 @@ class DeepAgentsApp(App):
         if not owner or (owner != active_agent and self._server_kwargs is None):
             return False
 
+        thread_links_configured = self._thread_links_configured()
         resume_hint = " (Resume with /threads -r)"
-        previous_msg_widget = AppMessage(
+        previous_message = (
             f"Previous thread: {previous_thread_id}{resume_hint}"
+            if thread_links_configured
+            else "Resume previous thread with /threads -r"
         )
+        previous_msg_widget = AppMessage(previous_message)
         # The hint is cosmetic, so a mount fault must not escape into the
         # caller's error handling. Two callers wrap this in a rollback: a raise
         # from `_resume_thread` would undo an already-completed switch and
@@ -18517,12 +18542,13 @@ class DeepAgentsApp(App):
         # server came up healthy. Both would misreport success as failure.
         try:
             await self._mount_message(previous_msg_widget)
-            self._schedule_thread_message_link(
-                previous_msg_widget,
-                prefix="Previous thread",
-                thread_id=previous_thread_id,
-                suffix=resume_hint,
-            )
+            if thread_links_configured:
+                self._schedule_thread_message_link(
+                    previous_msg_widget,
+                    prefix="Previous thread",
+                    thread_id=previous_thread_id,
+                    suffix=resume_hint,
+                )
         except Exception:
             logger.warning(
                 "Could not mount previous-thread hint for %s",

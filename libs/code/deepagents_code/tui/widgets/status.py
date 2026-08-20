@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from textual.containers import Horizontal, Vertical
@@ -46,7 +47,7 @@ CONNECTION_STATES = frozenset(get_args(ConnectionState))
 Derived from the `Literal` so the two can never drift."""
 
 PickerTarget = Literal["model", "effort"]
-"""Spans in the model label that open a picker on Ctrl+click.
+"""Clickable spans in the model label that open their corresponding picker.
 
 Each member names both an entry in `_PICKER_ACTIONS` and one in
 `_PICKER_STYLES`, so the two mappings stay keyed by this `Literal`."""
@@ -79,10 +80,13 @@ _PICKER_STYLES = {
 
 Derived from `PickerTarget` so a new member cannot be left without a style."""
 
-_PICKER_READY_STYLE = Style(underline=True)
-"""Added on top of a hit-target style while Ctrl is held over that span.
+_PICKER_HOVER_STYLE = Style(underline=True)
+"""Added on top of a hit-target style while the pointer is over that span.
 
 Carries no metadata of its own, so merging it keeps the target resolvable."""
+
+_APP_REFOCUS_CLICK_GUARD_SECONDS = 0.2
+"""Maximum delay between app refocus and the click that caused it."""
 
 _LEFT_BUTTON = 1
 """Textual `MouseEvent.button` value for the left mouse button."""
@@ -118,8 +122,8 @@ class ModelLabel(Widget):
     model left-truncated to make room) and is only dropped once even the
     left-truncated model plus effort cannot fit.
 
-    Whatever text survives that ladder is also a hit target: Ctrl+click on the
-    model span opens the model selector and on the effort span the reasoning
+    Whatever text survives that ladder is also a hit target: clicking the model
+    span opens the model selector and clicking the effort span opens the reasoning
     effort picker, via the `_PICKER_ACTIONS` app actions. A span that the ladder
     dropped is not clickable, because only rendered text carries the metadata.
     """
@@ -127,11 +131,11 @@ class ModelLabel(Widget):
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
     effort: reactive[str] = reactive("", layout=True)
-    _ctrl_hint_target: reactive[PickerTarget | None] = reactive(None)
-    """Target under the pointer while Ctrl is held, or `None` when there is none.
+    _hovered_target: reactive[PickerTarget | None] = reactive(None)
+    """Target under the pointer, or `None` when there is none."""
 
-    Repaints on change so the underline hint appears; only `on_mouse_move` and
-    `on_leave` write it, because terminals do not report modifier release."""
+    _last_app_focus_time: float | None = None
+    """Monotonic time when the app most recently regained focus."""
 
     def _clean_model(self) -> str:
         """Strip the provider's registered prefix so the status bar stays compact.
@@ -170,13 +174,13 @@ class ModelLabel(Widget):
             target: Picker represented by the styled span.
 
         Returns:
-            The cached hit-target style, underlined while Ctrl is held over
+            The cached hit-target style, underlined while the pointer is over
                 this span. `Style` is frozen, so the cached entry is never
                 mutated.
         """
         style = _PICKER_STYLES[target]
-        if self._ctrl_hint_target == target:
-            style += _PICKER_READY_STYLE
+        if self._hovered_target == target:
+            style += _PICKER_HOVER_STYLE
         return style
 
     @staticmethod
@@ -220,36 +224,58 @@ class ModelLabel(Widget):
             Content.styled(effort, self._picker_style("effort")),
         )
 
+    def on_mount(self) -> None:
+        """Track app refocuses so their initiating click stays inert."""
+        self.watch(self.app, "app_focus", self._on_app_focus_changed, init=False)
+
+    def _on_app_focus_changed(self, focused: bool) -> None:
+        """Record when the app regains focus.
+
+        Args:
+            focused: Whether the app now has focus.
+        """
+        self._last_app_focus_time = monotonic() if focused else None
+
+    def _is_refocus_click(self) -> bool:
+        """Consume and identify a click that immediately follows app refocus.
+
+        Returns:
+            Whether the click should be suppressed as part of app refocus.
+        """
+        focused_at = self._last_app_focus_time
+        self._last_app_focus_time = None
+        return (
+            focused_at is not None
+            and monotonic() - focused_at <= _APP_REFOCUS_CLICK_GUARD_SECONDS
+        )
+
     async def on_click(self, event: events.Click) -> None:
-        """Open a picker for a Ctrl+left-click on a target span in the status bar.
+        """Open a picker for a left-click on a target span in the status bar.
 
         Textual synthesizes `Click` for any button and posts one per release, so
-        filter on both: without the button check a Ctrl+right-click would open a
-        picker, and without the chain check a Ctrl+double-click would open two.
+        filter on both: without the button check a right-click would open a picker,
+        and without the chain check a double-click would open two. A click that
+        restores terminal focus is consumed without opening anything.
         """
         target = self._picker_target(event)
-        if not event.ctrl or event.button != _LEFT_BUTTON or target is None:
+        if event.button != _LEFT_BUTTON or target is None:
             return
-        # Stop every chained click, so a repeat does not bubble to the app
-        # handler that refocuses the chat input behind the picker.
+        # Stop every target click so it cannot bubble to the app handler that
+        # refocuses the chat input behind a picker.
         event.stop()
-        if event.chain > _SINGLE_CLICK_CHAIN:
+        if event.chain > _SINGLE_CLICK_CHAIN or self._is_refocus_click():
             return
         await self.run_action(_PICKER_ACTIONS[target])
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        """Underline the hovered target and show a pointer while Ctrl is held.
-
-        Clears both otherwise. Terminals do not report modifier release, so the
-        hint goes stale until the next move if Ctrl is released in place.
-        """
-        target = self._picker_target(event) if event.ctrl else None
-        self._ctrl_hint_target = target
+        """Underline the hovered target and show a pointer."""
+        target = self._picker_target(event)
+        self._hovered_target = target
         self.styles.pointer = "pointer" if target is not None else "default"
 
     def on_leave(self) -> None:
         """Clear the underline and the pointer when the pointer leaves the label."""
-        self._ctrl_hint_target = None
+        self._hovered_target = None
         self.styles.pointer = "default"
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002

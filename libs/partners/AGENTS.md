@@ -18,4 +18,4 @@ Wire a new partner into all relevant repository surfaces:
 - The managed-packages table in `.github/RELEASING.md`
 - Sandbox options and credential checks in `.github/workflows/harbor.yml` when the partner is sandbox-backed
 
-For a first release at `0.0.1`, set the manifest baseline to `0.0.0`.
+For a first release, set the manifest baseline to `0.0.0`. See [Adding a release-please-managed package](../../.github/RELEASING.md#adding-a-release-please-managed-package) for why, and for the check that blocks a wrong baseline.

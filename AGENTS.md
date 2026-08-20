@@ -27,7 +27,7 @@ Follow Conventional Commits and include a scope. Allowed types and scopes are de
 - Wrap class, function, method, parameter, and variable names in backticks.
 - Do not put Linear issue-closing markers in titles; put issue relationships in the PR body.
 - For version-branch syncs, use `chore(repo): sync main into vX.Y`; `release` is a type, not a scope.
-- Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [fan-out guidance](.github/RELEASING.md#multi-component-fan-out).
+- Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
 ### Branches
 
@@ -60,6 +60,9 @@ Preserve exported function signatures, argument positions, and names. Before cha
 - Use Google-style docstrings for public functions. Put types in signatures, not docstrings; do not repeat defaults unless post-processing or conditional behavior changes them.
 - Document public parameters, return values, and exceptions concisely, focusing on why rather than restating code.
 - Use American English and single backticks for inline code; do not use Sphinx-style double backticks.
+- Use descriptive variable names, preferring single words where they read clearly.
+- Break up functions longer than roughly 20 lines into smaller focused ones where it helps.
+- Build error text in a `msg` variable and raise with it, matching the surrounding code.
 - Remove unreachable or commented-out code before committing.
 
 When adding or updating model names in docs, examples, or defaults, verify the latest generally available IDs in the provider's official documentation. Do not rely on remembered model names.
@@ -74,7 +77,9 @@ Every feature or bugfix needs unit coverage.
 
 #### Warnings are errors
 
-All packages treat unaccepted pytest warnings as errors. Fix actionable warnings before adding filters.
+All packages treat unaccepted pytest warnings as errors. Fix actionable warnings before adding filters. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#warnings-fail-the-suite) for how a stray warning surfaces and for the `bypass-warnings-check` label.
+
+Keep this heading stable: package `pyproject.toml` comments cite it by name.
 
 - Scope an expected warning to the test with `@pytest.mark.filterwarnings`; reserve package-level entries for categorical or third-party warnings and justify them.
 - Prefer `default::` to `ignore::` for warnings such as `PytestUnhandledThreadExceptionWarning` and `PytestUnraisableExceptionWarning`, so failures remain visible.
@@ -106,18 +111,20 @@ Exclude package `.venv` directories, hidden worktrees, `deepagents.egg-info`, ge
 - [`libs/code/AGENTS.md`](libs/code/AGENTS.md) — Textual, startup performance, slash commands, providers, and the SDK pin.
 - [`libs/evals/AGENTS.md`](libs/evals/AGENTS.md) — eval commands, reports, and Harbor integration.
 - [`libs/partners/AGENTS.md`](libs/partners/AGENTS.md) — partner-package CI and release wiring.
+- [`libs/code/DEVELOPMENT.md`](libs/code/DEVELOPMENT.md) — coding-agent setup and local development.
+- [`libs/cli/DEVELOPMENT.md`](libs/cli/DEVELOPMENT.md) — deployment-CLI setup and package layout.
 
-`deepagents-code` is the terminal coding agent launched by `dcode`. `deepagents-cli` contains the `init`, `dev`, and `deploy` deployment commands.
+`deepagents-code` is the terminal coding agent launched by `dcode`. `deepagents-cli` contains the `init`, `deploy`, `agents`, and `mcp-servers` deployment commands.
 
 ### Benchmarks
 
-Use each package's `bench` and `bench-memory` Make targets; they are the source of truth for local and CI invocation. Run all packages with `make -C libs bench-all`. View results in the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepagents). See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#benchmarks) for thresholds and the nightly sweep.
+Benchmarks live in `deepagents`, `code`, and `partners/quickjs`; other packages have no `bench` target. Use the package's `bench` and `bench-memory` Make targets rather than invoking pytest directly — they are the source of truth for local and CI invocation. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#benchmarks) for commands, thresholds, dashboards, and the nightly sweep.
 
 ## CI and releases
 
 Use [`.github/RELEASING.md`](.github/RELEASING.md) for release-please behavior, version branches, changelog overrides, reverts, and release troubleshooting. Workflow files are authoritative for linting and labeling behavior.
 
-Pin GitHub Actions to full-length commit SHAs. Verify whether a tag is annotated and dereference it before using its commit.
+Pin GitHub Actions to full-length commit SHAs; a tag reference is rejected. Verify whether a tag is annotated and dereference it before using its commit. Use the `gh` CLI to resolve one.
 
 ## Additional resources
 

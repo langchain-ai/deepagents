@@ -103,19 +103,10 @@ For long-term memory and backend routing patterns, use the [Memory](https://docs
 
 ## Common starting points
 
-- Agent construction, middleware ordering, prompt assembly, default model behavior: `graph.py`. `create_deep_agent()` builds the middleware stack and delegates to `langchain.agents.create_agent()`; the call sits near the end of the function, followed by `.with_config(...)` for Deep Agents metadata and recursion config.
+- Agent construction, middleware ordering, prompt assembly, default model behavior: `graph.py`. `create_deep_agent()` builds the middleware stack and delegates to `langchain.agents.create_agent()`; the call currently sits near the end of the function, followed by `.with_config(...)` for Deep Agents metadata and recursion config.
 - Tool visibility, prompt injection, and request-time behavior: `middleware/`. Feature-specific modules include `subagents.py` (subagent middleware and nested `create_agent` use), `filesystem.py`, `skills.py`, `memory.py`, `permissions.py`, and `summarization.py`.
 - Filesystem persistence, shell support, and route behavior: `backends/`.
 - Provider- or model-specific harness changes: `profiles/`.
 - Public imports and compatibility expectations: `__init__.py` plus the API reference.
 
 When in doubt, trace from the public argument on `create_deep_agent()` to the middleware or backend it installs, then follow how that component participates during execution.
-
-## Code style conventions
-
-The durable rules live in the root [`AGENTS.md`](../AGENTS.md); these are the habits that make reviews go quickly:
-
-- Use descriptive variable names, preferring single words where they read clearly.
-- Break up complex functions (over ~20 lines) into smaller focused ones where it makes sense.
-- Build error text in a `msg` variable and raise with it, matching the surrounding code.
-- Write PR prose for readers unfamiliar with the area; avoid insider shorthand.

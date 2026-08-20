@@ -130,7 +130,7 @@ Test files mirror the source layout: tests for `deepagents/middleware/foo.py` li
 
 ### Warnings fail the suite
 
-Every package puts `"error"` first in its pytest `filterwarnings`, so any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist; fix actionable warnings first and treat an allowlist entry as the last resort. The filter mechanics live in the root [`AGENTS.md`](../AGENTS.md#warnings-are-errors); the operational notes below live here.
+Every package puts `"error"` first in its pytest `filterwarnings`. Any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist. Fix actionable warnings first and treat an allowlist entry as the last resort. For the filter mechanics, see the root [`AGENTS.md`](../AGENTS.md#warnings-are-errors).
 
 How a stray warning surfaces depends on when it is raised:
 
@@ -147,13 +147,16 @@ Maintainers can apply the `bypass-warnings-check` PR label and re-run failed job
 
 ## Benchmarks
 
-Each package's `Makefile` defines `bench` (walltime) and `bench-memory` (heap) targets that are the single source of truth for the benchmark invocation — both local runs and the reusable CI workflow (`.github/workflows/_benchmark.yml`) call these targets. To change how benchmarks run, edit the Makefile; CI inherits the change.
+Three packages carry benchmarks: `libs/deepagents`, `libs/code`, and `libs/partners/quickjs`. Each defines `bench` (walltime) and `bench-memory` (heap) Make targets. Other packages have no `bench` target, so `make -C libs/cli bench` fails.
+
+These targets are the single source of truth for the benchmark invocation. Both local runs and the reusable CI workflow (`.github/workflows/_benchmark.yml`) call them. To change how benchmarks run, edit the Makefile; CI inherits the change.
 
 ```bash
 # Single package (same target CI invokes):
 make -C libs/deepagents bench
 
-# All benched packages in one go:
+# `deepagents` and `code` in one go (BENCH_PACKAGES in libs/Makefile;
+# note quickjs is not included):
 make -C libs bench-all
 
 # Plain pytest-benchmark without CodSpeed instrumentation — faster, for
@@ -161,11 +164,11 @@ make -C libs bench-all
 make -C libs/deepagents benchmark
 ```
 
-`bench-memory` runs the `memory_benchmark`-marked subset and is gated in CI behind `has-memory-benchmarks: true` on the workflow input — currently set by `libs/partners/quickjs`.
+`bench-memory` runs the `memory_benchmark`-marked subset. In CI it is gated behind the `has-memory-benchmarks` input on `_benchmark.yml`, which defaults to `false`. No caller sets it today, so memory benchmarks are effectively local-only; wire the flag in if you add one to the sweep.
 
 Results land on the [CodSpeed dashboard](https://codspeed.io/langchain-ai/deepagents), with a separate view per package via the upper-left selector. Regression thresholds are managed in the dashboard (currently 10% global); tighten per-benchmark thresholds for benches whose noise floor is well below that, since a wide threshold masks real regressions in tight code.
 
-`.github/workflows/_benchmark_nightly.yml` runs every benched package on a daily cron without path gating so baselines for unchanged packages do not drift. Use `workflow_dispatch` on that workflow for an ad-hoc full sweep before bumping `pytest-codspeed` or the `CodSpeedHQ/action` SHA.
+`.github/workflows/_benchmark_nightly.yml` runs on a daily cron without path gating, so baselines for unchanged packages do not drift. It covers `libs/deepagents` and `libs/code` only — `libs/partners/quickjs` defines benchmark targets but is not in the sweep. Use `workflow_dispatch` on that workflow for an ad-hoc run before bumping `pytest-codspeed` or the `CodSpeedHQ/action` SHA.
 
 ## Contributing conventions
 

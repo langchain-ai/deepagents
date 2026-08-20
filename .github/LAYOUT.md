@@ -27,6 +27,15 @@ Repository-wide CI conventions live in root [`AGENTS.md`](../AGENTS.md). The par
 
 Credential placement rules are in [`SECRETS.md`](./SECRETS.md). Release wiring is in [`RELEASING.md`](./RELEASING.md).
 
+### Labeling workflows
+
+- `pr_labeler.yml` — unified PR labeler: size, file, title, external/internal, contributor tier.
+- `pr_labeler_backfill.yml` — manual backfill of those labels on open PRs.
+- `auto-label-by-package.yml` — labels issues by the package they name.
+- `tag-external-issues.yml` — classifies issues as external or internal and applies the contributor tier.
+
+The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails-around-releases) because their labels feed the release guards. The two issue labelers are not release-gated.
+
 ## Local composite actions (`actions/`)
 
 Reusable steps shared by multiple workflows. Today this is mainly `actions/uv_setup` (Python + pinned `uv` with caching). Add a new composite action here only when two or more workflows need the same multi-step setup.

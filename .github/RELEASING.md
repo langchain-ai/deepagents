@@ -312,12 +312,12 @@ This label transition signals to release-please that the merged PR has been full
 
 ### CI guardrails around releases
 
-Several workflows protect the release surface; knowing they exist saves a confused read of a red check:
+These workflows guard releases. Each one explains a failed check you may see on a PR:
 
 - **PR title lint** (`pr_lint.yml`) — enforces Conventional Commits with a mandatory scope on PR titles; its allowed types and scopes are the canonical list.
-- **Release-please parse check** (`release_please_parse_check.yml`) — runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)` + body) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. The parser is exact-pinned and must stay in lock-step with `release-please/package.json`.
-- **Fan-out guards** — `release_please_scope_check.yml` blocks bump-worthy PRs that touch real files in more than one managed component or only lockfiles inside a managed package; `release_fanout_bypass_warn.yml` posts a loud sticky when `allow-lockfile-release` / `allow-scope-mismatch` is applied; `release_please_fanout_watch.yml` is a post-merge safety net that comments on open release PRs whose package delta is lockfile-only. See [Multi-component fan-out](#multi-component-fan-out).
-- **Auto-labeling** — `pr_labeler.yml` (unified PR labeler: size, file, title, external/internal, contributor tier), `pr_labeler_backfill.yml` (manual backfill on open PRs), `auto-label-by-package.yml` (issue labeling by package), and `tag-external-issues.yml` (issue external/internal classification and contributor tier).
+- **Release-please parse check** (`release_please_parse_check.yml`) — runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)` + body) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. The parser is exact-pinned and must stay in lock-step with the version release-please itself depends on, declared in its own `package.json` upstream in `googleapis/release-please`.
+- **Fan-out guards** — `release_please_scope_check.yml` blocks bump-worthy PRs that touch real files in more than one managed component or only lockfiles inside a managed package; its bypass label is `allow-lockfile-release`. `pr_scope_file_check.yml` checks the PR scope against the files touched; its bypass label is `allow-scope-mismatch`. `release_fanout_bypass_warn.yml` posts a loud sticky when either label is applied. `release_please_fanout_watch.yml` is a post-merge safety net that comments on open release PRs whose package delta is lockfile-only. See [Multi-component fan-out](#multi-component-fan-out).
+- **Auto-labeling** — `pr_labeler.yml` (unified PR labeler: size, file, title, external/internal, contributor tier) and `pr_labeler_backfill.yml` (manual backfill on open PRs). Issue labeling is not release-gated; see [`LAYOUT.md`](./LAYOUT.md).
 
 ## Manual Release
 

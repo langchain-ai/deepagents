@@ -10730,6 +10730,7 @@ class DeepAgentsApp(App):
                 allow_empty_submit=True,
                 input_placeholder="Tavily API key (optional)",
                 submit_label="Enter save/skip",
+                show_cancel_hint=False,
             )
         )
         if result is not AuthResult.SAVED:

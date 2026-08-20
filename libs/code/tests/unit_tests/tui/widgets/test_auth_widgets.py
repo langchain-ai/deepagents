@@ -82,6 +82,7 @@ class _AuthHostApp(App[None]):
         allow_empty_submit: bool = False,
         input_placeholder: str | None = None,
         submit_label: str | None = None,
+        show_cancel_hint: bool = True,
     ) -> None:
         """Push the prompt and capture the dismissal result."""
 
@@ -97,6 +98,7 @@ class _AuthHostApp(App[None]):
                 allow_empty_submit=allow_empty_submit,
                 input_placeholder=input_placeholder,
                 submit_label=submit_label,
+                show_cancel_hint=show_cancel_hint,
             ),
             handle,
         )
@@ -1155,6 +1157,7 @@ api_key_url = "javascript:alert(1)"
                 allow_empty_submit=True,
                 input_placeholder="Tavily API key (optional)",
                 submit_label="Enter save/skip",
+                show_cancel_hint=False,
             )
             await pilot.pause()
 
@@ -1167,10 +1170,21 @@ api_key_url = "javascript:alert(1)"
         assert key_input.password is True
         assert "Web search is optional" in copy
         assert "Enter save/skip" in str(help_text.content)
+        assert "Esc cancel" not in str(help_text.content)
         # Services (Tavily) omit the storage note entirely — the title and
         # reason already explain the key, so it would only be redundant copy.
         assert has_storage_note is False
         assert "stores the above key locally" not in copy
+
+    async def test_default_prompt_keeps_cancel_hint(self) -> None:
+        """Regular auth prompts continue to advertise Escape."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            help_text = app.screen.query_one(".auth-prompt-help", Static)
+
+        assert "Esc cancel" in str(help_text.content)
 
     async def test_optional_prompt_surfaces_save_failure_and_stays_open(
         self, monkeypatch: pytest.MonkeyPatch

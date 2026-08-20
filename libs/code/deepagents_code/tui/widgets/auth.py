@@ -633,6 +633,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         allow_empty_submit: bool = False,
         input_placeholder: str | None = None,
         submit_label: str | None = None,
+        show_cancel_hint: bool = True,
     ) -> None:
         """Initialize the prompt for `provider`.
 
@@ -647,6 +648,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 with `AuthResult.CANCELLED` instead of showing a validation error.
             input_placeholder: Optional placeholder override for the key input.
             submit_label: Optional help-label override for the Enter action.
+            show_cancel_hint: Whether the footer advertises the Escape action.
         """
         super().__init__()
         self._provider = provider
@@ -655,6 +657,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self._allow_empty_submit = allow_empty_submit
         self._input_placeholder = input_placeholder
         self._submit_label = submit_label
+        self._show_cancel_hint = show_cancel_hint
         # LangSmith is configured as a tracing service: it carries an optional
         # project name and an endpoint chosen from a region selector (US/EU SaaS
         # or a custom self-hosted URL), and saving a key turns tracing on.
@@ -1000,8 +1003,13 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             save_label = self._submit_label or (
                 "Enter replace" if self._has_existing else "Enter save"
             )
+            save_help = (
+                f"{save_label} {glyphs.bullet} Esc cancel"
+                if self._show_cancel_hint
+                else save_label
+            )
             help_parts = [
-                f"{save_label} {glyphs.bullet} Esc cancel",
+                save_help,
                 "F2 advanced",
                 "Ctrl+R reload",
             ]

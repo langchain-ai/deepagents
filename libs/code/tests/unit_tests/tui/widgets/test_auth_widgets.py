@@ -2690,14 +2690,51 @@ enabled = false
         # surfaces in the rendered span representation.
         assert "providers" in repr(copy.content) or "providers" in content
 
-    async def test_footer_lists_full_action_set(self) -> None:
-        """Footer mentions add/replace/delete (delete happens via the prompt)."""
+    async def test_footer_tracks_highlighted_action(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footer names the action exposed by the highlighted provider row."""
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider in {"openai", "anthropic"},
+        )
+        auth_store.set_stored_key("openai", "stored-key")
+
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_manager()
             await pilot.pause()
-            help_text = app.screen.query_one(".auth-manager-help", Static)
-        assert "add/replace/delete" in str(help_text.content)
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            expected_actions = {
+                "openai": "replace/delete",
+                "anthropic": "replace",
+                "tavily": "add",
+                "groq": "install",
+            }
+            for provider, action in expected_actions.items():
+                index = next(
+                    i
+                    for i in range(options.option_count)
+                    if options.get_option_at_index(i).id == provider
+                )
+                options.highlighted = index
+                await pilot.pause()
+                assert f"Enter {action} " in str(help_text.content)
 
     async def test_corrupt_store_surfaces_warning_banner(
         self, fake_state_dir: Path
@@ -2797,6 +2834,9 @@ class TestCodexAuthInManager:
                     break
             assert target_index is not None
             options.highlighted = target_index
+            await pilot.pause()
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            assert "Enter sign in " in str(help_text.content)
             # We just need to observe that the screen is pushed *before* the
             # fake worker finishes; capture the screen class via the
             # `screen_stack` instead of asserting on `app.screen` (which the
@@ -2883,6 +2923,9 @@ class TestCodexAuthInManager:
                     break
             assert target_index is not None
             options.highlighted = target_index
+            await pilot.pause()
+            help_text = app.screen.query_one("#auth-manager-help", Static)
+            assert "Enter manage " in str(help_text.content)
             pushed: list[type] = []
             original = app.push_screen
 

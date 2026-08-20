@@ -1603,6 +1603,7 @@ class AuthManagerScreen(ModalScreen[None]):
         # populated each time the option list is built. Selecting one routes
         # to the install confirmation instead of the key prompt.
         self._install_extras: dict[str, str] = {}
+        self._auth_statuses: dict[str, ProviderAuthStatus] = {}
         # Set when the user confirms installing a provider's extra; the app
         # reads these off the screen after dismissal to install then reopen
         # the manager with the just-installed provider highlighted.
@@ -1616,7 +1617,6 @@ class AuthManagerScreen(ModalScreen[None]):
         Yields:
             Widgets for the manager listing.
         """
-        glyphs = get_glyphs()
         options, store_warning = self._build_options_with_warning()
         with Vertical():
             yield Static("Manage API keys", classes="auth-manager-title")
@@ -1630,12 +1630,53 @@ class AuthManagerScreen(ModalScreen[None]):
                     classes="auth-manager-warning",
                 )
             yield OptionList(*options, id="auth-manager-options")
+            first_provider = options[0].id if options else None
             yield Static(
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab/Shift+Tab "
-                f"navigate {glyphs.bullet} Enter add/replace/delete/install "
-                f"{glyphs.bullet} Esc close",
+                self._build_manager_help(first_provider),
                 classes="auth-manager-help",
+                id="auth-manager-help",
             )
+
+    def _build_manager_help(self, provider: str | None) -> str:
+        """Build the manager footer for the highlighted provider.
+
+        Args:
+            provider: Highlighted provider config key, if one is available.
+
+        Returns:
+            Navigation help with the provider's current Enter action.
+        """
+        glyphs = get_glyphs()
+        action = self._action_for_provider(provider)
+        return (
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab/Shift+Tab navigate "
+            f"{glyphs.bullet} Enter {action} {glyphs.bullet} Esc close"
+        )
+
+    def _action_for_provider(self, provider: str | None) -> str:
+        """Return the action exposed by selecting a provider row.
+
+        Args:
+            provider: Highlighted provider config key, if one is available.
+
+        Returns:
+            Short action label for the manager footer.
+        """
+        if provider is None:
+            return "select"
+        if provider in self._install_extras:
+            return "install"
+
+        status = self._auth_statuses.get(provider)
+        if provider == CODEX_PROVIDER:
+            if status is not None and status.state == ProviderAuthState.CONFIGURED:
+                return "manage"
+            return "sign in"
+        if status is not None and status.source == ProviderAuthSource.STORED:
+            return "replace/delete"
+        if status is not None and status.state == ProviderAuthState.CONFIGURED:
+            return "replace"
+        return "add"
 
     def _build_description(self) -> Content:
         """Build the description line with an inline docs hyperlink.
@@ -1699,6 +1740,14 @@ class AuthManagerScreen(ModalScreen[None]):
     def on_leave(self) -> None:
         """Reset the pointer shape when the mouse leaves the manager."""
         self.styles.pointer = "default"
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        """Update the footer for the highlighted provider row."""
+        self.query_one("#auth-manager-help", Static).update(
+            self._build_manager_help(event.option.id)
+        )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Open the prompt for the selected provider.
@@ -1853,6 +1902,15 @@ class AuthManagerScreen(ModalScreen[None]):
             option_list.add_option(option)
         if highlighted is not None and option_list.option_count:
             option_list.highlighted = min(highlighted, option_list.option_count - 1)
+        highlighted = option_list.highlighted
+        provider = (
+            option_list.get_option_at_index(highlighted).id
+            if highlighted is not None
+            else None
+        )
+        self.query_one("#auth-manager-help", Static).update(
+            self._build_manager_help(provider)
+        )
 
     def _build_options_with_warning(self) -> tuple[list[Option], str | None]:
         """Render the option list, returning a corruption warning if any.
@@ -1907,6 +1965,7 @@ class AuthManagerScreen(ModalScreen[None]):
         # corrupt store, log the same warning twice). A single pass halves both.
         services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
         status_by_key = {key: _auth_status_for(key) for key in shown | services}
+        self._auth_statuses = status_by_key
 
         # Float entries that already have a credential configured to the top so
         # the keys a user is actively using are easiest to find; everything else

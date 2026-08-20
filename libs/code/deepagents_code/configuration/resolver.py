@@ -153,6 +153,32 @@ def resolve_ranked[T](
     )
 
 
+def _replace_with_strongest[T](
+    found: Sequence[RankedProviderValue[T]],
+    tier_health: Mapping[int, ProviderResult[T]],
+    provider_status: Mapping[int, ProviderStatus],
+    tier_diagnostics: Mapping[int, tuple[str, ...]],
+) -> ResolvedValue[T]:
+    """Resolve to the strongest-precedence provider when accumulation fails.
+
+    The value is copied. Provider values alias the process-wide managed
+    snapshot, so handing out a live reference would let a consumer mutate
+    administrator policy for the rest of the session.
+
+    Returns:
+        The lowest-rank provider's value, deep-copied.
+    """
+    winner = found[0]
+    return ResolvedValue(
+        deepcopy(_provider_value(winner)),
+        MappingProxyType({winner.rank: frozenset({()})}),
+        tier_health,
+        provider_status,
+        selected_ranks=(winner.rank,),
+        tier_diagnostics=tier_diagnostics,
+    )
+
+
 def _resolve_ranked_union[T](
     found: Sequence[RankedProviderValue[T]],
     tier_health: Mapping[int, ProviderResult[T]],
@@ -162,18 +188,13 @@ def _resolve_ranked_union[T](
     """Accumulate list-like providers from weakest to strongest rank.
 
     Returns:
-        The union, or the highest-ranked replacement when a value is not list-like.
+        The union, or the strongest-precedence (lowest-rank) replacement when a
+        value is not list-like.
     """
     entries = [union_entries(_provider_value(provider)) for provider in found]
     if any(value is None for value in entries):
-        winner = found[0]
-        return ResolvedValue(
-            _provider_value(winner),
-            MappingProxyType({winner.rank: frozenset({()})}),
-            tier_health,
-            provider_status,
-            selected_ranks=(winner.rank,),
-            tier_diagnostics=tier_diagnostics,
+        return _replace_with_strongest(
+            found, tier_health, provider_status, tier_diagnostics
         )
     union: list[Any] = []
     for value in reversed(entries):
@@ -199,33 +220,28 @@ def _resolve_ranked_deep_merge[T](
 ) -> ResolvedValue[T]:
     """Deep-merge mapping providers from weakest to strongest rank.
 
+    A tier that does not hold a mapping cannot be merged. Such a tier falls
+    back to replacement by the strongest-precedence (lowest-rank) provider,
+    matching `_resolve_ranked_union`. Returning the non-mapping tier itself
+    would let a weaker tier displace managed policy.
+
     Returns:
-        The merged mapping, or the highest-ranked scalar replacement.
+        The merged mapping, or the strongest provider's value when any tier
+        cannot be merged.
     """
     weakest = found[-1]
     value = _provider_value(weakest)
     if not isinstance(value, dict):
-        winner = found[0]
-        return ResolvedValue(
-            _provider_value(winner),
-            MappingProxyType({winner.rank: frozenset({()})}),
-            tier_health,
-            provider_status,
-            selected_ranks=(winner.rank,),
-            tier_diagnostics=tier_diagnostics,
+        return _replace_with_strongest(
+            found, tier_health, provider_status, tier_diagnostics
         )
     merged = deepcopy(cast("dict[str, Any]", value))
     leaves = _ranked_leaf_provenance(merged, weakest.rank)
     for provider in reversed(found[:-1]):
         higher = _provider_value(provider)
         if not isinstance(higher, dict):
-            return ResolvedValue(
-                higher,
-                MappingProxyType({provider.rank: frozenset({()})}),
-                tier_health,
-                provider_status,
-                selected_ranks=(provider.rank,),
-                tier_diagnostics=tier_diagnostics,
+            return _replace_with_strongest(
+                found, tier_health, provider_status, tier_diagnostics
             )
         merged, leaves = _merge_ranked_tables(
             merged,
@@ -353,17 +369,6 @@ def union_entries(value: object) -> list[Any] | None:
     if isinstance(value, list):
         return value
     return None
-
-
-def leaf_provenance(value: object, source: str) -> dict[str, str]:
-    """Attribute every leaf under `value` to one source.
-
-    For a table that only one tier declares, where there is nothing to merge.
-
-    Returns:
-        Dotted leaf-to-source mapping.
-    """
-    return _dotted(_leaf_provenance(value, source, ()))
 
 
 def merge_toml_tables(

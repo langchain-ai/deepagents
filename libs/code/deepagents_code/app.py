@@ -1379,9 +1379,11 @@ def _load_bool_display_preference(key: str, *, fallback: bool) -> bool:
     """Deferred-import wrapper around `config_manifest`.
 
     Written once here rather than inlined at each caller, so that
-    `config_manifest` stays off `app.py`'s import path — matching every other
-    `config_manifest` use in this module, all of which are function-local. See
+    `config_manifest` stays off `app.py`'s import path. See
     `load_bool_display_preference` for the resolution rules and arguments.
+
+    Deliberately does not forward `on_rejected`: these are startup reads, and
+    the TUI owns the screen by the time they run.
 
     Returns:
         The resolved value.

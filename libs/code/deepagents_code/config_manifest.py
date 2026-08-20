@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 from deepagents_code import _env_vars
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     from deepagents_code.configuration.resolver import ResolvedValue
     from deepagents_code.configuration.types import ProviderStatus
@@ -788,36 +788,47 @@ def resolve_scalar(
     return resolved.value, _ranked_source(resolved)
 
 
-def load_bool_display_preference(key: str, *, fallback: bool) -> bool:
+def load_bool_display_preference(
+    key: str,
+    *,
+    fallback: bool,
+    on_rejected: Callable[[str], None] | None = None,
+) -> bool:
     """Resolve a boolean `Display` option through the config manifest.
 
     Precedence follows `resolve_scalar`: managed config wins, then the option's
     `DEEPAGENTS_CODE_*` env var if it declares one (not all do), then its
     `[ui]` key in `~/.deepagents/config.toml`, then the declared default.
     Resolution is intentionally forgiving — an unreadable config, a non-table
-    `[ui]`, or a wrong-typed value is logged by the resolver and falls through,
-    so a typo in a cosmetic setting never breaks startup.
+    `[ui]`, or a wrong-typed value is logged and falls through, so a typo in a
+    cosmetic setting never breaks startup.
 
-    Nothing about that is visible to the user by default. The package logger is
-    wired to an in-memory buffer in `deepagents_code/__init__.py`, whose only
-    reader is the TUI Debug Console; the file handler attaches only under
-    `DEEPAGENTS_CODE_DEBUG`. So a warning logged here after the TUI has exited,
-    or during a headless run, has no reader at all unless that env var is set.
-    `dcode config get <key>` is the self-service diagnosis: a rejected value
-    shows up there as source `default` rather than `config.toml`.
+    Warnings from this path only reach the TUI Debug Console or a
+    `DEEPAGENTS_CODE_DEBUG` log file, so by default a rejected value has no
+    reader; `dcode config get <key>` shows one as source `default`. Pass
+    `on_rejected` where that silence is itself the bug — see `on_rejected`
+    below.
 
     Args:
         key: Manifest key of the option, e.g. `"display.cursor_blink"`.
         fallback: Value to use when `key` is not in the manifest at all, or is
             not a `BOOL` option — both mean a caller and the manifest disagree.
-            `test_bool_display_preference_fallbacks_match_the_manifest`
-            discovers every literal call site by AST walk and checks its key
-            and fallback against the manifest, so a new caller needs no test
-            change — but it only sees literal arguments.
+            Pinned against each option's declared default by
+            `test_bool_display_preference_fallbacks_match_the_manifest`.
+        on_rejected: Called once per rejection reason when a tier supplied a
+            value that failed to parse. Only worth passing for an option whose
+            purpose is to *suppress* something: falling through to the default
+            then produces the exact output the user asked to hide, which is
+            indistinguishable from the option never having been set. Callers
+            that fail toward a merely cosmetic default should omit it — this
+            runs during TUI startup for most options, where writing to a
+            stream would land on top of the interface.
 
     Returns:
         The resolved value.
     """
+    from deepagents_code.configuration.types import Invalid
+
     option = get_option(key)
     if option is None:
         logger.warning("Unknown config option %r; falling back to %r", key, fallback)
@@ -833,11 +844,22 @@ def load_bool_display_preference(key: str, *, fallback: bool) -> bool:
             fallback,
         )
         return fallback
-    value, source = resolve_scalar(option, toml_data=load_config_toml())
-    resolved = bool(value)
+    # Inlines `resolve_scalar` rather than calling it, because the rejection
+    # reasons `on_rejected` needs live on the ranked result that it discards.
+    ranked = resolve_ranked_scalar(option, toml_data=load_config_toml())
+    _emit_ranked_diagnostics(option, ranked)
+    resolved = bool(ranked.value)
     # Keep the source: a display option turned off by managed policy is
     # otherwise indistinguishable from one the user turned off themselves.
-    logger.debug("Resolved %s to %r from %s", key, resolved, source)
+    # Visible under `DEEPAGENTS_CODE_DEBUG`; `dcode config get` is the answer
+    # without it.
+    logger.debug("Resolved %s to %r from %s", key, resolved, _ranked_source(ranked))
+    if on_rejected is not None:
+        for rank in sorted(ranked.tier_health):
+            result = ranked.tier_health[rank]
+            if isinstance(result, Invalid):
+                for reason in ranked.tier_diagnostics.get(rank) or (result.reason,):
+                    on_rejected(reason)
     return resolved
 
 
@@ -1475,7 +1497,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Show session usage statistics when a session ends.",
         kind=OptionKind.BOOL,
         default=True,
+        env_var=_env_vars.SHOW_USAGE_STATS,
         toml_keys=("ui", "show_usage_stats"),
+        empty_env_is_false=True,
     ),
     ConfigOption(
         key="display.themes",

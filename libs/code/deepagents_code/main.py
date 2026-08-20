@@ -3295,11 +3295,16 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
     passing something other than `SessionStats` should not trigger config I/O
     to decide to print nothing.
 
-    That guard is unreachable today — `AppResult.session_stats` is declared
-    `SessionStats` with a `default_factory`, and the sole caller passes it — so
-    if it ever fires, something upstream is broken rather than merely disabled.
-    It warns instead of returning silently, to keep the two indistinguishable
-    empty outputs apart.
+    That guard is unreachable as long as callers respect
+    `AppResult.session_stats`'s declared type — a dataclass annotation, not
+    runtime enforcement, which is exactly what `stats: Any` lets slip. If it
+    fires, something upstream is broken rather than merely disabled, so it
+    warns instead of returning silently: that keeps the two otherwise
+    indistinguishable empty outputs apart.
+
+    An exception escaping `usage_table_enabled` here would be caught by the
+    top-level handler that rewrites a clean exit into `1` plus a traceback,
+    which is why that call fails open.
 
     Args:
         stats: The cumulative session stats from the Textual app.

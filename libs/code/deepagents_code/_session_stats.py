@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_CEILING, Decimal
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
     from rich.console import Console
 
 logger = logging.getLogger(__name__)
+
+_warned_usage_stats_rejections: set[str] = set()
+"""Rejection reasons already reported by `_warn_rejected_usage_stats_value`."""
 
 SpinnerStatus = (
     Literal[
@@ -971,20 +975,61 @@ def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:
     return format_cost(cost_usd) if priced_request_count else "—"
 
 
+def _warn_rejected_usage_stats_value(reason: str) -> None:
+    """Report a rejected `show_usage_stats` value on stderr.
+
+    Every other rejection in this codebase is logged and left there, which is
+    right for an option that falls through to a cosmetic default. This one
+    falls through to *showing the table* — the single outcome the user was
+    trying to prevent — and the log has no reader outside the TUI Debug
+    Console, so a quoted `"false"` or a bare `no` would otherwise look exactly
+    like never having set the option. `dcode config set` does not exist, so
+    hand-edited TOML is the only input path and typos are the expected case.
+
+    Both call sites are at teardown, where stderr is a plain stream rather than
+    a live interface, so this cannot land on top of the TUI.
+
+    Deduped per reason rather than per process: resolving once per session is
+    the norm, but `dcode config` walks the whole manifest, and a line repeated
+    verbatim reads as two separate problems. Two *different* reasons — managed
+    config and the user file both rejected — really are two problems and both
+    print.
+
+    Args:
+        reason: Rejection text from the resolver.
+    """
+    if reason in _warned_usage_stats_rejections:
+        return
+    _warned_usage_stats_rejections.add(reason)
+    print(  # noqa: T201
+        f"Warning: {reason}; showing the session usage table",
+        file=sys.stderr,
+    )
+    logger.warning("%s", reason)
+
+
 def usage_table_enabled() -> bool:
     """Return whether the session usage table should be rendered.
 
-    Controlled by `[ui].show_usage_stats`; the option declares no env var. Both
-    the TUI teardown and the headless run call this rather than resolving the
-    option themselves, so the key and its fallback pair are written once and
-    the two surfaces cannot disagree about the default.
+    Controlled by `[ui].show_usage_stats` or `DEEPAGENTS_CODE_SHOW_USAGE_STATS`.
+    Both the TUI teardown and the headless run call this rather than resolving
+    the option themselves, so the key and its fallback pair are written once
+    and the two surfaces cannot disagree about the default.
 
-    Both callers are at teardown, where an exception would cost far more than
-    the table is worth: in the TUI it is caught by the top-level handler that
-    rewrites a clean exit into `1` plus a traceback, and in the headless run it
-    would skip the `AGENT_COMPLETED` notification and the `session.end` hooks.
-    A broad catch is warranted for a leaf, cosmetic, teardown-time decision
-    with a safe default, provided it is logged rather than swallowed.
+    Fails open: both callers are at teardown, where an exception would cost far
+    more than the table is worth, so a broad catch is warranted for a leaf,
+    cosmetic decision with a safe default — provided it is logged rather than
+    swallowed. The call sites document what an escape would actually break.
+
+    `BlockingError` is excluded from that fail-open, matching
+    `configurable_model._resolve_openai_prompt_cache_key_enabled`: it signals
+    blocking I/O on the event loop, which is a real regression rather than a
+    config hiccup, and this is called directly from the async headless
+    teardown. It is matched by class name because `blockbuster` is not a
+    runtime dependency of this package.
+
+    The `config_manifest` import is deliberately outside the `try`, so an
+    `ImportError` propagates instead of being reported as a config failure.
 
     Returns:
         Whether to render the table.
@@ -992,10 +1037,16 @@ def usage_table_enabled() -> bool:
     from deepagents_code.config_manifest import load_bool_display_preference
 
     try:
-        return load_bool_display_preference("display.show_usage_stats", fallback=True)
-    except Exception:
+        return load_bool_display_preference(
+            "display.show_usage_stats",
+            fallback=True,
+            on_rejected=_warn_rejected_usage_stats_value,
+        )
+    except Exception as exc:
+        if any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__):
+            raise
         logger.warning(
-            "Could not resolve [ui].show_usage_stats; showing the table",
+            "Could not resolve display.show_usage_stats; showing the table",
             exc_info=True,
         )
         return True

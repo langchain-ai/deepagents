@@ -177,7 +177,7 @@ def test_no_hand_rolled_ui_config_readers() -> None:
 
 # Six `app.py` display toggles plus `display.show_usage_stats` in
 # `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
-# so it is deliberately not counted.
+# so it is deliberately not counted. Exact, not a floor — see the test.
 _EXPECTED_LITERAL_CALL_SITES = 7
 
 
@@ -195,8 +195,11 @@ def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
 
     The walk only sees literal arguments, so a refactor that passed keys or
     fallbacks as variables would quietly shrink coverage while still passing on
-    whatever literal sites remained. `_EXPECTED_LITERAL_CALL_SITES` is the
-    floor that makes that shrink loud; raise it when a caller is added.
+    whatever literal sites remained. `_EXPECTED_LITERAL_CALL_SITES` is an exact
+    count rather than a floor, so both a shrink and an unreviewed new literal
+    caller are loud — bump it when you add one. The blind spot it cannot close
+    is a *new* caller that passes a variable key: the count stays put and
+    nothing checks that caller's pair.
     """
     import ast
     from pathlib import Path
@@ -244,11 +247,11 @@ def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
             if keys and fallbacks:
                 call_sites.append((source.name, keys[0], fallbacks[0]))
 
-    assert len(call_sites) >= _EXPECTED_LITERAL_CALL_SITES, (
-        f"found {len(call_sites)} literal call sites, expected at least "
+    assert len(call_sites) == _EXPECTED_LITERAL_CALL_SITES, (
+        f"found {len(call_sites)} literal call sites, expected "
         f"{_EXPECTED_LITERAL_CALL_SITES}; a caller that stopped passing "
-        "literals is no longer checked here, so lower the floor only "
-        "deliberately"
+        "literals is no longer checked here, and a new one has not been "
+        "reviewed — change the count deliberately"
     )
     for filename, key, fallback in call_sites:
         option = get_option(key)
@@ -300,21 +303,25 @@ def test_bool_display_preference_non_bool_key_falls_back(
 
 
 def test_toml_only_bool_display_options_declare_no_env_var() -> None:
-    """These two `Display` toggles are `config.toml`-only, deliberately.
+    """`display.show_diff_line_numbers` is `config.toml`-only, deliberately.
 
-    Both `load_bool_display_preference` and `usage_table_enabled` document the
-    absence in their docstrings, and the env-var tier of `resolve_scalar` is
-    therefore dead for them. Adding an `env_var` here is a legitimate product
-    change, but it should be a decision rather than a drive-by, so it has to
-    come through this test.
+    It is TUI-only and toggled in-app with `/line-numbers`, so `config.toml` is
+    the natural place to preset it — unlike `display.show_usage_stats`, which
+    also gates headless output and therefore does declare an env var.
+
+    The promise lives in `app._load_show_diff_line_numbers` ("There is no env
+    var for this option."), which is what a failure here has to go fix;
+    `load_bool_display_preference` only says that not every option declares
+    one. Adding an `env_var` is a legitimate product change, but it should be a
+    decision rather than a drive-by, so it has to come through this test.
     """
-    for key in ("display.show_usage_stats", "display.show_diff_line_numbers"):
-        option = get_option(key)
-        assert option is not None
-        assert option.env_var is None, (
-            f"{key} gained an env var; update the docstrings that promise it has none"
-        )
-        assert not option.fallback_env_vars
+    option = get_option("display.show_diff_line_numbers")
+    assert option is not None
+    assert option.env_var is None, (
+        "display.show_diff_line_numbers gained an env var; update the promise in "
+        "`app._load_show_diff_line_numbers`"
+    )
+    assert not option.fallback_env_vars
 
 
 @pytest.mark.parametrize(
